@@ -62,14 +62,39 @@ public final class BatchedInsert implements AutoCloseable {
         }
     }
 
-    /** Executes and commits any pending rows. No-op when nothing is pending. */
+    /**
+     * Executes and commits any pending rows. No-op when nothing is pending.
+     *
+     * <p>On failure the transaction is rolled back before the exception is
+     * rethrown. Leaving it open would be silent data corruption twice over: a
+     * later successful {@link #flush()} would commit this batch's partial work
+     * alongside the new rows, and {@link #close()} restoring auto-commit would
+     * commit it outright, because JDBC commits the in-flight transaction when
+     * auto-commit is re-enabled.
+     */
     public void flush() throws SQLException {
         if (pendingRows == 0) {
             return;
         }
-        statement.executeBatch();
-        connection.commit();
-        totalRows += pendingRows;
+        int flushing = pendingRows;
+        try {
+            statement.executeBatch();
+            connection.commit();
+        } catch (SQLException failure) {
+            pendingRows = 0;
+            try {
+                connection.rollback();
+            } catch (SQLException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+            try {
+                statement.clearBatch();
+            } catch (SQLException clearFailure) {
+                failure.addSuppressed(clearFailure);
+            }
+            throw failure;
+        }
+        totalRows += flushing;
         pendingRows = 0;
     }
 

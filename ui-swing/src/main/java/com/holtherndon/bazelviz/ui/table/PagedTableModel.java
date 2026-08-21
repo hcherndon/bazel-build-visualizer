@@ -10,6 +10,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Windowed table model over a {@link RowSource}, designed for tens of
@@ -35,6 +37,18 @@ public final class PagedTableModel<T> extends AbstractTableModel {
     /** Rendered for any cell whose page is not cached yet. */
     public static final String PLACEHOLDER = "…";
 
+    /**
+     * Rendered for any cell whose page failed to load. Deliberately distinct
+     * from {@link #PLACEHOLDER}: a failure the user cannot tell apart from
+     * still-loading is a silent drop.
+     */
+    public static final String ERROR_PLACEHOLDER = "⚠";
+
+    /** Distinct failed pages recorded before the source is declared broken. */
+    private static final int MAX_RECORDED_FAILED_PAGES = 4096;
+
+    private static final Logger log = LoggerFactory.getLogger(PagedTableModel.class);
+
     /** Observes completed page fetches; called on the fetch executor thread. */
     @FunctionalInterface
     public interface FetchObserver {
@@ -53,6 +67,10 @@ public final class PagedTableModel<T> extends AbstractTableModel {
     private final AtomicBoolean flushScheduled = new AtomicBoolean();
     private final AtomicLong fetchCount = new AtomicLong();
     private final AtomicLong skippedFetchCount = new AtomicLong();
+    private final AtomicLong failedFetchCount = new AtomicLong();
+    private final Set<Long> failedPages = ConcurrentHashMap.newKeySet();
+    private volatile boolean sourceFailed;
+    private volatile Throwable lastFailure;
     private volatile long lastRequestedPage;
     private volatile long lastFetchNanos = -1; // -1 = no fetch yet; never fake a zero latency
     private volatile FetchObserver fetchObserver;
@@ -101,8 +119,14 @@ public final class PagedTableModel<T> extends AbstractTableModel {
         lastRequestedPage = page; // viewport proxy for the obsolete-fetch check
         Page<T> cached = cache.get(page);
         if (cached == null) {
+            if (hasFailed(page)) {
+                return ERROR_PLACEHOLDER;
+            }
             scheduleFetch(page);
-            return PLACEHOLDER;
+            // Re-check: a rejected submission fails synchronously inside
+            // scheduleFetch, and reporting that page as merely "loading" would
+            // leave the user waiting for a fetch that will never run.
+            return hasFailed(page) ? ERROR_PLACEHOLDER : PLACEHOLDER;
         }
         int offset = (int) (rowIndex - page * pageSize);
         return columns.get(columnIndex).extractor().apply(cached.rows().get(offset));
@@ -135,6 +159,24 @@ public final class PagedTableModel<T> extends AbstractTableModel {
         return skippedFetchCount.get();
     }
 
+    /** Page fetches that failed. Their rows render as {@link #ERROR_PLACEHOLDER}. */
+    public long failedFetchCount() {
+        return failedFetchCount.get();
+    }
+
+    /** The most recent fetch failure, or null if none has occurred. */
+    public Throwable lastFailure() {
+        return lastFailure;
+    }
+
+    /**
+     * True once enough distinct pages have failed that the source itself is
+     * treated as broken and no further fetches are scheduled.
+     */
+    public boolean isSourceFailed() {
+        return sourceFailed;
+    }
+
     /** Duration of the most recent completed fetch, or -1 before the first one. */
     public long lastFetchNanos() {
         return lastFetchNanos;
@@ -144,11 +186,26 @@ public final class PagedTableModel<T> extends AbstractTableModel {
         this.fetchObserver = observer;
     }
 
+    private boolean hasFailed(long pageIndex) {
+        return sourceFailed || failedPages.contains(pageIndex);
+    }
+
     private void scheduleFetch(long pageIndex) {
+        if (hasFailed(pageIndex)) {
+            return; // failure is already being reported; do not spin on it
+        }
         if (!inFlight.add(pageIndex)) {
             return; // already queued or fetching
         }
-        fetchExecutor.execute(() -> runFetch(pageIndex));
+        try {
+            fetchExecutor.execute(() -> runFetch(pageIndex));
+        } catch (RuntimeException rejected) {
+            // A rejected submission would otherwise strand the page in
+            // inFlight forever, so it can never be fetched again, and would
+            // throw out of getValueAt onto the EDT paint path.
+            inFlight.remove(pageIndex);
+            recordFailure(pageIndex, rejected);
+        }
     }
 
     private void runFetch(long pageIndex) {
@@ -175,9 +232,42 @@ public final class PagedTableModel<T> extends AbstractTableModel {
                 observer.pageLoaded(pageIndex, elapsed);
             }
             pageArrived(pageIndex, page.rows().size());
+        } catch (Throwable failure) {
+            // Without this the executor swallows the throwable: the cell keeps
+            // showing the same placeholder as a still-loading page, and every
+            // repaint re-schedules the same failing fetch. A failure the user
+            // cannot distinguish from loading is a silent drop.
+            recordFailure(pageIndex, failure);
         } finally {
             inFlight.remove(pageIndex);
         }
+    }
+
+    private void recordFailure(long pageIndex, Throwable failure) {
+        failedFetchCount.incrementAndGet();
+        lastFailure = failure;
+        log.error("Page {} failed to load; its rows will render as {}",
+                pageIndex, ERROR_PLACEHOLDER, failure);
+        if (failedPages.size() >= MAX_RECORDED_FAILED_PAGES) {
+            // Past this many distinct failures the source itself is broken
+            // rather than individual pages. Stop scheduling entirely instead
+            // of growing the failure set without bound.
+            sourceFailed = true;
+        } else {
+            failedPages.add(pageIndex);
+        }
+        pageArrived(pageIndex, pageSize);
+    }
+
+    /**
+     * Clears recorded failures so the affected pages are fetched again on the
+     * next repaint. This is the hook behind a user-facing "retry" affordance;
+     * nothing retries on its own.
+     */
+    public void retryFailedPages() {
+        sourceFailed = false;
+        failedPages.clear();
+        fireTableRowsUpdated(0, Math.max(0, rowCount - 1));
     }
 
     private void pageArrived(long pageIndex, int rowsInPage) {

@@ -34,15 +34,27 @@ scripted verification.)
 
 ## Running the Phase 0 spikes
 
-Each spike opens an interactive window by default; `--offscreen` renders
-headlessly and prints frame statistics. Targets and methodology:
+Every spike prints a PASS/FAIL verdict against its budget and, in
+`--offscreen` mode, exits nonzero when it fails. What each one measures
+differs; only two of them are frame-rate spikes:
+
+| Spike | `--offscreen` behaviour | Reports |
+|---|---|---|
+| `runTableSpike` | headless; builds the model, no window | page-fetch latency percentiles, cache stats, JTable pixel geometry |
+| `runTimelineSpike` | paints 300 frames to a `BufferedImage` | LOD build time, frame-time percentiles |
+| `runGraphSpike` | paints 300 frames to a `BufferedImage` | CSR build/traversal rates, retained bytes, frame-time percentiles |
+| `runSqlPagingSpike` | console-only; the flag is accepted and ignored | insert throughput, OFFSET vs keyset vs point-lookup latency |
+
+The timeline and graph spikes open an interactive window when run without
+`--offscreen`; the table spike opens one too, while the SQL spike is always
+console-only. Targets and measured results:
 [docs/performance.md](docs/performance.md).
 
 ```
 ./gradlew :benchmarks:runTableSpike     --args="--offscreen"
 ./gradlew :benchmarks:runTimelineSpike  --args="--offscreen"
 ./gradlew :benchmarks:runGraphSpike     --args="--offscreen"
-./gradlew :benchmarks:runSqlPagingSpike --args="--offscreen"
+./gradlew :benchmarks:runSqlPagingSpike --args="--rows=2000000"
 ```
 
 ## Modules

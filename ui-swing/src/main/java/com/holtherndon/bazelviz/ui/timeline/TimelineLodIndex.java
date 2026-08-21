@@ -29,8 +29,35 @@ public final class TimelineLodIndex {
     static final long FINEST_BIN_MICROS = 1_000;
     static final int LEVEL_GROWTH = 4;
     static final int MAX_TOP_LEVEL_BINS = 2048;
-    /** Hard cap on level-0 bins so a pathological wall span cannot allocate gigabytes. */
-    static final int MAX_FINEST_BINS = 1 << 26;
+
+    /**
+     * Peak build cost of one level-0 bin: {@code starts} (int) + {@code overlap}
+     * (long) + the three difference arrays (int each) = 24 bytes, plus the
+     * resolved {@code active} and {@code failure} arrays (int each) that
+     * coexist with them = 32 bytes.
+     */
+    private static final int BYTES_PER_FINEST_BIN = 32;
+
+    /**
+     * Every coarser level has a quarter of its predecessor's bins, so the whole
+     * pyramid costs the level-0 arrays times the geometric sum 1 + 1/4 + 1/16 +
+     * … = 4/3. Rounded up to keep the budget conservative.
+     */
+    private static final double PYRAMID_BIN_MULTIPLIER = 4.0 / 3.0;
+
+    /** Memory the pyramid may occupy at its peak, against the plan-20.2 4 GB heap objective. */
+    static final long MAX_PYRAMID_BYTES = 256L * 1024 * 1024;
+
+    /**
+     * Hard cap on level-0 bins, derived from {@link #MAX_PYRAMID_BYTES} rather
+     * than picked as a round number: bins are only a proxy for what actually
+     * matters, which is bytes. Beyond this the level-0 bin width grows by
+     * {@link #LEVEL_GROWTH} instead, trading time resolution for a bounded
+     * footprint. Tier 3 (a ~2,344 s wall) needs ~2.3M bins at 1 ms, so the
+     * benchmark tiers keep full 1 ms resolution.
+     */
+    static final int MAX_FINEST_BINS =
+            (int) (MAX_PYRAMID_BYTES / (long) (BYTES_PER_FINEST_BIN * PYRAMID_BIN_MULTIPLIER));
     /** A level is selected when its bins are at least this wide on screen. */
     static final double TARGET_BIN_PIXELS = 2.0;
 

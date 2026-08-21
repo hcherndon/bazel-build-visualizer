@@ -229,9 +229,9 @@ public final class TableSpike {
                 cachedMaxNanos / 1_000.0, TimeUnit.NANOSECONDS.toMillis(CACHED_ACCESS_BUDGET_NANOS),
                 uncachedP99Nanos / 1_000.0,
                 TimeUnit.NANOSECONDS.toMillis(UNCACHED_FETCH_BUDGET_NANOS));
-        // The offscreen harness always exits 0 (its contract is "runs to
-        // completion"); the PASS/FAIL line above is the recorded verdict.
-        System.exit(0);
+        // Shared spike contract: in --offscreen mode a budget breach is a
+        // nonzero exit, so a regression fails a build instead of scrolling by.
+        System.exit(pass ? 0 : 1);
     }
 
     /**

@@ -56,6 +56,8 @@ public final class SqlPagingSpike {
         Path dbFile = tempDir.resolve("paging.db");
         System.out.printf("SqlPagingSpike: %,d rows, db %s%n", rows, dbFile);
 
+        boolean failed = false;
+
         try (SessionDatabase db = SessionDatabase.open(dbFile)) {
             createSchema(db.writerConnection());
             loadRows(db, rows);
@@ -69,9 +71,16 @@ public final class SqlPagingSpike {
                 pass &= report("point lookup by id",
                         measurePointLookup(read, rows));
                 System.out.println(pass ? "RESULT: PASS" : "RESULT: FAIL");
+                failed = !pass;
             }
         } finally {
             deleteRecursively(tempDir);
+        }
+        if (failed) {
+            // Shared spike contract: a budget breach is a nonzero exit, so a
+            // regression fails a build instead of scrolling by. Exiting after
+            // the finally block keeps the temp database cleanup guaranteed.
+            System.exit(1);
         }
     }
 

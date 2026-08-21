@@ -144,15 +144,24 @@ large margins, but neither is a true cold-cache measurement.
 
 ## Running the spikes
 
-Each spike defaults to an interactive window; `--offscreen` paints to a
-BufferedImage and prints frame statistics for CI/headless use.
+Only the timeline and graph spikes paint frames; the table spike measures
+page-fetch latency and the SQL spike is console-only (it accepts
+`--offscreen` for runner uniformity and ignores it). All four print a
+PASS/FAIL verdict and exit nonzero on a budget breach in `--offscreen` mode,
+so a regression fails the command rather than scrolling past.
 
 ```
 ./gradlew :benchmarks:runTableSpike     --args="--offscreen"
 ./gradlew :benchmarks:runTimelineSpike  --args="--offscreen"
+./gradlew :benchmarks:runTimelineSpike  --args="--offscreen --tier3"
 ./gradlew :benchmarks:runGraphSpike     --args="--offscreen"
-./gradlew :benchmarks:runSqlPagingSpike --args="--offscreen"
+./gradlew :benchmarks:runGraphSpike     --args="--offscreen --tier2"
+./gradlew :benchmarks:runSqlPagingSpike --args="--rows=2000000"
 ```
+
+The tier flags matter: the timeline and graph spikes default to Tier 2 and
+Tier 1 respectively, so the Tier 3 / Tier 2 figures in the results above come
+from the flagged invocations.
 
 Spike JVMs run with `-Xmx4g` (set in `benchmarks/build.gradle.kts`). Record
 alongside every measurement: OS + version, CPU, RAM, JDK build, display
