@@ -1,0 +1,10 @@
+.gradle/
+build/
+.kotlin/
+.DS_Store
+.idea/
+*.iml
+out/
+.vscode/
+hs_err_pid*
+replay_pid*

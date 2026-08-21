@@ -1,0 +1,33 @@
+# Central dependency versions. Every third-party addition needs the review
+# described in the agent execution contract (docs/adr, license, maintenance,
+# performance justification) and must keep dependency locking green.
+
+[versions]
+assertj = "3.27.3"
+flatlaf = "3.7.2"
+grpc = "1.83.1"
+jmh = "1.37"
+junit = "6.1.3"
+logback = "1.6.3"
+protobuf = "4.36.0"
+slf4j = "2.0.18"
+sqlite-jdbc = "3.53.2.1"
+
+[libraries]
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+flatlaf = { module = "com.formdev:flatlaf", version.ref = "flatlaf" }
+grpc-api = { module = "io.grpc:grpc-api", version.ref = "grpc" }
+grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpc" }
+grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-java-util = { module = "com.google.protobuf:protobuf-java-util", version.ref = "protobuf" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
+
+[plugins]
+jmh = { id = "me.champeau.jmh", version = "0.7.3" }
+protobuf = { id = "com.google.protobuf", version = "0.10.0" }
