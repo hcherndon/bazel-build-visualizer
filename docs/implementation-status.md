@@ -42,6 +42,36 @@ renumbered or re-scoped here.
 | Dependency lockfiles written | Done — `./gradlew resolveAndLockAll --write-locks --no-configuration-cache` regenerates them |
 | Phase 0 benchmark results recorded in docs/performance.md | Done |
 
+## Phase 0 audit
+
+Phase 0 was reviewed by an adversarial audit (five lenses — EDT discipline,
+memory/scale invariants, algorithmic correctness, storage and build config,
+documentation truthfulness — with independent refuters per finding and a
+completeness critic). 14 candidates, 11 refuted, and these fixed:
+
+- **`.gitignore` silently excluded five vendored protos**, including
+  `build_event_stream.proto`, because a bare `build/` matches at any depth
+  and the Bazel proto paths contain a `build` component. A fresh clone could
+  not compile `:proto`. Every lens missed it; the completeness critic found
+  it by diffing the tree against the lens scopes. Ignore patterns are now
+  anchored to module roots.
+- **`BatchedInsert` committed failed batches.** Restoring auto-commit in
+  `close()` commits the open transaction, so an aborted batch became durable
+  while `rowCount()` reported zero. Now rolls back before rethrowing.
+- **`PagedTableModel` swallowed fetch failures**, rendering them identically
+  to still-loading cells and retrying forever. Failures are now visible,
+  counted, and not auto-retried.
+- **`TimelineLodIndex` capped bins by count, not bytes**, permitting a ~2.9 GB
+  pyramid against the 4 GB heap objective. Cap is now byte-derived.
+- **Spike exit codes were inconsistent**, so two of four reported a budget
+  breach as a green build.
+
+The last two code fixes were formally refuted as unreachable in Phase 0 —
+correct today, since nothing yet wires a `RowSource` that can throw. Both
+refutations conceded the analysis itself; the fixes were kept because Phase 3
+wires exactly such a source, and inheriting a known latent defect costs more
+than fixing it now.
+
 ## Phase 0 exit criteria (plan section 24)
 
 | Criterion | Status |
