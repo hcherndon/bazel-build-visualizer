@@ -93,7 +93,11 @@ public final class SyntheticActionGenerator {
         double skewed = u * u * u;
         double logMin = Math.log(MIN_DURATION_MICROS);
         double logMax = Math.log(MAX_DURATION_MICROS);
-        return (long) Math.exp(logMin + skewed * (logMax - logMin));
+        long raw = (long) Math.exp(logMin + skewed * (logMax - logMin));
+        // exp(log(400)) rounds one ulp low (399.999...), so near-zero u used to
+        // truncate to 399 us; clamp so the documented [MIN, MAX] envelope holds
+        // for every hash value.
+        return Math.clamp(raw, MIN_DURATION_MICROS, MAX_DURATION_MICROS);
     }
 
     /** SplitMix64 finalizer. */

@@ -19,3 +19,12 @@ application {
         )
     }
 }
+
+// Gradle's own JVM properties do not reach the forked `run` JVM. Without this
+// forwarding, `./gradlew :app:run -Dbbv.smoke=true` silently ignores smoke
+// mode and the window never closes.
+tasks.named<JavaExec>("run") {
+    listOf("bbv.smoke", "bbv.theme", "bbv.appdir").forEach { key ->
+        providers.systemProperty(key).orNull?.let { systemProperty(key, it) }
+    }
+}

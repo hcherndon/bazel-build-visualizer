@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.app;
 
+import com.holtherndon.bazelviz.app.dirs.AppDirectories;
 import com.holtherndon.bazelviz.ui.MainWindow;
 import com.holtherndon.bazelviz.ui.theme.Themes;
 import javax.swing.SwingUtilities;
@@ -22,9 +23,22 @@ public final class Main {
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) ->
                 log.error("Uncaught exception on {}", thread.getName(), throwable));
 
+        // Directory creation is I/O, so it happens here on the main thread,
+        // before the EDT is ever involved.
+        AppDirectories dirs = AppDirectories.systemDefault();
+        log.info("Application support root: {}", dirs.root());
+        log.info("Logging is console-only in Phase 0; file logging will land in {}", dirs.logs());
+
+        boolean dark = "dark".equalsIgnoreCase(System.getProperty("bbv.theme"));
+
         SwingUtilities.invokeLater(() -> {
-            Themes.installDefault();
+            if (dark) {
+                Themes.installDark();
+            } else {
+                Themes.installDefault();
+            }
             MainWindow window = new MainWindow();
+            DesktopIntegration.install(window);
             window.setVisible(true);
             log.info("Main window shown");
             if (smoke) {
