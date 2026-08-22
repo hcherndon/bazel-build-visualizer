@@ -29,19 +29,56 @@ final class MigrationRunnerTest {
             "bep_event_edges",
             "bep_announced_missing");
 
+    private static final Set<String> V2_TABLES = Set.of(
+            "labels",
+            "mnemonics",
+            "build_invocation",
+            "configurations",
+            "configuration_make_variables",
+            "targets",
+            "configured_targets",
+            "target_tags",
+            "artifacts",
+            "depsets",
+            "depset_children",
+            "depset_files",
+            "target_output_groups",
+            "target_directory_outputs",
+            "actions",
+            "action_outputs",
+            "tests",
+            "test_attempts",
+            "test_logs",
+            "build_metrics",
+            "mnemonic_metrics",
+            "runner_counts",
+            "cache_miss_details",
+            "garbage_metrics",
+            "aborted_events",
+            "progress_output");
+
     @TempDir
     Path tempDir;
 
     @Test
-    void appliesEveryV1TableAndRecordsTheVersion() throws Exception {
+    void appliesEveryTableAndRecordsTheVersion() throws Exception {
         try (SessionDatabase db = open("apply.db")) {
             int version = MigrationRunner.standard().migrate(db);
 
-            assertThat(version).isEqualTo(SchemaV1.VERSION);
-            assertThat(tableNames(db.writerConnection())).containsAll(V1_TABLES);
+            assertThat(version).isEqualTo(SchemaV2.VERSION);
+            assertThat(tableNames(db.writerConnection())).containsAll(V1_TABLES).containsAll(V2_TABLES);
             assertThat(MigrationRunner.currentVersion(db.writerConnection()))
-                    .isEqualTo(SchemaV1.VERSION);
+                    .isEqualTo(SchemaV2.VERSION);
         }
+    }
+
+    @Test
+    void theShippingRunnerReachesTheAdvertisedLatestVersion() {
+        // LATEST_VERSION is what a version error tells the user this build
+        // supports; standard() is what it actually applies. They must agree or
+        // the message misinforms.
+        assertThat(MigrationRunner.standard().latestVersion())
+                .isEqualTo(MigrationRunner.LATEST_VERSION);
     }
 
     @Test
@@ -56,7 +93,7 @@ final class MigrationRunnerTest {
 
             int second = runner.migrate(db);
 
-            assertThat(second).isEqualTo(SchemaV1.VERSION);
+            assertThat(second).isEqualTo(SchemaV2.VERSION);
             assertThat(scalar(db.writerConnection(), "SELECT COUNT(*) FROM strings")).isEqualTo(1);
             assertThat(tableNames(db.writerConnection())).containsAll(V1_TABLES);
         }
@@ -78,7 +115,7 @@ final class MigrationRunnerTest {
                     .satisfies(thrown -> {
                         SchemaVersionException e = (SchemaVersionException) thrown;
                         assertThat(e.foundVersion()).isEqualTo(99);
-                        assertThat(e.supportedVersion()).isEqualTo(SchemaV1.VERSION);
+                        assertThat(e.supportedVersion()).isEqualTo(SchemaV2.VERSION);
                     });
 
             // And it refused without touching anything.
@@ -118,7 +155,7 @@ final class MigrationRunnerTest {
                     .isInstanceOf(SQLException.class)
                     .hasMessageContaining("no_such_table");
 
-            // v1's tables went in and came back out with v2's failure: DDL is
+            // v1's tables went in and came back out with the failure: DDL is
             // transactional in SQLite, so the whole run is one atomic step.
             assertThat(tableNames(db.writerConnection())).doesNotContain("bep_events");
             assertThat(MigrationRunner.currentVersion(db.writerConnection()))
@@ -136,13 +173,15 @@ final class MigrationRunnerTest {
                 statement.execute("INSERT INTO strings (value) VALUES ('kept across the upgrade')");
             }
 
-            MigrationRunner withV2 = new MigrationRunner(List.of(new V1Migration(), addsATable()));
-            assertThat(withV2.migrate(db)).isEqualTo(2);
+            MigrationRunner withV3 = new MigrationRunner(
+                    List.of(new V1Migration(), new V2Migration(), addsATable()));
+            assertThat(withV3.migrate(db)).isEqualTo(3);
 
-            // v1 did not run again — its data is still there — and v2's table exists.
+            // The shipped migrations did not run again — their data is still
+            // there — and the new one's table exists.
             assertThat(scalar(db.writerConnection(), "SELECT COUNT(*) FROM strings")).isEqualTo(1);
-            assertThat(tableNames(db.writerConnection())).contains("v2_probe");
-            assertThat(MigrationRunner.currentVersion(db.writerConnection())).isEqualTo(2);
+            assertThat(tableNames(db.writerConnection())).contains("v3_probe");
+            assertThat(MigrationRunner.currentVersion(db.writerConnection())).isEqualTo(3);
 
             // And the shipping runner now refuses the upgraded database.
             assertThatThrownBy(() -> MigrationRunner.standard().migrate(db))
@@ -169,7 +208,11 @@ final class MigrationRunnerTest {
                             "idx_bep_events_sequence",
                             "idx_bep_events_type_sequence",
                             "idx_bep_events_id_hash",
-                            "idx_bep_event_edges_child");
+                            "idx_bep_event_edges_child",
+                            "idx_actions_start",
+                            "idx_actions_mnemonic",
+                            "idx_configured_targets_outcome",
+                            "idx_test_attempts_status");
 
             // Recovery calls this unconditionally, so a second call must be free.
             SchemaIndexes.createAll(db.writerConnection());
@@ -206,18 +249,18 @@ final class MigrationRunnerTest {
         return new Migration() {
             @Override
             public int version() {
-                return 2;
+                return 3;
             }
 
             @Override
             public String description() {
-                return "adds v2_probe";
+                return "adds v3_probe";
             }
 
             @Override
             public void apply(Connection connection) throws SQLException {
                 try (Statement statement = connection.createStatement()) {
-                    statement.execute("CREATE TABLE v2_probe (id INTEGER PRIMARY KEY)");
+                    statement.execute("CREATE TABLE v3_probe (id INTEGER PRIMARY KEY)");
                 }
             }
         };

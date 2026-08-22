@@ -42,6 +42,16 @@ public final class MigrationRunner {
     /** Version recorded for a database that has never been migrated. */
     public static final int UNMIGRATED = 0;
 
+    /**
+     * The newest schema this build ships — what {@link #standard()} migrates to.
+     *
+     * <p>It exists because {@link #currentVersion(Connection)} is static and so
+     * has no runner to ask, yet the errors it raises must tell the user which
+     * version this build actually supports. {@code standardIsTheLatestVersion}
+     * in the migration tests keeps the two from drifting.
+     */
+    public static final int LATEST_VERSION = SchemaV2.VERSION;
+
     private static final String SELECT_METADATA_TABLE =
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'";
     private static final String SELECT_VERSION =
@@ -73,9 +83,9 @@ public final class MigrationRunner {
         this.migrations = List.copyOf(sorted);
     }
 
-    /** The runner this application ships: schema v1 and nothing else yet. */
+    /** The runner this application ships: schema v1 then v2. */
     public static MigrationRunner standard() {
-        return new MigrationRunner(List.of(new V1Migration()));
+        return new MigrationRunner(List.of(new V1Migration(), new V2Migration()));
     }
 
     /** The newest version this runner can produce. */
@@ -108,7 +118,7 @@ public final class MigrationRunner {
                     throw SchemaVersionException.unreadable(
                             "the schema_metadata table exists but carries no '"
                                     + SchemaV1.VERSION_KEY + "' row",
-                            SchemaV1.VERSION);
+                            LATEST_VERSION);
                 }
                 String raw = rows.getString(1);
                 try {
@@ -116,7 +126,7 @@ public final class MigrationRunner {
                 } catch (NumberFormatException notANumber) {
                     throw SchemaVersionException.unreadable(
                             "the recorded version '" + raw + "' is not an integer",
-                            SchemaV1.VERSION);
+                            LATEST_VERSION);
                 }
             }
         }

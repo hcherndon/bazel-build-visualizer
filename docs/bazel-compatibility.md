@@ -142,9 +142,55 @@ instead: `proto` is accepted by aquery, cquery and query on all four;
   on Bazel 9 can kill the server. The launcher holds the first signal until
   the client is a second old.
 
+## Event content the normalizer depends on
+
+A second measurement pass (five experiments, same four versions, 2026-08-22)
+covered what is *inside* the stream rather than how it is transported. The full
+record — field matrices per entity, the evidence for each claim, five
+unresolved contradictions and a list of what was never provoked — is
+`docs/bep-content.md`. The version-dependent parts:
+
+| Behaviour | 6.5.0 | 7.6.1 | 8.4.1 | 9.2.0 |
+|---|---|---|---|---|
+| Action `startTime` / `endTime` | absent | absent | present but `endTime == startTime` for every action | present, usable |
+| `importantOutput` on `TargetComplete` | present | present | absent by default | absent by default |
+| Synthetic tags appended to `completed.tag` | no | yes | yes | yes |
+| Analysis failure's `aborted` rides | `targetCompleted` | `targetConfigured` | `targetConfigured` | `targetConfigured` |
+| `configured` payload for an analysis-failed target | present | absent | absent | absent |
+| `buildMetrics` network / Skyframe counters | absent | absent | present | present |
+| `timingMetrics.executionPhaseTimeInMs` | absent | present | present | present |
+| `timingMetrics.criticalPathTime` | absent | absent | absent | present |
+| Fully-cached mnemonic in `actionData` | dropped | dropped | present | present |
+| `testResult` `executionInfo.exitCode` | absent | absent | proto3-default when 0 | proto3-default when 0 |
+| Carrier of `lastMessage: true` | `buildToolLogs` | `buildToolLogs` | changed | changed |
+| `--build_event_max_named_set_of_file_entries` default | `-1` | `-1` | 5000 | 5000 |
+
+Version-independent, and each one a way to be wrong on all four:
+
+- `id.actionCompleted.primaryOutput` is unique across a stream and present on
+  failures; the payload's `primaryOutput` is absent on every failure and on some
+  successes. `(label, configuration)` collides heavily.
+- `action.exitCode` is `1` for every failure; the process's real code is
+  `failureDetail.spawn.spawnExitCode`.
+- `targetCompleted.success` is `true` for a test that failed. Test verdicts come
+  from `testSummary.overallStatus` only.
+- `aborted` events arrive **after** `buildFinished`. An ingest that stops there
+  loses the entire failed and skipped target list.
+- A `NamedSetOfFiles` was always published before any reference to it: zero
+  forward references in 1,829 references across 43 streams. Measured on the JSON
+  file transport only, so the normalizer treats it as a fast path and surfaces a
+  violation rather than assuming it cannot happen.
+- Named-set ids are dense decimals reshuffled between runs of the same build.
+- Configuration id `system` is referenced on every build and never declared.
+- Two configuration events can be byte-identical with different ids.
+- Both the `*Millis` and the Timestamp/Duration spellings are emitted on all
+  four versions and never disagreed in 148 checks.
+
 ## What is not covered
 
 Everything above was measured on macOS arm64 only. Linux and Windows are
-unverified, and the report's own "Unverified" section lists what the
+unverified, and each report's own "Unverified" section lists what the
 experiments could not settle — including the exact 7.x release that added
-`FlagInfo` fields 11–16, and whether `help flags-as-proto` exists before 6.5.
+`FlagInfo` fields 11–16, whether `help flags-as-proto` exists before 6.5, and
+whether the named-set ordering guarantee holds over gRPC BES as it does over the
+JSON file.

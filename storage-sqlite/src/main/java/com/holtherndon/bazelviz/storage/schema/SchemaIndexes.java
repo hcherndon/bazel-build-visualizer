@@ -30,13 +30,17 @@ public final class SchemaIndexes {
     private SchemaIndexes() {}
 
     /**
-     * Creates every index in {@link SchemaV1#INDEXES}. Commits when the
-     * connection is not in auto-commit mode, so an ingestion that suspended
-     * auto-commit for batching does not leave the DDL uncommitted.
+     * Creates every index in {@link SchemaV1#INDEXES} and {@link
+     * SchemaV2#INDEXES}. Commits when the connection is not in auto-commit
+     * mode, so an ingestion that suspended auto-commit for batching does not
+     * leave the DDL uncommitted.
      */
     public static void createAll(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement()) {
             for (String ddl : SchemaV1.INDEXES) {
+                statement.execute(ddl);
+            }
+            for (String ddl : SchemaV2.INDEXES) {
                 statement.execute(ddl);
             }
         }
