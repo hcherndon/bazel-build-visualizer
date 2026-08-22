@@ -42,4 +42,24 @@ public final class DiagnosticCodes {
 
     /** A write failed because the volume is full (plan 21.2). */
     public static final String DISK_FULL = "DISK_FULL";
+
+    /**
+     * Two action events named the same primary output.
+     *
+     * <p>Measured unique across every stream on all four supported Bazel
+     * versions, so this should never appear on a clean import. When it does,
+     * the identity assumption has broken and one of the two actions is not in
+     * the table — which the user has to be told, because the alternative is a
+     * build that quietly reports fewer actions than it ran.
+     */
+    public static final String DUPLICATE_ACTION_OUTPUT = "DUPLICATE_ACTION_OUTPUT";
+
+    /**
+     * A named set of files was referenced and never defined.
+     *
+     * <p>Zero occurrences in 1,829 measured references. A non-zero count means
+     * the capture is missing events, so every byte total that walks through
+     * those sets is a lower bound rather than a total.
+     */
+    public static final String UNDEFINED_FILE_SET = "UNDEFINED_FILE_SET";
 }

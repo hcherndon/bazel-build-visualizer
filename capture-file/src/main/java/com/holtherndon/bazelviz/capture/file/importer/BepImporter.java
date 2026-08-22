@@ -1011,6 +1011,51 @@ public final class BepImporter {
                     SourceCheckpoint.at(sourceOffset, totalFrames, format, preserved));
         }
 
+        /**
+         * Records what normalization could not reconcile.
+         *
+         * <p>Both counters are evidence the contracts promise to surface, and
+         * both were computed and thrown away before this existed. A duplicate
+         * primary output means one of two actions is missing from the table; a
+         * file set referenced and never defined means every byte total that
+         * walks through it is a lower bound. Neither is visible any other way,
+         * because both look exactly like a smaller build.
+         */
+        private void reportNormalizationAnomalies() throws IOException {
+            if (entities == null) {
+                return;
+            }
+            long conflicts = entities.conflictingActions();
+            if (conflicts > 0) {
+                recordDiagnostic(DiagnosticSeverity.WARNING,
+                        DiagnosticCodes.DUPLICATE_ACTION_OUTPUT,
+                        conflicts + " action event(s) repeated a primary output already recorded;"
+                                + " the first row for each was kept. This is expected after a"
+                                + " resumed import, which replays events the previous run already"
+                                + " normalized, and unexpected otherwise -- the path is measured"
+                                + " unique across a stream on every supported Bazel version.",
+                        OptionalLong.empty());
+                warnings.add(conflicts + " action(s) repeated a primary output already recorded");
+            }
+            long undefined;
+            try {
+                undefined = entities.undefinedDepsets(streamId);
+            } catch (SQLException e) {
+                throw new IOException("failed to check for undefined file sets", e);
+            }
+            if (undefined > 0) {
+                recordDiagnostic(DiagnosticSeverity.WARNING,
+                        DiagnosticCodes.UNDEFINED_FILE_SET,
+                        undefined + " named set(s) of files were referenced and never defined, so"
+                                + " any byte total reached through them is a lower bound rather"
+                                + " than a total. Zero of 1,829 references were forward references"
+                                + " in measurement, so this is evidence the capture is missing"
+                                + " events.",
+                        OptionalLong.empty());
+                warnings.add(undefined + " file set(s) were referenced and never defined");
+            }
+        }
+
         private void flushEvents() throws IOException {
             try {
                 events.flush();
@@ -1313,6 +1358,7 @@ public final class BepImporter {
             phase = ImportPhase.FINALIZING;
             emitProgress(true);
             checkpoint();
+            reportNormalizationAnomalies();
             flushDiagnostics();
             summarizeDecodeOutcomes();
 

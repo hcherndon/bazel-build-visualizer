@@ -141,6 +141,10 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
 
     /** Commands currently held in {@link #pendingEntities}. */
     private int pendingEntityCommands;
+
+    /** Streams whose entities were normalized, for the per-stream checks at finish. */
+    private final java.util.Set<Long> normalizedStreams =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final StreamRegistry streams;
     private final EventNormalizer normalizer;
     private final ImportCheckpointStore checkpoints;
@@ -440,6 +444,18 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
         return true;
     }
 
+    /**
+     * The {@code event_streams} rows this pipeline normalized entities into.
+     *
+     * <p>Named sets are scoped to a stream, so "was anything referenced and
+     * never defined" is a question per stream rather than per session. A
+     * capture normally has one build-tool stream and may gain a second from a
+     * fallback file.
+     */
+    public java.util.Set<Long> normalizedStreamIds() {
+        return java.util.Set.copyOf(normalizedStreams);
+    }
+
     /** Holds one event's entity commands until its {@code bep_events} row exists. */
     private void bufferEntities(
             long streamId, long sequence, EventNormalizer.Normalization normalization) {
@@ -448,6 +464,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
             if (!commands.isEmpty()) {
                 pendingEntities.add(new PendingEntities(streamId, sequence, commands));
                 pendingEntityCommands += commands.size();
+                normalizedStreams.add(streamId);
             }
         });
     }
@@ -526,6 +543,15 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                 location, receiveMicros);
         events.write(normalization.normalized());
         bufferEntities(streamId, ordinal, normalization);
+        if (pendingEntityCommands >= MAX_PENDING_ENTITY_COMMANDS) {
+            // This path appends directly rather than going through the queue,
+            // so nothing else was going to drain it: without this the whole
+            // fallback file's commands accumulated until flushFileRecords().
+            // The events have to go in first or the provenance lookups find
+            // nothing.
+            events.flush();
+            drainEntities();
+        }
         normalizedCount.incrementAndGet();
         if (normalization.status() == DecodeStatus.FAILED) {
             decodeFailures.incrementAndGet();

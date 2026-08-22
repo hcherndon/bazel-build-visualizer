@@ -354,6 +354,7 @@ public final class CaptureCoordinator implements AutoCloseable {
             // session that skipped this is correct and slow -- every view query
             // falls back to a scan -- which is why it runs here and not only
             // on the import path, where it used to be the only caller.
+            reportNormalizationAnomalies(entities, events, pipeline, warnings);
             finalizeIndexesQuietly(entities, events, warnings);
             closeQuietly(entities, "entity writer", warnings);
             closeQuietly(events, "event writer", warnings);
@@ -880,6 +881,56 @@ public final class CaptureCoordinator implements AutoCloseable {
             journal.close();
         } catch (IOException | RuntimeException failure) {
             warnings.add("the raw journal could not be closed cleanly: " + failure);
+        }
+    }
+
+    /**
+     * Records what normalization could not reconcile.
+     *
+     * <p>The same two facts the import path reports, for the same reason: a
+     * duplicate primary output means one of two actions is missing from the
+     * table, and a file set referenced but never defined means every byte total
+     * reached through it is a lower bound. Both look exactly like a smaller
+     * build, so neither is visible any other way.
+     */
+    private static void reportNormalizationAnomalies(
+            EntityWriter entities,
+            EventWriter events,
+            LiveCapturePipeline pipeline,
+            List<String> warnings) {
+        if (entities == null || events == null || pipeline == null) {
+            return;
+        }
+        try {
+            long conflicts = entities.conflictingActions();
+            if (conflicts > 0) {
+                events.recordDiagnostic(ImportDiagnostic.general(
+                        DiagnosticSeverity.WARNING,
+                        com.holtherndon.bazelviz.storage.events.DiagnosticCodes
+                                .DUPLICATE_ACTION_OUTPUT,
+                        conflicts + " action event(s) repeated a primary output already recorded;"
+                                + " the first row for each was kept. The path is measured unique"
+                                + " across a stream on every supported Bazel version, so this"
+                                + " means one of each pair is not in the actions table.",
+                        System.currentTimeMillis() * 1_000L));
+                warnings.add(conflicts + " action(s) repeated a primary output already recorded");
+            }
+            for (long streamId : pipeline.normalizedStreamIds()) {
+                long undefined = entities.undefinedDepsets(streamId);
+                if (undefined == 0) {
+                    continue;
+                }
+                events.recordDiagnostic(ImportDiagnostic.general(
+                        DiagnosticSeverity.WARNING,
+                        com.holtherndon.bazelviz.storage.events.DiagnosticCodes.UNDEFINED_FILE_SET,
+                        undefined + " named set(s) of files were referenced and never defined, so"
+                                + " any byte total reached through them is a lower bound rather"
+                                + " than a total.",
+                        System.currentTimeMillis() * 1_000L));
+                warnings.add(undefined + " file set(s) were referenced and never defined");
+            }
+        } catch (SQLException failure) {
+            log.warn("could not check the session for normalization anomalies", failure);
         }
     }
 
