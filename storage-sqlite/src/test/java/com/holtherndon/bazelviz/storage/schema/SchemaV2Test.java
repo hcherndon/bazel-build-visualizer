@@ -368,8 +368,8 @@ final class SchemaV2Test {
             Connection c = db.writerConnection();
             exec(c, "INSERT INTO runner_counts (name, exec_kind, action_count, is_total)"
                     + " VALUES ('darwin-sandbox', 'local', 12, 0)");
-            exec(c, "INSERT INTO runner_counts (name, exec_kind, action_count, is_total)"
-                    + " VALUES ('total', NULL, 12, 1)");
+            exec(c, "INSERT INTO runner_counts (name, action_count, is_total)"
+                    + " VALUES ('total', 12, 1)");
 
             assertThat(scalar(c,
                             "SELECT SUM(action_count) FROM runner_counts WHERE is_total = 0"))
@@ -378,23 +378,35 @@ final class SchemaV2Test {
     }
 
     @Test
-    @DisplayName("aborted events are kept for every id kind they ride")
+    @DisplayName("aborted events are kept for every id kind they ride, once each")
     void abortedEventsUnionAcrossIdKinds() throws Exception {
         try (SessionDatabase db = migrated("aborted.db")) {
             Connection c = db.writerConnection();
+            long stream = insertStream(c, "build-tool");
             long label = insertLabel(c, "//app:broken");
+            long firstEvent = insertEvent(c, stream, 1);
+            long secondEvent = insertEvent(c, stream, 2);
 
             // The same aborted payload rides targetConfigured, targetCompleted,
             // unconfiguredLabel and configuredLabel ids, and which one carries
             // an analysis failure changed between 6.5.0 and 7.6.1. Scanning a
             // single id kind finds nothing on half the versions.
-            exec(c, "INSERT INTO aborted_events (id_kind, label_id, reason) VALUES ("
-                    + "'targetConfigured', " + label + ", 'ANALYSIS_FAILURE')");
-            exec(c, "INSERT INTO aborted_events (id_kind, label_id) VALUES ("
-                    + "'unconfiguredLabel', " + label + ")");
+            exec(c, "INSERT INTO aborted_events (id_kind, label_id, reason, bep_event_id) VALUES ("
+                    + "'targetConfigured', " + label + ", 'ANALYSIS_FAILURE', " + firstEvent + ")");
+            exec(c, "INSERT INTO aborted_events (id_kind, label_id, bep_event_id) VALUES ("
+                    + "'unconfiguredLabel', " + label + ", " + secondEvent + ")");
 
             assertThat(scalar(c, "SELECT COUNT(*) FROM aborted_events WHERE label_id = " + label))
                     .isEqualTo(2);
+
+            // Abort volume scales with target count -- 12,000 from one
+            // interrupt -- so a redelivered event that inserted a second row
+            // would inflate exactly the number the failures view reports.
+            assertThatThrownBy(() -> exec(c,
+                            "INSERT INTO aborted_events (id_kind, label_id, bep_event_id) VALUES ("
+                                    + "'unconfiguredLabel', " + label + ", " + secondEvent + ")"))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("UNIQUE");
             // An absent reason stays absent. Defaulting it to INCOMPLETE would
             // report a cause Bazel never gave.
             try (Statement s = c.createStatement();
@@ -430,6 +442,13 @@ final class SchemaV2Test {
 
     private static long insertStream(Connection c, String key) throws SQLException {
         exec(c, "INSERT INTO event_streams (stream_key, state) VALUES ('" + key + "', 'OPEN')");
+        return lastId(c);
+    }
+
+    private static long insertEvent(Connection c, long stream, long sequence) throws SQLException {
+        exec(c, "INSERT INTO bep_events (stream_id, sequence, event_type, raw_segment, raw_offset,"
+                + " raw_length, decode_status, receive_micros) VALUES ("
+                + stream + ", " + sequence + ", 4, 0, 0, 0, 'OK', 0)");
         return lastId(c);
     }
 

@@ -45,7 +45,6 @@ final class MigrationRunnerTest {
             "target_output_groups",
             "target_directory_outputs",
             "actions",
-            "action_outputs",
             "tests",
             "test_attempts",
             "test_logs",

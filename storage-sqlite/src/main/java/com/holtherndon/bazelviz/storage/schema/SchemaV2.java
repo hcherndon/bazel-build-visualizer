@@ -203,6 +203,13 @@ public final class SchemaV2 {
             // an `aborted` riding the targetConfigured id (T5), and the row must
             // still exist so the failures view can name the target.
             //
+            // aspect is NOT NULL with '' meaning "the target itself, not an
+            // aspect on it". Nullable would look tidier and would break the
+            // table: SQLite treats NULLs as distinct inside a UNIQUE, so
+            // ON CONFLICT would never fire for a plain target and every repeat
+            // delivery would insert another row. '' is unambiguous here because
+            // an aspect name is never empty.
+            //
             // outcome on this table is what the target-level events said —
             // CONFIGURED, or ABORTED when analysis never finished. What
             // happened when it was built lives on configured_targets. Two
@@ -212,7 +219,7 @@ public final class SchemaV2 {
             CREATE TABLE targets (
               id           INTEGER PRIMARY KEY,
               label_id     INTEGER NOT NULL REFERENCES labels(id),
-              aspect       TEXT,
+              aspect       TEXT    NOT NULL DEFAULT '',
               target_kind  TEXT,
               test_size    TEXT,
               outcome      TEXT    NOT NULL,
@@ -405,6 +412,12 @@ public final class SchemaV2 {
             // zero-length action. Duration aggregates exclude unknowns; they
             // never count them as zero.
             //
+            // There is no action_outputs table, because the BEP does not name
+            // an action's outputs: ActionExecuted carries a primary_output File
+            // with a uri and nothing else, and no list. The primary output path
+            // on this row is the whole of what the stream says. Outputs arrive
+            // with the execution log in Phase 4.
+            //
             // No is_test_runner column: the mnemonic is right there, and a
             // TestRunner row must be excluded from action aggregates so tests
             // are not counted twice (TS7). Tests are keyed off testResult only —
@@ -428,17 +441,6 @@ public final class SchemaV2 {
               stdout_uri              TEXT,
               stderr_uri              TEXT,
               bep_event_id            INTEGER REFERENCES bep_events(id)
-            )
-            """,
-            // An action's declared outputs. The primary output is also an
-            // artifact row, so this stays a plain many-to-many and the flag says
-            // which one the identity came from.
-            """
-            CREATE TABLE action_outputs (
-              action_id   INTEGER NOT NULL REFERENCES actions(id),
-              artifact_id INTEGER NOT NULL REFERENCES artifacts(id),
-              is_primary  INTEGER NOT NULL DEFAULT 0,
-              PRIMARY KEY (action_id, artifact_id)
             )
             """,
 
@@ -523,6 +525,12 @@ public final class SchemaV2 {
             // table with a nullable attempt and a nullable name rather than two,
             // because they are the same thing recorded at two granularities.
             //
+            // Keyed on (test, uri) rather than on the attempt, because the two
+            // sources can name the same file: a summary's `passed` list points
+            // at the winning attempt's log. Merging the two sightings into one
+            // row that carries both the attempt and the summary status is the
+            // truth; two rows would double the log count for every test.
+            //
             // These are URIs into the output base, which the next build or a
             // `bazel clean` removes. Stored so the session can say where they
             // were; the content is not captured, and the inspector says so
@@ -534,7 +542,8 @@ public final class SchemaV2 {
               test_attempt_id INTEGER REFERENCES test_attempts(id),
               name            TEXT,
               uri             TEXT    NOT NULL,
-              summary_status  TEXT
+              summary_status  TEXT,
+              UNIQUE (test_id, uri)
             )
             """,
 
@@ -590,7 +599,7 @@ public final class SchemaV2 {
             CREATE TABLE runner_counts (
               id           INTEGER PRIMARY KEY,
               name         TEXT    NOT NULL,
-              exec_kind    TEXT,
+              exec_kind    TEXT    NOT NULL DEFAULT '',
               action_count INTEGER,
               is_total     INTEGER NOT NULL DEFAULT 0,
               UNIQUE (name, exec_kind)
@@ -629,6 +638,14 @@ public final class SchemaV2 {
             // finds nothing on 7.6.1+, and scanning only targetConfigured finds
             // nothing on 6.5.0.
             //
+            // Unlike every other table here, identity is the event itself:
+            // an abort has no natural key of its own -- the same label can
+            // abort under several id kinds -- so a redelivered event would
+            // otherwise insert a second row and inflate the count the failures
+            // view exists to report. bep_event_id is NOT NULL for the same
+            // reason: a row that could not name its source event would be a
+            // silent duplicate waiting to happen.
+            //
             // reason is nullable and maps to an explicit unknown, never
             // defaulted to INCOMPLETE — two experiments disagreed on whether a
             // skipped sibling carries one (Contradiction 2), and unrecognised
@@ -641,7 +658,7 @@ public final class SchemaV2 {
               configuration_id INTEGER REFERENCES configurations(id),
               reason           TEXT,
               description      TEXT,
-              bep_event_id     INTEGER REFERENCES bep_events(id)
+              bep_event_id     INTEGER NOT NULL REFERENCES bep_events(id) UNIQUE
             )
             """,
             // An index into the raw progress events, not a copy of them. A
@@ -683,8 +700,6 @@ public final class SchemaV2 {
             "CREATE INDEX IF NOT EXISTS idx_target_tags_tag ON target_tags(tag)",
             "CREATE INDEX IF NOT EXISTS idx_depset_children_child ON depset_children(child_id)",
             "CREATE INDEX IF NOT EXISTS idx_depset_files_artifact ON depset_files(artifact_id)",
-            "CREATE INDEX IF NOT EXISTS idx_action_outputs_artifact"
-                    + " ON action_outputs(artifact_id)",
             "CREATE INDEX IF NOT EXISTS idx_test_attempts_test ON test_attempts(test_id)",
             "CREATE INDEX IF NOT EXISTS idx_test_attempts_status ON test_attempts(status)",
             "CREATE INDEX IF NOT EXISTS idx_test_logs_test ON test_logs(test_id)",
