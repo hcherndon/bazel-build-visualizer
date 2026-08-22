@@ -3,34 +3,72 @@
 The on-disk shape of a managed session, owned exclusively by the
 `session-format` module — no other module may construct paths inside a
 session directory. Deleting a session is deleting its directory (ADR-005);
-everything below `derived/` is rebuildable from the journal (ADR-004).
+everything derived is rebuildable from the raw journal (ADR-004).
 
 ## Managed session directory layout (plan 10.2)
 
+This is the layout `ManagedSessionLayout` creates. It is the plan's section
+10.2 layout verbatim. An earlier draft of this page described a different
+shape (`raw/bep.journal`, `derived/session.db`, `derived/index/`,
+`logs/capture.log`); that draft never existed in code and was corrected when
+Phase 1 landed.
+
 ```
 <sessions-root>/
-  catalog.db                     # app-level catalog database (ADR-005)
-  <session-id>/                  # SessionId UUID, one directory per session
-    manifest.json                # format version, SessionState, sources used,
-                                 # original + effective command (ADR-007),
-                                 # probed capabilities, timestamps
-    raw/
-      bep.journal                # append-only raw BEP journal — source of truth
-      execlog.bin                # execution log as received (if captured)
-      profile.json.gz            # timing profile as received (if captured)
-    derived/
-      session.db                 # per-session SQLite database
-      index/
-        actions.fwd.csr          # forward action-dependency CSR (graph-model.md)
-        actions.rev.csr          # reverse CSR
-        temporal.idx             # time-ordered span index for the timeline
-    logs/
-      capture.log                # tool-side capture/pipeline logs for this session
+  session-<uuid>/                # one directory per session
+    manifest.json                # format version, SessionState, capture sources
+                                 # and their completeness, counts, timestamps,
+                                 # original + effective command (ADR-007)
+    session.sqlite               # per-session database (ADR-005)
+    raw/                         # every source byte, verbatim (ADR-004)
+      bes-000001.journal         # segmented raw journal, rotated at frame
+      bes-000002.journal         # boundaries; see JournalFormat
+      stdout.log / stderr.log    # console output (Phase 2)
+      execution-log.bin          # execution log as received (Phase 4)
+      profile.json               # timing profile as received (Phase 4)
+      aquery.pb / cquery.pb      # query outputs as received (Phase 5)
+      imported-source.bep        # the original file, for an imported session
+    indexes/                     # rebuildable; see graph-model.md
+      action-forward.csr         # forward action-dependency CSR (Phase 5)
+      action-reverse.csr         # reverse CSR (Phase 5)
+      timeline-lod.dat           # timeline level-of-detail index (Phase 6)
+    exports/                     # user-requested exports (Phase 9)
+    checkpoints/
+      import.ckpt                # resumable import position; atomic replace
+    locks/                       # in-use marker with stale-lock detection
 ```
+
+Only directories relevant to a session are created — the plan says so
+explicitly, and an imported BEP file has no need for `exports/`. Files marked
+with a later phase are listed to show where they will live, not to imply they
+are written today.
+
+The catalog database is an application-level concern and lives under the
+application-support root (`catalog/`), not inside any session directory.
 
 The manifest is small, human-readable JSON and is the only file read to list
 sessions cheaply besides the catalog; catalog and manifest must agree, with
 the manifest winning on conflict (the directory is the artifact).
 
-Implementation arrives in Phase 1; journal record framing and integrity
-details will be specified here when that lands.
+## Journal framing and integrity
+
+The frame layout is defined once, in `core-model`
+`com.holtherndon.bazelviz.core.journal.JournalFormat`, and shared by the
+writer, the reader and crash recovery so it cannot drift between them.
+`docs/phase1-contracts.md` explains the layout; `JournalFormatTest` pins it.
+
+The properties that matter for recovery:
+
+- Every frame carries its own CRC-32C over header **and** payload, so the last
+  intact frame can be found without trusting any index.
+- Payload bytes are stored exactly as received and are never re-serialized.
+- A declared payload length above the configured maximum is treated as
+  corruption rather than honoured, because honouring it means allocating
+  whatever a damaged length field happens to say.
+- Recovery truncates only the invalid trailing bytes of the **last** segment.
+  Damage found in an earlier segment is reported and nothing is removed —
+  bytes after it are not a trailing tail, and later segments may be full of
+  valid frames.
+- A fully present, CRC-valid frame whose source kind this build does not
+  recognize is reported as unsupported, not corrupt, and is never truncated
+  (plan 21.5 forward compatibility).

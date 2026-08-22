@@ -4,11 +4,13 @@
 # To regenerate this file, run: ./gradlew :capture-file:dependencies --write-locks
 com.google.api.grpc:proto-google-common-protos:2.64.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.google.code.findbugs:jsr305:3.0.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+com.google.code.gson:gson:2.8.9=runtimeClasspath,testRuntimeClasspath
 com.google.errorprone:error_prone_annotations:2.50.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.google.guava:failureaccess:1.0.3=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.google.guava:guava:33.6.0-android=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.google.j2objc:j2objc-annotations:3.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+com.google.protobuf:protobuf-java-util:4.36.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.google.protobuf:protobuf-java:4.36.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 io.grpc:grpc-api:1.83.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 io.grpc:grpc-protobuf-lite:1.83.1=runtimeClasspath,testRuntimeClasspath
