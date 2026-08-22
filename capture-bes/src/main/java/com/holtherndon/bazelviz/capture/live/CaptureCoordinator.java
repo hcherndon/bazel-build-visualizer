@@ -215,6 +215,7 @@ public final class CaptureCoordinator implements AutoCloseable {
         List<String> warnings = new ArrayList<>();
         ManagedSession session = sessions.create(sessionId);
         Path sessionRoot = session.root();
+        liveSessionRoot = sessionRoot;
         ManagedSessionLayout layout = session.layout();
 
         SessionDatabase database = null;
@@ -405,6 +406,24 @@ public final class CaptureCoordinator implements AutoCloseable {
     }
 
     /** True while a build is running. */
+    /**
+     * Set once the session directory exists, read from the UI thread. Volatile
+     * rather than synchronized because it is written once and read often.
+     */
+    private volatile Path liveSessionRoot;
+
+    /**
+     * The session directory, once there is one.
+     *
+     * <p>Published as soon as it is created rather than when the capture ends,
+     * so a view can open the session read-only and watch it fill. The
+     * directory, its manifest and its database all exist before Bazel is
+     * launched; what is inside them grows for the life of the build.
+     */
+    public Optional<Path> sessionRoot() {
+        return Optional.ofNullable(liveSessionRoot);
+    }
+
     public boolean isRunning() {
         return running.get() != null;
     }

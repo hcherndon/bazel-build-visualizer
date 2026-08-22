@@ -6,6 +6,7 @@ import com.holtherndon.bazelviz.capture.file.importer.ImportResult;
 import com.holtherndon.bazelviz.capture.file.importer.UnsupportedSourceException;
 import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.format.session.SessionManifest;
+import com.holtherndon.bazelviz.capture.live.CaptureCoordinator;
 import com.holtherndon.bazelviz.capture.live.CaptureProgress;
 import com.holtherndon.bazelviz.capture.live.CaptureRequest;
 import com.holtherndon.bazelviz.capture.live.CaptureResult;
@@ -121,6 +122,16 @@ public final class MainWindow extends JFrame {
      * window opens it once, hands it round, and closes it once.
      */
     private SessionSource currentSource;
+
+    /**
+     * A read-only view of the session a capture is writing right now.
+     *
+     * <p>Separate from {@link #currentSource}, which is the session the user
+     * opened. The overview watches this one while the build runs — the Phase 3
+     * "Live overview" deliverable — and it is closed and replaced by the real
+     * source when the capture finishes.
+     */
+    private SessionSource liveSource;
     private final ExecutorService worker;
     private final ExecutorService captureWorker;
     private final ImportController importController;
@@ -531,6 +542,9 @@ public final class MainWindow extends JFrame {
     }
 
     private void closeSession() {
+        SessionSource live = liveSource;
+        liveSource = null;
+        closeSource(live);
         releaseViews();
         SessionSource closing = currentSource;
         currentSource = null;
@@ -675,6 +689,47 @@ public final class MainWindow extends JFrame {
             }
         }
 
+        /**
+         * Opens the running capture's session for the overview, once.
+         *
+         * <p>Driven from the progress tick rather than from a new callback
+         * because the session directory does not exist when the capture starts
+         * and does by the time the first events are counted. A tick that
+         * arrives too early simply finds nothing and the next one tries again.
+         */
+        private void attachLiveOverview() {
+            if (liveSource != null) {
+                return;
+            }
+            Path root = launchController.current()
+                    .flatMap(CaptureCoordinator::sessionRoot)
+                    .orElse(null);
+            if (root == null) {
+                return;
+            }
+            worker.execute(() -> {
+                try {
+                    SqliteSessionSource opened = SqliteSessionSource.open(sessions, root);
+                    SwingUtilities.invokeLater(() -> {
+                        if (liveSource != null || !launchController.isBusy()) {
+                            // A later tick won the race, or the capture ended
+                            // while this was opening and the real source is
+                            // about to arrive.
+                            opened.close();
+                            return;
+                        }
+                        liveSource = opened;
+                        overviewPanel.openSession(opened);
+                    });
+                } catch (RuntimeException notYet) {
+                    // The manifest or the database is still being written. The
+                    // next progress tick tries again; there is nothing to
+                    // report, because nothing is wrong.
+                    log.debug("the capture's session is not readable yet", notYet);
+                }
+            });
+        }
+
         @Override
         public void captureStarted(Preflight preflight) {
             setCaptureStatus(captureStatus.withPhase(
@@ -687,6 +742,7 @@ public final class MainWindow extends JFrame {
         public void captureProgress(CaptureProgress progress) {
             setCaptureStatus(captureStatus.withProgress(progress));
             eventStatus.setText("Events: " + EventValueFormat.count(progress.normalized()));
+            attachLiveOverview();
         }
 
         @Override
@@ -704,6 +760,11 @@ public final class MainWindow extends JFrame {
                             ? CaptureStatusModel.Phase.DONE
                             : CaptureStatusModel.Phase.FAILED;
             setCaptureStatus(captureStatus.withPhase(phase, describe(result)));
+            // The live view is replaced by the real one, which every view gets.
+            overviewPanel.closeSession();
+            SessionSource live = liveSource;
+            liveSource = null;
+            closeSource(live);
             // Opened whatever the outcome: a cancelled or partial capture is
             // still a session, and being able to look at it is the point.
             openSessionDirectory(result.sessionRoot(), false);

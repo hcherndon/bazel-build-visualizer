@@ -19,9 +19,11 @@ import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -362,6 +364,93 @@ class RealBazelNormalizationTest {
 
     static List<String> targetedVersions() {
         return BazelBinary.targetedVersions();
+    }
+
+    @Test
+    @Timeout(300)
+    @DisplayName("a session can be read while the build that is writing it still runs")
+    void theSessionIsReadableDuringTheCapture(@TempDir Path directory) throws Exception {
+        Optional<Path> bazel = BazelBinary.find();
+        assumeTrue(bazel.isPresent(), BazelBinary::whyUnavailable);
+
+        // Chained sleeps, so the build is still running while this reads.
+        BazelWorkspaceFixture workspace =
+                BazelWorkspaceFixture.slow(directory.resolve("ws"), 6, 3);
+        Path sessionsRoot = directory.resolve("sessions");
+        CaptureRequest request = CaptureRequest.of(
+                        sessionsRoot, "test", bazel.orElseThrow().toString(),
+                        workspace.root(), hermetic("build", "//..."))
+                .withPreset(CapturePreset.LIVE_ESSENTIALS);
+
+        long duringCapture;
+        try (CaptureCoordinator coordinator = new CaptureCoordinator(
+                request,
+                new SessionManager(sessionsRoot, request.appVersion()),
+                new BazelCapabilityDetector(),
+                Clock.systemUTC())) {
+            coordinator.preflight();
+            Thread building = new Thread(() -> {
+                try {
+                    coordinator.run();
+                } catch (Exception failure) {
+                    throw new IllegalStateException(failure);
+                }
+            }, "capture");
+            building.setDaemon(true);
+            building.start();
+
+            // The whole of the "live overview" deliverable rests on this: the
+            // session directory exists, and its database answers, before the
+            // build ends. Nothing exercised it, which is how the overview came
+            // to be attached only after the capture finished.
+            Path root = awaitSessionRoot(coordinator);
+            duringCapture = awaitReadableOverview(root);
+            building.join(TimeUnit.MINUTES.toMillis(4));
+        }
+
+        assertThat(duringCapture)
+                .as("the overview answered while the build was still running")
+                .isGreaterThanOrEqualTo(0);
+    }
+
+    private static Path awaitSessionRoot(CaptureCoordinator coordinator) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(2);
+        while (System.nanoTime() < deadline) {
+            Optional<Path> root = coordinator.sessionRoot();
+            if (root.isPresent()) {
+                return root.get();
+            }
+            TimeUnit.MILLISECONDS.sleep(20);
+        }
+        throw new AssertionError("the capture never published a session root");
+    }
+
+    /**
+     * Reads the growing session until the overview answers.
+     *
+     * <p>Retried rather than asserted once: the manifest and the database are
+     * written early but not instantly, and a reader that arrived a millisecond
+     * too soon would fail for a reason that says nothing about the design.
+     */
+    private static long awaitReadableOverview(Path root) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(2);
+        Exception last = null;
+        while (System.nanoTime() < deadline) {
+            try (SessionDatabase database = SessionDatabase.open(
+                            ManagedSessionLayout.at(root).databaseFile())) {
+                Connection c = database.newReadConnection();
+                long events = scalar(c, "SELECT COUNT(*) FROM bep_events");
+                if (events > 0) {
+                    // The entity tables answer too, which is the part that
+                    // would have been missing had the schema not been applied.
+                    return scalar(c, "SELECT COUNT(*) FROM targets");
+                }
+            } catch (Exception notYet) {
+                last = notYet;
+            }
+            TimeUnit.MILLISECONDS.sleep(50);
+        }
+        throw new AssertionError("the session never became readable during the capture", last);
     }
 
     // --- helpers ---------------------------------------------------------

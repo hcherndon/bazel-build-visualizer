@@ -85,6 +85,16 @@ public final class OverviewPanel extends JPanel {
 
     /** Cleared once a refresh succeeds, so only the first failure is shown. */
     private volatile boolean everRendered;
+
+    /**
+     * The scheduled refresh, cancelled once there is nothing left to see.
+     *
+     * <p>A session whose stream reached its end marker cannot change, so
+     * re-counting it every two seconds for as long as the window is open is
+     * work with a guaranteed answer. The timer stops itself when the numbers
+     * stop being able to move.
+     */
+    private volatile java.util.concurrent.ScheduledFuture<?> scheduled;
     private java.util.function.Consumer<OverviewSnapshot> snapshotListener = snapshot -> { };
 
     public OverviewPanel() {
@@ -166,7 +176,7 @@ public final class OverviewPanel extends JPanel {
                 return;
             }
             refreshOnce(newSource);
-            running.scheduleWithFixedDelay(
+            scheduled = running.scheduleWithFixedDelay(
                     () -> refreshOnce(newSource),
                     refreshInterval.toMillis(),
                     refreshInterval.toMillis(),
@@ -174,8 +184,18 @@ public final class OverviewPanel extends JPanel {
         });
     }
 
+    /** Cancels the periodic refresh without touching the reader. */
+    private void stopRefreshing() {
+        java.util.concurrent.ScheduledFuture<?> running = scheduled;
+        scheduled = null;
+        if (running != null) {
+            running.cancel(false);
+        }
+    }
+
     /** Stops refreshing and releases the reader, off the EDT. */
     public void closeSession() {
+        stopRefreshing();
         ScheduledExecutorService stopping = refresher;
         EntityReader closing = reader;
         source = null;
@@ -259,6 +279,12 @@ public final class OverviewPanel extends JPanel {
                     show(snapshot);
                 }
             });
+            if (snapshot.sawLastMessage()) {
+                // The stream ended, so every number here is final. Aborted
+                // events arrive after buildFinished and the flag comes after
+                // them, so this is the first moment nothing more can arrive.
+                stopRefreshing();
+            }
         } catch (RuntimeException failure) {
             // A refresh failing mid-capture is not fatal: the next tick tries
             // again, and blanking the panel would lose numbers that were true.
