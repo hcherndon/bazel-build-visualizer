@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
@@ -89,6 +90,9 @@ public final class OverviewPanel extends JPanel {
         super(new BorderLayout());
         this.refreshInterval = Objects.requireNonNull(refreshInterval, "refreshInterval");
 
+        PlainText.disableHtml(headline);
+        PlainText.disableHtml(subhead);
+        PlainText.disableHtml(emptyLabel);
         headline.setFont(headline.getFont().deriveFont(Font.BOLD, headline.getFont().getSize() + 4f));
         subhead.setEnabled(false);
 
@@ -329,12 +333,12 @@ public final class OverviewPanel extends JPanel {
         panel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createEtchedBorder(),
                 BorderFactory.createEmptyBorder(8, 10, 8, 10)));
-        JLabel nameLabel = new JLabel(name);
+        JLabel nameLabel = PlainText.disableHtml(new JLabel(name));
         nameLabel.setEnabled(false);
-        JLabel valueLabel = new JLabel(value);
+        JLabel valueLabel = PlainText.disableHtml(new JLabel(value));
         valueLabel.setFont(valueLabel.getFont().deriveFont(
                 Font.BOLD, valueLabel.getFont().getSize() + 8f));
-        JLabel noteLabel = new JLabel(note);
+        JLabel noteLabel = PlainText.disableHtml(new JLabel(note));
         noteLabel.setEnabled(false);
         nameLabel.setAlignmentX(LEFT_ALIGNMENT);
         valueLabel.setAlignmentX(LEFT_ALIGNMENT);
@@ -362,10 +366,10 @@ public final class OverviewPanel extends JPanel {
         for (int row = 0; row < rows.size(); row++) {
             name.gridy = row;
             value.gridy = row;
-            JLabel nameLabel = new JLabel(rows.get(row)[0]);
+            JLabel nameLabel = PlainText.disableHtml(new JLabel(rows.get(row)[0]));
             nameLabel.setEnabled(false);
             panel.add(nameLabel, name);
-            panel.add(new JLabel(rows.get(row)[1]), value);
+            panel.add(PlainText.disableHtml(new JLabel(rows.get(row)[1])), value);
         }
         return panel;
     }

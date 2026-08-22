@@ -34,7 +34,18 @@ public final class TestQueries implements AutoCloseable {
     private static final String COLUMNS =
             "te.id, l.value, c.bep_id, te.overall_status, te.total_run_count, te.run_count,"
                     + " te.shard_count, te.attempt_count, te.total_num_cached,"
-                    + " te.first_start_micros, te.last_stop_micros,"
+                    // Computed from the attempts, not read from the summary.
+                    // The summary's window excludes failed retries and its
+                    // first start was measured 218-747 ms after the earliest
+                    // attempt, so it is not the elapsed time of the test and
+                    // the views must not present it as one (TS2, requirement
+                    // 35). Bazel's own figures stay available under their own
+                    // names for the inspector to show beside it.
+                    + " (SELECT MIN(ta.start_micros) FROM test_attempts ta"
+                    + "    WHERE ta.test_id = te.id),"
+                    + " (SELECT MAX(ta.start_micros + COALESCE(ta.duration_micros, 0))"
+                    + "    FROM test_attempts ta"
+                    + "    WHERE ta.test_id = te.id AND ta.start_micros IS NOT NULL),"
                     + " te.bazel_reported_duration_micros, ct.test_timeout_seconds,"
                     + " (SELECT COUNT(*) FROM test_attempts ta WHERE ta.test_id = te.id),"
                     + " (SELECT COUNT(*) FROM test_attempts ta WHERE ta.test_id = te.id"

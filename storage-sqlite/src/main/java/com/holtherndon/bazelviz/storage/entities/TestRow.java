@@ -16,9 +16,12 @@ import java.util.OptionalLong;
  * @param attemptCount the maximum attempts any (run, shard) needed. Not a
  *     retry count — it equals {@code runCount} for a healthy multi-run test.
  * @param shardCount absent when the test was not sharded, never zero
+ * @param firstStartMicros the earliest attempt's start, computed from
+ *     {@code test_attempts} rather than read from the summary — the summary's
+ *     first start was measured 218–747 ms later than the earliest attempt
+ * @param lastStopMicros the latest attempt's end, likewise
  * @param bazelReportedDurationMicros Bazel's own figure, which excludes failed
  *     retries; shown as Bazel's and never used as a timeline bound
- * @param wallMicros last stop minus first start, computed from the attempts
  */
 public record TestRow(
         long id,

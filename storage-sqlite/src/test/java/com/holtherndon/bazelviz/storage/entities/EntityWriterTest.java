@@ -322,6 +322,11 @@ final class EntityWriterTest {
 
         assertThat(scalar("SELECT COUNT(*) FROM test_attempts")).isEqualTo(2);
         assertThat(text("SELECT overall_status FROM tests")).isEqualTo("FLAKY");
+        // The summary's window says 1 s; the attempts ran from 2.0 s to 2.1 s.
+        // Bazel's figure excludes failed retries and understated real wall time
+        // by 13x on a measured six-attempt test, so the elapsed time the views
+        // show is computed from the attempts and Bazel's is kept beside it.
+        assertThat(scalar("SELECT bazel_first_start_micros FROM tests")).isEqualTo(2_000_000L);
         // FLAKY exists only on the summary. An attempt carries its own truth,
         // and losing the failed one leaves a green result with no evidence.
         assertThat(text("SELECT status FROM test_attempts WHERE attempt = 1")).isEqualTo("FAILED");
@@ -420,6 +425,56 @@ final class EntityWriterTest {
                 .isEqualTo(4);
         assertThat(scalar("SELECT count FROM cache_miss_details")).isEqualTo(4);
         assertThat(scalar("SELECT collected_bytes FROM garbage_metrics")).isEqualTo(12_582_912L);
+    }
+
+    @Test
+    @DisplayName("an aborted target appears in the targets tree, not only in the abort log")
+    void abortsCreateTheTargetTheyName() throws Exception {
+        // From Bazel 7.6.1 an analysis-failed target emits no `configured`
+        // payload at all -- an abort riding the targetConfigured id is the only
+        // event that names it. Recording just the abort row left every such
+        // target out of the tree and out of the counts, which is the whole of
+        // what a failed analysis produces.
+        apply(event(), new EntityCommand.TargetAborted(
+                "targetConfigured",
+                Optional.of("//app:never_analysed"),
+                Optional.empty(),
+                "ANALYSIS_FAILURE",
+                ""));
+
+        assertThat(scalar("SELECT COUNT(*) FROM targets")).isEqualTo(1);
+        assertThat(text("SELECT outcome FROM targets")).isEqualTo("ABORTED");
+        // No configuration in that id kind, so it never became a configured
+        // target -- which is true, and better than inventing one.
+        assertThat(scalar("SELECT COUNT(*) FROM configured_targets")).isZero();
+    }
+
+    @Test
+    @DisplayName("an abort does not overwrite a target that really completed")
+    void abortsDoNotOverwriteACompletion() throws Exception {
+        apply(event(), completed("//pkg:lib", "cfg-1", true, List.of()));
+        apply(event(), new EntityCommand.TargetAborted(
+                "targetCompleted",
+                Optional.of("//pkg:lib"),
+                Optional.of("cfg-1"),
+                "INCOMPLETE",
+                ""));
+
+        // Aborts arrive after buildFinished, so an unconditional update would
+        // let a skipped sibling's abort relabel a target that built.
+        assertThat(text("SELECT outcome FROM configured_targets")).isEqualTo("BUILT");
+        // The target-level outcome does record that something aborted it.
+        assertThat(text("SELECT outcome FROM targets")).isEqualTo("ABORTED");
+    }
+
+    @Test
+    @DisplayName("an abort with no label stays in the log and creates nothing")
+    void abortsWithoutALabelNameNoTarget() throws Exception {
+        apply(event(), new EntityCommand.TargetAborted(
+                "pattern", Optional.empty(), Optional.empty(), "USER_INTERRUPTED", ""));
+
+        assertThat(scalar("SELECT COUNT(*) FROM aborted_events")).isEqualTo(1);
+        assertThat(scalar("SELECT COUNT(*) FROM targets")).isZero();
     }
 
     @Test

@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
@@ -85,6 +86,9 @@ public final class TargetsView extends JPanel {
         JPanel empty = new JPanel(new BorderLayout());
         empty.add(emptyLabel, BorderLayout.CENTER);
 
+        PlainText.install(tree);
+        PlainText.disableHtml(statusLabel);
+        PlainText.disableHtml(emptyLabel);
         tree.setRootVisible(false);
         tree.setShowsRootHandles(true);
         tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);

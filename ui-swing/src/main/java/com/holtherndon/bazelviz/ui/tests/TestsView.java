@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
@@ -71,6 +72,9 @@ public final class TestsView extends JPanel {
         JPanel empty = new JPanel(new BorderLayout());
         empty.add(emptyLabel, BorderLayout.CENTER);
 
+        PlainText.install(table);
+        PlainText.disableHtml(statusLabel);
+        PlainText.disableHtml(emptyLabel);
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setFillsViewportHeight(true);

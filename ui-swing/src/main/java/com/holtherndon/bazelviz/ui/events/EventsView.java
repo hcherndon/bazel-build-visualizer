@@ -5,6 +5,7 @@ import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
@@ -94,6 +95,11 @@ public final class EventsView extends JPanel {
         emptyLabel.setEnabled(false);
         empty.add(emptyLabel, BorderLayout.CENTER);
 
+        // The event table shows identifiers and display strings taken from the
+        // stream, so it is exposed exactly as the Phase 3 tables are.
+        PlainText.install(table);
+        PlainText.disableHtml(statusLabel);
+        PlainText.disableHtml(emptyLabel);
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setFillsViewportHeight(true);

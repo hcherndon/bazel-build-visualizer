@@ -175,6 +175,18 @@ public final class EntityWriter implements AutoCloseable {
                     + " bep_event_id = coalesce(configured_targets.bep_event_id,"
                     + "   excluded.bep_event_id)";
 
+    // Marks a configured target aborted, but only if nothing completed it.
+    // Aborts arrive after buildFinished, so an unconditional update would let
+    // a skipped sibling's abort overwrite a completion that really happened.
+    private static final String MARK_CONFIGURED_TARGET_ABORTED =
+            "INSERT INTO configured_targets (target_id, configuration_id, outcome)"
+                    + " SELECT t.id, c.id, 'ABORTED'"
+                    + " FROM targets t JOIN labels l ON l.id = t.label_id, configurations c"
+                    + " WHERE l.value = ? AND t.aspect = '' AND c.stream_id = ? AND c.bep_id = ?"
+                    + " ON CONFLICT (target_id, configuration_id) DO UPDATE SET"
+                    + " outcome = CASE WHEN configured_targets.outcome = 'CONFIGURED'"
+                    + " THEN 'ABORTED' ELSE configured_targets.outcome END";
+
     // Creates the row without claiming an outcome, for the events that name a
     // configured target before its completion arrives. DO NOTHING, so it can
     // never downgrade a real outcome to this placeholder one.
@@ -246,8 +258,8 @@ public final class EntityWriter implements AutoCloseable {
 
     private static final String INSERT_TEST =
             "INSERT INTO tests (configured_target_id, overall_status, total_run_count, run_count,"
-                    + " shard_count, attempt_count, total_num_cached, first_start_micros,"
-                    + " last_stop_micros, bazel_reported_duration_micros, bep_event_id)"
+                    + " shard_count, attempt_count, total_num_cached, bazel_first_start_micros,"
+                    + " bazel_last_stop_micros, bazel_reported_duration_micros, bep_event_id)"
                     + " SELECT ct.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, " + EVENT_LOOKUP
                     + CONFIGURED_TARGET_JOIN + CONFIGURED_TARGET_WHERE
                     + " ON CONFLICT (configured_target_id) DO UPDATE SET"
@@ -257,9 +269,10 @@ public final class EntityWriter implements AutoCloseable {
                     + " shard_count = coalesce(excluded.shard_count, tests.shard_count),"
                     + " attempt_count = coalesce(excluded.attempt_count, tests.attempt_count),"
                     + " total_num_cached = excluded.total_num_cached,"
-                    + " first_start_micros = coalesce(excluded.first_start_micros,"
-                    + "   tests.first_start_micros),"
-                    + " last_stop_micros = coalesce(excluded.last_stop_micros, tests.last_stop_micros),"
+                    + " bazel_first_start_micros = coalesce(excluded.bazel_first_start_micros,"
+                    + "   tests.bazel_first_start_micros),"
+                    + " bazel_last_stop_micros = coalesce(excluded.bazel_last_stop_micros,"
+                    + "   tests.bazel_last_stop_micros),"
                     + " bazel_reported_duration_micros = coalesce("
                     + "   excluded.bazel_reported_duration_micros,"
                     + "   tests.bazel_reported_duration_micros),"
@@ -1074,6 +1087,15 @@ public final class EntityWriter implements AutoCloseable {
             }
         });
 
+        // An abort names a target, and on Bazel 7.6.1 and later it is the only
+        // event that names an analysis-failed one -- those emit no `configured`
+        // payload at all. Recording only the abort row left every such target
+        // out of the targets tree and out of the target counts, which is the
+        // whole of what a failed analysis produces.
+        if (aborted.label().isPresent() && namesATarget(aborted.idKind())) {
+            markTargetAborted(streamId, sequence, aborted);
+        }
+
         PreparedStatement statement = prepare(INSERT_ABORTED);
         statement.setString(1, aborted.idKind());
         setText(statement, 2, aborted.label());
@@ -1086,6 +1108,55 @@ public final class EntityWriter implements AutoCloseable {
         statement.setLong(7, streamId);
         statement.setLong(8, sequence);
         statement.executeUpdate();
+    }
+
+    /**
+     * Whether an abort's id kind identifies a target rather than something
+     * else.
+     *
+     * <p>Patterns and other ids abort too; they carry no label and describe no
+     * target, so they stay in {@code aborted_events} and nowhere else.
+     */
+    private static boolean namesATarget(String idKind) {
+        return switch (idKind) {
+            case "targetConfigured", "targetCompleted", "unconfiguredLabel", "configuredLabel" ->
+                    true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Gives an aborted target a row, and marks it aborted.
+     *
+     * <p>{@code INSERT_TARGET}'s conflict clause protects {@code ABORTED} from
+     * being written back to {@code CONFIGURED} by a later event, which matters
+     * because aborts arrive after everything else.
+     */
+    private void markTargetAborted(
+            long streamId, long sequence, EntityCommand.TargetAborted aborted) throws SQLException {
+        String label = aborted.label().orElseThrow();
+        intern(INSERT_LABEL, knownLabels, label);
+        PreparedStatement target = prepare(INSERT_TARGET);
+        target.setString(1, "");
+        target.setNull(2, Types.VARCHAR);
+        target.setNull(3, Types.VARCHAR);
+        target.setString(4, TargetOutcome.ABORTED.name());
+        target.setLong(5, streamId);
+        target.setLong(6, sequence);
+        target.setString(7, label);
+        target.executeUpdate();
+
+        if (aborted.configurationId().isEmpty()) {
+            // `targetConfigured` and `unconfiguredLabel` carry no configuration,
+            // so there is no configured target to mark -- which is correct: the
+            // target never got as far as being one.
+            return;
+        }
+        PreparedStatement configured = prepare(MARK_CONFIGURED_TARGET_ABORTED);
+        configured.setString(1, label);
+        configured.setLong(2, streamId);
+        configured.setString(3, aborted.configurationId().orElseThrow());
+        configured.executeUpdate();
     }
 
     private void progress(long streamId, long sequence, EntityCommand.ProgressOutputSeen progress)

@@ -168,7 +168,12 @@ public final class EntityTranslator {
         for (BuildMetrics.ActionSummary.ActionData data : actions.getActionDataList()) {
             mnemonics.add(new EntityCommand.MnemonicWork(
                     data.getMnemonic(),
-                    OptionalLong.of(data.getActionsCreated()),
+                    // Bazel 6.5.0 and 7.6.1 do not populate the per-mnemonic
+                    // created count at all, so proto3 hands back a zero that
+                    // means "this version cannot say" (M4). Executed is
+                    // populated on every version, so a zero there is a real
+                    // zero and is kept.
+                    countInsideSubMessage(data.getActionsCreated()),
                     OptionalLong.of(data.getActionsExecuted())));
         }
         List<EntityCommand.RunnerWork> runners = new ArrayList<>();
@@ -199,9 +204,19 @@ public final class EntityTranslator {
                 count(hasActions, actions.getActionsExecuted()),
                 count(hasCache, cache.getHits()),
                 count(hasCache, cache.getMisses()),
-                count(hasTargets, targets.getTargetsLoaded()),
-                count(hasTargets, targets.getTargetsConfigured()),
-                count(metrics.hasPackageMetrics(), metrics.getPackageMetrics().getPackagesLoaded()),
+                // targetMetrics and packageMetrics arrive as empty objects on
+                // any loading or analysis failure (M6): the sub-message is
+                // present and every field inside it is absent, so `has` is true
+                // and the value is a zero that means "not counted". A build
+                // that configured nothing really does report zero, and a build
+                // that failed during analysis reports the same zero -- so the
+                // ambiguity resolves to unknown, which is the direction that
+                // cannot state a falsehood.
+                countInsideSubMessage(hasTargets, targets.getTargetsLoaded()),
+                countInsideSubMessage(hasTargets, targets.getTargetsConfigured()),
+                countInsideSubMessage(
+                        metrics.hasPackageMetrics(),
+                        metrics.getPackageMetrics().getPackagesLoaded()),
                 span(hasTiming, timing.getWallTimeInMs()),
                 span(hasTiming, timing.getCpuTimeInMs()),
                 span(hasTiming, timing.getAnalysisPhaseTimeInMs()),
@@ -224,6 +239,25 @@ public final class EntityTranslator {
      */
     private static OptionalLong count(boolean present, long value) {
         return present ? OptionalLong.of(value) : OptionalLong.empty();
+    }
+
+    /**
+     * A count whose zero cannot be told apart from an absence.
+     *
+     * <p>Used where the containing sub-message is present but its fields are
+     * not — {@code targetMetrics: {}} on an analysis failure, the per-mnemonic
+     * created count on Bazel 6.5.0 and 7.6.1. A zero there is proto3's default
+     * for a field nothing wrote, and reporting "0 targets configured" for a
+     * build that configured thousands is the falsehood this avoids. The cost is
+     * that a genuine zero also reads as unknown, which is the safe direction.
+     */
+    private static OptionalLong countInsideSubMessage(boolean present, long value) {
+        return present && value != 0L ? OptionalLong.of(value) : OptionalLong.empty();
+    }
+
+    /** As above, where the sub-message's presence is already established. */
+    private static OptionalLong countInsideSubMessage(long value) {
+        return value == 0L ? OptionalLong.empty() : OptionalLong.of(value);
     }
 
     /**

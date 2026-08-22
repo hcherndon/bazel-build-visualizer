@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.inspect;
 
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
@@ -59,6 +60,9 @@ public final class InspectorPanel extends JPanel {
     public InspectorPanel() {
         super(new BorderLayout());
 
+        PlainText.disableHtml(titleLabel);
+        PlainText.disableHtml(subtitleLabel);
+        PlainText.disableHtml(emptyLabel);
         titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD));
         subtitleLabel.setEnabled(false);
         sourceButton.setVisible(false);
@@ -111,7 +115,7 @@ public final class InspectorPanel extends JPanel {
             body.add(empty);
         } else {
             titleLabel.setText(inspection.title());
-            titleLabel.setToolTipText(inspection.title());
+            titleLabel.setToolTipText(PlainText.tooltip(inspection.title()));
             subtitleLabel.setText(inspection.subtitle().orElse(" "));
             sourceButton.setVisible(inspection.sourceEventId().isPresent());
             inspection.sourceEventId().ifPresent(id ->
@@ -150,7 +154,7 @@ public final class InspectorPanel extends JPanel {
         for (Inspection.Field field : section.fields()) {
             name.gridy = row;
             value.gridy = row;
-            JLabel nameLabel = new JLabel(field.name());
+            JLabel nameLabel = PlainText.disableHtml(new JLabel(field.name()));
             nameLabel.setEnabled(false);
             panel.add(nameLabel, name);
             panel.add(valueLabel(field), value);
@@ -161,22 +165,22 @@ public final class InspectorPanel extends JPanel {
 
     private static Component valueLabel(Inspection.Field field) {
         if (field.isKnown()) {
-            JLabel label = new JLabel(field.value().orElseThrow());
-            label.setToolTipText(field.value().orElseThrow());
+            JLabel label = PlainText.disableHtml(new JLabel(field.value().orElseThrow()));
+            label.setToolTipText(PlainText.tooltip(field.value().orElseThrow()));
             return label;
         }
         // The two halves are one label rather than two components so they wrap
         // and elide together: an explanation that scrolled out of view beside a
         // word saying "unknown" would be no explanation at all.
         String note = field.unknownNote().map(why -> " — " + why).orElse("");
-        JLabel label = new JLabel(UNKNOWN + note);
+        JLabel label = PlainText.disableHtml(new JLabel(UNKNOWN + note));
         label.setFont(label.getFont().deriveFont(Font.ITALIC));
         Color disabled = UIManager.getColor("Label.disabledForeground");
         if (disabled != null) {
             label.setForeground(disabled);
         }
-        label.setToolTipText(field.unknownNote()
-                .orElse("This value was not reported, and is not zero."));
+        label.setToolTipText(PlainText.tooltip(field.unknownNote()
+                .orElse("This value was not reported, and is not zero.")));
         return label;
     }
 }
