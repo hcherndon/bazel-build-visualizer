@@ -49,6 +49,7 @@ val spikeMains = mapOf(
     "runGraphSpike" to "com.holtherndon.bazelviz.benchmarks.spike.GraphSpike",
     "runSqlPagingSpike" to "com.holtherndon.bazelviz.benchmarks.spike.SqlPagingSpike",
     "runBesThroughputSpike" to "com.holtherndon.bazelviz.benchmarks.spike.BesThroughputSpike",
+    "runEntityScaleSpike" to "com.holtherndon.bazelviz.benchmarks.spike.EntityScaleSpike",
 )
 
 // Gradle's own JVM properties do not reach a forked JavaExec, so the spike

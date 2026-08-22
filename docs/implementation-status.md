@@ -351,6 +351,7 @@ application's code.
 | Add source completeness | Done — `build_invocation.saw_last_message`, `configurations.declared`, depsets with no defining event, and the output-group `incomplete` flag; each is surfaced |
 | UI: overview, actions table, targets tree, tests table, failures table, shared inspector | Done |
 | BEP content ground truth recorded | Done — `docs/bep-content.md`, five experiments across four Bazel versions, 91 findings, five unresolved contradictions stated as such |
+| Scale measured | Done — `:benchmarks:runEntityScaleSpike`; 112,000 actions/s normalized, flat 0.3–0.7 ms pages under every sort at a million actions, ordering verified against a reference query. See docs/performance.md |
 
 ## Phase 3 exit criteria (plan section 24)
 
@@ -389,10 +390,20 @@ imported BEP captured without it holds failures and little else. The view says
 so — worded about the options rather than about the rows, because what is
 known is what Bazel was asked to publish.
 
-**Sorting by duration has no index behind it.** Five of the six sorts ride an
-index the schema creates; duration is a computed expression and SQLite builds
-a temporary b-tree for it. The anchor scan runs off the EDT with the previous
-rows still on screen, and no measurement at five million rows exists yet.
+**Every sort pages at the same cost, and that took two rewrites.** Measured at
+a million actions: 0.30–0.67 ms a page under all six sorts, at the head of the
+table and at the tail alike. The first two versions did not: sorting on a null
+flag cost 18.8 ms at the tail, and a single row-value predicate cost 8.2 ms —
+both the shape of `OFFSET`, reached from different directions.
+`docs/performance.md` has the figures and what each mistake looked like. What
+still differs is the one-off anchor scan when a sort is picked: 52–61 ms for
+the four that order by a column of `actions`, 242–363 ms for the two that
+order by dictionary text, and it runs off the EDT with the previous rows still
+on screen.
+
+**Unknowns sort first ascending, last descending.** SQL's own convention,
+adopted because it is the only one an index can seek. Sorting them to one end
+regardless of direction reads better and costs a full scan and a sort per page.
 
 **Two numbers for the same thing, twice.** The overview shows this session's
 counts beside Bazel's, and a test's elapsed time beside Bazel's reported

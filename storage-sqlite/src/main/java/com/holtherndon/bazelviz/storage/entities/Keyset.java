@@ -1,107 +1,118 @@
 package com.holtherndon.bazelviz.storage.entities;
 
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.sql.Types;
-import java.util.Optional;
-
 /**
- * Keyset paging over a sort column that may be NULL.
+ * Keyset paging over a sort column that may be NULL and may repeat.
  *
  * <h2>Why not OFFSET</h2>
  *
  * <p>{@code OFFSET} makes SQLite walk and discard every skipped row, so its
  * cost grows with how far the user has scrolled — 11 ms mean and 23 ms worst
  * case at 2M rows in the Phase 0 spike, against 0.23 ms for the keyset form at
- * any depth (docs/performance.md). Plan 10.9 makes keyset the rule for every
- * UI-facing query, and this class is what makes that rule usable for the
- * sortable columns rather than only for id order.
+ * any depth (docs/performance.md). Plan 10.9 makes keyset the rule.
  *
- * <h2>Why NULL needs its own term</h2>
+ * <h2>Two ways to lose that, both measured</h2>
  *
- * <p>Half the sortable columns here are legitimately unknown: an action Bazel
- * 7 never timed has no start, and an action with no label has no label. SQL
- * comparison against NULL yields NULL, which is not true, so a plain
+ * <p><b>Sorting on a null flag.</b> Half the sortable columns are legitimately
+ * unknown, and SQL comparison against NULL yields NULL, so a plain
  * {@code WHERE col > ?} silently drops every unknown row from every page after
- * the first — the table would appear to contain fewer rows than its own count
- * says, and the missing ones would be exactly the ones the "unknown values are
- * visibly unknown" criterion is about.
+ * the first. The tempting fix is to sort on {@code (col IS NULL, col)} so
+ * unknowns land at one end whichever way the sort runs. That is an expression
+ * no ordinary index supplies, so SQLite answers every page with a full scan and
+ * a temporary b-tree: measured at 200,000 actions, 0.19 ms at the head of the
+ * table and 18.8 ms at the tail — the shape of {@code OFFSET}, reached from a
+ * different direction.
  *
- * <p>So the sort is on the pair {@code (col IS NULL, col)} with the row id
- * breaking ties, and the seek predicate spells out all three cases. NULLs sort
- * last in ascending order and first in descending, which is the same convention
- * a spreadsheet uses and keeps them together rather than scattered.
+ * <p><b>One predicate for the whole seek.</b> Both {@code (col, id) > (?, ?)}
+ * and its expansion {@code col > ? OR (col = ? AND id > ?)} select the right
+ * rows, and neither seeks reliably. SQLite uses only the leading term of a row
+ * value as an index bound, so on a column with few distinct values it lands at
+ * the start of the anchor's group and walks: 0.08 ms at the head, 8.2 ms at the
+ * tail of one 199,800-row group. The {@code OR} form is worse because it is
+ * unpredictable — the same query planned three different ways at three depths,
+ * the worst of them 26 ms.
  *
- * <p>{@code IS} rather than {@code =} for the tie-break comparison: it is
- * null-safe in SQLite, so an anchor whose sort value is NULL still matches the
- * rows beside it instead of matching nothing.
+ * <h2>What this does instead</h2>
+ *
+ * <p>It takes SQLite's own NULL ordering — unknowns first ascending, last
+ * descending, which an ordinary index on the column already supplies — and
+ * builds a page out of segments, each of which is a range SQLite can seek:
+ *
+ * <ol>
+ *   <li>the rest of the anchor's own value group, {@code col = ? AND id > ?};
+ *   <li>everything past that group, {@code col > ?};
+ *   <li>the unknowns, {@code col IS NULL}, optionally from an id.
+ * </ol>
+ *
+ * <p>A page is drawn from those in order until it is full. Almost every page
+ * comes entirely from one segment; only a page sitting on a boundary costs two
+ * queries, or three at the one place where a value boundary and the
+ * known/unknown boundary coincide. Measured flat at 0.06 ms per segment from
+ * the first page to the last, on both a near-unique column and one with two
+ * distinct values.
+ *
+ * <p>The price is the ordering convention: unknowns come first ascending rather
+ * than last. That is SQL's convention, it is consistent in both directions, and
+ * it is the only version of it that seeks.
  */
 final class Keyset {
 
     private Keyset() {}
 
+    /** One seekable range that a page can be drawn from, in page order. */
+    enum Segment {
+        /** No anchor: the ordering's own beginning. Binds nothing. */
+        FROM_START,
+
+        /** The rest of the anchor's value group. Binds the value, then the id. */
+        SAME_VALUE,
+
+        /** Everything past the anchor's value group. Binds the value. */
+        PAST_VALUE,
+
+        /** Every row that has a value, from the first of them. Binds nothing. */
+        VALUE_SIDE,
+
+        /** The unknowns after an id. Binds the id. */
+        NULL_SIDE_AFTER,
+
+        /** Every unknown, from the first of them. Binds nothing. */
+        NULL_SIDE,
+    }
+
+    /** The {@code WHERE} fragment for a segment. */
+    static String where(Segment segment, String column, String idColumn, boolean descending) {
+        String beyond = descending ? " < " : " > ";
+        return switch (segment) {
+            case FROM_START -> "";
+            case SAME_VALUE -> column.equals(idColumn)
+                    // A row id is unique, so its value group holds only itself
+                    // and this segment can never contribute. The pager skips it.
+                    ? " AND 0"
+                    : " AND " + column + " = ? AND " + idColumn + beyond + "?";
+            case PAST_VALUE -> column.equals(idColumn)
+                    ? " AND " + idColumn + beyond + "?"
+                    : " AND " + column + beyond + "?";
+            case VALUE_SIDE -> " AND " + column + " IS NOT NULL";
+            case NULL_SIDE_AFTER -> " AND " + column + " IS NULL AND " + idColumn + beyond + "?";
+            case NULL_SIDE -> " AND " + column + " IS NULL";
+        };
+    }
+
     /**
-     * The {@code ORDER BY} clause for a sort column, tie-broken by row id.
+     * The {@code ORDER BY} for a segment.
      *
-     * @param column a column expression, already qualified with its table alias
-     * @param idColumn the unique tie-breaker
+     * <p>Inside one value group, and among the unknowns, every row ties on the
+     * sort column and the id is the whole ordering. Saying only that is what
+     * lets SQLite answer from the index instead of sorting.
      */
-    static String orderBy(String column, String idColumn, boolean descending) {
-        String direction = descending ? "DESC" : "ASC";
-        // "col IS NULL" is 0 or 1, so ordering by it ascending puts known
-        // values first; descending flips both terms together, which keeps the
-        // reverse of a page exactly the page in reverse.
-        return " ORDER BY (" + column + " IS NULL) " + direction
-                + ", " + column + " " + direction
-                + ", " + idColumn + " " + direction;
-    }
-
-    /**
-     * The seek predicate for "rows after this anchor", or empty for the first
-     * page. Binds three parameters: the anchor's null flag, its value, and its
-     * id — in that order, twice for the value.
-     */
-    static String seek(String column, String idColumn, boolean descending) {
-        String beyond = descending ? "<" : ">";
-        String nullBeyond = descending ? "<" : ">";
-        return " AND (("
-                + "(" + column + " IS NULL) " + nullBeyond + " ?"
-                + ") OR ("
-                + "(" + column + " IS NULL) = ? AND ("
-                + column + " " + beyond + " ? OR ("
-                + column + " IS ? AND " + idColumn + " " + beyond + " ?)))"
-                + ")";
-    }
-
-    /**
-     * Binds the five parameters {@link #seek} declares.
-     *
-     * @param sortValue the anchor row's value for the sort column, empty when
-     *     that row's value is NULL
-     * @return the next free parameter index
-     */
-    static int bindSeek(
-            PreparedStatement statement, int index, Optional<Object> sortValue, long anchorId)
-            throws SQLException {
-        int nullFlag = sortValue.isPresent() ? 0 : 1;
-        statement.setInt(index, nullFlag);
-        statement.setInt(index + 1, nullFlag);
-        bindValue(statement, index + 2, sortValue);
-        bindValue(statement, index + 3, sortValue);
-        statement.setLong(index + 4, anchorId);
-        return index + 5;
-    }
-
-    private static void bindValue(PreparedStatement statement, int index, Optional<Object> value)
-            throws SQLException {
-        if (value.isEmpty()) {
-            statement.setNull(index, Types.OTHER);
-        } else if (value.get() instanceof Long number) {
-            statement.setLong(index, number);
-        } else if (value.get() instanceof Integer number) {
-            statement.setInt(index, number);
-        } else {
-            statement.setString(index, value.get().toString());
-        }
+    static String orderBy(Segment segment, String column, String idColumn, boolean descending) {
+        String direction = descending ? " DESC" : " ASC";
+        boolean idOnly = segment == Segment.SAME_VALUE
+                || segment == Segment.NULL_SIDE_AFTER
+                || segment == Segment.NULL_SIDE
+                || column.equals(idColumn);
+        return idOnly
+                ? " ORDER BY " + idColumn + direction
+                : " ORDER BY " + column + direction + ", " + idColumn + direction;
     }
 }

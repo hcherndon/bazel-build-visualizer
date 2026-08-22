@@ -173,7 +173,7 @@ public final class ActionQueries implements AutoCloseable {
         StringBuilder sql = new StringBuilder("SELECT ").append(column).append(", a.id")
                 .append(FROM).append(" WHERE 1=1");
         appendFilter(sql, filter);
-        sql.append(Keyset.orderBy(column, "a.id", descending));
+        sql.append(Keyset.orderBy(Keyset.Segment.FROM_START, column, "a.id", descending));
 
         List<Anchor> anchors = new ArrayList<>();
         long rowCount = 0;
@@ -224,6 +224,12 @@ public final class ActionQueries implements AutoCloseable {
         }
     }
 
+    /**
+     * One page, drawn from as many seekable segments as it takes to fill.
+     *
+     * <p>See {@link Keyset} for why a page is composed rather than expressed as
+     * one predicate, and what the two obvious single-predicate forms cost.
+     */
     private List<ActionRow> page(
             ActionFilter filter,
             ActionSort sort,
@@ -231,26 +237,119 @@ public final class ActionQueries implements AutoCloseable {
             int limit,
             Optional<Anchor> anchor)
             throws SQLException {
+        List<Keyset.Segment> segments = segmentsFor(sort, descending, anchor);
+        List<ActionRow> rows = new ArrayList<>(limit);
+        for (Keyset.Segment segment : segments) {
+            if (rows.size() >= limit) {
+                break;
+            }
+            if (segment == Keyset.Segment.SAME_VALUE && sort.column().equals("a.id")) {
+                // A row id's value group holds one row, the anchor itself.
+                continue;
+            }
+            rows.addAll(query(
+                    filter, sort, descending, limit - rows.size(), segment, anchor));
+        }
+        return rows;
+    }
+
+    /**
+     * Which ranges a page can come from, in the order the sort visits them.
+     *
+     * <p>Ascending, SQLite puts the unknowns first, so an anchor with a value
+     * has already passed them and an anchor without one has not. Descending,
+     * the unknowns are the tail and every anchor with a value still has them
+     * ahead of it. Naming the ranges rather than encoding the reasoning in a
+     * predicate is what keeps each of them seekable.
+     */
+    private static List<Keyset.Segment> segmentsFor(
+            ActionSort sort, boolean descending, Optional<Anchor> anchor) {
+        if (anchor.isEmpty()) {
+            return List.of(Keyset.Segment.FROM_START);
+        }
+        boolean anchorIsUnknown = anchor.get().sortValue().isEmpty() && sort.nullable();
+        if (descending) {
+            if (anchorIsUnknown) {
+                return List.of(Keyset.Segment.NULL_SIDE_AFTER);
+            }
+            return sort.nullable()
+                    ? List.of(Keyset.Segment.SAME_VALUE, Keyset.Segment.PAST_VALUE,
+                            Keyset.Segment.NULL_SIDE)
+                    : List.of(Keyset.Segment.SAME_VALUE, Keyset.Segment.PAST_VALUE);
+        }
+        if (anchorIsUnknown) {
+            return List.of(Keyset.Segment.NULL_SIDE_AFTER, Keyset.Segment.VALUE_SIDE);
+        }
+        return List.of(Keyset.Segment.SAME_VALUE, Keyset.Segment.PAST_VALUE);
+    }
+
+    private List<ActionRow> query(
+            ActionFilter filter,
+            ActionSort sort,
+            boolean descending,
+            int limit,
+            Keyset.Segment segment,
+            Optional<Anchor> anchor)
+            throws SQLException {
         String column = sort.column();
         StringBuilder sql = new StringBuilder("SELECT ").append(COLUMNS).append(FROM)
                 .append(" WHERE 1=1");
         appendFilter(sql, filter);
-        anchor.ifPresent(row -> sql.append(Keyset.seek(column, "a.id", descending)));
-        sql.append(Keyset.orderBy(column, "a.id", descending)).append(" LIMIT ?");
+        sql.append(Keyset.where(segment, column, "a.id", descending))
+                .append(Keyset.orderBy(segment, column, "a.id", descending))
+                .append(" LIMIT ?");
 
         try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
             running = statement;
             try {
                 int index = bindFilter(statement, 1, filter);
-                if (anchor.isPresent()) {
-                    index = Keyset.bindSeek(
-                            statement, index, anchor.get().sortValue(), anchor.get().id());
-                }
+                index = bindSegment(statement, index, segment, sort, anchor);
                 statement.setInt(index, limit);
                 return readRows(statement);
             } finally {
                 running = null;
             }
+        }
+    }
+
+    /** Binds whatever {@link Keyset#where} declared for this segment. */
+    private static int bindSegment(
+            PreparedStatement statement,
+            int from,
+            Keyset.Segment segment,
+            ActionSort sort,
+            Optional<Anchor> anchor)
+            throws SQLException {
+        int index = from;
+        boolean columnIsId = sort.column().equals("a.id");
+        switch (segment) {
+            case SAME_VALUE -> {
+                bindSortValue(statement, index++, anchor.orElseThrow().sortValue());
+                statement.setLong(index++, anchor.orElseThrow().id());
+            }
+            case PAST_VALUE -> {
+                if (columnIsId) {
+                    statement.setLong(index++, anchor.orElseThrow().id());
+                } else {
+                    bindSortValue(statement, index++, anchor.orElseThrow().sortValue());
+                }
+            }
+            case NULL_SIDE_AFTER -> statement.setLong(index++, anchor.orElseThrow().id());
+            case FROM_START, VALUE_SIDE, NULL_SIDE -> { }
+        }
+        return index;
+    }
+
+    private static void bindSortValue(
+            PreparedStatement statement, int index, Optional<Object> value) throws SQLException {
+        if (value.isEmpty()) {
+            statement.setNull(index, java.sql.Types.OTHER);
+        } else if (value.get() instanceof Long number) {
+            statement.setLong(index, number);
+        } else if (value.get() instanceof Integer number) {
+            statement.setInt(index, number);
+        } else {
+            statement.setString(index, value.get().toString());
         }
     }
 

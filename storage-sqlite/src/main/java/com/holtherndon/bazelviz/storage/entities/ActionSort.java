@@ -3,9 +3,19 @@ package com.holtherndon.bazelviz.storage.entities;
 /**
  * The orderings the actions table offers.
  *
- * <p>Each names a column the schema indexes, because a sort over an unindexed
- * column at five million rows is a full scan per page — which would turn
- * clicking a column header into a stall the user has no way to interpret.
+ * <h2>All six page at the same cost, and that took work</h2>
+ *
+ * <p>Measured at 1,000,000 actions (docs/performance.md, {@code EntityScaleSpike}),
+ * one page of 200 rows costs 0.30–0.67 ms under every sort, at the head of the
+ * table and at the tail alike. See {@link Keyset} for what makes that true and
+ * for the two natural-looking alternatives that cost 18.8 ms and 26 ms instead.
+ *
+ * <p>What does differ is the one-off anchor scan a view pays when the user
+ * picks a sort: 52–61 ms for the four that order by a column of
+ * {@code actions}, and 242–363 ms for {@link #MNEMONIC} and {@link #LABEL},
+ * which order by text in a dictionary table and so need a sort no index over
+ * {@code actions} can supply. That scan runs off the EDT with the previous rows
+ * still on screen.
  */
 public enum ActionSort {
 
@@ -14,10 +24,10 @@ public enum ActionSort {
      * came in, it needs no index beyond the primary key, and it is the only
      * ordering with no unknowns in it.
      */
-    ARRIVAL("a.id", "Arrival"),
+    ARRIVAL("a.id", "Arrival", false),
 
     /** When the action started, where that is known. */
-    START_TIME("a.start_micros", "Start"),
+    START_TIME("a.start_micros", "Start", true),
 
     /**
      * How long the action took.
@@ -26,32 +36,48 @@ public enum ActionSort {
      * not trustworthy — including the Bazel 8.4.x case where both timestamps
      * are present and equal. Sorting by a stored zero there would put every
      * action in the build at the top of the "fastest" list.
+     *
+     * <p>{@code SchemaV2} indexes this exact expression, which is what lets a
+     * page seek rather than sort.
      */
     DURATION(
             "(CASE WHEN a.duration_unknown_reason IS NULL"
                     + " THEN a.end_micros - a.start_micros END)",
-            "Duration"),
+            "Duration",
+            true),
 
     /** The action type, via the interned mnemonic. */
-    MNEMONIC("m.value", "Mnemonic"),
+    MNEMONIC("m.value", "Mnemonic", true),
 
     /** The owning target, via the interned label. */
-    LABEL("l.value", "Target"),
+    LABEL("l.value", "Target", true),
 
     /** Succeeded before failed, or the reverse. */
-    OUTCOME("a.outcome", "Outcome");
+    OUTCOME("a.outcome", "Outcome", false);
 
     private final String column;
     private final String title;
+    private final boolean nullable;
 
-    ActionSort(String column, String title) {
+    ActionSort(String column, String title, boolean nullable) {
         this.column = column;
         this.title = title;
+        this.nullable = nullable;
     }
 
     /** The SQL expression to order by, qualified with the query's aliases. */
     String column() {
         return column;
+    }
+
+    /**
+     * Whether the column can be NULL.
+     *
+     * <p>Lets the pager skip the null-side query for a column that has no null
+     * side, rather than issuing one that can only ever return nothing.
+     */
+    boolean nullable() {
+        return nullable;
     }
 
     public String title() {

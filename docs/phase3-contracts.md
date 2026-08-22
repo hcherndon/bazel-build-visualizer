@@ -76,7 +76,7 @@ int64 fields arrive as JSON **strings**; `criticalPathTime`, `testTimeout`,
 text [E3]. The `*Millis` spellings are preferred: both spellings are emitted on
 all four versions and disagreed in zero of 148 checks [E4].
 
-## 4. Ordering
+## 4. Stream ordering
 
 Measured across 43 streams and four versions, under `--jobs=64`, `--keep_going`
 failures, SIGINT and SIGKILL:
@@ -97,7 +97,24 @@ dropped row. The guarantee was measured on the JSON file transport; nothing has
 measured it over gRPC BES, and the two experiments disagreed on whether it may
 be relied upon at all (Contradiction 4). A warning satisfies both positions.
 
-## 5. Graphs, and what may be claimed about them
+## 5. Paging and sort order
+
+Every paged query is keyset, under every sort, in both directions. See
+`docs/performance.md` for the two ways that was got wrong first and what each
+cost.
+
+Two consequences a reader of the code should know before changing it:
+
+- **Unknowns sort first ascending and last descending.** That is SQL's own
+  convention. Putting them at one end regardless of direction reads better and
+  costs a full scan and a temporary b-tree per page, because `col IS NULL` is an
+  expression no ordinary index supplies.
+- **A page is composed from ranges, not expressed as one predicate.** The rest
+  of the anchor's value group, then everything past it, then the unknowns. Each
+  is a range SQLite can seek; the single-predicate forms that select the same
+  rows are not, and their cost grows with the table.
+
+## 6. Graphs, and what may be claimed about them
 
 `GraphKind` names the six graphs and each view states which one it shows
 (plan 2.1, rule 13). Two of them — `BEP_EVENTS` and `TEMPORAL` — carry no
@@ -109,7 +126,7 @@ Phase 3 populates `BEP_EVENTS`, `TARGETS`, `CONFIGURED_TARGETS` and
 aquery, which is Phase 5 — and the actions view says so rather than implying the
 actions it shows are all the actions there are.
 
-## 6. What Phase 3 does not do
+## 7. What Phase 3 does not do
 
 - **Action inputs.** The BEP does not report them. They arrive in Phase 4 from
   the execution log, and the table arrives with them; an empty one now would
@@ -131,7 +148,7 @@ actions it shows are all the actions there are.
   four versions [M2]. Only `garbageMetrics` is reliably present, and it is not a
   heap size.
 
-## 7. Numbers the UI must not compute
+## 8. Numbers the UI must not compute
 
 Each of these was measured producing a specific wrong answer.
 

@@ -464,6 +464,74 @@ is latency-bound at 45,000/s, at 64 it reaches 86,000/s, and 128, 256 and 512
 are indistinguishable from 64. The smallest window that reaches the plateau is
 the one that keeps the memory ceiling lowest.
 
+## Normalization and the actions table (Phase 3)
+
+`./gradlew :benchmarks:runEntityScaleSpike --args="--rows=1000000"`, on the same
+machine as the rest of this page (Apple M-series, macOS 25.6, Java 25).
+
+| Measurement | 200,000 actions | 1,000,000 actions |
+|---|---|---|
+| Normalization through `EntityWriter` | 108,000 actions/s | 112,000 actions/s |
+| Post-load index creation | 0.20 s | 1.03 s |
+| Session database on disk | 45 MB | 243 MB |
+| Overview snapshot (eleven counting queries) | 0.4 ms | 1.3 ms |
+
+One page of 200 rows, at the head of the table and at the tail:
+
+| Sort | Anchor scan | Page (any depth) |
+|---|---|---|
+| Arrival | 61 ms | 0.31–0.67 ms |
+| Start | 54 ms | 0.34–0.64 ms |
+| Duration | 52 ms | 0.35–0.42 ms |
+| Outcome | 54 ms | 0.30–0.38 ms |
+| Mnemonic | 363 ms | 0.32–0.35 ms |
+| Target | 242 ms | 0.34–0.35 ms |
+
+Pages are flat: the cost does not vary with scroll depth under any sort, which
+is what the plan's keyset rule is for. The anchor scan is the one-off a view
+pays when the user picks a sort; the two that order by text in a dictionary
+table cost four to six times the others, because no index over `actions` can
+supply a join's ordering, and it runs off the EDT with the previous rows still
+on screen.
+
+The spike also checks the ordering, not just the time: it walks the pages and
+compares the result to what a single `ORDER BY` returns. A page composed from
+several ranges can drop a row at a boundary or repeat one, and neither shows up
+as an error — the table simply holds fewer rows than its own count says.
+
+### Two ways to lose keyset paging, both measured
+
+The Phase 0 spike established that `OFFSET` costs grow with scroll depth and
+keyset costs do not. Phase 3 found two ways to write a keyset query that costs
+the same as `OFFSET` anyway. Both were shipped before they were measured, and
+both are recorded here because they look correct.
+
+**Sorting on a null flag.** Half the sortable columns are legitimately unknown,
+and `WHERE col > ?` is not true of a NULL, so the naive predicate silently drops
+every unknown row from every page after the first. The natural fix is to sort on
+`(col IS NULL, col)` so unknowns land at one end whichever way the sort runs.
+That expression is not something an ordinary index supplies, so SQLite answers
+every page with a full scan and a temporary b-tree. At 200,000 actions: **0.19 ms
+at the head of the table, 18.8 ms at the tail** — the shape of `OFFSET`, reached
+from a different direction. An expression index on `((col IS NULL), col)` removes
+the sort and keeps the linear growth.
+
+**One predicate for the whole seek.** `(col, id) > (?, ?)` and its expansion
+`col > ? OR (col = ? AND id > ?)` both select the right rows. Neither seeks
+reliably: SQLite uses only the leading term of a row value as an index bound, so
+on a column with few distinct values it lands at the start of the anchor's group
+and walks — **0.08 ms at the head, 8.2 ms at the tail** of one 199,800-row group.
+The `OR` form is worse because it is unpredictable: the same query planned three
+different ways at three depths, the worst of them **26 ms**.
+
+What ships instead takes SQLite's own NULL ordering — unknowns first ascending,
+last descending, which an ordinary index already supplies — and composes a page
+from ranges each of which is a genuine index SEARCH: the rest of the anchor's
+value group, then everything past it, then the unknowns. Almost every page comes
+from one range; a page on a boundary costs two queries. The price is the
+convention that unknowns sort first ascending rather than last, and it is the
+only version of that convention that seeks.
+
 ## Build performance
 
 `gradle.properties` enables parallel execution, the build cache, and the
