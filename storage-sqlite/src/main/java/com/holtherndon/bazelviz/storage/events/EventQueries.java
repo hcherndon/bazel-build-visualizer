@@ -49,24 +49,31 @@ import java.util.OptionalLong;
  */
 public final class EventQueries implements AutoCloseable {
 
+    // Qualified with the table alias because the paging queries left-join
+    // bep_event_ids to bring the id display along with the row. That join is
+    // what keeps the event table at one query per page instead of one query
+    // per page plus one point lookup per row.
     private static final String EVENT_COLUMNS =
-            "id, stream_id, sequence, event_type, event_id_hash, last_message, child_count,"
-                    + " decode_status, has_unknown_fields, event_micros, receive_micros";
+            "e.id, e.stream_id, e.sequence, e.event_type, e.event_id_hash, e.last_message,"
+                    + " e.child_count, e.decode_status, e.has_unknown_fields, e.event_micros,"
+                    + " e.receive_micros, e.raw_segment, e.raw_offset, e.raw_length, i.display";
+
+    private static final String EVENT_FROM =
+            " FROM bep_events e LEFT JOIN bep_event_ids i ON i.event_id_hash = e.event_id_hash";
 
     private static final String COUNT_EVENTS = "SELECT COUNT(*) FROM bep_events";
 
     private static final String PAGE_FORWARD =
-            "SELECT " + EVENT_COLUMNS + " FROM bep_events WHERE id > ? ORDER BY id ASC LIMIT ?";
+            "SELECT " + EVENT_COLUMNS + EVENT_FROM + " WHERE e.id > ? ORDER BY e.id ASC LIMIT ?";
 
     private static final String PAGE_BACKWARD =
-            "SELECT " + EVENT_COLUMNS + " FROM bep_events WHERE id < ? ORDER BY id DESC LIMIT ?";
+            "SELECT " + EVENT_COLUMNS + EVENT_FROM + " WHERE e.id < ? ORDER BY e.id DESC LIMIT ?";
 
     private static final String SELECT_EVENT =
-            "SELECT " + EVENT_COLUMNS + ", raw_segment, raw_offset, raw_length"
-                    + " FROM bep_events WHERE id = ?";
+            "SELECT " + EVENT_COLUMNS + EVENT_FROM + " WHERE e.id = ?";
 
     private static final String SELECT_EVENT_BY_HASH =
-            "SELECT " + EVENT_COLUMNS + " FROM bep_events WHERE event_id_hash = ? ORDER BY id ASC";
+            "SELECT " + EVENT_COLUMNS + EVENT_FROM + " WHERE e.event_id_hash = ? ORDER BY e.id ASC";
 
     private static final String SELECT_IDENTITY =
             "SELECT event_id_hash, id_kind, id_bytes, display FROM bep_event_ids"
@@ -87,14 +94,14 @@ public final class EventQueries implements AutoCloseable {
                     + " ORDER BY edge.parent_event_id ASC, edge.ordinal ASC";
 
     private static final String SELECT_PARENTS_BY_CHILD_HASH =
-            "SELECT parent.id, parent.stream_id, parent.sequence, parent.event_type,"
-                    + " parent.event_id_hash, parent.last_message, parent.child_count,"
-                    + " parent.decode_status, parent.has_unknown_fields, parent.event_micros,"
-                    + " parent.receive_micros"
+            "SELECT e.id, e.stream_id, e.sequence, e.event_type, e.event_id_hash,"
+                    + " e.last_message, e.child_count, e.decode_status, e.has_unknown_fields,"
+                    + " e.event_micros, e.receive_micros, e.raw_segment, e.raw_offset, e.raw_length, i.display"
                     + " FROM bep_event_edges edge"
-                    + " JOIN bep_events parent ON parent.id = edge.parent_event_id"
+                    + " JOIN bep_events e ON e.id = edge.parent_event_id"
+                    + " LEFT JOIN bep_event_ids i ON i.event_id_hash = e.event_id_hash"
                     + " WHERE edge.child_event_id_hash = ?"
-                    + " ORDER BY parent.id ASC";
+                    + " ORDER BY e.id ASC";
 
     // Two forms rather than one with a sentinel anchor: an event-id hash is an
     // arbitrary signed 64-bit value, so Long.MIN_VALUE is a legitimate hash and
@@ -198,7 +205,7 @@ public final class EventQueries implements AutoCloseable {
                 return Optional.empty();
             }
             summary = readSummary(rows);
-            raw = new RawLocation(rows.getInt(12), rows.getLong(13), rows.getInt(14));
+            raw = summary.rawLocation();
         } finally {
             active = null;
         }
@@ -391,6 +398,7 @@ public final class EventQueries implements AutoCloseable {
         OptionalLong eventIdHash = rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(hash);
         long micros = rows.getLong(10);
         OptionalLong eventMicros = rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(micros);
+        String display = rows.getString(15);
         return new EventSummary(
                 rows.getLong(1),
                 rows.getLong(2),
@@ -402,7 +410,9 @@ public final class EventQueries implements AutoCloseable {
                 DecodeStatus.parse(rows.getString(8)),
                 rows.getInt(9) != 0,
                 eventMicros,
-                rows.getLong(11));
+                rows.getLong(11),
+                new RawLocation(rows.getInt(12), rows.getLong(13), rows.getInt(14)),
+                Optional.ofNullable(display));
     }
 
     private static EventPage toPage(List<EventSummary> events, int limit, long anchor) {

@@ -10,8 +10,8 @@ renumbered or re-scoped here.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Repository and architectural spikes | **In progress** (see checklist below) |
-| 1 | Session, journal, and offline BEP import | Not started |
+| 0 | Repository and architectural spikes | **Complete** — all exit criteria met (see below) |
+| 1 | Session, journal, and offline BEP import | **Complete** — all five exit criteria verified end to end (see below) |
 | 2 | Bazel launcher and embedded BES | Not started |
 | 3 | Core target, action, test, and artifact normalization | Not started |
 | 4 | Execution-log and profile enrichment | Not started |
@@ -114,3 +114,45 @@ The one structural limit the spikes surfaced: `JScrollPane` int pixel geometry
 overflows near 107.4M rows at `rowHeight` 20. The 50M-row target fits; the
 custom logical scrollbar of plan 17.5 becomes mandatory beyond that. See
 docs/performance.md.
+
+## Phase 1 exit criteria (plan section 24)
+
+Verified end to end against the real `bbv` CLI on generated BEP files, not
+only by unit tests. Commands and observed results:
+
+| Criterion | Status |
+|---|---|
+| Complete and truncated BEP files import | Met — a 2,000-event binary file and its 300,000-event counterpart both import completely; the 2,000-event file cut mid-record at 40% imports its 771-event prefix, is marked `TRUNCATED` (not corrupt), reports damage at byte 229,050 of 229,433, and exits 1. The JSON encoding of the same stream imports to the same 2,000 events. |
+| Restart resumes interrupted indexing | Met — SIGINT at 145,000 of 300,000 events leaves the session resumable; `--resume` continues at source byte 43,970,432 without re-reading, reaching exactly 300,000 with zero duplicate `(stream_id, sequence)` rows. |
+| Original source is preserved | Met — the SHA-256 and size are recorded before anything is decoded, and the file is copied to `raw/imported-source.bep`, so the session never depends on the original. |
+| Event counts and offsets are reproducible | Met — three independent imports of one file produced identical sequence, event type, id hash, raw segment/offset/length and decode status for all 2,000 rows, and an identical SHA-256 over the journaled payload bytes. |
+| No full file is loaded into memory | Met — an 85 MB file imports completely under `-Xmx64m`, with a peak buffer of 5.9 MB. The buffer is bounded by the largest single record, not by file size. |
+
+**Resumed sessions equal clean ones.** The interrupted-then-resumed session
+and a clean import of the same file agree on every persisted column and hash
+identically over their journaled payloads. Two columns are excluded from that
+comparison on purpose: `bep_events.id` is insertion order, and `receive_micros`
+is a wall-clock observation that legitimately differs between two runs.
+
+A resumed session ends `READY_WITH_WARNINGS` where a clean one ends `READY`,
+and its manifest permanently records that it was cancelled and resumed. That
+is the honest outcome, not a defect to paper over.
+
+### Interpretations worth knowing
+
+- **A cancelled import stays in `CAPTURING`, a non-terminal state.**
+  `INCOMPLETE` is terminal in the state machine, so marking a cancelled import
+  there would make it permanently unresumable and contradict exit criterion 2.
+  Plan 21.1 finds recoverable work precisely by looking for non-terminal
+  states, so this is consistent with it.
+- **A flipped payload byte yields `CORRUPT_PARTIAL`, not a partial import.**
+  The length framing survives, so every record is still read and journaled;
+  what fails is decoding the damaged one. All events are stored, the
+  undecodable bytes are preserved verbatim, and the session says it is corrupt.
+- **`checkpoints/import-source.json`** is a sidecar beside the frozen
+  `import.ckpt`. The frozen checkpoint records a journal position, and a source
+  byte offset is not derivable from the journal for JSON, where the file
+  contains whitespace between objects that the journaled records do not.
+- **Ctrl-C exits 130, not the documented 4.** A JVM killed by SIGINT exits with
+  128 plus the signal number and a shutdown hook cannot change that; `bbv
+  import --help` says so. The session is left resumable either way.

@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.app;
 
+import com.holtherndon.bazelviz.app.cli.CliMain;
 import com.holtherndon.bazelviz.app.dirs.AppDirectories;
 import com.holtherndon.bazelviz.ui.MainWindow;
 import com.holtherndon.bazelviz.ui.theme.Themes;
@@ -16,6 +17,16 @@ public final class Main {
     private Main() {}
 
     public static void main(String[] args) {
+        // The subcommand seam, deliberately the very first thing that happens.
+        // Everything below it — the application directories, the look and feel,
+        // the EDT, the window — is graphical-mode setup, and a headless run on a
+        // CI machine with no display must reach none of it. Dispatching here
+        // rather than later is what makes "never initializes Swing" a property
+        // of the control flow instead of a promise.
+        if (args.length > 0) {
+            System.exit(CliMain.run(args, System.out, System.err, AppInfo.VERSION));
+        }
+
         // -Dbbv.smoke=true launches the window, then exits after two seconds.
         // Used by CI and scripted verification; never set in normal runs.
         boolean smoke = Boolean.getBoolean("bbv.smoke");
@@ -37,7 +48,10 @@ public final class Main {
             } else {
                 Themes.installDefault();
             }
-            MainWindow window = new MainWindow();
+            // Where sessions live is configuration-directory discovery, which the
+            // plan assigns to this module; ui-swing is handed the resolved path
+            // rather than re-deriving the platform rules for itself.
+            MainWindow window = new MainWindow(dirs.managedSessions());
             DesktopIntegration.install(window);
             window.setVisible(true);
             log.info("Main window shown");

@@ -1,38 +1,87 @@
 package com.holtherndon.bazelviz.ui;
 
+import com.holtherndon.bazelviz.capture.file.importer.BepImporter;
+import com.holtherndon.bazelviz.capture.file.importer.ImportOutcome;
+import com.holtherndon.bazelviz.capture.file.importer.ImportResult;
+import com.holtherndon.bazelviz.capture.file.importer.UnsupportedSourceException;
+import com.holtherndon.bazelviz.format.session.SessionManager;
+import com.holtherndon.bazelviz.format.session.SessionManifest;
+import com.holtherndon.bazelviz.ui.events.EventValueFormat;
+import com.holtherndon.bazelviz.ui.events.EventsView;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
+import com.holtherndon.bazelviz.ui.session.ImportController;
+import com.holtherndon.bazelviz.ui.session.ImportProgressModel;
+import com.holtherndon.bazelviz.ui.session.SessionInfo;
+import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.Toolkit;
+import java.awt.event.KeyEvent;
+import java.io.File;
+import java.nio.file.Path;
+import java.util.OptionalLong;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JList;
+import javax.swing.JMenu;
+import javax.swing.JMenuBar;
+import javax.swing.JMenuItem;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSeparator;
 import javax.swing.JSplitPane;
 import javax.swing.JTextField;
+import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * Main application window shell (plan section 17.1). Phase 0 lays out the
- * frame regions — launcher bar, navigation sidebar, card-switched center,
- * status bar — as non-functional placeholders; each region gains its backing
- * service in the phase noted on its card.
+ * Main application window shell (plan section 17.1). The frame regions —
+ * launcher bar, navigation sidebar, card-switched center, status bar — were
+ * laid out as placeholders in Phase 0; each gains its backing service in the
+ * phase noted on its card.
+ *
+ * <p>Phase 1 replaces the Events placeholder with a working card: open a BEP
+ * file, watch it import, scroll the chronological event table, inspect the raw
+ * protobuf of the selected event, and reopen an indexed session without
+ * re-importing it. The other placeholders are untouched.
+ *
+ * <p>Nothing in this class does file, database or parsing work on the EDT. The
+ * menu actions hand paths to {@link ImportController} and to a worker executor;
+ * the table and inspector own their own executors inside {@link EventsView}.
  */
 public final class MainWindow extends JFrame {
 
+    private static final long serialVersionUID = 1L;
+
+    private static final Logger log = LoggerFactory.getLogger(MainWindow.class);
+
+    /**
+     * Recorded into every session this window creates. Duplicated from the
+     * application module's {@code AppInfo} because {@code :app} depends on this
+     * module and not the other way round, so the version cannot be imported
+     * from there.
+     */
+    private static final String APP_VERSION = "0.1.0-SNAPSHOT";
+
     // Capture presets A-D (plan section 4.2); Performance Diagnostics is the
-    // recommended default. Placeholder-only in Phase 0 — the launcher bar
-    // becomes functional with bazel-runner in Phase 2.
+    // recommended default. Placeholder-only until the launcher bar becomes
+    // functional with bazel-runner in Phase 2.
     private static final String[] PRESET_NAMES = {
         "Live Essentials",
         "Performance Diagnostics",
@@ -42,23 +91,55 @@ public final class MainWindow extends JFrame {
 
     // Unknown-is-not-zero: counts are unknown until a session exists, so the
     // status bar shows an em dash, never "0".
-    private static final String UNKNOWN = "—";
+    private static final String UNKNOWN = EventValueFormat.UNKNOWN;
 
-    public MainWindow() {
+    private final Path sessionsRoot;
+    private final SessionManager sessions;
+    private final EventsView eventsView = new EventsView();
+    private final ExecutorService worker;
+    private final ImportController importController;
+
+    private final JLabel sessionStatus = new JLabel("Session: none");
+    private final JLabel eventStatus = new JLabel("Events: " + UNKNOWN);
+    private final JLabel actionStatus = new JLabel("Actions: " + UNKNOWN);
+    private final JMenuItem cancelImportItem = new JMenuItem("Cancel Import");
+    private final JMenuItem closeSessionItem = new JMenuItem("Close Session");
+    private final JList<NavEntry> nav = new JList<>(NavEntry.values());
+
+    private final CardLayout cardLayout = new CardLayout();
+    private final JPanel cards = new JPanel(cardLayout);
+
+    private Path lastChooserDirectory;
+
+    /**
+     * @param sessionsRoot directory imported sessions are created in; resolving
+     *     it is pure path arithmetic, and nothing is created until an import
+     *     actually runs
+     */
+    public MainWindow(Path sessionsRoot) {
         super("Bazel Build Visualizer");
+        this.sessionsRoot = sessionsRoot;
+        this.sessions = new SessionManager(sessionsRoot, APP_VERSION);
+        this.worker = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "bbv-import");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.importController = new ImportController(
+                new BepImporter(sessions), worker, SwingUtilities::invokeLater,
+                new ImportProgressModel());
+
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setMinimumSize(new Dimension(960, 640));
         setSize(1280, 840);
         setLocationByPlatform(true);
 
-        CardLayout cardLayout = new CardLayout();
-        JPanel cards = new JPanel(cardLayout);
         for (NavEntry entry : NavEntry.values()) {
-            cards.add(placeholderCard(entry), entry.cardName());
+            cards.add(entry == NavEntry.EVENTS ? eventsView : placeholderCard(entry),
+                    entry.cardName());
         }
 
-        JSplitPane split = new JSplitPane(
-                JSplitPane.HORIZONTAL_SPLIT, buildNavigation(cardLayout, cards), cards);
+        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, buildNavigation(), cards);
         split.setDividerLocation(180);
         split.setResizeWeight(0);
 
@@ -67,7 +148,275 @@ public final class MainWindow extends JFrame {
         content.add(split, BorderLayout.CENTER);
         content.add(buildStatusBar(), BorderLayout.SOUTH);
         setContentPane(content);
+        setJMenuBar(buildMenuBar());
+
+        eventsView.progressPanel().setCancelAction(importController::cancel);
+        // The manifest's event count is absent for a session whose import never
+        // finished; the database always knows, so the status bar takes the real
+        // number from the view once it is open rather than keeping an em dash
+        // for a count that is in fact available.
+        eventsView.setRowCountListener(count -> eventStatus.setText("Events: "
+                + EventValueFormat.count(count)));
+        cancelImportItem.setEnabled(false);
+        closeSessionItem.setEnabled(false);
     }
+
+    /** The directory imported sessions are written into. */
+    public Path sessionsRoot() {
+        return sessionsRoot;
+    }
+
+    @Override
+    public void dispose() {
+        eventsView.closeSession();
+        worker.shutdownNow();
+        super.dispose();
+    }
+
+    // ----------------------------------------------------------------- menus
+
+    private JMenuBar buildMenuBar() {
+        int shortcut = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+
+        JMenuItem openFile = new JMenuItem("Open BEP File…");
+        openFile.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_O, shortcut));
+        openFile.addActionListener(event -> chooseFileToImport());
+
+        JMenuItem openSession = new JMenuItem("Open Session…");
+        openSession.setAccelerator(
+                KeyStroke.getKeyStroke(KeyEvent.VK_O, shortcut | KeyEvent.SHIFT_DOWN_MASK));
+        openSession.addActionListener(event -> chooseSessionToOpen());
+
+        cancelImportItem.addActionListener(event -> importController.cancel());
+        closeSessionItem.addActionListener(event -> closeSession());
+
+        JMenu file = new JMenu("File");
+        file.add(openFile);
+        file.add(openSession);
+        file.addSeparator();
+        file.add(cancelImportItem);
+        file.add(closeSessionItem);
+
+        JMenuBar bar = new JMenuBar();
+        bar.add(file);
+        return bar;
+    }
+
+    private void chooseFileToImport() {
+        if (importController.isRunning()) {
+            JOptionPane.showMessageDialog(this,
+                    "An import is already running. Cancel it before starting another.",
+                    "Import in progress", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Open BEP File");
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        // No file filter by extension: the format is decided from the file's
+        // content (plan 5.2), and a filter would hide the very files whose
+        // names do not match what they are.
+        applyLastDirectory(chooser);
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File chosen = chooser.getSelectedFile();
+        rememberDirectory(chosen.toPath().getParent());
+        startImport(chosen.toPath());
+    }
+
+    private void chooseSessionToOpen() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Open Session Directory");
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        applyLastDirectory(chooser);
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File chosen = chooser.getSelectedFile();
+        rememberDirectory(chosen.toPath().getParent());
+        openSessionDirectory(chosen.toPath(), true);
+    }
+
+    private void applyLastDirectory(JFileChooser chooser) {
+        if (lastChooserDirectory != null) {
+            chooser.setCurrentDirectory(lastChooserDirectory.toFile());
+        }
+    }
+
+    private void rememberDirectory(Path directory) {
+        if (directory != null) {
+            lastChooserDirectory = directory;
+        }
+    }
+
+    // ---------------------------------------------------------------- import
+
+    private void startImport(Path source) {
+        showEventsCard();
+        eventsView.closeSession();
+        eventsView.showImportProgress();
+        eventsView.progressPanel().beginRun(source, false);
+        cancelImportItem.setEnabled(true);
+        closeSessionItem.setEnabled(false);
+        sessionStatus.setText("Session: importing");
+        eventStatus.setText("Events: " + UNKNOWN);
+        if (!importController.start(source, new ImportListener())) {
+            JOptionPane.showMessageDialog(this, "An import is already running.",
+                    "Import in progress", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
+    private void resumeImport(Path sessionRoot) {
+        showEventsCard();
+        eventsView.closeSession();
+        eventsView.showImportProgress();
+        eventsView.progressPanel().beginRun(sessionRoot, true);
+        cancelImportItem.setEnabled(true);
+        closeSessionItem.setEnabled(false);
+        sessionStatus.setText("Session: resuming");
+        importController.resume(sessionRoot, new ImportListener());
+    }
+
+    /** Receives the import lifecycle on the EDT. */
+    private final class ImportListener implements ImportController.Listener {
+
+        @Override
+        public void importStarted(Path source, boolean resuming) {
+            eventsView.progressPanel().beginRun(source, resuming);
+        }
+
+        @Override
+        public void importProgress(ImportProgressModel.Snapshot snapshot) {
+            eventsView.progressPanel().update(snapshot);
+        }
+
+        @Override
+        public void importFinished(ImportResult result) {
+            cancelImportItem.setEnabled(false);
+            eventsView.progressPanel().finish(summarize(result));
+            if (result.outcome() != ImportOutcome.COMPLETE) {
+                // Never presented as a clean import. The user is told what was
+                // read, where it stopped, and that the rest is absent.
+                JOptionPane.showMessageDialog(MainWindow.this, summarize(result),
+                        "Import finished with findings", JOptionPane.WARNING_MESSAGE);
+            }
+            openSessionDirectory(result.sessionRoot(), false);
+        }
+
+        @Override
+        public void importFailed(Path source, Throwable failure) {
+            cancelImportItem.setEnabled(false);
+            eventsView.progressPanel().finish("Import failed.");
+            eventsView.showEmpty("Import failed. Nothing was indexed.");
+            sessionStatus.setText("Session: none");
+            String message = failure instanceof UnsupportedSourceException
+                    ? failure.getMessage()
+                    : failure.toString();
+            JOptionPane.showMessageDialog(
+                    MainWindow.this, message, "Cannot import", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private static String summarize(ImportResult result) {
+        StringBuilder text = new StringBuilder();
+        text.append(switch (result.outcome()) {
+            case COMPLETE -> "Imported the whole file.";
+            case TRUNCATED -> "The file ends mid-record. Everything before the cut was imported.";
+            case CORRUPT_PARTIAL -> "A record's framing contradicted itself. Reading stopped there"
+                    + " rather than guessing at the next boundary.";
+            case CANCELLED -> "Import cancelled. The session is resumable from its checkpoint.";
+        });
+        text.append("\nEvents indexed: ").append(EventValueFormat.count(result.eventsInDatabase()));
+        text.append("\nSource completeness: ").append(result.sourceCompleteness());
+        result.damageOffset().ifPresent(offset ->
+                text.append("\nDamage begins at byte offset ").append(offset));
+        text.append("\nSession: ").append(result.sessionRoot());
+        return text.toString();
+    }
+
+    // --------------------------------------------------------------- session
+
+    /**
+     * Opens an indexed session without re-importing it.
+     *
+     * @param offerResume when true, a session that never finished importing
+     *     prompts before opening, because resuming it is usually what the user
+     *     wants and opening it silently would hide that the capture is partial
+     */
+    private void openSessionDirectory(Path root, boolean offerResume) {
+        showEventsCard();
+        eventsView.showEmpty("Opening " + root + "…");
+        worker.execute(() -> {
+            try {
+                SessionManifest manifest = sessions.readManifest(root);
+                if (offerResume && !manifest.state().isTerminal()) {
+                    SwingUtilities.invokeLater(() -> promptResume(root, manifest));
+                    return;
+                }
+                SqliteSessionSource opened = SqliteSessionSource.open(sessions, root);
+                SwingUtilities.invokeLater(() -> {
+                    eventsView.openSession(opened, this::showSessionFailure);
+                    showSessionInfo(opened.info());
+                });
+            } catch (Exception failure) {
+                log.error("could not open session {}", root, failure);
+                SwingUtilities.invokeLater(() -> showSessionFailure(failure.toString()));
+            }
+        });
+    }
+
+    private void promptResume(Path root, SessionManifest manifest) {
+        Object[] options = {"Resume import", "Open as it is", "Cancel"};
+        int choice = JOptionPane.showOptionDialog(this,
+                "This session is in state " + manifest.state()
+                        + ", so its import never finished.\n"
+                        + "Resuming continues from the last checkpoint without re-reading the"
+                        + " source from the beginning.",
+                "Unfinished session", JOptionPane.DEFAULT_OPTION,
+                JOptionPane.QUESTION_MESSAGE, null, options, options[0]);
+        switch (choice) {
+            case 0 -> resumeImport(root);
+            case 1 -> openSessionDirectory(root, false);
+            default -> eventsView.showEmpty("No session is open.");
+        }
+    }
+
+    private void showSessionInfo(SessionInfo info) {
+        sessionStatus.setText("Session: " + info.state() + (info.isPartial() ? " (partial)" : ""));
+        OptionalLong count = info.manifestEventCount();
+        eventStatus.setText("Events: " + EventValueFormat.count(count));
+        actionStatus.setText("Actions: " + UNKNOWN);
+        closeSessionItem.setEnabled(true);
+        if (!info.warnings().isEmpty()) {
+            log.info("session {} carries {} manifest warning(s)", info.root(),
+                    info.warnings().size());
+        }
+    }
+
+    private void showSessionFailure(String message) {
+        eventsView.showEmpty("The session could not be opened.");
+        sessionStatus.setText("Session: none");
+        closeSessionItem.setEnabled(false);
+        JOptionPane.showMessageDialog(
+                this, message, "Cannot open session", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private void closeSession() {
+        eventsView.closeSession();
+        eventsView.showEmpty("No session is open. Use File ▸ Open BEP File… or"
+                + " File ▸ Open Session…");
+        sessionStatus.setText("Session: none");
+        eventStatus.setText("Events: " + UNKNOWN);
+        actionStatus.setText("Actions: " + UNKNOWN);
+        closeSessionItem.setEnabled(false);
+    }
+
+    private void showEventsCard() {
+        nav.setSelectedValue(NavEntry.EVENTS, true);
+        cardLayout.show(cards, NavEntry.EVENTS.cardName());
+    }
+
+    // ------------------------------------------------------------------ shell
 
     private static JComponent buildLauncherBar() {
         JComboBox<String> presets = new JComboBox<>(PRESET_NAMES);
@@ -91,13 +440,15 @@ public final class MainWindow extends JFrame {
         return north;
     }
 
-    private static JComponent buildNavigation(CardLayout cardLayout, JPanel cards) {
-        JList<NavEntry> nav = new JList<>(NavEntry.values());
+    private JComponent buildNavigation() {
         nav.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         nav.setCellRenderer(new DefaultListCellRenderer() {
+            private static final long serialVersionUID = 1L;
+
             @Override
             public Component getListCellRendererComponent(
-                    JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
+                    JList<?> list, Object value, int index, boolean isSelected,
+                    boolean cellHasFocus) {
                 super.getListCellRendererComponent(
                         list, ((NavEntry) value).title(), index, isSelected, cellHasFocus);
                 setBorder(BorderFactory.createEmptyBorder(6, 12, 6, 12));
@@ -127,11 +478,11 @@ public final class MainWindow extends JFrame {
         return card;
     }
 
-    private static JComponent buildStatusBar() {
+    private JComponent buildStatusBar() {
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 16, 4));
-        bar.add(new JLabel("Session: NEW"));
-        bar.add(new JLabel("Events: " + UNKNOWN));
-        bar.add(new JLabel("Actions: " + UNKNOWN));
+        bar.add(sessionStatus);
+        bar.add(eventStatus);
+        bar.add(actionStatus);
 
         JPanel south = new JPanel(new BorderLayout());
         south.add(new JSeparator(), BorderLayout.NORTH);

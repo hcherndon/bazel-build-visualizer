@@ -15,3 +15,11 @@ dependencies {
     // way would produce a fixture that is not the format under test.
     api(libs.protobuf.java.util)
 }
+
+// Prints the runtime classpath so a scripted end-to-end check can generate a
+// BEP fixture with `java -cp "$(./gradlew -q :test-support:printRuntimeCp)"`
+// instead of needing a bespoke JavaExec task per scenario.
+tasks.register("printRuntimeCp") {
+    val runtimeClasspath = sourceSets["main"].runtimeClasspath
+    doLast { println(runtimeClasspath.asPath) }
+}
