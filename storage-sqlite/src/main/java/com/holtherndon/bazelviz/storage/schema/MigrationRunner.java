@@ -50,7 +50,7 @@ public final class MigrationRunner {
      * version this build actually supports. {@code standardIsTheLatestVersion}
      * in the migration tests keeps the two from drifting.
      */
-    public static final int LATEST_VERSION = SchemaV4.VERSION;
+    public static final int LATEST_VERSION = SchemaV5.VERSION;
 
     private static final String SELECT_METADATA_TABLE =
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'";
@@ -83,10 +83,11 @@ public final class MigrationRunner {
         this.migrations = List.copyOf(sorted);
     }
 
-    /** The runner this application ships: schema v1, then v2, v3, v4. */
+    /** The runner this application ships: schema v1, then v2, v3, v4, v5. */
     public static MigrationRunner standard() {
         return new MigrationRunner(List.of(
-                new V1Migration(), new V2Migration(), new V3Migration(), new V4Migration()));
+                new V1Migration(), new V2Migration(), new V3Migration(),
+                new V4Migration(), new V5Migration()));
     }
 
     /** The newest version this runner can produce. */

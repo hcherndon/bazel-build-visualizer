@@ -219,15 +219,37 @@ final class SchemaV4Test {
     }
 
     @Test
-    @DisplayName("v4 is the version the runner reports, and migrating twice changes nothing")
+    @DisplayName("migrating twice changes nothing, and v4's tables are all there")
     void migrationIsIdempotent() throws Exception {
         Path file = tempDir.resolve("idempotent.db");
         try (SessionDatabase db = SessionDatabase.open(file)) {
             MigrationRunner runner = MigrationRunner.standard();
-            assertThat(runner.migrate(db)).isEqualTo(4);
-            assertThat(runner.migrate(db)).isEqualTo(4);
-            assertThat(MigrationRunner.LATEST_VERSION).isEqualTo(4);
+            // Asserted against LATEST_VERSION rather than the literal 4. The
+            // first version of this test said 4, and shipping v5 broke it --
+            // the same trap MigrationRunnerTest's probe migration fell into.
+            assertThat(runner.migrate(db)).isEqualTo(MigrationRunner.LATEST_VERSION);
+            assertThat(runner.migrate(db)).isEqualTo(MigrationRunner.LATEST_VERSION);
+            assertThat(MigrationRunner.LATEST_VERSION).isGreaterThanOrEqualTo(4);
+
+            // What this test is actually about: v4's tables survive whatever
+            // versions come after it.
+            assertThat(tableNames(db.writerConnection())).contains(
+                    "enrichment_tasks", "action_attempts", "attempt_outputs",
+                    "attempt_env_vars", "input_sets", "profile_metadata",
+                    "profile_spans", "build_phases", "bazel_critical_path");
         }
+    }
+
+    private static List<String> tableNames(Connection connection) throws SQLException {
+        List<String> names = new ArrayList<>();
+        try (Statement statement = connection.createStatement();
+                ResultSet rows = statement.executeQuery(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'")) {
+            while (rows.next()) {
+                names.add(rows.getString(1));
+            }
+        }
+        return names;
     }
 
     // ------------------------------------------------------------------ helpers
