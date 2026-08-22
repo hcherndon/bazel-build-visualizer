@@ -19,3 +19,9 @@ bin/
 
 hs_err_pid*
 replay_pid*
+
+# Claude Code's per-session state, including the git worktrees it creates for
+# isolated work. A worktree under here is a checkout of this same repository,
+# so committing one adds a gitlink that clones cannot resolve — and it captures
+# whatever branch someone else happens to have in progress.
+.claude/
