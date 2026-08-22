@@ -62,6 +62,8 @@ public final class OverviewPanel extends JPanel {
     /** How often a live session's numbers are re-read. */
     public static final Duration REFRESH_INTERVAL = Duration.ofSeconds(2);
 
+    private final Duration refreshInterval;
+
     private final JLabel headline = new JLabel(" ");
     private final JLabel subhead = new JLabel(" ");
     private final JPanel tiles = new JPanel(new GridLayout(0, 4, 12, 12));
@@ -75,7 +77,17 @@ public final class OverviewPanel extends JPanel {
     private java.util.function.Consumer<OverviewSnapshot> snapshotListener = snapshot -> { };
 
     public OverviewPanel() {
+        this(REFRESH_INTERVAL);
+    }
+
+    /**
+     * @param refreshInterval how often to re-read. A parameter so a test can
+     *     drive several intervals in a second; the coalescing it is there to
+     *     demonstrate is a property of the interval existing, not of its length.
+     */
+    public OverviewPanel(Duration refreshInterval) {
         super(new BorderLayout());
+        this.refreshInterval = Objects.requireNonNull(refreshInterval, "refreshInterval");
 
         headline.setFont(headline.getFont().deriveFont(Font.BOLD, headline.getFont().getSize() + 4f));
         subhead.setEnabled(false);
@@ -141,8 +153,8 @@ public final class OverviewPanel extends JPanel {
             refreshOnce(newSource);
             running.scheduleWithFixedDelay(
                     () -> refreshOnce(newSource),
-                    REFRESH_INTERVAL.toMillis(),
-                    REFRESH_INTERVAL.toMillis(),
+                    refreshInterval.toMillis(),
+                    refreshInterval.toMillis(),
                     TimeUnit.MILLISECONDS);
         });
     }

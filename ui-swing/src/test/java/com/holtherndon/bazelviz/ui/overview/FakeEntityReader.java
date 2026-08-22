@@ -1,0 +1,209 @@
+package com.holtherndon.bazelviz.ui.overview;
+
+import com.holtherndon.bazelviz.storage.entities.ActionFilter;
+import com.holtherndon.bazelviz.storage.entities.ActionQueries;
+import com.holtherndon.bazelviz.storage.entities.ActionRow;
+import com.holtherndon.bazelviz.storage.entities.ActionSort;
+import com.holtherndon.bazelviz.storage.entities.FailureQueries;
+import com.holtherndon.bazelviz.storage.entities.FailureRow;
+import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
+import com.holtherndon.bazelviz.storage.entities.TargetQueries;
+import com.holtherndon.bazelviz.storage.entities.TargetRow;
+import com.holtherndon.bazelviz.storage.entities.TestAttemptRow;
+import com.holtherndon.bazelviz.storage.entities.TestQueries;
+import com.holtherndon.bazelviz.storage.entities.TestRow;
+import com.holtherndon.bazelviz.ui.session.EntityReader;
+import java.util.List;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * An {@link EntityReader} whose numbers change on every read, counting how
+ * often it is asked.
+ *
+ * <p>Exists so the overview's coalescing can be measured rather than asserted:
+ * a panel that refreshed per change would call {@link #overview()} as fast as
+ * the numbers move, and a panel that refreshes on a timer calls it once per
+ * interval however fast they move.
+ */
+final class FakeEntityReader implements EntityReader {
+
+    private final AtomicLong overviewReads = new AtomicLong();
+
+    /** A number that advances on its own, standing in for a build in progress. */
+    private final AtomicLong actions = new AtomicLong();
+
+    long overviewReads() {
+        return overviewReads.get();
+    }
+
+    /** Advances the underlying data, as a running capture would. */
+    void advance() {
+        actions.incrementAndGet();
+    }
+
+    @Override
+    public OverviewSnapshot overview() {
+        overviewReads.incrementAndGet();
+        return new OverviewSnapshot(
+                Optional.of("9.2.0"),
+                Optional.of("build"),
+                Optional.of("/ws"),
+                Optional.of(true),
+                Optional.empty(),
+                Optional.empty(),
+                OptionalLong.empty(),
+                false,
+                0, 0, 0, 0, 0,
+                actions.get(),
+                0, 0, 0, 0, 0,
+                OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),
+                OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),
+                OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),
+                OptionalLong.empty(),
+                List.of());
+    }
+
+    @Override
+    public long actionCount() {
+        return actions.get();
+    }
+
+    @Override
+    public long actionCount(ActionFilter filter) {
+        return 0;
+    }
+
+    @Override
+    public List<ActionRow> firstActionPage(
+            ActionFilter filter, ActionSort sort, boolean descending, int limit) {
+        return List.of();
+    }
+
+    @Override
+    public List<ActionRow> actionsAfter(
+            ActionQueries.Anchor anchor,
+            ActionFilter filter,
+            ActionSort sort,
+            boolean descending,
+            int limit) {
+        return List.of();
+    }
+
+    @Override
+    public ActionQueries.Index actionIndex(
+            ActionFilter filter, ActionSort sort, boolean descending, int pageSize) {
+        return new ActionQueries.Index(0, List.of());
+    }
+
+    @Override
+    public Optional<ActionRow> action(long id) {
+        return Optional.empty();
+    }
+
+    @Override
+    public List<ActionQueries.MnemonicCount> mnemonics() {
+        return List.of();
+    }
+
+    @Override
+    public List<TargetQueries.PackageSummary> packages() {
+        return List.of();
+    }
+
+    @Override
+    public List<TargetRow> targetsInPackage(String packagePath) {
+        return List.of();
+    }
+
+    @Override
+    public Optional<TargetRow> target(long id) {
+        return Optional.empty();
+    }
+
+    @Override
+    public List<TargetQueries.Tag> targetTags(long targetId) {
+        return List.of();
+    }
+
+    @Override
+    public List<TargetQueries.OutputGroup> outputGroups(long configuredTargetId) {
+        return List.of();
+    }
+
+    @Override
+    public long testCount() {
+        return 0;
+    }
+
+    @Override
+    public List<TestRow> firstTestPage(int limit) {
+        return List.of();
+    }
+
+    @Override
+    public List<TestRow> testsAfter(TestQueries.Anchor anchor, int limit) {
+        return List.of();
+    }
+
+    @Override
+    public TestQueries.Index testIndex(int pageSize) {
+        return new TestQueries.Index(0, List.of());
+    }
+
+    @Override
+    public Optional<TestRow> test(long id) {
+        return Optional.empty();
+    }
+
+    @Override
+    public List<TestAttemptRow> testAttempts(long testId) {
+        return List.of();
+    }
+
+    @Override
+    public List<TestQueries.TestLog> testLogs(long testId) {
+        return List.of();
+    }
+
+    @Override
+    public FailureCounts failureCounts() {
+        return new FailureCounts(0, 0, 0);
+    }
+
+    @Override
+    public List<FailureRow> failedActions(OptionalLong afterId, int limit) {
+        return List.of();
+    }
+
+    @Override
+    public List<FailureRow> failedTargets(OptionalLong afterId, int limit) {
+        return List.of();
+    }
+
+    @Override
+    public List<FailureRow> abortedTargets(OptionalLong afterId, int limit) {
+        return List.of();
+    }
+
+    @Override
+    public List<FailureQueries.ReasonCount> abortReasons() {
+        return List.of();
+    }
+
+    @Override
+    public List<FailureQueries.ProgressRef> progressOutputEvents(int limit) {
+        return List.of();
+    }
+
+    @Override
+    public void cancelRunningQuery() {
+        // Nothing runs long enough to need stopping.
+    }
+
+    @Override
+    public void close() {
+        // No resources.
+    }
+}

@@ -275,18 +275,40 @@ public final class ActionsView extends JPanel {
     }
 
     /** Visible for testing: the installed model, or null before one is. */
-    PagedTableModel<ActionRow> tableModelForTest() {
+    public PagedTableModel<ActionRow> tableModelForTest() {
         return tableModel;
     }
 
     /** Visible for testing: the source behind the current table. */
-    ActionRowSource rowSourceForTest() {
+    public ActionRowSource rowSourceForTest() {
         return rowSource;
     }
 
     /** Visible for testing: what the status line says. */
-    String statusForTest() {
+    public String statusForTest() {
         return statusLabel.getText();
+    }
+
+    /** Visible for testing: the note about what the capture published. */
+    public String captureNoteForTest() {
+        return captureNote.getText();
+    }
+
+    /** Visible for testing: drives the toolbar as a user would. */
+    public void applyForTest(String mnemonic, ActionSort sort, boolean descending) {
+        mnemonicChoice.setSelectedItem(mnemonic);
+        sortChoice.setSelectedItem(sort);
+        descendingBox.setSelected(descending);
+        reload();
+    }
+
+    /** Visible for testing: the mnemonic entries the filter offers. */
+    public List<String> mnemonicChoicesForTest() {
+        List<String> items = new ArrayList<>();
+        for (int i = 0; i < mnemonicChoice.getItemCount(); i++) {
+            items.add(mnemonicChoice.getItemAt(i));
+        }
+        return items;
     }
 
     // ------------------------------------------------------------------ EDT

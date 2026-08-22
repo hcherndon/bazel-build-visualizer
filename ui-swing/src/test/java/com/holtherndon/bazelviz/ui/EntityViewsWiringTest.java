@@ -127,6 +127,38 @@ class EntityViewsWiringTest {
 
     @Test
     @Timeout(180)
+    @DisplayName("an action row leads back to the exact bytes Bazel sent")
+    void provenanceReachesTheRawPayload(@TempDir Path temporary) throws Exception {
+        SyntheticBepStream stream = SyntheticBepStream.of(EVENT_COUNT);
+        Path source = temporary.resolve("build.bep");
+        BepBinaryWriter.write(source, stream);
+        SessionManager sessions = new SessionManager(temporary.resolve("sessions"), "0.1.0-test");
+        ImportResult imported = new BepImporter(sessions).importFile(source);
+
+        try (SqliteSessionSource opened = SqliteSessionSource.open(sessions, imported.sessionRoot());
+                EntityReader entities = opened.openEntityReader();
+                com.holtherndon.bazelviz.ui.session.SessionReader events = opened.openReader()) {
+
+            ActionRow action = ActionRowSource
+                    .open(entities, ActionFilter.NONE, ActionSort.ARRIVAL, false, 10)
+                    .fetchPage(0, 10)
+                    .rows()
+                    .getFirst();
+
+            // This is the whole chain the criterion names: a normalized row
+            // carries the id of the event it came from, that event carries the
+            // journal location of its bytes, and those bytes are the ones the
+            // stream contained -- not a re-serialization of what was parsed.
+            long eventId = action.bepEventId().orElseThrow();
+            var detail = events.event(eventId).orElseThrow();
+            var payload = events.rawPayload(detail.rawLocation());
+            assertThat(payload.bytes())
+                    .isEqualTo(stream.eventAt((int) detail.summary().sequence()).toByteArray());
+        }
+    }
+
+    @Test
+    @Timeout(180)
     @DisplayName("filtering narrows the rows and the count says so")
     void filteringReportsWhatItHides(@TempDir Path temporary) throws Exception {
         SyntheticBepStream stream = SyntheticBepStream.of(EVENT_COUNT);
