@@ -107,7 +107,7 @@ than fixing it now.
 | Application window launches on macOS | Met — `./gradlew :app:run` with `-Dbbv.smoke=true` |
 | Synthetic paged table remains responsive | Met — cached access max 23.6 µs, uncached fetch p99 120 µs at 50M rows |
 | Aggregate timeline can pan and zoom without loading individual spans | Met — LOD-only painting, p95 0.79 ms at Tier 3 |
-| Chosen Swing approach meets initial spike thresholds, or an ADR documents a revised rendering strategy | Met — all four spikes pass with >25x margin; ADR-001 stands, no revision needed |
+| Chosen Swing approach meets initial spike thresholds, or an ADR documents a revised rendering strategy | Met — all four spikes pass; the three rendering spikes clear their 33 ms frame budget by >25x, and SQL paging clears the 100 ms cached-page budget by ~4x. ADR-001 stands, no revision needed |
 | `./gradlew check` succeeds | Met |
 
 The one structural limit the spikes surfaced: `JScrollPane` int pixel geometry
@@ -156,3 +156,57 @@ is the honest outcome, not a defect to paper over.
 - **Ctrl-C exits 130, not the documented 4.** A JVM killed by SIGINT exits with
   128 plus the signal number and a shutdown hook cannot change that; `bbv
   import --help` says so. The session is left resumable either way.
+
+## Phase 1 audit
+
+Reviewed by an adversarial audit (five lenses — journal/recovery, importer and
+its exit-criteria claims, parsers/codec, storage and UI, documentation
+honesty — with three independent refuters per finding and a completeness
+critic). 19 candidates, 5 refuted. Fixed:
+
+- **A resumed import could store every record after the seam twice under a
+  shifted sequence.** The next ordinal was seeded from the database high-water
+  mark while the already-journaled records were counted from the journal. After
+  a crash in which SQLite committed rows whose frames were still in the
+  writer's staging buffer, the two disagree. The journal is the authority on
+  frame identity, so the database is now reconciled to it before anything is
+  appended, and the discarded rows are reported.
+- **A capped diagnostic destroyed the import.** `flushDiagnostics` inserted the
+  summary row into the map it was iterating, so the first capped code threw
+  `ConcurrentModificationException` at finalization. The cap exists to surface
+  a limit; failing the whole import instead was the worst possible outcome.
+- **Losing segments from the front of a journal was invisible**, and recovery
+  reported the mutilated journal as complete. The gap scan anchored at the
+  lowest surviving index rather than at 0, and a test asserted that behavior
+  with a rationale that is false for this format — every journal starts at
+  segment 0 and nothing deletes one, so a run starting higher is proof of loss.
+- **Recovery never converged on an empty trailing segment.** A zero-length
+  final segment — which a crash between creating a segment and forcing its
+  header produces, and which recovery's own repair also produces — was reported
+  as truncated forever, claiming data loss that had not happened.
+- **A dead process's session lock could become unbreakable.** Host identity came
+  from the `HOSTNAME` environment variable, which is a per-process value: a
+  cron job, a CI runner and a desktop launch on one machine can each see a
+  different string, and a lock that appears to be held on another host is
+  deliberately not breakable. The OS hostname is now primary.
+- **Journal replay duplicated diagnostics.** A resumed import re-emitted a
+  per-record diagnostic for every replayed frame. Anchored diagnostics now
+  identify themselves by where they happened and are idempotent; unanchored
+  import-level notes can still legitimately repeat.
+- **The JSON parser's reported peak memory understated the truth by a whole
+  record**, because the copy delivered to the caller coexists with the
+  accumulator and was not counted. That figure is the instrumentation exit
+  criterion 5 rests on, so it now counts both.
+- **The CLI called itself `bbv` but the build produced `app`**, so no usage line
+  it printed could be pasted into a shell.
+
+Documentation corrections: the frame contract's source-kind values were all off
+by one against the code; the README still announced Phase 0; the schema page
+named a database path that never existed; performance objective 12 was listed
+unmeasurable although Phase 1 measures it; and the session layout omitted two
+files the importer writes.
+
+Known gaps the critic identified and this phase does not close:
+`session-format`'s `format/session` package, `app/cli`, and `test-support`'s
+fixtures had no review lens of their own, and `test-support`'s
+announced-missing-child fixture still has no test exercising it.

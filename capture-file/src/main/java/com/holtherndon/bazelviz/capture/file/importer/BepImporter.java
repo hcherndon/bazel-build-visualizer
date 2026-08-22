@@ -427,6 +427,32 @@ public final class BepImporter {
             long journalFrames = replayJournal(checkpoint);
             framesAtStart = journalFrames;
 
+            // The journal is the authority on frame identity (ADR-004). It is
+            // forced before the checkpoint is written, so a crash can leave the
+            // database holding committed rows whose frames were still in the
+            // writer's staging buffer. Those rows name a raw location that no
+            // longer exists — unreadable, and worse, they would push the next
+            // ordinal past the true frame count while the source skip is
+            // counted from the journal, so every later record would land under
+            // a shifted sequence. Make the database agree with the journal
+            // before appending anything, and say so.
+            try {
+                long dropped = SessionTables.deleteEventsFromSequence(
+                        writerConnection(), streamId, journalFrames);
+                if (dropped > 0) {
+                    recordDiagnostic(DiagnosticSeverity.WARNING,
+                            ImportDiagnosticCodes.IMPORT_RESUMED,
+                            dropped + " stored event(s) referenced journal frames that did not"
+                                    + " survive the interruption and were discarded; the journal"
+                                    + " holds " + journalFrames + " frame(s) and they are being"
+                                    + " re-read from the source",
+                            OptionalLong.empty());
+                }
+            } catch (SQLException e) {
+                throw new IOException("cannot reconcile the database with the journal", e);
+            }
+            nextOrdinal = journalFrames;
+
             journal = JournalWriter.resume(
                     layout.rawDirectory(), session.id().value(), options.journalWriterConfig());
 
@@ -1076,9 +1102,18 @@ public final class BepImporter {
             return counts == null ? 0 : counts[0];
         }
 
-        /** Writes the true totals for any code whose per-code cap was reached. */
+        /**
+         * Writes the true totals for any code whose per-code cap was reached.
+         *
+         * <p>Iterates a snapshot because the loop inserts the summary code into
+         * the same map. Iterating the live view threw
+         * {@link java.util.ConcurrentModificationException} on the next entry,
+         * which failed the whole import at finalization — the cap exists to
+         * surface a limit, so destroying the session instead was the worst
+         * possible outcome.
+         */
         private void flushDiagnostics() throws IOException {
-            for (Map.Entry<String, long[]> entry : diagnosticCounts.entrySet()) {
+            for (Map.Entry<String, long[]> entry : List.copyOf(diagnosticCounts.entrySet())) {
                 long total = entry.getValue()[0];
                 long written = entry.getValue()[1];
                 if (total > written) {

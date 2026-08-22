@@ -169,6 +169,48 @@ final class SessionTables {
     }
 
     /** Highest {@code sequence} stored for a stream, empty when it has no events. */
+    /**
+     * Deletes rows at or beyond {@code fromSequence}, and everything hanging
+     * off them, returning how many events went.
+     *
+     * <p>Used on resume when the database is further ahead than the journal.
+     * The journal is forced before the checkpoint is written, so a crash can
+     * leave committed rows whose frames were still in the writer's staging
+     * buffer. Those rows name a raw location that no longer exists, so they
+     * cannot be read back and cannot be trusted; the journal is the authority
+     * on frame identity (ADR-004) and the database is made to agree with it.
+     */
+    static long deleteEventsFromSequence(Connection connection, long streamId, long fromSequence)
+            throws SQLException {
+        long removed;
+        try (PreparedStatement count = connection.prepareStatement(
+                "SELECT COUNT(*) FROM bep_events WHERE stream_id = ? AND sequence >= ?")) {
+            count.setLong(1, streamId);
+            count.setLong(2, fromSequence);
+            try (ResultSet rows = count.executeQuery()) {
+                removed = rows.next() ? rows.getLong(1) : 0L;
+            }
+        }
+        if (removed == 0) {
+            return 0;
+        }
+        String scope = " WHERE parent_event_id IN"
+                + " (SELECT id FROM bep_events WHERE stream_id = ? AND sequence >= ?)";
+        for (String sql : new String[] {
+                "DELETE FROM bep_event_edges" + scope,
+                "DELETE FROM bep_announced_missing WHERE announced_by_event_id IN"
+                        + " (SELECT id FROM bep_events WHERE stream_id = ? AND sequence >= ?)",
+                "DELETE FROM bep_events WHERE stream_id = ? AND sequence >= ?"}) {
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setLong(1, streamId);
+                statement.setLong(2, fromSequence);
+                statement.executeUpdate();
+            }
+        }
+        commitIfNeeded(connection);
+        return removed;
+    }
+
     static OptionalLong maxSequence(Connection connection, long streamId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT MAX(sequence) FROM bep_events WHERE stream_id = ?")) {

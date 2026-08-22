@@ -48,7 +48,7 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 | 9 | Application-managed heap remains below 4 GB for Tier 3 under normal aggregate viewing | Phase 6/7 (partial signal in Phase 0 spikes) | partial — see spike retained-bytes figures |
 | 10 | No routine EDT pause exceeds 100 milliseconds | Phase 3 | not yet measurable |
 | 11 | Long queries are cancellable | Phase 3 | not yet measurable |
-| 12 | Session finalization can resume after application restart | Phase 1 | not yet measurable |
+| 12 | Session finalization can resume after application restart | **Phase 1** | **met** — an import interrupted at 145,000 of 300,000 events resumes to a state identical to a clean import; see docs/implementation-status.md |
 
 ### What the Phase 0 spikes do and do not prove
 

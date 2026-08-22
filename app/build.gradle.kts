@@ -45,6 +45,10 @@ val nativeAccessArg = extra["bbvNativeAccessArg"] as String
 
 application {
     mainClass = "com.holtherndon.bazelviz.app.Main"
+    // Every usage line, error hint and resume instruction the CLI prints names
+    // the program `bbv`; the launcher has to match or none of them can be
+    // pasted into a shell.
+    applicationName = "bbv"
     // FlatLaf's NativeLibrary calls System::load for the macOS window
     // decorations, so the launcher scripts and any jpackage image need the
     // native-access grant on every platform, not just macOS.

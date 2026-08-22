@@ -59,9 +59,13 @@ class JournalSegmentsTest {
         assertThat(JournalSegments.missingSegmentIndexes(List.of(0, 1, 3, 6))).containsExactly(2, 4, 5);
         assertThat(JournalSegments.missingSegmentIndexes(List.of(0, 1, 2))).isEmpty();
         assertThat(JournalSegments.missingSegmentIndexes(List.of())).isEmpty();
-        // A journal that starts at a later index is not "missing" the earlier
-        // ones; only gaps inside the observed run are holes.
-        assertThat(JournalSegments.missingSegmentIndexes(List.of(4, 5))).isEmpty();
+        // A run that starts above 0 has lost its front. Every journal begins at
+        // segment 0 and nothing deletes one, so this is loss, not a journal
+        // that legitimately starts later. This assertion previously expected
+        // the opposite, which made front-of-journal loss invisible and let
+        // recovery call a mutilated journal complete.
+        assertThat(JournalSegments.missingSegmentIndexes(List.of(4, 5))).containsExactly(0, 1, 2, 3);
+        assertThat(JournalSegments.missingSegmentIndexes(List.of(2, 3))).containsExactly(0, 1);
     }
 
     @Test

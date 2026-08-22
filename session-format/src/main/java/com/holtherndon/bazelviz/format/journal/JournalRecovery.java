@@ -118,14 +118,27 @@ public final class JournalRecovery {
                     : JournalFormat.SEGMENT_HEADER_BYTES;
 
             long size = Files.size(file);
+            boolean isLastSegment = i == toScan.size() - 1;
+            if (size == 0 && isLastSegment) {
+                // An empty trailing segment is a clean end, not damage. A
+                // segment file is created before its header is written, so a
+                // crash in that window leaves exactly this — and so does this
+                // method's own repair below, which truncates a header-less
+                // segment to zero. Treating it as TRUNCATED_TAIL meant
+                // recovery never converged: running it twice still claimed a
+                // truncated journal, with bytesTruncated 0 and no data
+                // actually lost. The segment before it was forced before this
+                // one was created, so there is nothing here to save and
+                // nothing behind it at risk.
+                continue;
+            }
             if (size < JournalFormat.SEGMENT_HEADER_BYTES) {
                 // The segment header itself never landed. There is no frame in
                 // here to save, and nothing before it to protect.
-                boolean isLast = i == toScan.size() - 1;
                 status = JournalScanStatus.TRUNCATED_TAIL;
                 detail = "segment " + segmentIndex + " has only " + size + " of "
                         + JournalFormat.SEGMENT_HEADER_BYTES + " header bytes";
-                if (isLast && truncate && size > 0) {
+                if (isLastSegment && truncate && size > 0) {
                     truncateTo(file, 0L, size);
                     bytesTruncated += size;
                 }
@@ -161,7 +174,6 @@ public final class JournalRecovery {
 
             status = scan.status();
             detail = "segment " + segmentIndex + " at byte " + scan.endOffset() + ": " + scan.detail();
-            boolean isLastSegment = i == toScan.size() - 1;
             if (!scan.hasTruncatableTail()) {
                 // Either nothing follows the last good frame, or what follows is
                 // intact and merely uninterpretable. Both mean: leave it alone.

@@ -2,8 +2,15 @@
 
 The on-disk shape of a managed session, owned exclusively by the
 `session-format` module — no other module may construct paths inside a
-session directory. Deleting a session is deleting its directory (ADR-005);
-everything derived is rebuildable from the raw journal (ADR-004).
+session directory, with one exception noted below. Deleting a session is
+deleting its directory (ADR-005); everything derived is rebuildable from the
+raw journal (ADR-004).
+
+The exception: the importer names `raw/imported-source.bep` and
+`checkpoints/import-source.json` itself rather than going through
+`ManagedSessionLayout`. Both are importer concerns rather than layout
+concerns, but the claim above is "owned exclusively" and this is where it
+does not hold today.
 
 ## Managed session directory layout (plan 10.2)
 
@@ -34,7 +41,11 @@ Phase 1 landed.
       timeline-lod.dat           # timeline level-of-detail index (Phase 6)
     exports/                     # user-requested exports (Phase 9)
     checkpoints/
-      import.ckpt                # resumable import position; atomic replace
+      import.ckpt                # resumable journal position; atomic replace
+      import-source.json         # resumable *source* byte offset. Separate
+                                 # because a source offset is not derivable
+                                 # from the journal for JSON, where the file
+                                 # holds whitespace the records do not.
     locks/                       # in-use marker with stale-lock detection
 ```
 

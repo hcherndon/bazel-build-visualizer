@@ -83,17 +83,27 @@ public final class JournalSegments {
     }
 
     /**
-     * Segment indexes that are missing from an otherwise contiguous run, e.g.
-     * {@code [0, 1, 3]} reports {@code [2]}. A gap means a segment file was
-     * deleted or never landed; the caller decides what to do, but it must never
-     * pass unnoticed because the journal would then be silently short.
+     * Segment indexes that are missing, e.g. {@code [0, 1, 3]} reports
+     * {@code [2]} and {@code [2, 3]} reports {@code [0, 1]}. A gap means a
+     * segment file was deleted or never landed; the caller decides what to do,
+     * but it must never pass unnoticed because the journal would then be
+     * silently short.
+     *
+     * <p>The scan starts at 0, not at the lowest index present. Every journal
+     * begins at segment 0 — {@link JournalWriter#create} only ever creates that
+     * index and refuses a directory that already holds segments, and nothing
+     * ever deletes one — so a run starting above 0 is proof that the front of
+     * the journal was lost, not evidence of a journal that legitimately starts
+     * later. Anchoring the scan at the first surviving index made exactly that
+     * loss invisible, and recovery then reported the mutilated journal as
+     * complete.
      */
     public static List<Integer> missingSegmentIndexes(List<Integer> present) {
         if (present.isEmpty()) {
             return List.of();
         }
         List<Integer> missing = new ArrayList<>();
-        for (int i = present.get(0); i < present.get(present.size() - 1); i++) {
+        for (int i = 0; i < present.get(present.size() - 1); i++) {
             if (!present.contains(i)) {
                 missing.add(i);
             }

@@ -373,19 +373,36 @@ public final class SessionLock implements AutoCloseable {
 
     // --------------------------------------------------------------- helpers
 
-    /** Best-effort host identity, used only to decide whether pids are meaningful. */
+    /**
+     * Best-effort host identity, used only to decide whether pids are
+     * meaningful.
+     *
+     * <p>The OS hostname comes first and the environment only as a fallback,
+     * because {@code HOSTNAME} is a per-process value, not the machine's
+     * identity: shells do not reliably export it, and a cron job, a CI runner
+     * and a desktop launch of the same application can each see a different
+     * string on one machine. When that happens a lock left by a dead process
+     * reads as held on another host, which {@code isBreakable} deliberately
+     * refuses to break — permanently locking a session that nothing is using.
+     * Getting this backwards trades a rare cross-host mistake for a common
+     * same-host lockout.
+     */
     public static String currentHost() {
+        try {
+            String hostName = InetAddress.getLocalHost().getHostName();
+            if (hostName != null && !hostName.isBlank()) {
+                return hostName;
+            }
+        } catch (UnknownHostException | UncheckedIOException e) {
+            // Fall through to the environment, then to the sentinel.
+        }
         String fromEnv = firstNonBlank(System.getenv("HOSTNAME"), System.getenv("COMPUTERNAME"));
         if (fromEnv != null) {
             return fromEnv;
         }
-        try {
-            return InetAddress.getLocalHost().getHostName();
-        } catch (UnknownHostException | UncheckedIOException e) {
-            // A host we cannot name is one whose pids we should not trust across
-            // machines; a stable sentinel keeps that comparison conservative.
-            return "unknown-host";
-        }
+        // A host we cannot name is one whose pids we should not trust across
+        // machines; a stable sentinel keeps that comparison conservative.
+        return "unknown-host";
     }
 
     private static String firstNonBlank(String... candidates) {

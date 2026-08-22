@@ -287,6 +287,12 @@ public final class JsonBepParser {
             }
 
             byte[] raw = Arrays.copyOf(accumulator, accumulated);
+            // The delivered copy lives alongside the accumulator, so both are
+            // resident at once. Counting only the accumulator understated the
+            // real peak by a whole record — and this figure is what the
+            // bounded-memory claim is measured against, so it has to be the
+            // true high-water mark rather than the convenient half of it.
+            peakAccumulatorBytes = Math.max(peakAccumulatorBytes, accumulator.length + raw.length);
             DecodeStatus status = DecodeStatus.NOT_ATTEMPTED;
             BuildEvent event = null;
             String detail = null;

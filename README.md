@@ -1,9 +1,12 @@
 # Bazel Build Visualizer
 
-> **Status: Phase 0 — foundations and risk retirement.** The window shell
-> launches, synthetic data generators exist, and the rendering/storage
-> spikes are being proven at scale. Nothing here captures a real build yet.
-> See [docs/implementation-status.md](docs/implementation-status.md).
+> **Status: Phase 1 complete — offline BEP import.** You can import a binary
+> or JSON build event protocol file into a managed session, from the command
+> line or the app, and read it back: raw journal, per-session SQLite database,
+> and a chronological event view with a raw protobuf inspector. Truncated and
+> corrupt files import as far as they go and say so; an interrupted import
+> resumes. It does not yet launch or attach to a live Bazel build — that is
+> Phase 2. See [docs/implementation-status.md](docs/implementation-status.md).
 
 A local desktop application for capturing, exploring, and understanding
 Bazel builds. It ingests the Build Event Protocol — from builds it launches,
@@ -32,6 +35,18 @@ first build.
 
 (`-Dbbv.smoke=true` opens the window and exits after two seconds; used by
 scripted verification.)
+
+## Importing a BEP file from the command line
+
+```
+./gradlew :app:installDist
+app/build/install/bbv/bin/bbv import path/to/build.bep
+app/build/install/bbv/bin/bbv inspect <session-dir> --events 20
+```
+
+`bbv import --help` documents the options and the exit-code contract: 0 for a
+clean import, 1 when the source was truncated or corrupt and everything before
+the damage was imported, 3 when the import failed outright.
 
 ## Running the Phase 0 spikes
 

@@ -134,6 +134,20 @@ public final class SchemaV1 {
               child_event_id_hash   INTEGER PRIMARY KEY,
               announced_by_event_id INTEGER NOT NULL REFERENCES bep_events(id)
             )
+            """,
+            // A constraint, not an accelerator, so it is created with the
+            // tables rather than deferred to the post-load index step: the
+            // diagnostic insert's ON CONFLICT needs it to exist while rows are
+            // being written. It makes a journal-anchored diagnostic identify
+            // itself by where it happened, so replaying a frame after a resume
+            // re-reports the same observation instead of accumulating a
+            // duplicate row. Partial on purpose — a diagnostic with no anchor
+            // has NULLs here, and SQLite treats NULLs as distinct, so
+            // import-level notes can still legitimately repeat.
+            """
+            CREATE UNIQUE INDEX idx_import_diagnostics_anchor
+              ON import_diagnostics(code, segment_index, byte_offset)
+              WHERE segment_index IS NOT NULL AND byte_offset IS NOT NULL
             """);
 
     /** Applied after bulk load, not before — see the class comment. */

@@ -248,8 +248,12 @@ final class JsonBepParserTest {
         assertThat(listener.records()).extracting(JsonBepRecord::byteOffset)
                 .containsExactly(0L, small.length() + 1L + huge.length() + 1L);
 
-        // And no unbounded allocation happened on the way.
-        assertThat(result.peakRecordBufferBytes()).isLessThanOrEqualTo(maxRecordBytes);
+        // And no unbounded allocation happened on the way. The bound is twice
+        // the record limit, not once: a completed record is copied out of the
+        // accumulator, so the accumulator and the delivered copy are briefly
+        // resident together. The reported peak counts both, because it is what
+        // the bounded-memory claim is measured against.
+        assertThat(result.peakRecordBufferBytes()).isLessThanOrEqualTo(2 * maxRecordBytes);
     }
 
     @Test
@@ -332,7 +336,8 @@ final class JsonBepParserTest {
         assertThat(result.completeness()).isEqualTo(Completeness.TRUNCATED);
         assertThat(result.deliveredRecordCount()).isEqualTo(1);
         assertThat(result.truncatedTailBytes()).hasValue(content.length() - 38L);
-        assertThat(result.peakRecordBufferBytes()).isLessThanOrEqualTo(512);
+        // Twice the limit: accumulator plus the copy delivered from it.
+        assertThat(result.peakRecordBufferBytes()).isLessThanOrEqualTo(2 * 512);
     }
 
     // -------------------------------------------------------- odd but legal

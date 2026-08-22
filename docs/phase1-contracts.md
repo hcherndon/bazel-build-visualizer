@@ -40,8 +40,8 @@ always find the last intact frame.
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 | frame magic `BFRM` — lets recovery confirm a boundary |
-| 4 | 4 | payload length (bounded by `MAX_FRAME_BYTES`, reject larger) |
-| 8 | 1 | source kind: 1 = BES envelope, 2 = BEP `BuildEvent` (binary), 3 = imported JSON record |
+| 4 | 4 | payload length (bounded by `DEFAULT_MAX_PAYLOAD_BYTES`, reject larger) |
+| 8 | 1 | source kind ordinal: 0 = BES envelope, 1 = BEP `BuildEvent` (binary), 2 = imported JSON record |
 | 9 | 2 | stream ordinal (index into the session's streams) |
 | 11 | 8 | sequence number (BES sequence, or import ordinal for files) |
 | 19 | 8 | receive timestamp, epoch micros |
@@ -50,7 +50,7 @@ always find the last intact frame.
 
 Rules:
 - Payload bytes are stored exactly as received. Never re-serialize.
-- `MAX_FRAME_BYTES` is configurable, default 64 MiB; a larger declared length
+- `DEFAULT_MAX_PAYLOAD_BYTES` is configurable, default 64 MiB; a larger declared length
   is corruption, not a big event (plan 21.3 "limit protobuf message size").
 - Rotation at a configurable segment size (default 256 MiB), at a frame
   boundary only.

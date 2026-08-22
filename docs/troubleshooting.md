@@ -68,7 +68,6 @@ troubleshooting (capture failures, session recovery) arrives with Phase 2+.
 - Test reports: `<module>/build/reports/tests/test/index.html`.
 - App logs: console via logback (`app/src/main/resources/logback.xml`);
   per-session capture logs will live in the session directory
-  (`logs/capture.log`, docs/session-format.md) from Phase 1.
 - Headless app smoke run: `./gradlew :app:run -Dbbv.smoke=true` opens the
   window and exits after two seconds.
 - CI failures: the workflow uploads `**/build/reports/tests` as an artifact

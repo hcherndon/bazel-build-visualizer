@@ -32,7 +32,10 @@ public final class DiagnosticWriter implements AutoCloseable {
     private static final String INSERT =
             "INSERT INTO import_diagnostics"
                     + " (severity, code, message, segment_index, byte_offset, at_micros)"
-                    + " VALUES (?, ?, ?, ?, ?, ?)";
+                    + " VALUES (?, ?, ?, ?, ?, ?)"
+                    + " ON CONFLICT (code, segment_index, byte_offset)"
+                    + " WHERE segment_index IS NOT NULL AND byte_offset IS NOT NULL"
+                    + " DO NOTHING";
 
     private final Connection connection;
     private final PreparedStatement insert;
@@ -60,11 +63,13 @@ public final class DiagnosticWriter implements AutoCloseable {
             insert.setNull(5, Types.INTEGER);
         }
         insert.setLong(6, diagnostic.atMicros());
-        insert.executeUpdate();
+        int inserted = insert.executeUpdate();
         if (!connection.getAutoCommit()) {
             connection.commit();
         }
-        recorded++;
+        // A repeat of an anchored diagnostic inserts nothing; counting it
+        // would overstate how much was recorded.
+        recorded += inserted;
     }
 
     /** Diagnostics written through this writer. */
