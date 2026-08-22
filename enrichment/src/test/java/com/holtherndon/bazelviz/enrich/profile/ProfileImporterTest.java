@@ -202,6 +202,37 @@ final class ProfileImporterTest {
         }
     }
 
+    @Test
+    @DisplayName("a profile larger than one batch imports every row")
+    void batchesAreFlushedRatherThanAccumulated() throws Exception {
+        // ProfileWriter used to add every span to a single JDBC batch and
+        // execute it once at the end, which is fine for the fifteen spans a
+        // six-target build produces and unbounded for a real profile. This
+        // exercises more rows than the batch threshold so a regression to the
+        // old shape shows up as missing rows rather than as memory nobody
+        // measures.
+        int spans = 12_000;
+        Path big = tempDir.resolve("big.json");
+        try (java.io.BufferedWriter out = Files.newBufferedWriter(big)) {
+            out.write("{\"otherData\":{\"profile_start_ts\":1787434091653},\"traceEvents\":[");
+            for (int i = 0; i < spans; i++) {
+                if (i > 0) {
+                    out.write(',');
+                }
+                out.write("{\"ph\":\"X\",\"cat\":\"action processing\",\"name\":\"a" + i
+                        + "\",\"ts\":" + (i * 10) + ",\"dur\":5,\"tid\":1,\"out\":\"out/"
+                        + i + "\"}");
+            }
+            out.write("]}");
+        }
+
+        ProfileImporter.Result result = new ProfileImporter(connection).importFrom(big);
+
+        assertThat(result.state()).isEqualTo(EnrichmentTask.State.SUCCEEDED);
+        assertThat(result.spansWritten()).isEqualTo(spans);
+        assertThat(scalar("SELECT count(*) FROM profile_spans")).isEqualTo(spans);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private ProfileImporter.Result importFixture(String name) throws Exception {

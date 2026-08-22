@@ -234,7 +234,11 @@ public final class TestsView extends JPanel {
         details.execute(() -> {
             try {
                 Inspection inspection = TestInspection.of(
-                        row, reader.testAttempts(row.id()), reader.testLogs(row.id()));
+                        row, reader.testAttempts(row.id()), reader.testLogs(row.id()),
+                        // The execution log's own record of this test. Reached
+                        // by label because a test spawn matches no action by
+                        // output on any Bazel version (K2).
+                        reader.attemptsForLabel(row.label()));
                 SwingUtilities.invokeLater(() -> {
                     if (generation == selectionGeneration) {
                         inspector.show(inspection);

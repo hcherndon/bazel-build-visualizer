@@ -479,3 +479,76 @@ than by reading, and the fact that the "live overview" was never attached to a
 running capture at all. The card showed "No session is open." for the whole
 build and populated only when it ended, so the phase's own UI deliverable was
 not delivered and its exit criterion rested on a unit test's fake reader.
+
+## Phase 4 checklist (as of 2026-08-22)
+
+| Task | Status |
+|---|---|
+| Detect supported execution-log format | Done — by capability, and by sniffing the file's first bytes on import; the compact format is a zstd frame and the binary one is not (S4) |
+| Plan and capture execution-log output | Done — one format per invocation, because Bazel 7+ rejects two; the user's own execution-log flag is left alone rather than fought with |
+| Parse it streaming | Done — nothing accumulates but a bounded command buffer; paths are passed by id so the parser never holds them |
+| Create action attempts | Done — one row per spawn, not per action: a test produces two and most actions produce none |
+| Correlate attempts with actions | Done — by output path for ordinary actions, by label for tests, and the reason is stored either way |
+| Parse JSON trace profile | Done — Gson pull parser; kept and skipped events are both counted |
+| Normalize build phases and selected spans | Done — phases read from the file rather than a constant, ends derived and flagged as derived |
+| Import final build metrics | Already done in Phase 3 — `BuildMetricsReported` writes `build_metrics`; a second path would have duplicated it |
+| Calculate correlation diagnostics | Done — five `AttemptCorrelation` values, counted in the coverage panel, with the two that need attention called out |
+| Add optional filesystem stat enrichment | Done — fills holes only, counts absent files rather than writing zero, refuses paths that escape the output tree |
+| UI: attempt inspector, timing breakdown, runner/cache columns, phase overview, data-coverage panel, enrichment task status | Done — all six; the coverage panel shares the Overview card because plan 17.1 fixes the sidebar at eleven entries |
+| Execution-log and profile ground truth recorded | Done — `docs/exec-log-and-profile.md`, four Bazel versions, with a "not measured" section so nothing there is mistaken for a finding |
+
+## Phase 4 exit criteria (plan section 24)
+
+| Criterion | Status |
+|---|---|
+| Detailed metrics appear without replacing source-specific values | Met — Phase 4 writes no column any earlier phase wrote. An attempt's `start_micros` sits beside the action's and neither replaces the other; `ActionInspectionTest` and `RealBazelEnrichmentTest` both assert the action's own timing columns are untouched by enrichment. The actions table's Runner column comes from the attempt and the Duration column still comes from the BEP. |
+| Ambiguous correlations remain visible | Met — `action_attempts.correlation` records which of five situations produced a null `action_id`, and `correlation_note` says it in words. The coverage panel counts the two that need attention and states that their own measurements are still correct; the attempt inspector shows the reason on every attempt. A test's two spawns are both kept and neither is chosen. |
+| Enrichment failure does not invalidate BEP | Met — structurally, not by care: the importers write only to tables schema v4 added and run in their own transactions. `ExecutionLogImporterTest` and `ProfileImporterTest` each feed a broken file to a session with BEP data and assert the action rows are unchanged, nothing landed, and the task row explains what the user lost in the words plan 21.4 asks for. A failed profile import leaves a succeeded execution-log import alone. |
+| Profile and execution-log imports are resumable where practical | **Partial, and stated as such.** Neither is resumable. Both run in one transaction that either lands whole or rolls back, and re-running is the recovery. See the interpretation below. |
+
+### Interpretations worth knowing
+
+**"Resumable where practical" was read as "not practical here", deliberately.**
+Phase 1's BEP import is resumable because the source is tens of gigabytes,
+arrives over minutes, and is the thing the session is made of. An execution log
+and a profile are neither: they are written by Bazel at the end of the build,
+are read in seconds, and are enrichment — losing one costs the user the
+enrichment and nothing else. So both import inside a single transaction and a
+failure rolls the whole thing back, which is simpler than a resume point and
+has the property that matters more: a half-imported execution log never exists.
+`enrichment_tasks.resume_offset` is where a resume point goes if a real profile
+ever makes one worth having; it is currently always null, which the column's
+comment says.
+
+**An execution log from another build is refused; a profile from another build
+is not.** The log's timings would attach to the wrong actions, and that is
+worse than not having them. A profile's phases and counters are about the
+machine and the invocation as a whole, and a user comparing two builds is doing
+something reasonable — so it imports with `build_id_matches = 0` recorded, and
+the panel says so.
+
+**The execution log covers about a third of the actions, always.** Measured 4
+spawns against 13 published actions. The other actions run inside the Bazel
+server and never start a subprocess, so no attempt record exists for them and
+none ever will. Every place that shows the ratio says why.
+
+**Bazel 6.5.0 attempts have a length and no position.** That version never
+emits a spawn start under any flag setting, so its attempts cannot be drawn on
+a timeline. `start_unknown_reason` carries the sentence, and
+`RealBazelEnrichmentTest` asserts every 6.5.0 attempt has one.
+
+**Nothing joins Bazel's critical path to the actions table.** Its components
+name themselves with a progress message and nothing else. ADR-009 wants Bazel's
+answer kept as Bazel's regardless, and the visualizer's own dependency critical
+path is a Phase 6 computation over a graph Phase 5 has not built yet.
+
+## Phase 4 audit
+
+Done by hand rather than by a fleet: a systematic self-review against the
+defect classes Phase 3's audit found, each turned into a check that can be run
+again rather than remembered. Six findings, all fixed — three dead columns, one
+method built and never wired, one unmeasured number in a comment, and one
+unbounded JDBC batch. Two more came from running the code against real Bazel
+and could not have been found any other way: a paging benchmark that measured
+an empty table and passed, and capability detection probing a different Bazel
+than the build ran. `docs/phase4-audit.md` is the full report.

@@ -38,15 +38,29 @@ final class SchemaV4 {
             // task, source, exit status, error excerpt, retriability, and the
             // metrics that are unavailable as a result.
             //
-            // unavailable_metrics is a JSON array rather than a join table
-            // because it is written once, read whole, and never queried across
-            // tasks.
+            // unavailable_metrics is a newline-joined list rather than a join
+            // table because it is written once, read whole, and never queried
+            // across tasks.
+            //
+            // resume_offset is always null today and that is a decision, not an
+            // omission. Plan 24 asks for imports "resumable where practical",
+            // and neither of these is: they are written by Bazel at the end of
+            // the build, read in seconds, and are enrichment rather than the
+            // thing the session is made of. Both import in one transaction that
+            // lands whole or rolls back, which has the property that matters
+            // more than resuming -- a half-imported execution log never exists.
+            // The column is where a resume point goes if a profile ever gets
+            // large enough to want one.
+            //
+            // There is no source_id linking to capture_sources. One was
+            // declared here at first and nothing wrote it; source_path already
+            // carries what the panel shows, and a foreign key nobody sets is a
+            // promise of provenance the rows do not keep.
             """
             CREATE TABLE enrichment_tasks (
               id                   INTEGER PRIMARY KEY,
               kind                 TEXT    NOT NULL,
               source_path          TEXT,
-              source_id            INTEGER REFERENCES capture_sources(id),
               state                TEXT    NOT NULL,
               started_micros       INTEGER,
               finished_micros      INTEGER,
@@ -195,6 +209,13 @@ final class SchemaV4 {
             // tree-artifact output, and on 8.4.1+ that is the ONLY resolvable
             // output a test spawn has.
             //
+            // No digest or size here: the digest an output carries belongs to
+            // the artifact, which already has columns for both and is where
+            // writePath puts them. A second copy per attempt was declared in
+            // the first draft of this schema and nothing ever wrote it -- the
+            // exact defect the Phase 3 audit found in saw_last_message, caught
+            // this time by grepping the DDL against every INSERT in the source.
+            //
             // produced = 0 is the invalid_output_path case: an output the spawn
             // was allowed to produce and did not. Those are kept rather than
             // skipped because on 7.6.1 a failing test's entire output list is
@@ -206,9 +227,7 @@ final class SchemaV4 {
               attempt_id  INTEGER NOT NULL REFERENCES action_attempts(id),
               artifact_id INTEGER NOT NULL REFERENCES artifacts(id),
               kind        TEXT    NOT NULL,
-              produced    INTEGER NOT NULL,
-              digest_hash TEXT,
-              size_bytes  INTEGER
+              produced    INTEGER NOT NULL
             )
             """,
             "CREATE INDEX ix_attempt_outputs_attempt ON attempt_outputs (attempt_id)",

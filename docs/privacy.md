@@ -43,3 +43,30 @@ arrive with Phase 4.
 The redaction layer itself is Phase 9. Until it exists, a session directory is
 a sensitive artifact and the tool says so rather than implying otherwise —
 nothing in Phases 1 to 3 exports, uploads or shares one.
+
+## Execution-log environment variables (Phase 4)
+
+An execution log records every spawn's full environment, so importing one
+brings the build's environment into the session database. Values whose names
+look like secrets are withheld on the way in, by `EnvironmentRedactor`, using
+the default patterns of plan 22.2: `TOKEN`, `PASSWORD`, `PASSWD`, `SECRET`,
+`CREDENTIAL`, `KEY`, `AUTH`, `SESSION`, `COOKIE`, `PRIVATE`. Matching is
+case-insensitive and by substring, and the list is constructor-injectable.
+
+Two properties matter more than the list:
+
+**By name, never by value.** Detecting a secret by looking at it means
+guessing, and guessing wrong leaks. A name rule is conservative in the safe
+direction — it withholds some things that were not secret, and the user can see
+that it did.
+
+**Withheld is not the same as unset.** `attempt_env_vars.redacted` records that
+a value was hidden rather than absent, and the record type refuses to carry a
+value and the flag at once. `PATH=""` and `API_TOKEN=<withheld>` are different
+facts about a build, and a user asking why two actions behaved differently
+needs to tell them apart.
+
+The spawn's argv is stored too, and carries absolute paths and command
+arguments. The plan's added-flag metadata marks both the execution log and the
+profile as writing files that may contain sensitive data, so the
+instrumentation dialog says so before the build runs.

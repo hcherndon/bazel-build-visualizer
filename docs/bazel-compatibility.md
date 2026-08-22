@@ -186,6 +186,44 @@ Version-independent, and each one a way to be wrong on all four:
 - Both the `*Millis` and the Timestamp/Duration spellings are emitted on all
   four versions and never disagreed in 148 checks.
 
+## Enrichment flags (Phase 4)
+
+Measured on 2026-08-22 by parsing `bazel help build` on each version, and
+confirmed by running builds with them.
+
+| Flag | 6.5.0 | 7.6.1 | 8.4.1 | 9.2.0 |
+|---|:-:|:-:|:-:|:-:|
+| `--execution_log_binary_file` | yes | yes | yes | yes |
+| `--execution_log_json_file` | yes | yes | yes | yes |
+| `--execution_log_compact_file` | **no** | yes | yes | yes |
+| `--experimental_execution_log_file` | yes | no | no | no |
+| `--experimental_execution_log_spawn_metrics` | yes | no | no | no |
+| `--profile`, `--generate_json_trace_profile`, `--[no]slim_profile` | yes | yes | yes | yes |
+| `--experimental_profile_include_primary_output` | yes | yes | yes | yes |
+| `--record_full_profiler_data` | no | yes | yes | yes |
+
+Four behaviours the planner depends on:
+
+**The three execution-log formats are mutually exclusive from Bazel 7.** Naming
+two is a command-line error that fails the build before analysis. On 6.5.0 the
+same command succeeds and writes both files.
+
+**`--slim_profile` defaults to `true` on every version**, and slimming cuts
+per-action events from 22–30 down to 2. A profile captured without
+`--noslim_profile` has none of what the importer reads it for.
+
+**Bazel 6.5.0 writes `progress_message` at field 9 and `walltime` at field 17
+of `SpawnExec`,** both of which the current `spawn.proto` marks `reserved`.
+Parsed with the modern descriptor alone it yields attempts with no timing and
+no error.
+
+**The profile's absolute anchor changed name and meaning between 7.6.1 and
+8.4.1.** `profile_finish_ts` on 6.5.0 and 7.6.1 holds the *start*, floored to
+the second; `profile_start_ts` on 8.4.1+ holds it exactly.
+
+Full measurements, including the correlation behaviour and what was not
+measured, are in `docs/exec-log-and-profile.md`.
+
 ## What is not covered
 
 Everything above was measured on macOS arm64 only. Linux and Windows are

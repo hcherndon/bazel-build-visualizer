@@ -91,6 +91,21 @@ public final class ProfileWriter implements AutoCloseable {
      */
     private final List<EnrichmentCommand.PhaseMarkerSeen> phases = new ArrayList<>();
 
+    /**
+     * Rows allowed to accumulate in one JDBC batch.
+     *
+     * <p>The first version of this class added every span, counter and thread
+     * to a batch and executed all of them in {@link #finish()}. That is
+     * correct for the fifteen action spans a six-target build produces and
+     * indefensible for a real one: a profile grows with everything the build
+     * did, and plan 19.4 requires bounded memory of every import path. The
+     * driver holds each batched statement's parameters until execution.
+     */
+    private static final int BATCH = 5_000;
+
+    private int pendingSpans;
+    private int pendingCounters;
+    private int pendingThreads;
     private long spansWritten;
     private long attributedSpans;
     private long traceMin = Long.MAX_VALUE;
@@ -140,10 +155,16 @@ public final class ProfileWriter implements AutoCloseable {
                 statement.executeUpdate();
             }
         }
+        // Whatever is left below the batch threshold.
         insertThread.executeBatch();
         insertSpan.executeBatch();
         insertCounter.executeBatch();
+        // The critical path is bounded by the build's depth, so it is never
+        // flushed early and does not need a counter.
         insertCriticalPath.executeBatch();
+        pendingThreads = 0;
+        pendingSpans = 0;
+        pendingCounters = 0;
     }
 
     private void writeHeader(EnrichmentCommand.ProfileHeaderSeen header) throws SQLException {
@@ -189,6 +210,10 @@ public final class ProfileWriter implements AutoCloseable {
             insertThread.setNull(3, Types.INTEGER);
         }
         insertThread.addBatch();
+        if (++pendingThreads >= BATCH) {
+            insertThread.executeBatch();
+            pendingThreads = 0;
+        }
     }
 
     /**
@@ -249,6 +274,10 @@ public final class ProfileWriter implements AutoCloseable {
         setNullableString(insertSpan, i++, span.targetLabel());
         setNullableString(insertSpan, i, span.mnemonic());
         insertSpan.addBatch();
+        if (++pendingSpans >= BATCH) {
+            insertSpan.executeBatch();
+            pendingSpans = 0;
+        }
         spansWritten++;
         if (span.primaryOutput().isPresent()) {
             attributedSpans++;
@@ -261,6 +290,10 @@ public final class ProfileWriter implements AutoCloseable {
         insertCounter.setLong(2, counter.atMicros());
         insertCounter.setDouble(3, counter.value());
         insertCounter.addBatch();
+        if (++pendingCounters >= BATCH) {
+            insertCounter.executeBatch();
+            pendingCounters = 0;
+        }
     }
 
     private void writeCriticalPath(EnrichmentCommand.CriticalPathComponentSeen component)

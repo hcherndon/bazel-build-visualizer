@@ -10,8 +10,17 @@
 > Verified against real Bazel 6.5, 7.6, 8.4 and 9.2 — including the places
 > where those four disagree, which are written down in
 > [docs/bep-content.md](docs/bep-content.md). Offline import of binary and JSON
-> BEP files (Phase 1) still works the same way. Timing detail from the
-> execution log and profile arrives in Phase 4. See
+> BEP files (Phase 1) still works the same way.
+>
+> **Phase 4 adds the execution log and the trace profile.** Builds it launches
+> now record where every subprocess ran, whether it was a cache hit, and where
+> its time went; the profile contributes the build's phases, Bazel's own
+> critical path, and a resource timeline. Attempts are attached to actions by
+> output path and to tests by label, and where an attempt cannot be attached
+> the session says which of the five situations that is rather than leaving a
+> blank. What those two sources actually contain — and the four places the
+> supported Bazel versions disagree about them — is in
+> [docs/exec-log-and-profile.md](docs/exec-log-and-profile.md). See
 > [docs/implementation-status.md](docs/implementation-status.md).
 
 A local desktop application for capturing, exploring, and understanding
@@ -139,6 +148,8 @@ Build conventions live in `build-logic/` (see
   [graph-model](docs/graph-model.md) ·
   [metric-definitions](docs/metric-definitions.md) ·
   [bazel-compatibility](docs/bazel-compatibility.md) ·
+  [exec-log-and-profile](docs/exec-log-and-profile.md) ·
+  [phase4-contracts](docs/phase4-contracts.md) ·
   [instrumentation-planner](docs/instrumentation-planner.md) ·
   [privacy](docs/privacy.md) ·
   [troubleshooting](docs/troubleshooting.md)

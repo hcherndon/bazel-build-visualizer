@@ -96,6 +96,47 @@ publishing a `Configuration` event for it, so the normalizer inserts a row
 marked undeclared rather than either dropping the referencing actions or giving
 up integer foreign keys.
 
+### Schema v3 — the test summary's timing columns renamed (Phase 3)
+
+`tests.first_start_micros` and `last_stop_micros` became
+`bazel_first_start_micros` and `bazel_last_stop_micros`, because the summary's
+window excludes failed retries and the old names claimed a provenance the
+values did not have.
+
+### Schema v4 — attempts and the profile (Phase 4)
+
+Eleven tables. Every one is written by the enrichment importers and by nothing
+else, which is what makes plan 21.4's "a failed enrichment must not invalidate
+BEP" structural rather than careful.
+
+| Table | Holds |
+|---|---|
+| `enrichment_tasks` | one row per enrichment, with how it ended and what the user lost if it failed |
+| `input_sets`, `input_set_children`, `input_set_files` | the spawn-input DAG, unflattened |
+| `action_attempts` | one row per spawn — not per action |
+| `attempt_outputs` | what each spawn produced, and what it declared and did not |
+| `attempt_env_vars` | the environment, with secret-looking values withheld and marked |
+| `profile_metadata` | the profile's absolute anchor, **with what the anchor means** |
+| `profile_threads` | thread ids to names |
+| `build_phases` | phases as the profile reported them, ends derived and flagged |
+| `profile_spans` | attributable action spans, joined to actions by primary output |
+| `profile_counters` | the ten resource series |
+| `bazel_critical_path` | Bazel's own answer, deliberately unjoined |
+
+Three shapes are worth knowing before reading a query:
+
+**`action_attempts.action_id` is nullable and `correlation` says why.** Four
+different facts produce a null and only two of them are problems. See
+`docs/phase4-contracts.md` §2.
+
+**`profile_metadata` stores the anchor's meaning and uncertainty, not just its
+value.** On Bazel 6.5.0 and 7.6.1 the anchor is a start floored to the whole
+second, published under a key named for the finish.
+
+**There is no `action_coverage` table.** How many actions have attempt data is
+a count over `action_attempts`. A stored copy is one more number that can
+disagree with its rows.
+
 ## Sensitive-field inventory
 
 `docs/privacy.md` commits to tagging every column that can carry

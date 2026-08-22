@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.tests;
 
+import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
 import com.holtherndon.bazelviz.storage.entities.TestAttemptRow;
 import com.holtherndon.bazelviz.storage.entities.TestQueries;
 import com.holtherndon.bazelviz.storage.entities.TestRow;
@@ -24,6 +25,27 @@ public final class TestInspection {
 
     public static Inspection of(
             TestRow test, List<TestAttemptRow> attempts, List<TestQueries.TestLog> logs) {
+        return of(test, attempts, logs, List.of());
+    }
+
+    /**
+     * The test, its BEP attempts, its logs, and the spawns the execution log
+     * recorded for it.
+     *
+     * <p>The spawns are a separate list from the attempts and are not merged
+     * into them. They are different measurements of overlapping things: a BEP
+     * {@code testResult} is one attempt of one shard, and a spawn is one
+     * subprocess — and a test produces two spawns per attempt, the second being
+     * XML generation which exits 0 even when the test failed (K3 in
+     * docs/exec-log-and-profile.md). Pairing them up would need a rule nothing
+     * in either source supports, so both are shown and neither is presented as
+     * the other's detail.
+     */
+    public static Inspection of(
+            TestRow test,
+            List<TestAttemptRow> attempts,
+            List<TestQueries.TestLog> logs,
+            List<AttemptRow> spawns) {
         Inspection.Builder builder = new Inspection.Builder(test.label())
                 .subtitle(test.overallStatus().name())
                 .sourceEvent(test.bepEventId());
@@ -85,7 +107,47 @@ public final class TestInspection {
                 builder.field(log.name().orElse(log.summaryStatus().orElse("log")), log.uri());
             }
         }
+        addSpawns(builder, spawns);
         return builder.build();
+    }
+
+    /**
+     * What the execution log recorded for this test.
+     *
+     * <p>Shown in log order and numbered, with no attempt to say which one is
+     * "the" test run. They disagree about the exit code by design, and choosing
+     * between them on the shape of their outputs would be a guess presented as
+     * a fact; the verdict above already comes from {@code testSummary}, which
+     * needs no help.
+     */
+    private static void addSpawns(Inspection.Builder builder, List<AttemptRow> spawns) {
+        if (spawns.isEmpty()) {
+            return;
+        }
+        builder.section("Recorded subprocesses");
+        builder.field("Spawns", Integer.toString(spawns.size()));
+        if (spawns.size() > 1) {
+            builder.field(Inspection.Field.of("Note",
+                    "Bazel runs a test as more than one subprocess -- the test itself, then a"
+                            + " step that writes its XML, which succeeds even when the test"
+                            + " failed. The pass or fail above comes from Bazel's own test"
+                            + " summary, not from these."));
+        }
+        for (int i = 0; i < spawns.size(); i++) {
+            AttemptRow spawn = spawns.get(i);
+            builder.section("Subprocess " + (i + 1))
+                    .field(EntityFormat.field("Runner", spawn.runner()))
+                    .field(spawn.exitCode().isPresent()
+                            ? Inspection.Field.of("Exit code",
+                                    Integer.toString(spawn.exitCode().getAsInt()))
+                            : Inspection.Field.unknown("Exit code", "not reported"))
+                    .field(EntityFormat.field("Status", spawn.status()))
+                    .field(EntityFormat.durationField("Elapsed", spawn.elapsed()));
+            if (spawn.unproducedOutputs() > 0) {
+                builder.field("Declared but not produced",
+                        Long.toString(spawn.unproducedOutputs()));
+            }
+        }
     }
 
     private static String describe(TestAttemptRow attempt) {

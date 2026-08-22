@@ -9,10 +9,13 @@ import java.util.Arrays;
  *
  * <p>The compact log names one entry per file, and a five-million-action build
  * names tens of millions of files. A {@code HashMap<Long, Long>} at that size
- * costs roughly 48 bytes an entry in boxed keys, boxed values and nodes — over
- * a gigabyte before the rest of the import starts. A {@code long[]} indexed by
- * the log's id costs eight, and the log's ids are assigned sequentially from
- * one, so the array is dense.
+ * pays for a node object and two boxed longs per entry, several times what the
+ * eight bytes of data need, and pays it tens of millions of times. A
+ * {@code long[]} indexed by the log's own id pays the eight, and the ids are
+ * assigned sequentially from one, so the array is dense.
+ *
+ * <p>The multiplier is deliberately not written here as a number: it depends on
+ * the JVM's object layout and nothing in this project has measured it.
  *
  * <p>Zero means absent, which is safe because SQLite rowids start at one and
  * because the log's own ids do too.
