@@ -3,9 +3,10 @@
 How dependency graphs are stored and traversed. The six distinct graph
 representations and their vocabulary are defined in
 [architecture.md](architecture.md); this page covers the physical CSR index
-format owned by `graph-core` (ADR-006). Implementation arrives in Phase 6;
-the Phase 0 graph spike exercises a prototype of this layout at Tier 2/3
-scale.
+format owned by `graph-core` (ADR-006). Implementation arrives in **Phase 5**,
+whose task list includes "Build forward/reverse CSR indexes"; the visualization
+that reads it is Phase 7. The Phase 0 graph spike exercises a prototype of this
+layout at Tier 2/3 scale.
 
 ## CSR file format sketch (plan 13.2)
 
@@ -34,7 +35,9 @@ neighbors array
 
 Node ids are dense indexes assigned at indexing time; the mapping from node
 id to domain identity (action, artifact) lives in the session SQLite
-database (`strings`/`actions` tables), not in the CSR file. Degree of node
+database — since Phase 3 that is the `actions`, `artifacts` and `depsets`
+tables of schema v2, not the `strings` table, which holds only the raw layer's
+interned text. Degree of node
 `i` is `offsets[i+1] - offsets[i]` — degrees are never stored separately.
 
 Construction streams edges (two passes: count, then fill) so peak memory is
@@ -44,4 +47,4 @@ journal (ADR-004); there is no in-place migration.
 
 The temporal index (`temporal.idx`) is a sibling flat format — time-sorted
 span records for timeline queries — and will be specified here alongside
-Phase 5.
+**Phase 6**, which is where the timeline and its LOD index are built.
