@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.actions;
 
+import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
@@ -19,6 +20,21 @@ public final class ActionInspection {
     private ActionInspection() {}
 
     public static Inspection of(ActionRow row) {
+        return of(row, List.of());
+    }
+
+    /**
+     * The action, plus what the execution log says about the spawns that ran
+     * it.
+     *
+     * <p>Attempts are shown as their own sections rather than folded into the
+     * action's timing, because they are a different measurement: the action's
+     * start and end come from the BEP, the attempt's from the execution log,
+     * and ADR-009 keeps both under names saying whose they are. An action whose
+     * BEP duration and spawn duration disagree is telling the reader something,
+     * and averaging them would tell them nothing.
+     */
+    public static Inspection of(ActionRow row, List<AttemptRow> attempts) {
         Inspection.Builder builder = new Inspection.Builder(
                         row.label().orElseGet(row::outputFileName))
                 .subtitle(row.mnemonic().orElse("action") + " · " + row.outcome().name())
@@ -58,7 +74,35 @@ public final class ActionInspection {
                     .field(EntityFormat.field("Failure category", row.failureCategory()))
                     .field(EntityFormat.field("Message", row.failureMessage()));
         }
+
+        addAttempts(builder, attempts);
         return builder.build();
+    }
+
+    /**
+     * One section per spawn.
+     *
+     * <p>Numbered rather than named, because a spawn has no name of its own and
+     * because an action with two of them has two answers to "where did it run"
+     * — which is a fact about the build, not a presentation problem to smooth
+     * over.
+     */
+    private static void addAttempts(Inspection.Builder builder, List<AttemptRow> attempts) {
+        if (attempts.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < attempts.size(); i++) {
+            AttemptRow attempt = attempts.get(i);
+            builder.section(attempts.size() == 1 ? "Execution" : "Execution " + (i + 1))
+                    .field(EntityFormat.field("Runner", attempt.runner()))
+                    .field("Cache hit", attempt.cacheHit() ? "yes" : "no")
+                    .field(EntityFormat.durationField("Spawn time", attempt.elapsed()));
+            for (var component : attempt.timing().measuredComponents()) {
+                builder.field("  " + component.name(),
+                        EntityFormat.count(component.micros()) + " \u00b5s");
+            }
+            attempt.correlationNote().ifPresent(note -> builder.field("Correlation", note));
+        }
     }
 
     /**

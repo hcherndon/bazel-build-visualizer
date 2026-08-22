@@ -48,7 +48,15 @@ public final class ActionQueries implements AutoCloseable {
                     + "   THEN a.end_micros - a.start_micros END,"
                     + " a.duration_unknown_reason, a.bazel_exit_code, a.spawn_exit_code,"
                     + " a.failure_category, a.failure_message, c.bep_id, a.command_line,"
-                    + " a.bep_event_id";
+                    + " a.bep_event_id,"
+                    // Enrichment, as correlated subqueries rather than a join.
+                    // A join to action_attempts would multiply a row by its
+                    // attempts, and an action can legitimately have more than
+                    // one; these evaluate once per row of the page, against
+                    // ix_action_attempts_action.
+                    + " (SELECT count(*) FROM action_attempts x WHERE x.action_id = a.id),"
+                    + " (SELECT max(x.runner) FROM action_attempts x WHERE x.action_id = a.id),"
+                    + " (SELECT max(x.cache_hit) FROM action_attempts x WHERE x.action_id = a.id)";
 
     private static final String FROM =
             " FROM actions a"
@@ -486,7 +494,28 @@ public final class ActionQueries implements AutoCloseable {
                 text(result, 12),
                 text(result, 13),
                 text(result, 14),
-                number(result, 15));
+                number(result, 15),
+                executionOf(result));
+    }
+
+    /**
+     * The execution-log columns, or {@link ActionRow.Execution#none()}.
+     *
+     * <p>With more than one attempt the runner and cache flag are dropped
+     * rather than picked from: the {@code max()} in the query would return an
+     * arbitrary one, and an action whose two spawns ran under different runners
+     * has no single runner to report.
+     */
+    private static ActionRow.Execution executionOf(ResultSet result) throws SQLException {
+        long attempts = result.getLong(16);
+        if (attempts != 1) {
+            return new ActionRow.Execution(attempts, Optional.empty(), Optional.empty());
+        }
+        int cacheHit = result.getInt(18);
+        return new ActionRow.Execution(
+                1,
+                text(result, 17),
+                result.wasNull() ? Optional.empty() : Optional.of(cacheHit != 0));
     }
 
     /**

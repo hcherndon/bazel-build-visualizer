@@ -1,5 +1,9 @@
 package com.holtherndon.bazelviz.ui.overview;
 
+import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
+import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
+import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
+import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
@@ -194,6 +198,48 @@ final class FakeEntityReader implements EntityReader {
 
     @Override
     public List<FailureQueries.ProgressRef> progressOutputEvents(int limit) {
+        return List.of();
+    }
+
+    // ---- enrichment: this fake has no enrichment data, and says so honestly ----
+
+    @Override
+    public List<AttemptRow> attemptsForAction(long actionId) {
+        return List.of();
+    }
+
+    @Override
+    public List<AttemptRow> attemptsForLabel(String label) {
+        return List.of();
+    }
+
+    @Override
+    public EnrichmentQueries.Coverage enrichmentCoverage() {
+        return new EnrichmentQueries.Coverage(0, 0, 0, 0, 0, java.util.Map.of());
+    }
+
+    @Override
+    public List<EnrichmentQueries.Phase> buildPhases() {
+        return List.of();
+    }
+
+    @Override
+    public List<EnrichmentQueries.CriticalPathComponent> bazelCriticalPath() {
+        return List.of();
+    }
+
+    @Override
+    public List<EnrichmentQueries.RunnerCount> runnerCounts() {
+        return List.of();
+    }
+
+    @Override
+    public Optional<ProfileAnchor> profileAnchor() {
+        return Optional.empty();
+    }
+
+    @Override
+    public List<EnrichmentTask> enrichmentTasks() {
         return List.of();
     }
 

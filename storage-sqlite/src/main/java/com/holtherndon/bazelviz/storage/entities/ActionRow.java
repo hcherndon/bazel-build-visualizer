@@ -41,7 +41,35 @@ public record ActionRow(
         Optional<String> failureMessage,
         Optional<String> configurationId,
         Optional<String> commandLine,
-        OptionalLong bepEventId) {
+        OptionalLong bepEventId,
+        Execution execution) {
+
+    /**
+     * What the execution log says about this action, when one was imported.
+     *
+     * <p>{@code runner} and {@code cacheHit} are present only when exactly one
+     * spawn was attached. With more than one they are absent on purpose:
+     * showing the first would present one spawn's answer as the action's, and
+     * an action with two spawns that ran differently has no single answer.
+     * {@code attempts} is how the column says which case it is.
+     */
+    public record Execution(long attempts, Optional<String> runner, Optional<Boolean> cacheHit) {
+
+        /** An action no execution log has anything to say about. */
+        public static Execution none() {
+            return new Execution(0, Optional.empty(), Optional.empty());
+        }
+
+        /** True when no spawn was attached — the normal case for most actions. */
+        public boolean isAbsent() {
+            return attempts == 0;
+        }
+
+        /** True when several spawns were attached and none of them speaks for the action. */
+        public boolean isAmbiguous() {
+            return attempts > 1;
+        }
+    }
 
     public ActionRow {
         Objects.requireNonNull(primaryOutput, "primaryOutput");

@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.actions;
 
 import com.holtherndon.bazelviz.core.domain.ActionOutcome;
 import com.holtherndon.bazelviz.storage.entities.ActionFilter;
+import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
@@ -507,7 +508,49 @@ public final class ActionsView extends JPanel {
             // than flashing empty; the next page arrival re-fires selection.
             return;
         }
+        // Shown immediately from the row already in hand, so selecting is never
+        // waiting on a query.
         inspector.show(ActionInspection.of(row));
+        loadAttempts(row);
+    }
+
+    /**
+     * Adds the execution log's account of this action, off the EDT.
+     *
+     * <p>The attempts are a query, and plan rule 8 forbids querying on the EDT
+     * however small the result. The inspector is already showing the action, so
+     * this only ever adds to what is on screen — and a stale answer is
+     * discarded by comparing the id, because a user arrowing down the table
+     * fires this faster than SQLite answers.
+     */
+    private void loadAttempts(ActionRow row) {
+        ExecutorService details = detailExecutor;
+        EntityReader reader = detailReader;
+        if (details == null || reader == null) {
+            return;
+        }
+        long wanted = row.id();
+        details.execute(() -> {
+            List<AttemptRow> attempts;
+            try {
+                attempts = reader.attemptsForAction(wanted);
+            } catch (RuntimeException unavailable) {
+                // Enrichment is optional and its absence is not an error for
+                // the actions table. The inspector keeps the action it has.
+                return;
+            }
+            if (attempts.isEmpty()) {
+                return;
+            }
+            SwingUtilities.invokeLater(() -> {
+                int current = table.getSelectedRow();
+                ActionRow still = current < 0 || tableModel == null
+                        ? null : tableModel.rowAt(current);
+                if (still != null && still.id() == wanted) {
+                    inspector.show(ActionInspection.of(still, attempts));
+                }
+            });
+        });
     }
 
     private void sizeColumns() {

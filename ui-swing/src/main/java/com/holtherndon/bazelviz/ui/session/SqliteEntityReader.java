@@ -1,5 +1,10 @@
 package com.holtherndon.bazelviz.ui.session;
 
+import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
+import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
+import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
+import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
+import com.holtherndon.bazelviz.storage.enrich.EnrichmentTaskStore;
 import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
@@ -43,6 +48,7 @@ final class SqliteEntityReader implements EntityReader {
     private final TargetQueries targets;
     private final TestQueries tests;
     private final FailureQueries failures;
+    private final EnrichmentQueries enrichment;
     private boolean closed;
 
     SqliteEntityReader(String describedSession, Connection connection) {
@@ -53,6 +59,7 @@ final class SqliteEntityReader implements EntityReader {
         this.targets = new TargetQueries(connection);
         this.tests = new TestQueries(connection);
         this.failures = new FailureQueries(connection);
+        this.enrichment = new EnrichmentQueries(connection);
     }
 
     @Override
@@ -209,6 +216,50 @@ final class SqliteEntityReader implements EntityReader {
      * pretending to cancel something that cannot be cancelled would be worse
      * than not offering it.
      */
+    // ------------------------------------------------------------ enrichment
+
+    @Override
+    public List<AttemptRow> attemptsForAction(long actionId) {
+        return call("reading attempts for action " + actionId,
+                () -> enrichment.attemptsForAction(actionId));
+    }
+
+    @Override
+    public List<AttemptRow> attemptsForLabel(String label) {
+        return call("reading attempts for " + label, () -> enrichment.attemptsForLabel(label));
+    }
+
+    @Override
+    public EnrichmentQueries.Coverage enrichmentCoverage() {
+        return call("reading enrichment coverage", enrichment::coverage);
+    }
+
+    @Override
+    public List<EnrichmentQueries.Phase> buildPhases() {
+        return call("reading build phases", enrichment::phases);
+    }
+
+    @Override
+    public List<EnrichmentQueries.CriticalPathComponent> bazelCriticalPath() {
+        return call("reading Bazel's critical path", enrichment::bazelCriticalPath);
+    }
+
+    @Override
+    public List<EnrichmentQueries.RunnerCount> runnerCounts() {
+        return call("counting runners", enrichment::runnerCounts);
+    }
+
+    @Override
+    public Optional<ProfileAnchor> profileAnchor() {
+        return call("reading the profile anchor", enrichment::anchor);
+    }
+
+    @Override
+    public List<EnrichmentTask> enrichmentTasks() {
+        return call("reading enrichment tasks",
+                () -> new EnrichmentTaskStore(connection).all());
+    }
+
     @Override
     public void cancelRunningQuery() {
         actions.cancel();

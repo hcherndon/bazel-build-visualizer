@@ -37,11 +37,42 @@ public final class ActionTableColumns {
                 // failure with no spawn -- a genrule that produced no output --
                 // has no process code at all.
                 new ColumnSpec<>("Exit", row -> EntityFormat.exitCode(row.processExitCode())),
+                // Where it ran and whether it was a cache hit. Both come from
+                // the execution log, so both are empty until one is imported --
+                // and stay empty for the two thirds of actions that never spawn
+                // a subprocess (K1). An em dash there is the truth, not a gap.
+                new ColumnSpec<>("Runner", ActionTableColumns::runner),
+                new ColumnSpec<>("Cached", ActionTableColumns::cached),
                 new ColumnSpec<>("Output", ActionRow::primaryOutput));
+    }
+
+    /**
+     * Where the action ran.
+     *
+     * <p>An action with several spawns says how many rather than naming one of
+     * them: two spawns that ran under different runners give the action no
+     * single runner, and showing the first would present one spawn's answer as
+     * the action's.
+     */
+    static String runner(ActionRow row) {
+        ActionRow.Execution execution = row.execution();
+        if (execution.isAmbiguous()) {
+            return execution.attempts() + " spawns";
+        }
+        return EntityFormat.text(execution.runner());
+    }
+
+    static String cached(ActionRow row) {
+        ActionRow.Execution execution = row.execution();
+        if (execution.isAbsent() || execution.isAmbiguous()) {
+            return EntityFormat.text(java.util.Optional.empty());
+        }
+        return execution.cacheHit().map(hit -> hit ? "yes" : "no")
+                .orElseGet(() -> EntityFormat.text(java.util.Optional.empty()));
     }
 
     /** Preferred pixel widths, in column order. */
     public static int[] widths() {
-        return new int[] {320, 120, 100, 100, 60, 520};
+        return new int[] {320, 120, 100, 100, 60, 130, 70, 520};
     }
 }

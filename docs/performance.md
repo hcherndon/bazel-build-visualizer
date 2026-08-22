@@ -532,6 +532,39 @@ from one range; a page on a boundary costs two queries. The price is the
 convention that unknowns sort first ascending rather than last, and it is the
 only version of that convention that seeks.
 
+## Phase 4: the cost of the enrichment columns
+
+The actions table gained Runner and Cached columns, and they are correlated
+subqueries over `action_attempts` rather than a join — a join would multiply a
+row by its attempts, and an action can legitimately have more than one.
+
+Measured by `:benchmarks:runEntityScaleSpike` at a million actions with
+333,334 attempts, one per three actions, which is the ratio a real build
+produced (4 spawns against 13 published actions, finding K1):
+
+| Sort | Head | Middle | Tail |
+|---|---:|---:|---:|
+| ARRIVAL | 1.07 ms | 0.99 ms | 0.88 ms |
+| START_TIME | 0.75 ms | 0.76 ms | 0.73 ms |
+| DURATION | 0.70 ms | 1.06 ms | 1.14 ms |
+| MNEMONIC | 0.72 ms | 0.68 ms | 0.67 ms |
+| LABEL | 0.72 ms | 0.70 ms | 0.71 ms |
+| OUTCOME | 1.03 ms | 0.66 ms | 0.65 ms |
+
+Phase 3's figures for the same pages were 0.30–0.67 ms, so the two columns
+roughly double the cost of a page. What matters is that they do not change its
+shape: every sort is still flat from head to tail, which is the property two
+rewrites were needed to get, and 1.1 ms is well inside the 100 ms budget.
+
+**The first version of this measurement was worthless and looked fine.** The
+spike loaded a million actions and no attempts, so the subqueries ran against
+an empty table and reported 0.57–0.93 ms. The numbers above come from a spike
+that loads attempts too. A correlated subquery over an empty table measures
+nothing at all, and the run that did it passed every threshold.
+
+Attempts load at 422,000 rows/s (333,334 in 0.79 s), which is not a bottleneck
+next to the 128,000 actions/s of normalization.
+
 ## Build performance
 
 `gradle.properties` enables parallel execution, the build cache, and the

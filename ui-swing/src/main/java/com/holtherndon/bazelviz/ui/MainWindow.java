@@ -24,6 +24,7 @@ import com.holtherndon.bazelviz.ui.capture.LaunchController;
 import com.holtherndon.bazelviz.ui.events.EventValueFormat;
 import com.holtherndon.bazelviz.ui.actions.ActionsView;
 import com.holtherndon.bazelviz.ui.events.EventsView;
+import com.holtherndon.bazelviz.ui.enrich.CoverageView;
 import com.holtherndon.bazelviz.ui.failures.FailuresView;
 import com.holtherndon.bazelviz.ui.overview.OverviewPanel;
 import com.holtherndon.bazelviz.ui.targets.TargetsView;
@@ -113,6 +114,20 @@ public final class MainWindow extends JFrame {
     private final TargetsView targetsView = new TargetsView();
     private final TestsView testsView = new TestsView();
     private final FailuresView failuresView = new FailuresView();
+    private final CoverageView coverageView = new CoverageView();
+
+    /**
+     * The Overview card: the build's own summary above, what is known about it
+     * below.
+     *
+     * <p>Plan 17.1 fixes the left navigation at eleven entries and coverage is
+     * not one of them, so Phase 4's data-coverage panel, phase overview and
+     * enrichment-task status share this card rather than taking a twelfth.
+     * They belong together anyway: "this build ran 12,000 actions" and "4 of
+     * them have attempt data, because the rest never spawned a subprocess" are
+     * halves of one answer.
+     */
+    private final JComponent overviewCard = buildOverviewCard();
 
     /**
      * The open session, owned here rather than by any one view.
@@ -492,6 +507,7 @@ public final class MainWindow extends JFrame {
         targetsView.openSession(opened);
         testsView.openSession(opened);
         failuresView.openSession(opened);
+        coverageView.openSession(opened);
         closeSource(previous);
     }
 
@@ -503,6 +519,7 @@ public final class MainWindow extends JFrame {
         targetsView.closeSession();
         testsView.closeSession();
         failuresView.closeSession();
+        coverageView.closeSession();
     }
 
     /**
@@ -898,7 +915,7 @@ public final class MainWindow extends JFrame {
     /** The real view for an entry whose phase has arrived, else a placeholder. */
     private JComponent cardFor(NavEntry entry) {
         return switch (entry) {
-            case OVERVIEW -> overviewPanel;
+            case OVERVIEW -> overviewCard;
             case ACTIONS -> actionsView;
             case TARGETS -> targetsView;
             case TESTS -> testsView;
@@ -918,6 +935,15 @@ public final class MainWindow extends JFrame {
         JPanel card = new JPanel(new BorderLayout());
         card.add(label, BorderLayout.CENTER);
         return card;
+    }
+
+    /** Stacks the build summary above the coverage panel, split and resizable. */
+    private JComponent buildOverviewCard() {
+        JSplitPane split = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT, overviewPanel, coverageView);
+        split.setResizeWeight(0.62);
+        split.setBorder(null);
+        return split;
     }
 
     private JComponent buildStatusBar() {

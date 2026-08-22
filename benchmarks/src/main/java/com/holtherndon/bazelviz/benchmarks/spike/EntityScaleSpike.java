@@ -14,6 +14,7 @@ import com.holtherndon.bazelviz.storage.schema.SchemaIndexes;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -91,6 +92,12 @@ public final class EntityScaleSpike {
             System.out.printf(Locale.ROOT,
                     "  normalize: %,d actions in %.2f s = %,.0f actions/s%n",
                     rows, writeSeconds, rows / writeSeconds);
+
+            double attemptSeconds = loadAttempts(db, rows);
+            System.out.printf(Locale.ROOT,
+                    "  attempts:  %,d spawns in %.2f s (one per three actions, the measured"
+                            + " ratio)%n",
+                    rows / 3 + 1, attemptSeconds);
 
             long indexSeconds = time(() -> SchemaIndexes.createAll(db.writerConnection()));
             System.out.printf(Locale.ROOT, "  indexes:   %.2f s%n", indexSeconds / 1e9);
@@ -265,6 +272,57 @@ public final class EntityScaleSpike {
         }
         return (System.nanoTime() - start) / 1e9;
     }
+
+    /**
+     * An execution-log attempt for a third of the actions.
+     *
+     * <p>The proportion is measured rather than chosen: a real build produced 4
+     * spawns against 13 published actions, because the rest run inside the
+     * Bazel server and never spawn a subprocess (K1 in
+     * docs/exec-log-and-profile.md).
+     *
+     * <p>This exists because the actions table's Runner and Cached columns are
+     * correlated subqueries over {@code action_attempts}, and measuring them
+     * against an empty table would measure nothing. The first run of this spike
+     * after those columns landed did exactly that and looked fine.
+     */
+    private static double loadAttempts(SessionDatabase db, long rows) throws SQLException {
+        long start = System.nanoTime();
+        Connection connection = db.writerConnection();
+        boolean previousAutoCommit = connection.getAutoCommit();
+        connection.setAutoCommit(false);
+        try (PreparedStatement task = connection.prepareStatement(
+                        "INSERT INTO enrichment_tasks (kind, state) VALUES"
+                                + " ('EXECUTION_LOG', 'SUCCEEDED')");
+                PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO action_attempts (task_id, log_entry_index, action_id,"
+                                + " correlation, runner, cache_hit, exit_code, start_micros,"
+                                + " total_micros) VALUES (1, ?, ?, 'MATCHED_BY_OUTPUT', ?, ?, 0,"
+                                + " ?, ?)")) {
+            task.executeUpdate();
+            long index = 0;
+            for (long actionId = 1; actionId <= rows; actionId += 3) {
+                insert.setLong(1, index++);
+                insert.setLong(2, actionId);
+                insert.setString(3, RUNNERS[(int) (actionId % RUNNERS.length)]);
+                insert.setInt(4, actionId % 7 == 0 ? 1 : 0);
+                insert.setLong(5, 1_000_000L + actionId * 37);
+                insert.setLong(6, 1 + actionId % 500_000);
+                insert.addBatch();
+                if (index % 10_000 == 0) {
+                    insert.executeBatch();
+                }
+            }
+            insert.executeBatch();
+            connection.commit();
+        } finally {
+            connection.setAutoCommit(previousAutoCommit);
+        }
+        return (System.nanoTime() - start) / 1e9;
+    }
+
+    private static final String[] RUNNERS =
+            {"darwin-sandbox", "worker", "remote", "disk cache hit", "local"};
 
     /**
      * One stream row and one event row.

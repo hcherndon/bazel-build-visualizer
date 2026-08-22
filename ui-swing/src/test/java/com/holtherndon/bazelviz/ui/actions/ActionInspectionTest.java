@@ -34,7 +34,8 @@ class ActionInspectionTest {
                 Optional.of("Action failed: /bin/sh -c 'exit 7'"),
                 Optional.of("cfg-1"),
                 Optional.of("[\"/bin/sh\",\"-c\",\"exit 7\"]"),
-                OptionalLong.of(900));
+                OptionalLong.of(900),
+                ActionRow.Execution.none());
 
         Inspection inspection = ActionInspection.of(failed);
 
@@ -69,7 +70,8 @@ class ActionInspectionTest {
                 Optional.empty(),
                 Optional.of("system"),
                 Optional.empty(),
-                OptionalLong.empty());
+                OptionalLong.empty(),
+                ActionRow.Execution.none());
 
         Inspection inspection = ActionInspection.of(untimed);
 
@@ -105,7 +107,8 @@ class ActionInspectionTest {
                 Optional.empty(),
                 Optional.of("cfg-1"),
                 Optional.empty(),
-                OptionalLong.of(12));
+                OptionalLong.of(12),
+                ActionRow.Execution.none());
 
         assertThat(noteOf(ActionInspection.of(zero), "Duration"))
                 .hasValueSatisfying(note -> assertThat(note).contains("8.4.x"));

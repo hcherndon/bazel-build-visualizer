@@ -1,5 +1,9 @@
 package com.holtherndon.bazelviz.ui.session;
 
+import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
+import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
+import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
+import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
@@ -146,6 +150,47 @@ public interface EntityReader extends AutoCloseable {
             return total() == 0;
         }
     }
+
+    // ------------------------------------------------------------ enrichment
+
+    /**
+     * Every execution-log attempt attached to this action, in log order.
+     *
+     * <p>Usually empty, and that is not a defect: two thirds of a build's
+     * actions run inside the Bazel server and never spawn a subprocess, so no
+     * attempt record exists for them (K1 in docs/exec-log-and-profile.md).
+     */
+    List<AttemptRow> attemptsForAction(long actionId);
+
+    /**
+     * Every attempt carrying this label.
+     *
+     * <p>How a test's attempts are reached, since a test spawn matches no
+     * action by output on any Bazel version (K2). Returns both spawns a test
+     * produces, in log order.
+     */
+    List<AttemptRow> attemptsForLabel(String label);
+
+    /** How much of the build each enrichment source covers. */
+    EnrichmentQueries.Coverage enrichmentCoverage();
+
+    /** The build's phases, in order, as the profile reported them. */
+    List<EnrichmentQueries.Phase> buildPhases();
+
+    /** Bazel's own critical path, in order and unjoined to actions. */
+    List<EnrichmentQueries.CriticalPathComponent> bazelCriticalPath();
+
+    /** How many attempts ran under each runner. */
+    List<EnrichmentQueries.RunnerCount> runnerCounts();
+
+    /**
+     * The profile's absolute anchor and what it means, or empty when no
+     * profile was imported.
+     */
+    Optional<ProfileAnchor> profileAnchor();
+
+    /** Every enrichment task and how it ended. */
+    List<EnrichmentTask> enrichmentTasks();
 
     /** Asks the in-flight query to stop, from another thread. */
     void cancelRunningQuery();
