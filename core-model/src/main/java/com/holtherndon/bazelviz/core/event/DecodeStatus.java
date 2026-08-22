@@ -55,4 +55,23 @@ public enum DecodeStatus {
     public boolean isPersistable() {
         return this != NOT_ATTEMPTED;
     }
+
+    /**
+     * Reads a status back from the {@code bep_events.decode_status} column.
+     *
+     * <p>An unrecognized value is rejected rather than mapped onto a plausible
+     * neighbour: it means the database was written by a build that knew a
+     * status this one does not, and guessing which would misreport how much of
+     * the session was understood.
+     */
+    public static DecodeStatus parse(String value) {
+        try {
+            return valueOf(value);
+        } catch (IllegalArgumentException unknown) {
+            throw new IllegalArgumentException(
+                    "unrecognized decode status '" + value
+                            + "'; the session may have been written by a newer version",
+                    unknown);
+        }
+    }
 }

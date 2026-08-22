@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.storage.events;
 
+import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import java.nio.file.Path;

@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.storage.events;
 
+import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.storage.SessionDatabase;

@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.storage.events;
 
+import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import java.util.Objects;
 import java.util.OptionalLong;
 
