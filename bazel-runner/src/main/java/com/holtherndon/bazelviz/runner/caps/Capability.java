@@ -74,6 +74,16 @@ public enum Capability {
     /** JSON execution log. Large; offered for interoperability, not for analysis. */
     EXECUTION_LOG_JSON("execution_log_json_file"),
 
+    /**
+     * Make Bazel 6.5.0 report spawn durations in the execution log.
+     *
+     * <p>Exists only on 6.5.0 and defaults to false. Without it that version's
+     * log carries no metrics submessage at all; with it there are durations,
+     * and still no spawn start on any setting (finding S2 in
+     * docs/exec-log-and-profile.md).
+     */
+    EXECUTION_LOG_SPAWN_METRICS("experimental_execution_log_spawn_metrics"),
+
     /** Write a Chrome-trace JSON profile. */
     JSON_TRACE_PROFILE("generate_json_trace_profile"),
 
@@ -83,8 +93,19 @@ public enum Capability {
     /** Keep the profile unabridged, so per-action spans survive. */
     UNSLIM_PROFILE("slim_profile"),
 
-    /** Label profile spans with their target, which is what makes them attributable. */
+    /** Label profile spans with their target. */
     PROFILE_TARGET_LABELS("experimental_profile_include_target_label"),
+
+    /**
+     * Label profile spans with the output they produced.
+     *
+     * <p>The load-bearing one: {@code out} is the same key the BEP uses for
+     * action identity, and it is the only thing tying a span to an action.
+     * {@code args.target} was measured empty on 7.6.1 for the workspace-status
+     * action, so the label flag is not a substitute (finding P4). Defaults to
+     * false on all four supported versions.
+     */
+    PROFILE_PRIMARY_OUTPUT("experimental_profile_include_primary_output"),
 
     /** Ask {@code aquery} for protobuf output. */
     AQUERY_PROTO_OUTPUT("output"),

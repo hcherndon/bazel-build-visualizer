@@ -46,6 +46,8 @@ public enum CapturePreset {
                     Capability.PROFILE_PATH,
                     Capability.UNSLIM_PROFILE,
                     Capability.PROFILE_TARGET_LABELS,
+                    Capability.PROFILE_PRIMARY_OUTPUT,
+                    Capability.EXECUTION_LOG_SPAWN_METRICS,
                     Capability.AQUERY_PROTO_OUTPUT)),
 
     /**
@@ -64,6 +66,8 @@ public enum CapturePreset {
                     Capability.PROFILE_PATH,
                     Capability.UNSLIM_PROFILE,
                     Capability.PROFILE_TARGET_LABELS,
+                    Capability.PROFILE_PRIMARY_OUTPUT,
+                    Capability.EXECUTION_LOG_SPAWN_METRICS,
                     Capability.AQUERY_PROTO_OUTPUT,
                     Capability.CQUERY_PROTO_OUTPUT)),
 

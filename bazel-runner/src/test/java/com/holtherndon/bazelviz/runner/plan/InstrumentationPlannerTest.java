@@ -263,12 +263,94 @@ class InstrumentationPlannerTest {
                 parse("build", "//..."), fullCapabilities(), CapturePreset.PERFORMANCE_DIAGNOSTICS,
                 raw, Optional.of(ENDPOINT)));
 
-        assertThat(plan.sourceAvailability().entry(DataSource.PROFILE).availability())
-                .isEqualTo(SourceAvailability.Availability.UNAVAILABLE);
+        // aquery and cquery arrive in Phase 5. The execution log and the
+        // profile were on this list until Phase 4 and are not any more.
         assertThat(plan.sourceAvailability().entry(DataSource.AQUERY).reason())
                 .contains("does not capture it yet");
         assertThat(plan.warnings()).anyMatch(warning -> warning.contains("does not capture yet"));
         assertThat(plan.canLaunch()).isTrue();
+    }
+
+    @Test
+    @DisplayName("the execution log and the profile are planned, with the flags that make them usable")
+    void enrichmentSourcesArePlanned(@TempDir Path raw) {
+        InstrumentationPlan plan = planner.plan(PlanRequest.initial(
+                parse("build", "//..."), fullCapabilities(), CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                raw, Optional.of(ENDPOINT)));
+
+        assertThat(plan.sourceAvailability().entry(DataSource.EXECUTION_LOG).availability())
+                .isEqualTo(SourceAvailability.Availability.PLANNED);
+        assertThat(plan.sourceAvailability().entry(DataSource.PROFILE).availability())
+                .isEqualTo(SourceAvailability.Availability.PLANNED);
+
+        List<String> flags = plan.addedFlags().stream().map(AddedFlag::argv).toList();
+        assertThat(flags).anyMatch(flag -> flag.startsWith("--execution_log_compact_file="));
+        assertThat(flags).anyMatch(flag -> flag.startsWith("--profile="));
+        // Without these the profile is not worth importing: slimming is the
+        // default and cuts per-action events from about thirty to two (X3),
+        // and the primary output is the only thing tying a span to an action
+        // (P4).
+        assertThat(flags).contains("--noslim_profile");
+        assertThat(flags).contains("--experimental_profile_include_primary_output");
+    }
+
+    @Test
+    @DisplayName("only one execution-log format is ever asked for")
+    void oneExecutionLogFormatOnly(@TempDir Path raw) {
+        InstrumentationPlan plan = planner.plan(PlanRequest.initial(
+                parse("build", "//..."), fullCapabilities(), CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                raw, Optional.of(ENDPOINT)));
+
+        // From Bazel 7 on, naming two is a command-line error that fails the
+        // build before analysis (X2).
+        assertThat(plan.addedFlags().stream()
+                        .map(AddedFlag::argv)
+                        .filter(flag -> flag.contains("execution_log_") && flag.contains("_file="))
+                        .toList())
+                .hasSize(1);
+    }
+
+    @Test
+    @DisplayName("a user's own execution-log flag is left alone rather than fought with")
+    void theirExecutionLogWins(@TempDir Path raw) {
+        InstrumentationPlan plan = planner.plan(PlanRequest.initial(
+                parse("build", "--execution_log_json_file=/tmp/theirs.json", "//..."),
+                fullCapabilities(), CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                raw, Optional.of(ENDPOINT)));
+
+        // Adding ours alongside theirs fails the build outright; the formats
+        // are mutually exclusive, so this is not a shadowing problem but a
+        // hard error.
+        assertThat(plan.addedFlags().stream().map(AddedFlag::argv))
+                .noneMatch(flag -> flag.contains("execution_log_compact_file"));
+        assertThat(plan.sourceAvailability().entry(DataSource.EXECUTION_LOG).availability())
+                .isEqualTo(SourceAvailability.Availability.DECLINED);
+        assertThat(plan.warnings())
+                .anyMatch(warning -> warning.contains("refuses more than one format"));
+        assertThat(plan.sourceAvailability().entry(DataSource.EXECUTION_LOG).reason())
+                .contains("only one format at a time");
+    }
+
+    @Test
+    @DisplayName("Bazel 6.5.0 gets the binary format and the spawn-metrics flag")
+    void sixFiveGetsTheLegacyPath(@TempDir Path raw) {
+        BazelCapabilities six = capabilities(
+                spec("bes_backend", "build", "test", "run"),
+                spec("build_event_publish_all_actions", "build", "test", "run"),
+                spec("execution_log_binary_file", "build", "test"),
+                spec("experimental_execution_log_spawn_metrics", "build", "test"),
+                spec("generate_json_trace_profile", "build", "test"),
+                spec("profile", "build", "test"));
+
+        InstrumentationPlan plan = planner.plan(PlanRequest.initial(
+                parse("build", "//..."), six, CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                raw, Optional.of(ENDPOINT)));
+
+        List<String> flags = plan.addedFlags().stream().map(AddedFlag::argv).toList();
+        // 6.5.0 has no compact format (X1), and without the metrics flag its
+        // log records what ran and not how long it took (S2).
+        assertThat(flags).anyMatch(flag -> flag.startsWith("--execution_log_binary_file="));
+        assertThat(flags).contains("--experimental_execution_log_spawn_metrics");
     }
 
     // ------------------------------------------------------------------ setup
@@ -300,7 +382,12 @@ class InstrumentationPlannerTest {
                 spec("build_event_json_file", "build", "test", "run"),
                 spec("build_event_publish_all_actions", "build", "test", "run"),
                 spec("execution_log_compact_file", "build", "test"),
+                spec("execution_log_binary_file", "build", "test"),
+                spec("execution_log_json_file", "build", "test"),
                 spec("generate_json_trace_profile", "build", "test"),
+                spec("slim_profile", "build", "test"),
+                spec("experimental_profile_include_primary_output", "build", "test"),
+                spec("experimental_profile_include_target_label", "build", "test"),
                 spec("profile", "build", "test"),
                 spec("output", "aquery", "cquery"));
     }

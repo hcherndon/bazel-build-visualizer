@@ -108,6 +108,26 @@ public final class BazelExecutableResolver {
      */
     public static BazelExecutable resolve(String entered, Optional<Path> workspace)
             throws ExecutableNotUsableException {
+        return resolve(entered, workspace, Map.of());
+    }
+
+    /**
+     * Resolves the executable under the environment the build will run with.
+     *
+     * <p>The environment matters because {@code bazelisk} reads
+     * {@code USE_BAZEL_VERSION} from it, so probing with a different one
+     * identifies a different Bazel. That is not hypothetical: capability
+     * detection keys off the version this returns, and a mismatch makes the
+     * planner inject a flag the build then rejects outright — measured, as a
+     * Bazel 6.5.0 build failing on {@code --execution_log_compact_file} that
+     * the detector had reported as supported because it had probed 9.2.0.
+     *
+     * @param environment variables the build will run with; the rest of this
+     *     process's environment is inherited either way
+     */
+    public static BazelExecutable resolve(
+            String entered, Optional<Path> workspace, Map<String, String> environment)
+            throws ExecutableNotUsableException {
         Objects.requireNonNull(entered, "entered");
         Path resolved = resolvePath(entered);
         if (resolved == null) {
@@ -122,7 +142,7 @@ public final class BazelExecutableResolver {
             result = Subprocess.run(
                     List.of(resolved.toString(), "--version"),
                     workspace.orElse(null),
-                    Map.of(),
+                    environment,
                     VERSION_TIMEOUT);
         } catch (IOException | InterruptedException failure) {
             if (failure instanceof InterruptedException) {

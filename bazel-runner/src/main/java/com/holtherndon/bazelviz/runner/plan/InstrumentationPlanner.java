@@ -56,6 +56,15 @@ public final class InstrumentationPlanner {
     /** File name for the BEP fallback, under the session's {@code raw/}. */
     public static final String FALLBACK_BEP_FILE = "bep-fallback.bin";
 
+    /** Where a captured compact execution log is written. */
+    public static final String EXECUTION_LOG_FILE = "execution-log.zst";
+
+    /** Where a captured pre-compact execution log is written. */
+    public static final String EXECUTION_LOG_BINARY_FILE = "execution-log.bin";
+
+    /** Where a captured trace profile is written. */
+    public static final String PROFILE_FILE = "profile.json";
+
     /**
      * The upload timeout injected alongside the local backend.
      *
@@ -159,6 +168,8 @@ public final class InstrumentationPlanner {
 
         // --- the rest of the preset -----------------------------------------
         addPublishAllActions(request, capabilities, added, conflicts, availability, userFlags);
+        addExecutionLog(request, capabilities, added, outputs, availability, warnings, userFlags);
+        addProfile(request, capabilities, added, outputs, availability, warnings, userFlags);
         reportUnimplemented(request, availability, warnings);
 
         // --- destinations ----------------------------------------------------
@@ -438,13 +449,232 @@ public final class InstrumentationPlanner {
      * "not implemented in this version" is a worse answer than capturing them
      * and a much better one than silence.
      */
+
+    /**
+     * The execution log: which format, and the flags that make it usable.
+     *
+     * <h2>Format choice</h2>
+     *
+     * <p>Compact where it exists, binary otherwise. The compact format is
+     * 3.5x smaller than binary for identical content and is the only one
+     * carrying an invocation header, which is the only way a log can be shown
+     * to belong to its session (S4, V2 in docs/exec-log-and-profile.md).
+     * Bazel 6.5.0 has no compact format at all (X1).
+     *
+     * <p>Only one may be asked for: from Bazel 7 on, naming two is a
+     * command-line error that fails the build before analysis (X2). So this
+     * adds exactly one flag and never a fallback.
+     *
+     * <h2>The 6.5.0 extra</h2>
+     *
+     * <p>{@code --experimental_execution_log_spawn_metrics} exists only on
+     * 6.5.0 and defaults to false. Without it a 6.5.0 log carries no metrics
+     * submessage at all. With it there are durations — and still no spawn
+     * start, on any setting (S2), which is why the attempt rows from that
+     * version say so rather than leaving a blank.
+     */
+    private void addExecutionLog(
+            PlanRequest request,
+            BazelCapabilities capabilities,
+            List<AddedFlag> added,
+            List<Path> outputs,
+            Map<DataSource, SourceAvailability.Entry> availability,
+            List<String> warnings,
+            UserFlags userFlags) {
+        if (!request.preset().requestedCapabilities().contains(Capability.EXECUTION_LOG_COMPACT)) {
+            return;
+        }
+
+        Capability chosen = Capability.EXECUTION_LOG_COMPACT;
+        String fileName = EXECUTION_LOG_FILE;
+        if (!capabilities.status(chosen).isSupported()) {
+            chosen = Capability.EXECUTION_LOG_BINARY;
+            fileName = EXECUTION_LOG_BINARY_FILE;
+        }
+        CapabilityStatus status = capabilities.status(chosen);
+        if (!status.isSupported()) {
+            availability.put(DataSource.EXECUTION_LOG, new SourceAvailability.Entry(
+                    SourceAvailability.Availability.UNAVAILABLE,
+                    explain(status, "--execution_log_compact_file"),
+                    Optional.empty()));
+            return;
+        }
+
+        String flagName = capabilities.preferredFlag(chosen).orElse(chosen.flagNames().getFirst());
+        Path file = request.sessionRawDirectory().resolve(fileName).toAbsolutePath();
+
+        // Their flag wins if they named one: the formats are mutually
+        // exclusive, so adding ours alongside theirs fails the build outright
+        // rather than shadowing it.
+        for (Capability format : List.of(Capability.EXECUTION_LOG_COMPACT,
+                Capability.EXECUTION_LOG_BINARY, Capability.EXECUTION_LOG_JSON)) {
+            for (String name : format.flagNames()) {
+                if (userFlags.has(name)) {
+                    availability.put(DataSource.EXECUTION_LOG, new SourceAvailability.Entry(
+                            SourceAvailability.Availability.DECLINED,
+                            "your command already writes an execution log, and Bazel accepts only"
+                                    + " one format at a time",
+                            Optional.of("--" + name)));
+                    warnings.add("Your command already writes an execution log with --" + name
+                            + ", and Bazel refuses more than one format in a single invocation."
+                            + " No execution-log flag was added; import that file afterwards.");
+                    return;
+                }
+            }
+        }
+
+        added.add(new AddedFlag(
+                "--" + flagName + "=" + file,
+                AddedFlag.Placement.COMMAND,
+                chosen,
+                status,
+                "Records every subprocess the build ran: where it ran, whether it was a cache"
+                        + " hit, and where its time went.",
+                DataSource.EXECUTION_LOG,
+                Overhead.MEDIUM,
+                Optional.of(file),
+                // Every spawn's argv and environment, so absolute paths,
+                // command arguments and environment values all appear.
+                true,
+                true));
+        outputs.add(file);
+
+        // 6.5.0 only, and off by default. Adds durations; never adds a start.
+        CapabilityStatus spawnMetrics = capabilities.status(Capability.EXECUTION_LOG_SPAWN_METRICS);
+        if (spawnMetrics.isSupported()) {
+            added.add(new AddedFlag(
+                    "--experimental_execution_log_spawn_metrics",
+                    AddedFlag.Placement.COMMAND,
+                    Capability.EXECUTION_LOG_SPAWN_METRICS,
+                    spawnMetrics,
+                    "Makes this Bazel report how long each subprocess took. Without it the log"
+                            + " records what ran and not how long it took.",
+                    DataSource.EXECUTION_LOG,
+                    Overhead.LOW,
+                    Optional.empty(),
+                    false,
+                    true));
+        }
+
+        availability.put(DataSource.EXECUTION_LOG, new SourceAvailability.Entry(
+                SourceAvailability.Availability.PLANNED,
+                chosen == Capability.EXECUTION_LOG_COMPACT
+                        ? "captured in the compact format after the build"
+                        : "captured in the pre-compact binary format, which this Bazel is the"
+                                + " only supported version to require",
+                Optional.of("--" + flagName)));
+    }
+
+    /**
+     * The trace profile, and the three flags without which it is not worth
+     * importing.
+     *
+     * <p>{@code --noslim_profile}: slimming is the default on every supported
+     * version and cuts per-action events from 22–30 down to 2 (X3). A profile
+     * captured without this has none of what Phase 4 reads it for.
+     *
+     * <p>{@code --experimental_profile_include_primary_output}: the {@code out}
+     * field is the only thing tying a span to an action, and it defaults off
+     * (P4).
+     *
+     * <p>{@code --experimental_profile_include_target_label}: useful but not
+     * load-bearing — {@code args.target} was measured empty on 7.6.1 for the
+     * workspace-status action, so {@code out} is the key that is relied on.
+     */
+    private void addProfile(
+            PlanRequest request,
+            BazelCapabilities capabilities,
+            List<AddedFlag> added,
+            List<Path> outputs,
+            Map<DataSource, SourceAvailability.Entry> availability,
+            List<String> warnings,
+            UserFlags userFlags) {
+        if (!request.preset().requestedCapabilities().contains(Capability.JSON_TRACE_PROFILE)) {
+            return;
+        }
+        CapabilityStatus status = capabilities.status(Capability.PROFILE_PATH);
+        if (!status.isSupported()) {
+            availability.put(DataSource.PROFILE, new SourceAvailability.Entry(
+                    SourceAvailability.Availability.UNAVAILABLE,
+                    explain(status, "--profile"),
+                    Optional.empty()));
+            return;
+        }
+        if (userFlags.has("profile")) {
+            availability.put(DataSource.PROFILE, new SourceAvailability.Entry(
+                    SourceAvailability.Availability.DECLINED,
+                    "your command already chooses where the profile is written",
+                    Optional.of("--profile")));
+            warnings.add("Your command already sets --profile, so no profile flag was added."
+                    + " Import that file afterwards if you want its phases and critical path.");
+            return;
+        }
+
+        Path file = request.sessionRawDirectory().resolve(PROFILE_FILE).toAbsolutePath();
+        added.add(new AddedFlag(
+                "--profile=" + file,
+                AddedFlag.Placement.COMMAND,
+                Capability.PROFILE_PATH,
+                status,
+                "Writes the trace profile where this application can read it.",
+                DataSource.PROFILE,
+                Overhead.MEDIUM,
+                Optional.of(file),
+                // Span names carry target labels and output paths.
+                true,
+                true));
+        outputs.add(file);
+
+        addProfileSwitch(capabilities, added, Capability.JSON_TRACE_PROFILE,
+                "--generate_json_trace_profile",
+                "Turns the profile on explicitly rather than relying on its default.");
+        addProfileSwitch(capabilities, added, Capability.UNSLIM_PROFILE,
+                "--noslim_profile",
+                "Keeps the per-action events. Slimming is Bazel's default and cuts them from"
+                        + " about thirty to two, which is all of what this application reads a"
+                        + " profile for.");
+        addProfileSwitch(capabilities, added, Capability.PROFILE_PRIMARY_OUTPUT,
+                "--experimental_profile_include_primary_output",
+                "Labels each span with the output it produced. Without it no span can be tied"
+                        + " to an action.");
+        addProfileSwitch(capabilities, added, Capability.PROFILE_TARGET_LABELS,
+                "--experimental_profile_include_target_label",
+                "Labels each span with its target.");
+
+        availability.put(DataSource.PROFILE, new SourceAvailability.Entry(
+                SourceAvailability.Availability.PLANNED,
+                "captured after the build, unslimmed and with per-action attribution",
+                Optional.of("--profile")));
+    }
+
+    private void addProfileSwitch(
+            BazelCapabilities capabilities,
+            List<AddedFlag> added,
+            Capability capability,
+            String flag,
+            String why) {
+        CapabilityStatus status = capabilities.status(capability);
+        if (!status.isSupported()) {
+            return;
+        }
+        added.add(new AddedFlag(
+                flag,
+                AddedFlag.Placement.COMMAND,
+                capability,
+                status,
+                why,
+                DataSource.PROFILE,
+                Overhead.LOW,
+                Optional.empty(),
+                false,
+                true));
+    }
+
     private void reportUnimplemented(
             PlanRequest request,
             Map<DataSource, SourceAvailability.Entry> availability,
             List<String> warnings) {
         Map<DataSource, Capability> pending = new LinkedHashMap<>();
-        pending.put(DataSource.EXECUTION_LOG, Capability.EXECUTION_LOG_COMPACT);
-        pending.put(DataSource.PROFILE, Capability.JSON_TRACE_PROFILE);
         pending.put(DataSource.AQUERY, Capability.AQUERY_PROTO_OUTPUT);
         pending.put(DataSource.CQUERY, Capability.CQUERY_PROTO_OUTPUT);
 

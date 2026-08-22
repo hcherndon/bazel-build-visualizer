@@ -41,7 +41,13 @@ import com.holtherndon.bazelviz.storage.events.ImportDiagnostic;
 import com.holtherndon.bazelviz.storage.events.StreamRegistry;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import com.holtherndon.bazelviz.storage.schema.SchemaV1;
+import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
+import com.holtherndon.bazelviz.enrich.execlog.EnvironmentRedactor;
+import com.holtherndon.bazelviz.enrich.execlog.ExecutionLogImporter;
+import com.holtherndon.bazelviz.enrich.profile.ProfileImporter;
+import com.holtherndon.bazelviz.runner.plan.AddedFlag;
 import java.io.IOException;
+import java.util.Map;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
@@ -139,13 +145,31 @@ public final class CaptureCoordinator implements AutoCloseable {
      * a port afterwards would mean the command the user approved is not the
      * command that runs, which is the one thing ADR-007 exists to prevent.
      */
+    /**
+     * The request's environment overrides that set a value, as a plain map.
+     *
+     * <p>The unsets are dropped: they matter to the build and not to
+     * identifying the binary, and {@code Subprocess} has no way to express
+     * "remove this variable" anyway.
+     */
+    private Map<String, String> setVariables() {
+        Map<String, String> set = new java.util.LinkedHashMap<>();
+        request.environmentOverrides().forEach((name, value) ->
+                value.ifPresent(present -> set.put(name, present)));
+        return set;
+    }
+
     public synchronized Preflight preflight() throws IOException {
         if (preflight != null) {
             return preflight;
         }
         WorkspaceInfo workspace = WorkspaceDetector.detect(request.workingDirectory());
-        BazelExecutable executable =
-                BazelExecutableResolver.resolve(request.executable(), workspace.workspaceRoot());
+        // Resolved under the environment the build will run with, so that
+        // bazelisk's USE_BAZEL_VERSION picks the same Bazel here as it will
+        // there. Without this the detector probes one version and the build
+        // runs another, and the planner injects flags the build rejects.
+        BazelExecutable executable = BazelExecutableResolver.resolve(
+                request.executable(), workspace.workspaceRoot(), setVariables());
         var capabilities = detector.detect(executable, startupArgsOf(executable, workspace));
 
         server = new BesServer(sink, BesServerConfig.defaults()
@@ -357,6 +381,10 @@ public final class CaptureCoordinator implements AutoCloseable {
             // on the import path, where it used to be the only caller.
             reportNormalizationAnomalies(entities, events, pipeline, warnings);
             finalizeIndexesQuietly(entities, events, warnings);
+            // After the indexes, because correlation joins actions by their
+            // primary output. Before the database closes, because that is the
+            // connection the imports write through.
+            enrichQuietly(database, executedPlan, layout, warnings);
             closeQuietly(entities, "entity writer", warnings);
             closeQuietly(events, "event writer", warnings);
             closeQuietly(streams, "stream registry", warnings);
@@ -596,6 +624,88 @@ public final class CaptureCoordinator implements AutoCloseable {
             return SessionState.INCOMPLETE;
         }
         return summary.lagged() ? SessionState.READY_WITH_WARNINGS : SessionState.READY;
+    }
+
+
+    /**
+     * Runs the post-build enrichment imports, if the plan asked for their
+     * files.
+     *
+     * <h2>Quietly, and that is the point</h2>
+     *
+     * <p>Plan 21.4: each enrichment task is independent and a failure must not
+     * invalidate the BEP. By the time this runs the build events are written,
+     * normalized and indexed, and nothing here can undo that — the importers
+     * write only to the tables schema v4 added, in their own transactions, and
+     * record their own failures in {@code enrichment_tasks}.
+     *
+     * <p>So a missing or corrupt execution log costs the user the execution
+     * log and nothing else. It does not fail the capture, does not change the
+     * session's terminal state, and adds a warning only when a file the plan
+     * promised is not there — which is worth saying, because the user asked
+     * for it.
+     */
+    private void enrichQuietly(
+            SessionDatabase database,
+            InstrumentationPlan plan,
+            ManagedSessionLayout layout,
+            List<String> warnings) {
+        if (database == null) {
+            return;
+        }
+        for (AddedFlag flag : plan.addedFlags()) {
+            Optional<Path> written = flag.writesFile();
+            if (written.isEmpty()) {
+                continue;
+            }
+            Path file = written.get();
+            try {
+                switch (flag.enables()) {
+                    case EXECUTION_LOG -> importExecutionLog(database, file, warnings);
+                    case PROFILE -> importProfile(database, file, warnings);
+                    default -> {
+                        // BEP files are the capture path's own business.
+                    }
+                }
+            } catch (SQLException | RuntimeException failure) {
+                // The task row already records this; the warning is for the
+                // capture summary, which is read before anyone opens the
+                // coverage panel.
+                log.warn("enrichment from {} failed", file, failure);
+                warnings.add("could not read " + file.getFileName() + ": " + failure);
+            }
+        }
+    }
+
+    private void importExecutionLog(SessionDatabase database, Path file, List<String> warnings)
+            throws SQLException {
+        if (!Files.exists(file)) {
+            warnings.add("Bazel was asked to write an execution log to " + file
+                    + " and did not, so nothing is known about where actions ran.");
+            return;
+        }
+        ExecutionLogImporter.Result result =
+                new ExecutionLogImporter(database.writerConnection(), new EnvironmentRedactor())
+                        .importFrom(file);
+        if (result.state() != EnrichmentTask.State.SUCCEEDED) {
+            warnings.add("the execution log could not be imported: "
+                    + result.error().orElse("unknown reason"));
+        }
+    }
+
+    private void importProfile(SessionDatabase database, Path file, List<String> warnings)
+            throws SQLException {
+        if (!Files.exists(file)) {
+            warnings.add("Bazel was asked to write a trace profile to " + file
+                    + " and did not, so there are no build phases and no critical path.");
+            return;
+        }
+        ProfileImporter.Result result =
+                new ProfileImporter(database.writerConnection()).importFrom(file);
+        if (result.state() != EnrichmentTask.State.SUCCEEDED) {
+            warnings.add("the trace profile could not be imported: "
+                    + result.error().orElse("unknown reason"));
+        }
     }
 
     private SessionState finalizeSession(

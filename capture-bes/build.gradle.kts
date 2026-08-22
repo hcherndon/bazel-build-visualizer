@@ -28,6 +28,11 @@ dependencies {
     // packaged alongside libraries carrying their own Netty.
     implementation(libs.grpc.netty.shaded)
 
+    // Post-build enrichment. The coordinator runs it because it is the only
+    // thing that knows when the build finished and still holds the session's
+    // writer connection; the imports themselves know nothing about capture.
+    implementation(project(":enrichment"))
+
     testImplementation(project(":test-support"))
     testImplementation(project(":bep-codec"))
     testImplementation(project(":proto"))
