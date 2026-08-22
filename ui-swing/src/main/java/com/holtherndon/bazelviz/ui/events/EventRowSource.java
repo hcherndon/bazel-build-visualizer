@@ -27,22 +27,20 @@ import java.util.Optional;
  *   <li>The predicted first id is checked against what came back. A mismatch
  *       demotes the index and the fetch is retried once, rather than the table
  *       showing rows from the wrong place.</li>
- *   <li>Each row is completed with its raw location and id display.</li>
  * </ol>
  *
- * <h2>The per-row lookup, and why it is here</h2>
+ * <h2>One query per page</h2>
  *
- * <p>Step 4 costs one primary-key lookup per row. {@code EventSummary} — what
- * the keyset page returns — carries neither {@code raw_length} nor the
- * canonical id display, and both are columns the Phase 1 event table is
- * required to show. {@code storage-sqlite} is frozen for this phase, so the
- * honest options were to fetch them per row or to leave two required columns
- * out. This fetches them: a page of {@value #DEFAULT_PAGE_SIZE} rows costs one
- * range scan plus that many indexed point lookups, all on the fetch executor
- * and never on the EDT. When the storage module next opens, the fix is a
- * single query returning the summary columns joined to
- * {@code raw_length} and {@code bep_event_ids.display}, and this loop collapses
- * into it.
+ * <p>A page costs one range scan and nothing else. {@code EventSummary} carries
+ * the raw location and the canonical id display alongside the summary columns,
+ * so the rows are built straight from what the keyset query returned.
+ *
+ * <p>It was not always so: this used to add an indexed point lookup per row for
+ * those two columns, because {@code storage-sqlite}'s schema was frozen for
+ * Phase 1 and the alternative was leaving two required columns out. The Phase 1
+ * audit closed that by widening the summary query, and this comment is kept
+ * because the shape of the fix — widen the query rather than loop — is the one
+ * to reach for the next time a column is missing from a page.
  *
  * <p>What is <em>not</em> fetched per row is the payload itself. The table
  * shows how many bytes a record occupies; the bytes themselves are read only
