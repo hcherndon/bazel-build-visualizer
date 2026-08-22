@@ -6,6 +6,18 @@ import com.holtherndon.bazelviz.capture.file.importer.ImportResult;
 import com.holtherndon.bazelviz.capture.file.importer.UnsupportedSourceException;
 import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.format.session.SessionManifest;
+import com.holtherndon.bazelviz.capture.live.CaptureProgress;
+import com.holtherndon.bazelviz.capture.live.CaptureRequest;
+import com.holtherndon.bazelviz.capture.live.CaptureResult;
+import com.holtherndon.bazelviz.capture.live.Preflight;
+import com.holtherndon.bazelviz.runner.plan.CapturePreset;
+import com.holtherndon.bazelviz.runner.plan.PlanConflict;
+import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
+import com.holtherndon.bazelviz.ui.capture.CapturePanel;
+import com.holtherndon.bazelviz.ui.capture.CaptureStatusModel;
+import com.holtherndon.bazelviz.ui.capture.ConsoleView;
+import com.holtherndon.bazelviz.ui.capture.InstrumentationPlanDialog;
+import com.holtherndon.bazelviz.ui.capture.LaunchController;
 import com.holtherndon.bazelviz.ui.events.EventValueFormat;
 import com.holtherndon.bazelviz.ui.events.EventsView;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
@@ -79,16 +91,6 @@ public final class MainWindow extends JFrame {
      */
     private static final String APP_VERSION = "0.1.0-SNAPSHOT";
 
-    // Capture presets A-D (plan section 4.2); Performance Diagnostics is the
-    // recommended default. Placeholder-only until the launcher bar becomes
-    // functional with bazel-runner in Phase 2.
-    private static final String[] PRESET_NAMES = {
-        "Live Essentials",
-        "Performance Diagnostics",
-        "Full Graph Diagnostics",
-        "Custom",
-    };
-
     // Unknown-is-not-zero: counts are unknown until a session exists, so the
     // status bar shows an em dash, never "0".
     private static final String UNKNOWN = EventValueFormat.UNKNOWN;
@@ -97,6 +99,7 @@ public final class MainWindow extends JFrame {
     private final SessionManager sessions;
     private final EventsView eventsView = new EventsView();
     private final ExecutorService worker;
+    private final ExecutorService captureWorker;
     private final ImportController importController;
 
     private final JLabel sessionStatus = new JLabel("Session: none");
@@ -105,6 +108,15 @@ public final class MainWindow extends JFrame {
     private final JMenuItem cancelImportItem = new JMenuItem("Cancel Import");
     private final JMenuItem closeSessionItem = new JMenuItem("Close Session");
     private final JList<NavEntry> nav = new JList<>(NavEntry.values());
+
+    private final JComboBox<CapturePreset> presetChoice = new JComboBox<>();
+    private final JTextField commandField = new JTextField();
+    private final JTextField workspaceField = new JTextField();
+    private final JButton runButton = new JButton("Run");
+    private final CapturePanel capturePanel = new CapturePanel();
+    private final ConsoleView consoleView = new ConsoleView();
+    private final LaunchController launchController;
+    private CaptureStatusModel captureStatus = CaptureStatusModel.idle();
 
     private final CardLayout cardLayout = new CardLayout();
     private final JPanel cards = new JPanel(cardLayout);
@@ -128,6 +140,16 @@ public final class MainWindow extends JFrame {
         this.importController = new ImportController(
                 new BepImporter(sessions), worker, SwingUtilities::invokeLater,
                 new ImportProgressModel());
+        // A capture blocks its worker for the whole build, so it gets its own
+        // thread rather than sharing the import worker: a running build must
+        // not make "open a session" queue behind it.
+        this.captureWorker = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "bbv-capture");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.launchController = new LaunchController(
+                captureWorker, SwingUtilities::invokeLater, new CaptureListener());
 
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setMinimumSize(new Dimension(960, 640));
@@ -135,8 +157,7 @@ public final class MainWindow extends JFrame {
         setLocationByPlatform(true);
 
         for (NavEntry entry : NavEntry.values()) {
-            cards.add(entry == NavEntry.EVENTS ? eventsView : placeholderCard(entry),
-                    entry.cardName());
+            cards.add(cardFor(entry), entry.cardName());
         }
 
         JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, buildNavigation(), cards);
@@ -157,6 +178,7 @@ public final class MainWindow extends JFrame {
         // for a count that is in fact available.
         eventsView.setRowCountListener(count -> eventStatus.setText("Events: "
                 + EventValueFormat.count(count)));
+        capturePanel.setStopAction(launchController::cancel);
         cancelImportItem.setEnabled(false);
         closeSessionItem.setEnabled(false);
     }
@@ -169,7 +191,12 @@ public final class MainWindow extends JFrame {
     @Override
     public void dispose() {
         eventsView.closeSession();
+        // Abandons a plan that was never launched, which releases its BES port.
+        // A running build is deliberately not killed here: closing a window is
+        // not a request to destroy a capture in progress.
+        launchController.discardPlan();
         worker.shutdownNow();
+        captureWorker.shutdownNow();
         super.dispose();
     }
 
@@ -416,23 +443,228 @@ public final class MainWindow extends JFrame {
         cardLayout.show(cards, NavEntry.EVENTS.cardName());
     }
 
+    // --------------------------------------------------------------- capturing
+
+    /**
+     * Preflights the launcher's command and shows the plan.
+     *
+     * <p>Never launches directly. The dialog is what launches, because the user
+     * has to see the effective command first (ADR-007) — and because a mandatory
+     * conflict has to be answered by a person, not defaulted past.
+     */
+    private void startLaunch() {
+        if (launchController.isBusy()) {
+            JOptionPane.showMessageDialog(this,
+                    "A build is already running. Cancel it before starting another.",
+                    "Capture in progress", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        String typed = commandField.getText().strip();
+        if (typed.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "Enter a Bazel command, such as: test //...",
+                    "Nothing to run", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        Path workingDirectory;
+        try {
+            workingDirectory = Path.of(workspaceField.getText().strip()).toAbsolutePath().normalize();
+        } catch (java.nio.file.InvalidPathException bad) {
+            JOptionPane.showMessageDialog(this,
+                    "That is not a usable directory: " + workspaceField.getText(),
+                    "Cannot launch", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        if (!java.nio.file.Files.isDirectory(workingDirectory)) {
+            JOptionPane.showMessageDialog(this,
+                    "The working directory does not exist:\n" + workingDirectory,
+                    "Cannot launch", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        CapturePreset preset = (CapturePreset) presetChoice.getSelectedItem();
+        CaptureRequest request = CaptureRequest.of(
+                        sessionsRoot, APP_VERSION, "bazel", workingDirectory,
+                        com.holtherndon.bazelviz.runner.command.CommandLineParser.tokenize(typed))
+                .withPreset(preset == null ? CapturePreset.defaultPreset() : preset);
+
+        runButton.setEnabled(false);
+        setCaptureStatus(captureStatus.withPhase(
+                CaptureStatusModel.Phase.PREPARING, "Resolving Bazel and probing capabilities…"));
+        showCard(NavEntry.CAPTURE);
+        launchController.preflight(request);
+    }
+
+    private void chooseWorkingDirectory() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        chooser.setDialogTitle("Working directory for the build");
+        String current = workspaceField.getText().strip();
+        if (!current.isEmpty()) {
+            File asFile = new File(current);
+            if (asFile.isDirectory()) {
+                chooser.setCurrentDirectory(asFile);
+            }
+        }
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            workspaceField.setText(chooser.getSelectedFile().getAbsolutePath());
+        }
+    }
+
+    private void setCaptureStatus(CaptureStatusModel model) {
+        this.captureStatus = model;
+        capturePanel.show(model);
+    }
+
+    private void showCard(NavEntry entry) {
+        nav.setSelectedValue(entry, true);
+        cardLayout.show(cards, entry.cardName());
+    }
+
+    /** Receives the capture's progress, always on the EDT. */
+    private final class CaptureListener implements LaunchController.Listener {
+
+        @Override
+        public void planReady(Preflight preflight) {
+            InstrumentationPlanDialog dialog =
+                    new InstrumentationPlanDialog(MainWindow.this, preflight);
+            dialog.setVisible(true);
+            switch (dialog.choice()) {
+                case LAUNCH -> {
+                    consoleView.clear();
+                    setCaptureStatus(captureStatus.withPhase(
+                            CaptureStatusModel.Phase.WAITING,
+                            "Listening on " + preflight.endpoint().besBackendUri()));
+                    launchController.launch();
+                }
+                case RESOLVE -> {
+                    PlanConflict.Kind kind = dialog.resolvedKind().orElseThrow();
+                    // Re-planned rather than patched: the plan is a value, and
+                    // the dialog reopens showing what the answer actually
+                    // changed instead of asserting that it worked.
+                    launchController.resolve(kind, dialog.resolutionId().orElseThrow());
+                }
+                case CANCEL -> {
+                    launchController.discardPlan();
+                    runButton.setEnabled(true);
+                    setCaptureStatus(CaptureStatusModel.idle());
+                }
+            }
+        }
+
+        @Override
+        public void captureStarted(Preflight preflight) {
+            setCaptureStatus(captureStatus.withPhase(
+                    CaptureStatusModel.Phase.CAPTURING,
+                    String.join(" ", preflight.plan().effective().userVisibleArgs())));
+            showCard(NavEntry.CONSOLE);
+        }
+
+        @Override
+        public void captureProgress(CaptureProgress progress) {
+            setCaptureStatus(captureStatus.withProgress(progress));
+            eventStatus.setText("Events: " + EventValueFormat.count(progress.normalized()));
+        }
+
+        @Override
+        public void consoleOutput(
+                ConsoleSink.ConsoleStream stream, byte[] data, int offset, int length) {
+            consoleView.append(data, offset, length);
+        }
+
+        @Override
+        public void captureFinished(CaptureResult result) {
+            runButton.setEnabled(true);
+            CaptureStatusModel.Phase phase = result.wasCancelled()
+                    ? CaptureStatusModel.Phase.CANCELLED
+                    : result.captureComplete()
+                            ? CaptureStatusModel.Phase.DONE
+                            : CaptureStatusModel.Phase.FAILED;
+            setCaptureStatus(captureStatus.withPhase(phase, describe(result)));
+            // Opened whatever the outcome: a cancelled or partial capture is
+            // still a session, and being able to look at it is the point.
+            openSessionDirectory(result.sessionRoot(), false);
+        }
+
+        @Override
+        public void captureFailed(Throwable failure) {
+            runButton.setEnabled(true);
+            setCaptureStatus(captureStatus.withPhase(
+                    CaptureStatusModel.Phase.FAILED, String.valueOf(failure.getMessage())));
+            log.warn("the capture could not run", failure);
+            JOptionPane.showMessageDialog(MainWindow.this,
+                    failure.getMessage() == null ? failure.toString() : failure.getMessage(),
+                    "Cannot capture", JOptionPane.ERROR_MESSAGE);
+        }
+
+        private String describe(CaptureResult result) {
+            StringBuilder text = new StringBuilder();
+            result.process().ifPresent(process -> text.append(
+                    process.isSuccess() ? "build succeeded"
+                            : process.wasCancelled() ? "build cancelled"
+                            : "build failed").append(" · "));
+            result.capture().ifPresent(capture -> text
+                    .append(capture.isComplete() ? "capture complete" : "capture incomplete")
+                    .append(" · ")
+                    .append(capture.normalized())
+                    .append(" events indexed"));
+            return text.toString();
+        }
+    }
+
     // ------------------------------------------------------------------ shell
 
-    private static JComponent buildLauncherBar() {
-        JComboBox<String> presets = new JComboBox<>(PRESET_NAMES);
-        presets.setEnabled(false);
+    /**
+     * The launcher (plan 24, Phase 2 UI deliverable).
+     *
+     * <p>A preset, a command and a working directory. Pressing Run does not run
+     * anything: it preflights, and the instrumentation dialog is what launches
+     * (ADR-007). The field holds the command exactly as the user would type it
+     * in a terminal, {@code bazel} omitted, because that is the thing they can
+     * check against what they meant.
+     */
+    private JComponent buildLauncherBar() {
+        for (CapturePreset preset : CapturePreset.values()) {
+            presetChoice.addItem(preset);
+        }
+        presetChoice.setSelectedItem(CapturePreset.defaultPreset());
+        presetChoice.setRenderer(new DefaultListCellRenderer() {
+            private static final long serialVersionUID = 1L;
 
-        JTextField command = new JTextField();
-        command.setEnabled(false);
+            @Override
+            public Component getListCellRendererComponent(
+                    JList<?> list, Object value, int index, boolean isSelected, boolean hasFocus) {
+                return super.getListCellRendererComponent(
+                        list, value == null ? "" : ((CapturePreset) value).displayName(),
+                        index, isSelected, hasFocus);
+            }
+        });
 
-        JButton run = new JButton("Run");
-        run.setEnabled(false);
+        commandField.setToolTipText(
+                "The Bazel command, without 'bazel' — for example: test //...");
+        commandField.addActionListener(event -> startLaunch());
+
+        workspaceField.setColumns(18);
+        workspaceField.setToolTipText("Where the build runs. Relative targets resolve against it.");
+        workspaceField.setText(System.getProperty("user.dir", ""));
+
+        JButton chooseWorkspace = new JButton("…");
+        chooseWorkspace.setToolTipText("Choose the working directory");
+        chooseWorkspace.addActionListener(event -> chooseWorkingDirectory());
+
+        runButton.setToolTipText("Preflight the command and show what will run");
+        runButton.addActionListener(event -> startLaunch());
+
+        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        left.add(presetChoice);
+        left.add(workspaceField);
+        left.add(chooseWorkspace);
 
         JPanel bar = new JPanel(new BorderLayout(8, 0));
         bar.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        bar.add(presets, BorderLayout.WEST);
-        bar.add(command, BorderLayout.CENTER);
-        bar.add(run, BorderLayout.EAST);
+        bar.add(left, BorderLayout.WEST);
+        bar.add(commandField, BorderLayout.CENTER);
+        bar.add(runButton, BorderLayout.EAST);
 
         JPanel north = new JPanel(new BorderLayout());
         north.add(bar, BorderLayout.CENTER);
@@ -466,6 +698,16 @@ public final class MainWindow extends JFrame {
         });
         nav.setSelectedIndex(0);
         return new JScrollPane(nav);
+    }
+
+    /** The real view for an entry whose phase has arrived, else a placeholder. */
+    private JComponent cardFor(NavEntry entry) {
+        return switch (entry) {
+            case EVENTS -> eventsView;
+            case CONSOLE -> consoleView;
+            case CAPTURE -> capturePanel;
+            default -> placeholderCard(entry);
+        };
     }
 
     private static JComponent placeholderCard(NavEntry entry) {

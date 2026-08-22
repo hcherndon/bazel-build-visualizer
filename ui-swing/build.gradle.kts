@@ -17,6 +17,14 @@ dependencies {
     // EventQueries or SessionDatabase.
     implementation(project(":capture-file"))
 
+    // Phase 2 UI deliverables: the launcher, the instrumentation-plan dialog,
+    // live capture status and the console all drive CaptureCoordinator, and
+    // the stop controls name CancellationMode. capture-bes exposes
+    // bazel-runner as `api`, but the runner is named here too because this
+    // module's own source imports its types directly.
+    implementation(project(":capture-bes"))
+    implementation(project(":bazel-runner"))
+
     // Decoding the selected event's raw payload for the inspector (plan
     // 17.11: render full protobuf text only for the selected event).
     implementation(project(":bep-codec"))
