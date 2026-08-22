@@ -39,6 +39,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -249,6 +250,7 @@ public final class CaptureCoordinator implements AutoCloseable {
                     LaunchRequest.of(plan.effective(), console));
             running.set(process);
             outcome = process.await();
+            awaitStreamsToSettle(outcome);
 
             summary = pipeline.finish();
             terminal = terminalStateFor(outcome, summary, warnings);
@@ -327,6 +329,42 @@ public final class CaptureCoordinator implements AutoCloseable {
     }
 
     // ------------------------------------------------------------- internals
+
+    /**
+     * Waits for the BES streams to close after the client has exited.
+     *
+     * <p>The client exiting is not the end of the event stream. The Bazel
+     * <em>server</em> is a separate, longer-lived process that publishes the
+     * events, and after a force-kill it carries on for about two and a half
+     * seconds — running actions, then cancelling the build itself, then
+     * finishing the stream. Finishing the pipeline at the moment the client
+     * died would refuse those last events, and the session would record a
+     * stream that aborted when in fact it completed.
+     *
+     * <p>Bounded, because a stream that never closes must not hang the
+     * application at exactly the moment the user is trying to look at what was
+     * captured. Whatever arrived is already journaled either way.
+     */
+    private void awaitStreamsToSettle(ProcessOutcome outcome) throws InterruptedException {
+        if (server == null) {
+            return;
+        }
+        // Longer after a force-kill, because that is the case where the server
+        // is known to still be working. A clean exit means Bazel already
+        // finished its upload, so the wait normally returns at once.
+        Duration budget = outcome != null
+                        && outcome.terminatedBy().filter(CancellationMode.FORCE_KILL::equals).isPresent()
+                ? Duration.ofSeconds(15)
+                : Duration.ofSeconds(5);
+        long deadline = System.nanoTime() + budget.toNanos();
+        while (server.openStreamCount() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(25);
+        }
+        if (server.openStreamCount() > 0) {
+            log.info("{} BES stream(s) were still open {} after the build exited; finalizing anyway",
+                    server.openStreamCount(), budget);
+        }
+    }
 
     /**
      * The terminal state that honestly describes what happened.

@@ -32,6 +32,15 @@ public final class BazelLauncher {
 
     private static final Logger log = LoggerFactory.getLogger(BazelLauncher.class);
 
+    /**
+     * How old the client must be before a cancellation signal is sent to it.
+     *
+     * <p>One second, and empirical: signals delivered inside the first few tens
+     * of milliseconds are a race that can lose the signal entirely or kill the
+     * Bazel server. See {@code BazelProcess.awaitSignalReadiness}.
+     */
+    private static final long SIGNAL_READY_MILLIS = 1_000;
+
     /** Environment variables Bazel needs to run at all. */
     private static final Set<String> ESSENTIAL_ENVIRONMENT =
             Set.of("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL");
@@ -196,6 +205,7 @@ public final class BazelLauncher {
          */
         public ProcessOutcome cancel(CancellationMode mode, boolean escalate) throws InterruptedException {
             Objects.requireNonNull(mode, "mode");
+            awaitSignalReadiness();
             CancellationMode current = mode;
             while (true) {
                 cancelledWith = current;
@@ -224,14 +234,47 @@ public final class BazelLauncher {
             }
         }
 
+        /**
+         * Waits until the client is old enough to have installed its signal
+         * handler.
+         *
+         * <p>Measured, and worth the wait: a signal delivered in the first few
+         * tens of milliseconds of the client's life is a race with four
+         * outcomes. It can exit 130 with no event stream written at all; it can
+         * be handled normally; it can be <em>lost</em>, leaving the build to run
+         * to completion and exit 0 despite the user having pressed Cancel; and
+         * on Bazel 9 it can take the whole Bazel server down with exit 37.
+         *
+         * <p>Delaying the signal instead of firing it immediately turns all
+         * four into the one predictable outcome. A user who clicks Cancel in the
+         * first second waits a fraction of a second longer and gets a session
+         * that says what happened.
+         */
+        private void awaitSignalReadiness() throws InterruptedException {
+            long ageMillis = (System.nanoTime() - startedNanos) / 1_000_000;
+            long remaining = SIGNAL_READY_MILLIS - ageMillis;
+            if (remaining <= 0 || !process.isAlive()) {
+                return;
+            }
+            log.debug("holding the cancel signal for {}ms: the client is only {}ms old",
+                    remaining, ageMillis);
+            process.waitFor(remaining, java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+
         private void apply(CancellationMode mode) {
             switch (mode) {
                 case CANCEL -> sendInterrupt();
                 case TERMINATE -> process.destroy();
                 case FORCE_KILL -> {
-                    // Descendants first, then the process itself: killing the
-                    // parent first can reparent the children to init, where
-                    // this handle can no longer find them.
+                    // The descendant sweep is kept for launchers that do have
+                    // children — a corporate wrapper script, or shell mode. It
+                    // is deliberately not how the Bazel server is reached,
+                    // because the server is not a descendant of the client: it
+                    // runs with PPID 1 in its own session from the first
+                    // millisecond, so this walk finds it neither during a cold
+                    // start nor mid-build. That is the intended outcome. The
+                    // server is shared with every other terminal using the same
+                    // output base, and killing it would throw away their state.
                     process.descendants().forEach(ProcessHandle::destroyForcibly);
                     process.destroyForcibly();
                 }

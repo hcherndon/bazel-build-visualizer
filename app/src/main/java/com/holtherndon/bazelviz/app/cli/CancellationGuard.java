@@ -69,15 +69,45 @@ final class CancellationGuard implements BooleanSupplier, AutoCloseable {
     private final HookRegistry registry;
     private final PrintStream err;
     private final long waitMillis;
+    private final String stoppingMessage;
+    private final String timeoutMessage;
     private final AtomicBoolean cancelRequested = new AtomicBoolean();
     private final CountDownLatch settled = new CountDownLatch(1);
     private final Thread hook;
     private volatile boolean installed;
+    private volatile Runnable listener = () -> {};
 
-    private CancellationGuard(HookRegistry registry, PrintStream err, long waitMillis) {
+    /** What an interrupted import says it is doing, and what it says if it cannot. */
+    static final String IMPORT_STOPPING =
+            "interrupted: finishing the current record and writing a resume point…";
+
+    static final String IMPORT_TIMED_OUT =
+            "the import did not stop within %ds; the session's journal will be recovered to its"
+                    + " last intact frame when it is next opened";
+
+    /**
+     * The same, for a launched build. Different wording because a different
+     * thing is happening: there is another process to stop, and the session is
+     * finalized as cancelled rather than left resumable.
+     */
+    static final String RUN_STOPPING =
+            "interrupted: asking Bazel to stop and finalizing the session…";
+
+    static final String RUN_TIMED_OUT =
+            "the build did not stop within %ds; the session is being left as it stands and will"
+                    + " be recovered when it is next opened";
+
+    private CancellationGuard(
+            HookRegistry registry,
+            PrintStream err,
+            long waitMillis,
+            String stoppingMessage,
+            String timeoutMessage) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.err = Objects.requireNonNull(err, "err");
         this.waitMillis = waitMillis;
+        this.stoppingMessage = Objects.requireNonNull(stoppingMessage, "stoppingMessage");
+        this.timeoutMessage = Objects.requireNonNull(timeoutMessage, "timeoutMessage");
         this.hook = new Thread(this::onShutdown, "bbv-cancel");
     }
 
@@ -87,10 +117,31 @@ final class CancellationGuard implements BooleanSupplier, AutoCloseable {
     }
 
     static CancellationGuard install(HookRegistry registry, PrintStream err, long waitMillis) {
-        CancellationGuard guard = new CancellationGuard(registry, err, waitMillis);
+        return install(registry, err, waitMillis, IMPORT_STOPPING, IMPORT_TIMED_OUT);
+    }
+
+    static CancellationGuard install(
+            HookRegistry registry,
+            PrintStream err,
+            long waitMillis,
+            String stoppingMessage,
+            String timeoutMessage) {
+        CancellationGuard guard =
+                new CancellationGuard(registry, err, waitMillis, stoppingMessage, timeoutMessage);
         registry.addShutdownHook(guard.hook);
         guard.installed = true;
         return guard;
+    }
+
+    /**
+     * Called when a stop is requested, in addition to the polled flag.
+     *
+     * <p>An import polls; a launched build cannot, because it is blocked
+     * waiting on another process. So a listener may be registered to push the
+     * request onward rather than waiting to be asked.
+     */
+    void onCancelRequested(Runnable listener) {
+        this.listener = Objects.requireNonNull(listener, "listener");
     }
 
     /** Polled by the importer between records. */
@@ -129,14 +180,19 @@ final class CancellationGuard implements BooleanSupplier, AutoCloseable {
 
     private void onShutdown() {
         cancelRequested.set(true);
+        try {
+            listener.run();
+        } catch (RuntimeException misbehaving) {
+            // A listener that throws must not stop the guard from waiting for
+            // the command to come to rest, which is the half that matters.
+            err.println("the cancel listener failed: " + misbehaving);
+        }
         err.println();
-        err.println("interrupted: finishing the current record and writing a resume point…");
+        err.println(stoppingMessage);
         err.flush();
         try {
             if (!settled.await(waitMillis, TimeUnit.MILLISECONDS)) {
-                err.println("the import did not stop within " + (waitMillis / 1000)
-                        + "s; the session's journal will be recovered to its last intact frame"
-                        + " when it is next opened");
+                err.println(timeoutMessage.formatted(waitMillis / 1000));
                 err.flush();
             }
         } catch (InterruptedException e) {

@@ -46,6 +46,7 @@ public final class CliMain {
         List<String> rest = args.subList(1, args.size());
         try {
             return switch (command) {
+                case "run" -> RunCommand.run(rest, ctx);
                 case "import" -> ImportCommand.run(rest, ctx);
                 case "inspect" -> InspectCommand.run(rest, ctx);
                 case "help", "--help" -> {
@@ -80,7 +81,8 @@ public final class CliMain {
         String message = command.startsWith("-")
                 ? "unknown option '" + command + "' before any subcommand"
                 : "unknown command '" + command + "'";
-        return new CliUsageException(message + "; the commands are 'import' and 'inspect'");
+        return new CliUsageException(
+                message + "; the commands are 'run', 'import' and 'inspect'");
     }
 
     static void printHelp(PrintStream out, String appVersion) {
@@ -88,6 +90,7 @@ public final class CliMain {
         out.println();
         out.println("usage:");
         out.println("  bbv                                  launch the graphical application");
+        out.println("  bbv run [options] -- <bazel command> launch an instrumented build");
         out.println("  bbv import <bep-file> [options]      import a BEP capture into a session");
         out.println("  bbv inspect <session-dir> [options]  read back an imported session");
         out.println("  bbv --help | --version");
@@ -104,7 +107,8 @@ public final class CliMain {
         out.println("  3  the command failed outright and produced no usable result");
         out.println("  4  interrupted; the session was left resumable ('bbv import … --resume')");
         out.println();
-        out.println("run 'bbv import --help' or 'bbv inspect --help' for each command's options.");
+        out.println("run 'bbv run --help', 'bbv import --help' or 'bbv inspect --help' for each");
+        out.println("command's options.");
         out.flush();
     }
 }

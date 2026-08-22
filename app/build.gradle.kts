@@ -14,6 +14,13 @@ dependencies {
     // and SessionDatabase — a dependency a file compiles against belongs in its
     // own build file, not inherited by accident from a sibling's api surface.
     implementation(project(":capture-file"))
+
+    // `bbv run` drives the Phase 2 capture path: the coordinator, the embedded
+    // BES server and the launcher. capture-bes exposes bazel-runner as `api`,
+    // but the runner is named here too because this module's own source imports
+    // CapturePreset, PlanConflict and CancellationMode.
+    implementation(project(":capture-bes"))
+    implementation(project(":bazel-runner"))
     implementation(project(":session-format"))
     implementation(project(":storage-sqlite"))
 

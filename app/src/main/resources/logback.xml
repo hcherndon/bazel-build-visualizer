@@ -1,11 +1,40 @@
 <configuration>
-  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+  <!--
+    Logback announces its own version and configuration on startup, and it
+    writes that announcement to System.out before any appender exists. On a
+    terminal it is merely noise; piping a JSON summary into a consumer, it is
+    the first two lines of the document and makes it unparseable. Silencing the
+    status listener is the only way to stop it, and it must be the first
+    element here.
+
+    (Note for editors: XML forbids a double hyphen inside a comment, so option
+    names are written without their leading dashes below.)
+  -->
+  <statusListener class="ch.qos.logback.core.status.NopStatusListener"/>
+
+  <!--
+    Logs go to stderr, never stdout. stdout is a subcommand's result: the json
+    option on `bbv run` and `bbv import` produces a document meant to be piped
+    into a consumer, and a log line landing in the middle of it makes the
+    document unparseable. This appender used to target System.out, which was
+    harmless only for as long as nothing logged during a CLI run.
+  -->
+  <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
     <encoder>
       <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
     </encoder>
   </appender>
 
-  <root level="INFO">
-    <appender-ref ref="STDOUT"/>
+  <!--
+    WARN by default. The headless subcommands share stderr with the build's own
+    console output, and a running Bazel build already says plenty; an INFO line
+    from this application between two of Bazel's progress repaints is noise in
+    the middle of the thing the user is actually reading.
+
+    Raise it when diagnosing, with the JVM property bbv.log.level=DEBUG.
+  -->
+  <root level="${bbv.log.level:-WARN}">
+    <appender-ref ref="STDERR"/>
   </root>
 </configuration>
