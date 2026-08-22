@@ -199,6 +199,16 @@ final class SqliteEntityReader implements EntityReader {
         return call("reading progress output events", () -> failures.progressOutputEvents(limit));
     }
 
+    /**
+     * Stops the actions query, which is the only one long enough to be worth
+     * abandoning.
+     *
+     * <p>The others answer in single-digit milliseconds at a million rows
+     * (docs/performance.md), so a cancel would arrive after they had already
+     * finished. If one of them ever grows a long form, it gets a cancel then;
+     * pretending to cancel something that cannot be cancelled would be worse
+     * than not offering it.
+     */
     @Override
     public void cancelRunningQuery() {
         actions.cancel();
@@ -228,9 +238,10 @@ final class SqliteEntityReader implements EntityReader {
     private <T> T call(String what, Callable<T> query) {
         try {
             return query.call();
-        } catch (SQLException e) {
-            throw new SessionDataException(what + " in " + describedSession + " failed", e);
         } catch (Exception e) {
+            // Callable widens to Exception, and every query here throws only
+            // SQLException; catching the wider type is what the signature
+            // forces, not a claim that anything else is expected.
             throw new SessionDataException(what + " in " + describedSession + " failed", e);
         }
     }

@@ -493,6 +493,23 @@ public final class EntityWriter implements AutoCloseable {
      *     row so the resulting entities can be traced back to raw bytes
      */
     public void apply(long streamId, long sequence, EntityCommand command) throws SQLException {
+        try {
+            dispatch(streamId, sequence, command);
+        } catch (UncheckedSqlException wrapped) {
+            // A few steps run inside a lambda and cannot declare SQLException.
+            // Unwrapping here keeps the checked type at this class's boundary,
+            // so a caller that catches SQLException catches every failure --
+            // rather than most of them, and taking an unchecked one through
+            // the floor for the rest.
+            throw (SQLException) wrapped.getCause();
+        }
+        applied++;
+        if (++pending >= commitEvery) {
+            flush();
+        }
+    }
+
+    private void dispatch(long streamId, long sequence, EntityCommand command) throws SQLException {
         switch (command) {
             case EntityCommand.InvocationStarted started -> invocationStarted(streamId, started);
             case EntityCommand.InvocationOptions options -> invocationOptions(streamId, options);
@@ -510,10 +527,6 @@ public final class EntityWriter implements AutoCloseable {
             case EntityCommand.TargetAborted aborted -> aborted(streamId, sequence, aborted);
             case EntityCommand.ProgressOutputSeen progress ->
                     progress(streamId, sequence, progress);
-        }
-        applied++;
-        if (++pending >= commitEvery) {
-            flush();
         }
     }
 
