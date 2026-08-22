@@ -412,6 +412,25 @@ excludes cache hits, and `totalRunDuration` excludes failed retries and
 understated real wall time by 13x on a measured six-attempt test — so each is
 labelled rather than reconciled into a figure true of neither.
 
+### Verified from clean
+
+`rm -rf build */build build-logic/build && ./gradlew build --no-build-cache`,
+so nothing came out of the build cache or a stale output directory:
+**BUILD SUCCESSFUL in 2m 21s, 72 actionable tasks all executed, 907 tests
+across 111 classes, 0 failures, 0 errors, 0 skipped.**
+
+Nothing carries `@Disabled` and no Gradle configuration excludes a test, so the
+907 are the whole suite. But *0 skipped* is a fact about this machine, not a
+property of the suite: the tests that drive a real Bazel are guarded by
+`assumeTrue(bazel.isPresent())`, and `RealBazelCapabilityTest` additionally
+requires each pinned version to actually resolve. They ran here because Bazel
+6.5.0, 7.6.1, 8.4.1 and 9.2.0 are all installed. On a machine without them the
+count stays 907 and the skipped count rises, which is the honest reading of a
+green run elsewhere. Two further guards are environmental rather than about
+Bazel: `JournalBoundedMemoryTest` needs per-thread allocation accounting from
+the JVM, and one `SessionLockTest` case needs its second process to still be
+alive.
+
 ## Phase 3 audit
 
 Eight lenses, three independent refuters per finding, and a completeness critic
