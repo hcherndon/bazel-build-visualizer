@@ -1,12 +1,13 @@
 # Bazel Build Visualizer
 
-> **Status: Phase 1 complete — offline BEP import.** You can import a binary
-> or JSON build event protocol file into a managed session, from the command
-> line or the app, and read it back: raw journal, per-session SQLite database,
-> and a chronological event view with a raw protobuf inspector. Truncated and
-> corrupt files import as far as they go and say so; an interrupted import
-> resumes. It does not yet launch or attach to a live Bazel build — that is
-> Phase 2. See [docs/implementation-status.md](docs/implementation-status.md).
+> **Status: Phase 2 complete — launching and capturing live builds.** The
+> app launches Bazel for you, shows exactly what it will run and why before it
+> runs it, and captures the event stream through an embedded Build Event
+> Service bound to loopback. Cancel a build and the partial session is still
+> there to open. Verified against real Bazel 6.5, 7.6, 8.4 and 9.2. Offline
+> import of binary and JSON BEP files (Phase 1) still works the same way.
+> Targets, actions and tests are not normalized yet — that is Phase 3. See
+> [docs/implementation-status.md](docs/implementation-status.md).
 
 A local desktop application for capturing, exploring, and understanding
 Bazel builds. It ingests the Build Event Protocol — from builds it launches,
@@ -47,6 +48,27 @@ app/build/install/bbv/bin/bbv inspect <session-dir> --events 20
 `bbv import --help` documents the options and the exit-code contract: 0 for a
 clean import, 1 when the source was truncated or corrupt and everything before
 the damage was imported, 3 when the import failed outright.
+
+## Launching a build from the command line
+
+```
+app/build/install/bbv/bin/bbv run -- build //...
+```
+
+The Bazel command goes after `--`, so its options are never confused with
+this tool's. `bbv run` prints the instrumentation plan — the command you
+typed, the command that will run, and one line for every difference — then
+launches, forwards Bazel's own output to stderr, and writes a summary to
+stdout. `--dry-run` plans without launching; `--json` makes the summary
+machine-readable.
+
+The exit code describes the capture, not the build: a failing build whose
+events were all captured exits 0, because the session it produced is exactly
+what you asked for. The build's own result is in the summary.
+
+If your command already names a `--bes_backend`, `bbv run` stops and asks,
+because redirecting a team's build results away from their own backend is not
+a decision a tool should make.
 
 ## Running the Phase 0 spikes
 
