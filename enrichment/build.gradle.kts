@@ -16,5 +16,13 @@ dependencies {
     implementation(libs.aircompressor)
     implementation(libs.protobuf.java)
 
+    // Streaming JSON, for the trace profile. Gson's JsonReader is a pull
+    // parser, which is the requirement: a profile is not a protobuf and can be
+    // hundreds of megabytes, so it is read a token at a time and never held.
+    // Declared rather than inherited -- it already arrives transitively through
+    // protobuf-java-util at 2.8.9, and depending on that by accident is how a
+    // version nobody chose ends up in the build.
+    implementation(libs.gson)
+
     testImplementation(project(":test-support"))
 }
