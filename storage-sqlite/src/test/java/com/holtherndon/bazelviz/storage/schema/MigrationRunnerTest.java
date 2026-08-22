@@ -65,10 +65,10 @@ final class MigrationRunnerTest {
         try (SessionDatabase db = open("apply.db")) {
             int version = MigrationRunner.standard().migrate(db);
 
-            assertThat(version).isEqualTo(SchemaV3.VERSION);
+            assertThat(version).isEqualTo(MigrationRunner.LATEST_VERSION);
             assertThat(tableNames(db.writerConnection())).containsAll(V1_TABLES).containsAll(V2_TABLES);
             assertThat(MigrationRunner.currentVersion(db.writerConnection()))
-                    .isEqualTo(SchemaV3.VERSION);
+                    .isEqualTo(MigrationRunner.LATEST_VERSION);
         }
     }
 
@@ -85,7 +85,7 @@ final class MigrationRunnerTest {
             // because then a session written before the change and one written
             // after would both record version 2 with different shapes, and
             // nothing could tell them apart.
-            assertThat(MigrationRunner.standard().migrate(db)).isEqualTo(SchemaV3.VERSION);
+            assertThat(MigrationRunner.standard().migrate(db)).isEqualTo(MigrationRunner.LATEST_VERSION);
             assertThat(columnNames(db.writerConnection(), "tests"))
                     .contains("bazel_first_start_micros", "bazel_last_stop_micros")
                     .doesNotContain("first_start_micros", "last_stop_micros");
@@ -113,7 +113,7 @@ final class MigrationRunnerTest {
 
             int second = runner.migrate(db);
 
-            assertThat(second).isEqualTo(SchemaV3.VERSION);
+            assertThat(second).isEqualTo(MigrationRunner.LATEST_VERSION);
             assertThat(scalar(db.writerConnection(), "SELECT COUNT(*) FROM strings")).isEqualTo(1);
             assertThat(tableNames(db.writerConnection())).containsAll(V1_TABLES);
         }
@@ -135,7 +135,7 @@ final class MigrationRunnerTest {
                     .satisfies(thrown -> {
                         SchemaVersionException e = (SchemaVersionException) thrown;
                         assertThat(e.foundVersion()).isEqualTo(99);
-                        assertThat(e.supportedVersion()).isEqualTo(SchemaV3.VERSION);
+                        assertThat(e.supportedVersion()).isEqualTo(MigrationRunner.LATEST_VERSION);
                     });
 
             // And it refused without touching anything.
@@ -193,15 +193,16 @@ final class MigrationRunnerTest {
                 statement.execute("INSERT INTO strings (value) VALUES ('kept across the upgrade')");
             }
 
-            MigrationRunner withV4 = new MigrationRunner(
-                    List.of(new V1Migration(), new V2Migration(), new V3Migration(), addsATable()));
-            assertThat(withV4.migrate(db)).isEqualTo(4);
+            int next = MigrationRunner.LATEST_VERSION + 1;
+            List<Migration> shippedPlusOne = new ArrayList<>(MigrationRunner.standard().migrations());
+            shippedPlusOne.add(addsATable());
+            assertThat(new MigrationRunner(shippedPlusOne).migrate(db)).isEqualTo(next);
 
             // The shipped migrations did not run again — their data is still
             // there — and the new one's table exists.
             assertThat(scalar(db.writerConnection(), "SELECT COUNT(*) FROM strings")).isEqualTo(1);
-            assertThat(tableNames(db.writerConnection())).contains("v4_probe");
-            assertThat(MigrationRunner.currentVersion(db.writerConnection())).isEqualTo(4);
+            assertThat(tableNames(db.writerConnection())).contains("next_probe");
+            assertThat(MigrationRunner.currentVersion(db.writerConnection())).isEqualTo(next);
 
             // And the shipping runner now refuses the upgraded database.
             assertThatThrownBy(() -> MigrationRunner.standard().migrate(db))
@@ -265,22 +266,30 @@ final class MigrationRunnerTest {
         };
     }
 
+    /**
+     * A migration one version newer than anything this build ships.
+     *
+     * <p>Derived from {@link MigrationRunner#LATEST_VERSION} rather than
+     * written as a literal, so that shipping a new schema version does not
+     * silently turn this test into a no-op — which is what happened when v4
+     * arrived and the probe was still numbered 4.
+     */
     private static Migration addsATable() {
         return new Migration() {
             @Override
             public int version() {
-                return 4;
+                return MigrationRunner.LATEST_VERSION + 1;
             }
 
             @Override
             public String description() {
-                return "adds v4_probe";
+                return "adds next_probe";
             }
 
             @Override
             public void apply(Connection connection) throws SQLException {
                 try (Statement statement = connection.createStatement()) {
-                    statement.execute("CREATE TABLE v4_probe (id INTEGER PRIMARY KEY)");
+                    statement.execute("CREATE TABLE next_probe (id INTEGER PRIMARY KEY)");
                 }
             }
         };
