@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.capture.file.detect.FormatDetection;
 import com.holtherndon.bazelviz.capture.file.detect.FormatDetector;
 import com.holtherndon.bazelviz.capture.file.json.JsonBepListener;
 import com.holtherndon.bazelviz.capture.file.json.JsonBepParseResult;
+import com.holtherndon.bazelviz.capture.normalize.EventNormalizer;
 import com.holtherndon.bazelviz.capture.file.json.JsonBepParser;
 import com.holtherndon.bazelviz.capture.file.json.JsonBepRecord;
 import com.holtherndon.bazelviz.capture.file.json.JsonParseDiagnostic;

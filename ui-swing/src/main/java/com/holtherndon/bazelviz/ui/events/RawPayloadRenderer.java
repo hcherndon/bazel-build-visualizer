@@ -2,8 +2,11 @@ package com.holtherndon.bazelviz.ui.events;
 
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.holtherndon.bazelviz.bepcodec.BepEventDecoder;
+import com.holtherndon.bazelviz.bepcodec.BesEnvelope;
+import com.holtherndon.bazelviz.bepcodec.BesEnvelopeDecoder;
 import com.holtherndon.bazelviz.bepcodec.DecodeResult;
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
+import com.holtherndon.bazelviz.core.journal.JournalFormat.SourceKind;
 import com.holtherndon.bazelviz.ui.session.RawPayload;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -77,13 +80,75 @@ public final class RawPayloadRenderer {
         return switch (payload.sourceKind()) {
             case BEP_BINARY -> renderBinary(payload, storedStatus, notices);
             case BEP_JSON_RECORD -> renderJson(payload, storedStatus, notices);
-            case BES_ENVELOPE -> new Rendered(
-                    "This record is a BES envelope. Envelope decoding arrives with the embedded"
-                            + " BES server in Phase 2; the raw bytes below are complete and"
-                            + " unmodified in the meantime.",
+            case BES_ENVELOPE, BES_LIFECYCLE -> renderEnvelope(payload, storedStatus, notices);
+        };
+    }
+
+    /**
+     * Renders a BES request by unwrapping it and showing the build event inside.
+     *
+     * <p>The envelope is transport. Showing its protobuf text would put a
+     * {@code StreamId} and an opaque {@code Any} in front of the user instead of
+     * the event they selected, so the inner event is rendered and the envelope's
+     * own facts — stream, sequence, kind — are stated in one line above it. The
+     * hex dump beside this still shows the complete request, so nothing is
+     * hidden, only reordered by usefulness.
+     */
+    private static Rendered renderEnvelope(
+            RawPayload payload, DecodeStatus storedStatus, List<String> notices) {
+        byte[] bytes = payload.bytes();
+        BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
+        BesEnvelopeDecoder.Result result =
+                payload.sourceKind() == SourceKind.BES_LIFECYCLE
+                        ? decoder.decodeLifecycle(bytes, 0, bytes.length)
+                        : decoder.decodeToolEvent(bytes, 0, bytes.length);
+        if (result.isFailed()) {
+            return new Rendered(
+                    "This record is a BES request that could not be read as one. Its bytes are"
+                            + " preserved exactly as they arrived and are shown below.",
+                    result.failureDetail(),
+                    notices);
+        }
+
+        BesEnvelope envelope = result.envelope().orElseThrow();
+        String header = "BES %s  stream %s/%s  sequence %d%n%n".formatted(
+                envelope.kind(),
+                envelope.buildId().orElse("(no build id)"),
+                envelope.invocationId().orElse("(no invocation id)"),
+                envelope.sequence());
+
+        if (!envelope.kind().carriesBuildEvent()) {
+            // Deliberately not a notice: this is the record, not a limitation of
+            // the display. Lifecycle and stream-control envelopes have no build
+            // event by definition, and calling that a shortfall would suggest
+            // something is missing.
+            return new Rendered(
+                    header + "This envelope carries no build event. It is stream control traffic:"
+                            + " it is journaled in full and it moves the stream's state, but there"
+                            + " is nothing inside it to decode.",
                     Optional.empty(),
                     notices);
-        };
+        }
+
+        byte[] inner = envelope.bazelEventBytes().orElseThrow().toByteArray();
+        DecodeResult decoded = BepEventDecoder.withDefaults().decode(inner);
+        if (decoded.status() != storedStatus) {
+            notices.add("The capture recorded this record as " + storedStatus
+                    + ", but decoding it again now says " + decoded.status() + ".");
+        }
+        if (decoded.isFailed()) {
+            return new Rendered(
+                    header + "The build event inside this envelope could not be decoded. Its bytes"
+                            + " are preserved exactly as they arrived and are shown below.",
+                    decoded.failureDetail(),
+                    notices);
+        }
+        if (decoded.hasUnknownFields()) {
+            notices.add("This record carried fields this build does not know. They are absent"
+                    + " from the text below and present in the raw bytes.");
+        }
+        return new Rendered(
+                cap(header + decoded.requireEvent(), notices, "decoded text"), Optional.empty(), notices);
     }
 
     private static Rendered renderBinary(

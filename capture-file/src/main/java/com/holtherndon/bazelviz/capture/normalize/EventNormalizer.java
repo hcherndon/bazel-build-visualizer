@@ -1,10 +1,13 @@
-package com.holtherndon.bazelviz.capture.file.importer;
+package com.holtherndon.bazelviz.capture.normalize;
 
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.holtherndon.bazelviz.bepcodec.BepEventDecoder;
 import com.holtherndon.bazelviz.bepcodec.BepPayloadType;
+import com.holtherndon.bazelviz.bepcodec.BesEnvelope;
+import com.holtherndon.bazelviz.bepcodec.BesEnvelopeDecoder;
 import com.holtherndon.bazelviz.bepcodec.DecodeResult;
 import com.holtherndon.bazelviz.bepcodec.EventIdDisplay;
 import com.holtherndon.bazelviz.bepcodec.EventIdKey;
@@ -47,15 +50,17 @@ import java.util.OptionalLong;
  * not (plan 21.5). Dropping the row would erase the evidence that anything was
  * there at all.
  */
-final class EventNormalizer {
+public final class EventNormalizer {
 
     private final BepEventDecoder binaryDecoder;
     private final JsonBuildEventDecoder jsonDecoder;
+    private final BesEnvelopeDecoder envelopeDecoder;
 
-    EventNormalizer(int maxMessageBytes) {
+    public EventNormalizer(int maxMessageBytes) {
         this.binaryDecoder = new BepEventDecoder(
                 maxMessageBytes, BepEventDecoder.UnknownFieldScan.DEEP);
         this.jsonDecoder = new JsonBuildEventDecoder();
+        this.envelopeDecoder = new BesEnvelopeDecoder(maxMessageBytes);
     }
 
     /**
@@ -66,7 +71,7 @@ final class EventNormalizer {
      * @param ordinal the import ordinal, which is the event's {@code sequence}
      * @param location where the payload lives in the journal
      */
-    Normalization normalize(
+    public Normalization normalize(
             SourceKind sourceKind,
             byte[] payload,
             int offset,
@@ -82,7 +87,7 @@ final class EventNormalizer {
 
     private Decoded decode(SourceKind sourceKind, byte[] payload, int offset, int length) {
         return switch (sourceKind) {
-            case BEP_BINARY, BES_ENVELOPE -> {
+            case BEP_BINARY -> {
                 DecodeResult result = binaryDecoder.decode(payload, offset, length);
                 yield new Decoded(result.status(), result.event().orElse(null),
                         result.failureDetail().orElse(null));
@@ -91,11 +96,69 @@ final class EventNormalizer {
                 JsonDecodeResult result = jsonDecoder.decode(payload, offset, length);
                 yield new Decoded(result.status(), result.event(), result.message());
             }
+            case BES_ENVELOPE, BES_LIFECYCLE -> throw new IllegalArgumentException(
+                    "a " + sourceKind + " frame is a BES request, not a bare BuildEvent; "
+                            + "use normalizeBesEnvelope so the envelope is unwrapped first");
         };
     }
 
+    /**
+     * Normalizes a journaled BES request.
+     *
+     * <p>Returns empty for the envelopes that carry no build event — lifecycle
+     * transitions, console output, and the stream terminator. Those are accepted
+     * BES traffic and stay in the journal, but they are not BEP events and must
+     * not become {@code bep_events} rows: a row with event type "none" claims a
+     * build event arrived and could not be understood, which is a different
+     * statement from "this was never a build event", and the two would be
+     * indistinguishable afterwards.
+     *
+     * <p>A malformed envelope <em>does</em> produce a row. The bytes were
+     * accepted, journaled and acknowledged to Bazel, so the session has to
+     * account for them; the row carries {@link DecodeStatus#FAILED} and the raw
+     * location, exactly as a malformed BEP record does.
+     *
+     * @param sourceKind {@link SourceKind#BES_ENVELOPE} or
+     *     {@link SourceKind#BES_LIFECYCLE}, taken from the frame
+     */
+    public Optional<Normalization> normalizeBesEnvelope(
+            SourceKind sourceKind,
+            byte[] payload,
+            int offset,
+            int length,
+            long streamId,
+            long ordinal,
+            JournalLocation location,
+            long receiveMicros) {
+        BesEnvelopeDecoder.Result result = switch (sourceKind) {
+            case BES_ENVELOPE -> envelopeDecoder.decodeToolEvent(payload, offset, length);
+            case BES_LIFECYCLE -> envelopeDecoder.decodeLifecycle(payload, offset, length);
+            case BEP_BINARY, BEP_JSON_RECORD -> throw new IllegalArgumentException(
+                    "a " + sourceKind + " frame is not a BES envelope; use normalize");
+        };
+
+        if (result.isFailed()) {
+            return Optional.of(build(
+                    new Decoded(DecodeStatus.FAILED, null, result.failureDetail().orElse("unreadable BES envelope")),
+                    streamId, ordinal, location, receiveMicros));
+        }
+
+        BesEnvelope envelope = result.envelope().orElseThrow();
+        if (!envelope.kind().carriesBuildEvent()) {
+            return Optional.empty();
+        }
+
+        ByteString inner = envelope.bazelEventBytes().orElseThrow();
+        byte[] innerBytes = inner.toByteArray();
+        DecodeResult decoded = binaryDecoder.decode(innerBytes, 0, innerBytes.length);
+        return Optional.of(build(
+                new Decoded(decoded.status(), decoded.event().orElse(null),
+                        decoded.failureDetail().orElse(null)),
+                streamId, ordinal, location, receiveMicros));
+    }
+
     /** Normalizes an event that has already been decoded, without decoding it again. */
-    Normalization fromDecoded(
+    public Normalization fromDecoded(
             DecodeStatus status,
             BuildEvent event,
             String detail,
@@ -227,7 +290,7 @@ final class EventNormalizer {
      * status (for a diagnostic) and the invocation id (for
      * {@code event_streams}).
      */
-    record Normalization(
+    public record Normalization(
             NormalizedEvent normalized,
             DecodeStatus status,
             String failureDetail,

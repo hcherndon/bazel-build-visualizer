@@ -83,7 +83,23 @@ public final class JournalFormat {
         /** A BEP {@code BuildEvent}, binary-encoded. */
         BEP_BINARY,
         /** One record from a JSON BEP file, verbatim. */
-        BEP_JSON_RECORD;
+        BEP_JSON_RECORD,
+        /**
+         * A BES {@code PublishLifecycleEventRequest}, verbatim.
+         *
+         * <p>Added in Phase 2, after the first three ordinals were already
+         * written to journals on disk. New kinds go on the end for that reason:
+         * an earlier build reading this frame reports an unsupported source kind
+         * and leaves it alone, which is the documented forward-compatibility
+         * behavior (plan 21.5), whereas renumbering would make it read some
+         * other kind's bytes as this one.
+         *
+         * <p>Lifecycle requests carry no BEP payload — they are the build and
+         * invocation envelope Bazel sends outside the event stream — so they are
+         * journaled for completeness and drive stream state, but produce no
+         * {@code bep_events} row.
+         */
+        BES_LIFECYCLE;
 
         public static SourceKind fromOrdinal(int ordinal) {
             SourceKind[] values = values();

@@ -18,6 +18,7 @@ BAZEL_FILES=(
     src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto
     src/main/protobuf/action_cache.proto
     src/main/protobuf/analysis_v2.proto
+    src/main/protobuf/bazel_flags.proto
     src/main/protobuf/build.proto
     src/main/protobuf/command_line.proto
     src/main/protobuf/failure_details.proto

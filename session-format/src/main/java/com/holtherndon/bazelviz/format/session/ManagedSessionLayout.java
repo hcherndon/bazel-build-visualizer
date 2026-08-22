@@ -51,6 +51,23 @@ public final class ManagedSessionLayout {
     /** The in-use marker inspected by {@link SessionLock}. */
     public static final String LOCK_FILE_NAME = "session.lock";
 
+    /**
+     * The instrumentation plan as shown to the user before launch (ADR-007).
+     *
+     * <p>Kept as its own file rather than folded into the manifest because it is
+     * the evidence for a claim the manifest only summarizes: the manifest says
+     * which flags were injected, and this says what each one was for, what it
+     * cost, which conflicts the user resolved and how. A session that cannot
+     * answer "why was my build run with these extra flags" is not transparent,
+     * whatever the manifest lists.
+     */
+    public static final String INSTRUMENTATION_PLAN_FILE_NAME = "instrumentation-plan.json";
+
+    /** Console output of the launched build, verbatim (plan 10.2, ADR-004). */
+    public static final String STDOUT_LOG_FILE_NAME = "stdout.log";
+
+    public static final String STDERR_LOG_FILE_NAME = "stderr.log";
+
     /** The subdirectories a session may contain. */
     public enum SessionDirectory {
         /** Bytes exactly as received: journal segments, stdout, profiles (ADR-004). */
@@ -173,6 +190,21 @@ public final class ManagedSessionLayout {
             throw new IllegalArgumentException("segment index must not be negative: " + segmentIndex);
         }
         return rawDirectory().resolve(JournalFormat.segmentFileName(segmentIndex));
+    }
+
+    /** Where the instrumentation plan is written, at the session root. */
+    public Path instrumentationPlanFile() {
+        return root.resolve(INSTRUMENTATION_PLAN_FILE_NAME);
+    }
+
+    /** Captured standard output of the launched build. */
+    public Path stdoutLog() {
+        return rawDirectory().resolve(STDOUT_LOG_FILE_NAME);
+    }
+
+    /** Captured standard error of the launched build. */
+    public Path stderrLog() {
+        return rawDirectory().resolve(STDERR_LOG_FILE_NAME);
     }
 
     public Path importCheckpointFile() {

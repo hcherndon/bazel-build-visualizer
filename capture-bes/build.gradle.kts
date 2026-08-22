@@ -4,8 +4,29 @@ plugins {
 
 dependencies {
     api(project(":core-model"))
+
+    // The live capture pipeline is the component that joins the Phase 2 parts
+    // together, so this module reaches the runner, the session layer and the
+    // storage layer. capture-file comes in for two reasons that are not
+    // incidental: the binary-file fallback for a BES conflict (plan 8.5) is its
+    // growing-file tail reader, and normalization is shared with the importer so
+    // that a captured session and an imported one produce identical rows.
+    api(project(":bazel-runner"))
+    api(project(":capture-file"))
+
     implementation(project(":proto"))
+    implementation(project(":bep-codec"))
     implementation(libs.grpc.api)
     implementation(libs.grpc.stub)
+    implementation(libs.grpc.protobuf)
+
+    // grpc-netty-shaded rather than grpc-netty: the shaded artifact keeps
+    // Netty's classes out of the application classpath, which matters because
+    // this is a desktop application that may one day be packaged with other
+    // libraries that carry their own Netty.
     runtimeOnly(libs.grpc.netty.shaded)
+
+    testImplementation(project(":test-support"))
+    testImplementation(project(":bep-codec"))
+    testImplementation(libs.grpc.netty.shaded)
 }

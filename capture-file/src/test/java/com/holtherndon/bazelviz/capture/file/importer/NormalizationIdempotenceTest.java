@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.capture.file.importer;
 
+import com.holtherndon.bazelviz.capture.normalize.EventNormalizer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.capture.file.importer.ImportTestSupport.EventRow;

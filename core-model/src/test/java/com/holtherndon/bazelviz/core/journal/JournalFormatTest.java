@@ -152,6 +152,10 @@ class JournalFormatTest {
         assertThat(SourceKind.BES_ENVELOPE.ordinal()).isZero();
         assertThat(SourceKind.BEP_BINARY.ordinal()).isEqualTo(1);
         assertThat(SourceKind.BEP_JSON_RECORD.ordinal()).isEqualTo(2);
+        // Added in Phase 2. New kinds go on the end so that the ordinals already
+        // written to journals on disk keep their meaning; a journal written
+        // before this constant existed still reads correctly.
+        assertThat(SourceKind.BES_LIFECYCLE.ordinal()).isEqualTo(3);
         assertThatThrownBy(() -> SourceKind.fromOrdinal(99))
                 .isInstanceOf(IllegalArgumentException.class);
     }

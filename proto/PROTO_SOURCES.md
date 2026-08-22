@@ -24,6 +24,7 @@ Files (paths relative to `src/main/proto/`, identical to Bazel repo root):
 | `src/main/protobuf/option_filters.proto` | required |
 | `src/main/protobuf/invocation_policy.proto` | required |
 | `src/main/protobuf/failure_details.proto` | required |
+| `src/main/protobuf/bazel_flags.proto` | `bazel help flags-as-proto` output; the capability detector's primary probe (Phase 2). No imports |
 | `src/main/protobuf/action_cache.proto` | required |
 | `src/main/protobuf/spawn.proto` | required |
 | `src/main/protobuf/analysis_v2.proto` | required |

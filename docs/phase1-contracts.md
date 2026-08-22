@@ -41,7 +41,7 @@ always find the last intact frame.
 |---|---|---|
 | 0 | 4 | frame magic `BFRM` — lets recovery confirm a boundary |
 | 4 | 4 | payload length (bounded by `DEFAULT_MAX_PAYLOAD_BYTES`, reject larger) |
-| 8 | 1 | source kind ordinal: 0 = BES envelope, 1 = BEP `BuildEvent` (binary), 2 = imported JSON record |
+| 8 | 1 | source kind ordinal: 0 = BES `PublishBuildToolEventStreamRequest`, 1 = BEP `BuildEvent` (binary), 2 = imported JSON record, 3 = BES `PublishLifecycleEventRequest` (added in Phase 2) |
 | 9 | 2 | stream ordinal (index into the session's streams) |
 | 11 | 8 | sequence number (BES sequence, or import ordinal for files) |
 | 19 | 8 | receive timestamp, epoch micros |
