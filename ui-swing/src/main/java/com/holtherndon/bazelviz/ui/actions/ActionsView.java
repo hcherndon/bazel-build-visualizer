@@ -122,6 +122,26 @@ public final class ActionsView extends JPanel {
     /** Bumped on every reload so a slow one cannot overwrite a newer one. */
     private long reloadGeneration;
 
+    /**
+     * Coalesces the keystrokes in the filter box.
+     *
+     * <p>Each reload rescans the table to build its anchors — 61 ms at a
+     * million actions — so a five-letter search issued a letter at a time is
+     * five scans, four of which are discarded by the generation check after
+     * they have already run. The timer restarts on every keystroke and fires
+     * once when the typing stops.
+     */
+    private final javax.swing.Timer filterDebounce = new javax.swing.Timer(
+            250, event -> reload());
+
+    /**
+     * True while the toolbar is being populated rather than used.
+     *
+     * <p>Filling the mnemonic combo fires its own action listener, so without
+     * this, opening a session starts a reload for every item added.
+     */
+    private boolean populating;
+
     public ActionsView() {
         super(new BorderLayout());
 
@@ -174,24 +194,25 @@ public final class ActionsView extends JPanel {
         sortChoice.setSelectedItem(ActionSort.ARRIVAL);
         textFilter.setToolTipText("Substring of the primary output path");
 
-        mnemonicChoice.addActionListener(event -> reload());
-        outcomeChoice.addActionListener(event -> reload());
-        sortChoice.addActionListener(event -> reload());
-        descendingBox.addActionListener(event -> reload());
+        mnemonicChoice.addActionListener(event -> reloadUnlessPopulating());
+        outcomeChoice.addActionListener(event -> reloadUnlessPopulating());
+        sortChoice.addActionListener(event -> reloadUnlessPopulating());
+        descendingBox.addActionListener(event -> reloadUnlessPopulating());
+        filterDebounce.setRepeats(false);
         textFilter.getDocument().addDocumentListener(new DocumentListener() {
             @Override
             public void insertUpdate(DocumentEvent event) {
-                reload();
+                filterDebounce.restart();
             }
 
             @Override
             public void removeUpdate(DocumentEvent event) {
-                reload();
+                filterDebounce.restart();
             }
 
             @Override
             public void changedUpdate(DocumentEvent event) {
-                reload();
+                filterDebounce.restart();
             }
         });
 
@@ -259,6 +280,7 @@ public final class ActionsView extends JPanel {
 
     /** Closes the session and stops the executors, off the EDT. */
     public void closeSession() {
+        filterDebounce.stop();
         tableModel = null;
         rowSource = null;
         table.setModel(new DefaultTableModel());
@@ -312,9 +334,14 @@ public final class ActionsView extends JPanel {
 
     /** Visible for testing: drives the toolbar as a user would. */
     public void applyForTest(String mnemonic, ActionSort sort, boolean descending) {
-        mnemonicChoice.setSelectedItem(mnemonic);
-        sortChoice.setSelectedItem(sort);
-        descendingBox.setSelected(descending);
+        populating = true;
+        try {
+            mnemonicChoice.setSelectedItem(mnemonic);
+            sortChoice.setSelectedItem(sort);
+            descendingBox.setSelected(descending);
+        } finally {
+            populating = false;
+        }
         reload();
     }
 
@@ -439,9 +466,20 @@ public final class ActionsView extends JPanel {
     }
 
     private void populateMnemonics(List<String> mnemonics) {
-        mnemonicChoice.removeAllItems();
-        mnemonicChoice.addItem(ANY_MNEMONIC);
-        mnemonics.forEach(mnemonicChoice::addItem);
+        populating = true;
+        try {
+            mnemonicChoice.removeAllItems();
+            mnemonicChoice.addItem(ANY_MNEMONIC);
+            mnemonics.forEach(mnemonicChoice::addItem);
+        } finally {
+            populating = false;
+        }
+    }
+
+    private void reloadUnlessPopulating() {
+        if (!populating) {
+            reload();
+        }
     }
 
     private void selectionChanged() {

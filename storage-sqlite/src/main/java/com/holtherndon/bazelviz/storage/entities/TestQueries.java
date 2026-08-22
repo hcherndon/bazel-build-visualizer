@@ -53,6 +53,13 @@ public final class TestQueries implements AutoCloseable {
     // Sorted so the rows a user opens this view for are the ones at the top:
     // failures, then flakes, then everything else. Keyset-paged on the same
     // (status rank, id) pair the ordering uses.
+    //
+    // Unlike the actions table, this ordering is an expression and no index
+    // supplies it, so every page costs a scan and a sort. That is deliberate
+    // here and would not be there: tests are bounded by the number of test
+    // targets, in the thousands rather than the millions, and the sort is over
+    // one small table with no join. If a build ever appears where it matters,
+    // the fix is the one the actions table uses -- see Keyset.
     private static final String RANK =
             "(CASE te.overall_status"
                     + " WHEN 'FAILED' THEN 0 WHEN 'TIMEOUT' THEN 1 WHEN 'FAILED_TO_BUILD' THEN 2"
