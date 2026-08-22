@@ -12,7 +12,7 @@ renumbered or re-scoped here.
 |---|---|---|
 | 0 | Repository and architectural spikes | **Complete** — all exit criteria met (see below) |
 | 1 | Session, journal, and offline BEP import | **Complete** — all five exit criteria verified end to end (see below) |
-| 2 | Bazel launcher and embedded BES | Not started |
+| 2 | Bazel launcher and embedded BES | **Complete** — all six exit criteria verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0 (see below) |
 | 3 | Core target, action, test, and artifact normalization | Not started |
 | 4 | Execution-log and profile enrichment | Not started |
 | 5 | `aquery`, `cquery`, and graph construction | Not started |
@@ -210,3 +210,65 @@ Known gaps the critic identified and this phase does not close:
 `session-format`'s `format/session` package, `app/cli`, and `test-support`'s
 fixtures had no review lens of their own, and `test-support`'s
 announced-missing-child fixture still has no test exercising it.
+
+## Phase 2 checklist (as of 2026-08-22)
+
+| Task | Status |
+|---|---|
+| Executable/workspace detection | Done — `BazelExecutableResolver` (`--version`, not `version`: the client answers it in ~15 ms without touching the server), `WorkspaceDetector` (filesystem walk, four markers) |
+| Command model | Done — `BazelCommand` + `CommandLineParser`, grammar measured against real binaries |
+| Capability detection | Done — `bazel help flags-as-proto` from outside the workspace, help-text scrape as fallback, cached by executable + version + startup options |
+| Instrumentation planner | Done — `InstrumentationPlanner`; mechanism complete, catalog covers the Phase 2 flags |
+| gRPC BES server | Done — `BesServer`, loopback-only by construction, raw-byte marshaller |
+| Sequence tracking and acknowledgements | Done — `BesStreamTracker`; acks follow the journal append and never pass a gap |
+| Process launch | Done — `BazelLauncher`, direct argv, two pump threads |
+| Capture stdout/stderr | Done — `ConsoleCapture` writes `raw/stdout.log` and `raw/stderr.log` verbatim |
+| Cancellation | Done — SIGINT/SIGTERM/SIGKILL ladder, with a one-second hold before the first signal |
+| Correlate invocation and stream identifiers | Done — `BesStreamKey` is `(buildId, invocationId, component)`; `event_streams.stream_key` |
+| Persist effective command and injected flags | Done — manifest fields plus `instrumentation-plan.json` |
+| Binary-file fallback for BES conflicts | Done — plan 8.5 option 2, `--build_event_binary_file` into the session |
+| UI: launcher, plan dialog, live status, console, stop controls | Done |
+| CLI: `bbv run` | Done — `--dry-run`, `--json`, `--replace-bes`/`--keep-bes` |
+| Real-Bazel ground truth recorded | Done — `docs/bazel-ground-truth.md`, five experiments, 69 findings |
+| Capture throughput measured | Done — `:benchmarks:runBesThroughputSpike`; see docs/performance.md |
+
+## Phase 2 exit criteria (plan section 24)
+
+Every row was checked against real Bazel binaries provisioned by Bazelisk, not
+against a fake. `RealBazelBesTest`, `RealBazelCaptureTest` and
+`RealBazelCapabilityTest` are tagged `real-bazel` and skip — never weaken —
+when the machine has none.
+
+| Criterion | Status |
+|---|---|
+| A real Bazel 6–9 fixture build can be launched | Met — 6.5.0, 7.6.1, 8.4.1 and 9.2.0 each launch a generated genrule workspace and complete. Capability detection is asserted separately on all four, including the `FlagInfo` field-population differences between them. |
+| Events arrive through the embedded BES | Met — every version delivers a full stream to the loopback server; the envelopes unwrap to decodable `BuildEvent`s, the first is `BuildStarted` and the last is `component_stream_finished`. |
+| No accepted event is silently dropped | Met — `CaptureSummary.isComplete()` is the arithmetic `received == journaled` and `journaled == normalized + stream-control`, checked on every capture. A 200,000-event burst under active backpressure satisfies it. `RawEventSink.submit` has no return value a caller could ignore: it accepts or it throws. |
+| Duplicate sequences are idempotent | Met — a retransmitted sequence is acknowledged again and journaled once, verified over a real socket. A stream replayed on a *new connection* is also recognised, because trackers are keyed by `StreamId` for the life of the server rather than by connection. |
+| A cancelled build creates an inspectable partial session | Met — a build cancelled six seconds in finalizes as `CANCELLED` with its journal, its rows and a `CAPTURE_CANCELLED` diagnostic, and opens. |
+| Existing BES conflicts require an explicit decision | Met — a command carrying its own `--bes_backend` refuses to launch, offers plan 8.5's three resolutions with the cost of each, and creates nothing. |
+
+### Interpretations worth knowing
+
+**The build's outcome and the capture's outcome are separate.** A failed build
+with a complete stream finalizes as `READY`: it is a good session about a bad
+build, which is the most useful thing this tool produces. `bbv run`'s exit
+code describes the capture for the same reason — a script that captures
+failing builds on purpose is the normal case.
+
+**Exit code 38 is not a build failure.** Bazel reports it when the event
+upload fails, whatever the build did, so it masks the real result.
+`CaptureResult.buildOutcomeKnown()` says when the exit code can be believed.
+
+**Objective 1 is not met, and the gap is not ours.** The capture path
+sustains 86,000 events/sec end to end without loss, against a target of
+100,000. Replacing the whole pipeline with a sink that acknowledges and stores
+nothing runs at the same speed, so the journal and the indexer are free at
+this scale and the cost is the gRPC acknowledgement round trip. See
+docs/performance.md.
+
+**What is deliberately not attempted.** Coalescing acknowledgements would
+close the throughput gap, and is not tried: an acknowledgement with a wrong
+sequence number kills the user's Bazel server on 6.5.0 and 9.2.0, and no
+experiment has established that Bazel accepts one acknowledgement covering a
+run of sequences.
