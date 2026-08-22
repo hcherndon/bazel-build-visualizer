@@ -72,6 +72,31 @@ public enum TestOutcome {
     }
 
     /**
+     * Maps this enum's own name, as stored in the database.
+     *
+     * <p>Separate from {@link #ofBazelStatus} because the two vocabularies are
+     * not the same: Bazel has {@code TOOL_HALTED_BEFORE_TESTING} and no
+     * {@code SKIPPED}, this enum has the reverse. Reading a stored value
+     * through the Bazel mapping turned every {@code SKIPPED} row back into
+     * {@code UNKNOWN} — a value silently changing meaning on the way out of
+     * the database it went into intact.
+     *
+     * @return {@link #UNKNOWN} for a name this build does not define, which is
+     *     what a session written by a newer build looks like
+     */
+    public static TestOutcome ofStoredName(String name) {
+        if (name == null) {
+            return UNKNOWN;
+        }
+        for (TestOutcome outcome : values()) {
+            if (outcome.name().equals(name)) {
+                return outcome;
+            }
+        }
+        return UNKNOWN;
+    }
+
+    /**
      * Maps a {@code build_event_stream.TestStatus} name.
      *
      * <p>By name rather than by ordinal: the enum is defined in a vendored
