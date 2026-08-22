@@ -305,9 +305,10 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                     events.flush();
                     break;
                 }
-                store(journaled);
-                normalizedCount.incrementAndGet();
-                pending++;
+                if (store(journaled)) {
+                    normalizedCount.incrementAndGet();
+                    pending++;
+                }
                 sinceCheckpoint++;
 
                 if (pending >= options.batchSize()
@@ -329,7 +330,16 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
         }
     }
 
-    private void store(Journaled journaled) throws SQLException {
+    /**
+     * Turns one journaled frame into rows.
+     *
+     * @return true when a {@code bep_events} row was written. False for an
+     *     envelope that carries no build event — which is counted separately,
+     *     and must not also be counted as normalized: the two counters together
+     *     have to account for every frame exactly once, and that arithmetic is
+     *     what {@link CaptureSummary#isComplete()} checks
+     */
+    private boolean store(Journaled journaled) throws SQLException {
         RawBesEvent event = journaled.event();
         long streamId = resolveStreamRow(event.stream());
         Optional<EventNormalizer.Normalization> normalization = normalizer.normalizeBesEnvelope(
@@ -346,7 +356,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
             // Lifecycle, console output, or the stream terminator. Journaled,
             // counted, and deliberately not a row — see EventNormalizer.
             nonEventEnvelopes.incrementAndGet();
-            return;
+            return false;
         }
 
         EventNormalizer.Normalization result = normalization.get();
@@ -361,6 +371,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                     journaled.location().frameOffset(),
                     nowMicros()));
         }
+        return true;
     }
 
     /**
