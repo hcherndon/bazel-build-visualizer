@@ -104,6 +104,17 @@ public final class ActionsView extends JPanel {
     private ExecutorService detailExecutor;
     private SessionSource source;
     private EntityReader detailReader;
+
+    /**
+     * The reader the current table's pages are read through.
+     *
+     * <p>It belongs to the source, not to the reload that built it: an
+     * {@link ActionRowSource} holds it and uses it for every page it will ever
+     * serve. Closing it at the end of the reload — which this used to do —
+     * failed every subsequent page fetch, and the table rendered the error
+     * placeholder rather than rows.
+     */
+    private EntityReader pageReader;
     private PagedTableModel<ActionRow> tableModel;
     private ActionRowSource rowSource;
     private LongConsumer showEventHandler = eventId -> { };
@@ -255,19 +266,24 @@ public final class ActionsView extends JPanel {
         SessionSource closing = source;
         ExecutorService pages = pageExecutor;
         ExecutorService details = detailExecutor;
-        EntityReader reader = detailReader;
+        EntityReader detail = detailReader;
+        EntityReader page = pageReader;
         source = null;
         pageExecutor = null;
         detailExecutor = null;
         detailReader = null;
+        pageReader = null;
         if (closing == null && pages == null && details == null) {
             return;
         }
         Thread closer = new Thread(() -> {
             shutdown(pages);
             shutdown(details);
-            if (reader != null) {
-                reader.close();
+            if (detail != null) {
+                detail.close();
+            }
+            if (page != null) {
+                page.close();
             }
         }, "bbv-actions-close");
         closer.setDaemon(true);
@@ -363,6 +379,9 @@ public final class ActionsView extends JPanel {
     }
 
     private void install(ActionRowSource built, EntityReader reader) {
+        // The previous table's reader is finished with; this one's is not.
+        EntityReader previous = pageReader;
+        pageReader = reader;
         rowSource = built;
         tableModel = new PagedTableModel<>(
                 built, ActionTableColumns.columns(), pageExecutor, built.pageSize(), CACHE_PAGES);
@@ -380,9 +399,11 @@ public final class ActionsView extends JPanel {
         inspector.show(Inspection.NONE);
         statusLabel.setText(describe(built));
         cards.show(deck, CARD_TABLE);
-        // The reader that built the index belongs to the page executor from
-        // here on; it is closed when the next reload replaces it.
-        pageExecutor.execute(reader::close);
+        if (previous != null) {
+            // Queued behind any page fetch already scheduled against it, on the
+            // one thread that touches these readers.
+            pageExecutor.execute(previous::close);
+        }
     }
 
     private String describe(ActionRowSource built) {

@@ -70,10 +70,13 @@ class ActionsViewWiringTest {
                 .contains("build_event_publish_all_actions");
 
         // Paging: the first cell is a placeholder until its page lands, then a
-        // real value. A table that never left the placeholder would look
-        // identical to one whose fetches were never scheduled.
-        await(() -> onEdt(() -> !PagedTableModel.PLACEHOLDER.equals(
-                view.tableModelForTest().getValueAt(0, 0))));
+        // real value. Both placeholders are excluded, not just the loading one
+        // -- an earlier version of this assertion accepted the error
+        // placeholder and so passed while every page fetch was failing.
+        await(() -> onEdt(() -> isLoaded(view.tableModelForTest().getValueAt(0, 0))));
+        assertThat(onEdt(() -> view.tableModelForTest().failedFetchCount()))
+                .as("no page fetch failed")
+                .isZero();
 
         List<String> mnemonics = onEdt(view::mnemonicChoicesForTest);
         assertThat(mnemonics).hasSizeGreaterThan(1);
@@ -100,8 +103,21 @@ class ActionsViewWiringTest {
                 .contains("match the filter");
         assertThat(onEdt(() -> view.tableModelForTest().getRowCount())).isEqualTo((int) filtered);
 
+        // The filtered table's pages come through the same reader the reload
+        // built its index with, so they must still be readable.
+        await(() -> onEdt(() -> isLoaded(view.tableModelForTest().getValueAt(0, 0))));
+        assertThat(onEdt(() -> view.tableModelForTest().failedFetchCount()))
+                .as("no page fetch failed after a filter change")
+                .isZero();
+
         SwingUtilities.invokeAndWait(view::closeSession);
         opened.close();
+    }
+
+    /** True once a cell holds a value rather than either placeholder. */
+    private static boolean isLoaded(Object value) {
+        return !PagedTableModel.PLACEHOLDER.equals(value)
+                && !PagedTableModel.ERROR_PLACEHOLDER.equals(value);
     }
 
     private static SqliteSessionSource openImportedSession(Path temporary) throws Exception {

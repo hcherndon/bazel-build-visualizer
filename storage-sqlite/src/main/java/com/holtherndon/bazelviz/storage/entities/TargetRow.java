@@ -46,14 +46,23 @@ public record TargetRow(
         return packageOf(label);
     }
 
-    /** The name after the last colon, or the whole label when there is none. */
+    /** The name after the colon, or the whole label when there is none. */
     public String targetName() {
-        int colon = label.lastIndexOf(':');
+        int colon = label.indexOf(':');
         return colon < 0 ? label : label.substring(colon + 1);
     }
 
+    /**
+     * The package part of a label.
+     *
+     * <p>The <em>first</em> colon, matching the SQL expression the tree groups
+     * by, which uses {@code instr}. A label carries at most one — neither a
+     * repository name nor a target name may contain a colon — so first and last
+     * are the same today; keeping the two definitions identical means they stay
+     * that way if Bazel ever changes its mind.
+     */
     static String packageOf(String label) {
-        int colon = label.lastIndexOf(':');
+        int colon = label.indexOf(':');
         return colon < 0 ? label : label.substring(0, colon);
     }
 }

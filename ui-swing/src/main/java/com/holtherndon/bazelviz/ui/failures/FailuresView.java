@@ -221,6 +221,11 @@ public final class FailuresView extends JPanel {
             showEmpty("Nothing failed and nothing was skipped.");
             return;
         }
+        // When aborts are all there is, listing them is the only thing to
+        // show. Leaving the button up would offer to load rows already on
+        // screen, and the "shown of available" arithmetic would count them as
+        // unavailable while displaying them.
+        abortsListed = counts.failedActions() == 0 && counts.failedTargets() == 0;
         if (counts.aborted() > 0) {
             StringBuilder text = new StringBuilder(EntityFormat.count(counts.aborted()))
                     .append(" target(s) were not built");
@@ -232,7 +237,7 @@ public final class FailuresView extends JPanel {
                 text.append(": ").append(String.join(", ", parts));
             }
             abortSummary.setText(text.toString());
-            listAborts.setVisible(true);
+            listAborts.setVisible(!abortsListed);
         } else {
             abortSummary.setText(" ");
         }

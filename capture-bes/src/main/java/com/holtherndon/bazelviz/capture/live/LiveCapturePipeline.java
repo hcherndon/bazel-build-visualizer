@@ -78,6 +78,15 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(LiveCapturePipeline.class);
 
     /**
+     * Entity commands held before the batch is forced out.
+     *
+     * <p>Sized in commands, not in events, because one event's commands range
+     * from none to one per file in a named set. A live capture's memory has to
+     * be bounded by configuration rather than by the build (plan rule 9).
+     */
+    static final int MAX_PENDING_ENTITY_COMMANDS = 20_000;
+
+    /**
      * How long {@link #finish()} waits to hand the journal thread its sentinel
      * before concluding that it is never going to take it.
      */
@@ -117,12 +126,21 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
      * that row up. The commands therefore wait here until {@code events.flush()}
      * has run, and are applied immediately afterwards.
      *
+     * <p>Bounded by {@link #MAX_PENDING_ENTITY_COMMANDS} rather than by the
+     * event batch size. Those are not the same bound: one event can carry
+     * thousands of commands — a {@code NamedSetOfFiles} holds a file list — so
+     * a buffer sized in events is a buffer of unbounded bytes, and this one
+     * sits behind a live capture that must not grow with the build.
+     *
      * <p>Touched only by whichever thread is currently storing: the store thread
      * while the build runs, and the coordinator afterwards for fallback file
      * ingestion. The two never overlap, because fallback ingestion begins only
      * after {@link #finish()} has joined the store thread.
      */
     private final List<PendingEntities> pendingEntities = new ArrayList<>();
+
+    /** Commands currently held in {@link #pendingEntities}. */
+    private int pendingEntityCommands;
     private final StreamRegistry streams;
     private final EventNormalizer normalizer;
     private final ImportCheckpointStore checkpoints;
@@ -357,6 +375,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                 sinceCheckpoint++;
 
                 if (pending >= options.batchSize()
+                        || pendingEntityCommands >= MAX_PENDING_ENTITY_COMMANDS
                         || clock.millis() - lastCommitMillis >= options.flushInterval().toMillis()) {
                     events.flush();
                     drainEntities();
@@ -428,6 +447,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
             List<EntityCommand> commands = translator.translate(event);
             if (!commands.isEmpty()) {
                 pendingEntities.add(new PendingEntities(streamId, sequence, commands));
+                pendingEntityCommands += commands.size();
             }
         });
     }
@@ -446,6 +466,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
             entities.flush();
         } finally {
             pendingEntities.clear();
+            pendingEntityCommands = 0;
         }
     }
 

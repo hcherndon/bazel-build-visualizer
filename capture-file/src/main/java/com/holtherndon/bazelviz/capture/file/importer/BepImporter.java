@@ -132,6 +132,15 @@ public final class BepImporter {
     private static final Logger log = LoggerFactory.getLogger(BepImporter.class);
 
     /**
+     * Entity commands held before the batch is forced out.
+     *
+     * <p>Sized in commands, not in events, because one event's commands range
+     * from none to one per file in a named set. Twenty thousand small records
+     * is a few megabytes; the same count of events could be anything.
+     */
+    static final int MAX_PENDING_ENTITY_COMMANDS = 20_000;
+
+    /**
      * Name of the preserved copy inside {@code raw/}, fixed by plan 10.2. It
      * keeps the {@code .bep} suffix for a JSON source too: the name is a slot in
      * the session layout, and the source's real format is recorded in
@@ -317,10 +326,18 @@ public final class BepImporter {
          * not exist until the batch is executed — and every entity row resolves
          * its provenance by looking that row up. So the commands are held until
          * {@link #flushEvents()} has put the events in, and only then applied.
-         * The buffer is bounded by the event batch size, and the commands hold
-         * a small fraction of what the already-decoded events do.
+         *
+         * <p>Bounded by {@link #MAX_PENDING_ENTITY_COMMANDS} rather than by the
+         * event batch size. Those are not the same bound: one event can carry
+         * thousands of commands — a {@code NamedSetOfFiles} holds a file list —
+         * so a buffer sized in events is a buffer of unbounded bytes. Plan
+         * rule 9 requires the import path's memory to be bounded by
+         * configuration rather than by the size of the input.
          */
         private final List<PendingEntities> pendingEntities = new ArrayList<>();
+
+        /** Commands currently held in {@link #pendingEntities}. */
+        private int pendingEntityCommands;
 
         private final EntityTranslator translator = new EntityTranslator();
 
@@ -907,8 +924,15 @@ public final class BepImporter {
                 if (!commands.isEmpty()) {
                     pendingEntities.add(new PendingEntities(
                             normalization.normalized().event().sequence(), commands));
+                    pendingEntityCommands += commands.size();
                 }
             });
+            if (pendingEntityCommands >= MAX_PENDING_ENTITY_COMMANDS) {
+                // The events have to go in first, or the provenance lookups
+                // find nothing. Flushing early costs a commit; not flushing
+                // costs whatever the largest file set in the build weighs.
+                flushEvents();
+            }
             if (invocationId.isEmpty() && normalization.invocationId().isPresent()) {
                 invocationId = normalization.invocationId();
             }
@@ -1015,6 +1039,7 @@ public final class BepImporter {
                 throw new IOException("failed to normalize a batch of entities", e);
             } finally {
                 pendingEntities.clear();
+                pendingEntityCommands = 0;
             }
         }
 

@@ -1,12 +1,17 @@
 # Bazel Build Visualizer
 
-> **Status: Phase 2 complete — launching and capturing live builds.** The
+> **Status: Phase 3 complete — builds are normalized and browsable.** The
 > app launches Bazel for you, shows exactly what it will run and why before it
-> runs it, and captures the event stream through an embedded Build Event
-> Service bound to loopback. Cancel a build and the partial session is still
-> there to open. Verified against real Bazel 6.5, 7.6, 8.4 and 9.2. Offline
-> import of binary and JSON BEP files (Phase 1) still works the same way.
-> Targets, actions and tests are not normalized yet — that is Phase 3. See
+> runs it, captures the event stream through an embedded Build Event Service
+> bound to loopback, and turns it into targets, actions, tests, artifacts and
+> failures you can page, filter and sort. Every row leads back to the bytes
+> Bazel sent, and every value the build did not report reads as unknown rather
+> than as zero. Cancel a build and the partial session is still there to open.
+> Verified against real Bazel 6.5, 7.6, 8.4 and 9.2 — including the places
+> where those four disagree, which are written down in
+> [docs/bep-content.md](docs/bep-content.md). Offline import of binary and JSON
+> BEP files (Phase 1) still works the same way. Timing detail from the
+> execution log and profile arrives in Phase 4. See
 > [docs/implementation-status.md](docs/implementation-status.md).
 
 A local desktop application for capturing, exploring, and understanding

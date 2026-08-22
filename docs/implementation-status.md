@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-08-21. This file states what exists in the tree, not what
+Last updated: 2026-08-22. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## Phases
@@ -13,7 +13,7 @@ renumbered or re-scoped here.
 | 0 | Repository and architectural spikes | **Complete** — all exit criteria met (see below) |
 | 1 | Session, journal, and offline BEP import | **Complete** — all five exit criteria verified end to end (see below) |
 | 2 | Bazel launcher and embedded BES | **Complete** — all six exit criteria verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0, audited, and remediated (see below) |
-| 3 | Core target, action, test, and artifact normalization | Not started |
+| 3 | Core target, action, test, and artifact normalization | **Complete** — all five exit criteria met and verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0 (see below) |
 | 4 | Execution-log and profile enrichment | Not started |
 | 5 | `aquery`, `cquery`, and graph construction | Not started |
 | 6 | Timeline | Not started |
@@ -334,3 +334,69 @@ be turned off while offering no way to turn one off.
 command-specific ones; `--json` omits the plan's warnings; the veto is in the
 dialog and not in the CLI; and objective 1 is missed for reasons outside this
 application's code.
+
+## Phase 3 checklist (as of 2026-08-22)
+
+| Task | Status |
+|---|---|
+| Normalize configurations | Done — keyed on the opaque BEP id alone; referenced-but-undeclared ids (`system`, and `none` when it appears) get a row marked `declared = 0` rather than being dropped |
+| Normalize targets | Done — two tables, because `TargetConfiguredId` carries no configuration and a row must not wait for `TargetComplete` |
+| Normalize named file/depset structures | Done — stored as a DAG with two edge kinds; a set referenced but never defined is recorded and reportable rather than dropped |
+| Normalize logical actions | Done — identity is `id.actionCompleted.primaryOutput`; label nullable; a repeated primary output is counted and surfaced, never merged |
+| Normalize action timestamps and status | Done — `ActionTiming` classifies the four unavailability cases; the Bazel 8.4.x zero-length span is recorded unknown |
+| Normalize outputs and logs | Done — output groups with their `incomplete` flag, tree artifacts kept out of the file roll-up, test logs merged across their two sources |
+| Normalize tests and summaries | Done — verdict from `testSummary.overallStatus` only; every attempt kept |
+| Build string/path dictionaries | Done — `labels` and `mnemonics` interned; artifact paths are the artifact table |
+| Implement incremental overview aggregates | **Partial** — the overview is one consistent read on a timer, not an incrementally maintained aggregate. See the interpretations below. |
+| Add source completeness | Done — `build_invocation.saw_last_message`, `configurations.declared`, depsets with no defining event, and the output-group `incomplete` flag; each is surfaced |
+| UI: overview, actions table, targets tree, tests table, failures table, shared inspector | Done |
+| BEP content ground truth recorded | Done — `docs/bep-content.md`, five experiments across four Bazel versions, 91 findings, five unresolved contradictions stated as such |
+
+## Phase 3 exit criteria (plan section 24)
+
+| Criterion | Status |
+|---|---|
+| Successful and failed builds produce coherent action/target/test records | Met — `RealBazelNormalizationTest` runs four real builds (success, failure under `--keep_going`, a test run with retries, an analysis abort) plus the same build across 6.5.0, 7.6.1, 8.4.1 and 9.2.0. Every run asserts `PRAGMA foreign_key_check` is empty, so "nothing was dropped to protect referential tidiness" is checked rather than claimed. |
+| Action table supports paging, filtering, and sorting | Met — keyset paging under six sorts in both directions, with `ActionQueriesTest` walking every page of every sort and asserting each row is visited exactly once. `ActionsViewWiringTest` drives the toolbar over an imported session and checks the table and the status line agree. No path uses `OFFSET`. |
+| Live updates are coalesced | Met — the overview re-reads one whole snapshot on a timer rather than reacting to rows. `OverviewPanelTest` advances the underlying numbers a few thousand times in 400 ms against a 40 ms interval and observes about ten reads: reads follow the clock, not the data. |
+| Unknown values are visibly unknown | Met — `Measured` and the `Optional`-typed row records carry absence through the query layer; `Inspection.Field` carries the absence *and* its reason, and the shared inspector renders that as the word "unknown" followed by why. A field that claims both a value and a reason is refused by the constructor. |
+| Event-to-domain provenance is inspectable | Met — every normalized row carries `bep_event_id`; the inspector offers the source event from any of the five views; `EntityViewsWiringTest` follows an action row to its event, to its journal location, to bytes that equal the ones the stream contained. |
+
+### Interpretations worth knowing
+
+**"Incremental overview aggregates" are a timer, not an incremental maintainer.**
+Plan 24 lists incremental aggregates as a Phase 3 task. What exists is a set
+of counting queries re-run on a two-second timer, which delivers the exit
+criterion the task exists for — coalesced live updates — with one read per
+interval and every number on screen taken from the same read. Maintaining
+running totals in the writer would be faster and would be optimizing a number
+nobody has measured; `OverviewQueries` is where that change goes when one is.
+
+**There is no `action_outputs` table and no `action_attempts` table.** The BEP
+names neither: `ActionExecuted` carries a `primary_output` File with a uri and
+nothing else, and a retried action appears once reporting its final result.
+Empty tables would have read as "these actions produced nothing" and "nothing
+was retried". Both arrive in Phase 4 with the execution log.
+
+**`DECLARED_ACTIONS` is not populated.** Phase 3 fills `BEP_EVENTS`,
+`TARGETS`, `CONFIGURED_TARGETS` and `OBSERVED_EXECUTION`. The declared action
+graph needs `aquery`, which is Phase 5, and the actions view does not imply
+that what it shows is every action there is.
+
+**The actions table can be legitimately near-empty.** Bazel publishes an event
+for a successful action only under `--build_event_publish_all_actions`, so an
+imported BEP captured without it holds failures and little else. The view says
+so — worded about the options rather than about the rows, because what is
+known is what Bazel was asked to publish.
+
+**Sorting by duration has no index behind it.** Five of the six sorts ride an
+index the schema creates; duration is a computed expression and SQLite builds
+a temporary b-tree for it. The anchor scan runs off the EDT with the previous
+rows still on screen, and no measurement at five million rows exists yet.
+
+**Two numbers for the same thing, twice.** The overview shows this session's
+counts beside Bazel's, and a test's elapsed time beside Bazel's reported
+duration. In both cases the pair legitimately disagrees — `actionsExecuted`
+excludes cache hits, and `totalRunDuration` excludes failed retries and
+understated real wall time by 13x on a measured six-attempt test — so each is
+labelled rather than reconciled into a figure true of neither.
