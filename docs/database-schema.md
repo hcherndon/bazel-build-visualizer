@@ -94,3 +94,36 @@ Bazel references the configuration id `system` on every build without ever
 publishing a `Configuration` event for it, so the normalizer inserts a row
 marked undeclared rather than either dropping the referencing actions or giving
 up integer foreign keys.
+
+## Sensitive-field inventory
+
+`docs/privacy.md` commits to tagging every column that can carry
+user-identifying or secret data, maintained as the schema lands. This is the
+schema-v2 half of that inventory. The raw journal stays faithful (ADR-004) and
+is sensitive at rest; what changes per row below is what the UI masks by
+default and what export must redact.
+
+| Column | What it can carry | Treatment |
+|---|---|---|
+| `build_invocation.working_directory`, `workspace_directory` | absolute paths, which on macOS and Linux begin with the user's home directory and therefore their account name | redact on export; shown in the UI |
+| `build_invocation.options_description` | the whole effective option string, including `--remote_header` values and any credential passed as a flag | mask by default; redact on export |
+| `actions.command_line` | the action's argv verbatim — credentials appear here when a rule passes one as an argument | mask by default; redact on export |
+| `actions.failure_message` | Bazel's own text, which routinely embeds the failing command line and a sandbox path | redact on export |
+| `actions.stdout_uri`, `stderr_uri` | absolute paths into the output base | redact on export |
+| `artifacts.uri` | absolute path into the output base or the source tree | redact on export |
+| `artifacts.path`, `path_prefix`, `name` | workspace-relative paths, which carry internal project and directory names | redact on export when path redaction is enabled |
+| `labels.value` | internal repository, package and target names | redact on export when path redaction is enabled |
+| `test_logs.uri` | absolute paths into the output base | redact on export |
+| `configuration_make_variables.value` | make variables, which frequently hold paths | redact on export |
+| `target_tags.tag` | user-authored strings, so arbitrary | redact on export |
+| `aborted_events.description` | Bazel's own text | redact on export |
+
+Everything else in schema v2 is structural — counts, timestamps, outcomes,
+opaque configuration ids, mnemonics — and carries nothing about the user.
+
+Two columns look sensitive and are not. `configurations.mnemonic` and
+`platform_name` are Bazel's own vocabulary. `actions.primary_output` is a
+workspace-relative path and is covered by the path row above; it is also the
+action's identity, so redacting it in place would leave the export unable to
+join its own rows, and export replaces it with a stable pseudonym rather than
+removing it.

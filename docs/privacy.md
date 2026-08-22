@@ -34,6 +34,12 @@ faithful (ADR-004) and is treated as sensitive at rest.
 
 Maintained as the schema lands (Phase 3+): every column/manifest field that
 can carry user-identifying or secret data is tagged in
-docs/database-schema.md and handled by the redaction layer. Current known
-set: effective/original command lines, environment blocks, remote headers,
-workspace paths, hostnames in profile metadata.
+[docs/database-schema.md](database-schema.md) and handled by the redaction
+layer. Schema v2's twelve such columns are listed there with the treatment
+each gets. Beyond the database: effective and original command lines,
+environment blocks, remote headers, and hostnames in profile metadata, which
+arrive with Phase 4.
+
+The redaction layer itself is Phase 9. Until it exists, a session directory is
+a sensitive artifact and the tool says so rather than implying otherwise —
+nothing in Phases 1 to 3 exports, uploads or shares one.
