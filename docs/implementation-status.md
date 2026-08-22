@@ -28,7 +28,7 @@ renumbered or re-scoped here.
 |---|---|
 | Repo + Gradle multi-module skeleton (15 modules + build-logic, wrapper 9.7.1) | Done |
 | Convention plugins (`bbv.java-common` / `-library` / `-application`), reproducible archives, dependency locking wiring | Done |
-| Java 21 toolchain auto-provisioning (foojay resolver) | Done |
+| Java 25 toolchain auto-provisioning (foojay resolver) | Done — baseline raised from 21 to 25 on 2026-08-21, see below |
 | Logging (slf4j everywhere, logback in `app`, uncaught-handler in `Main`) | Done |
 | FlatLaf window shell (`app` `Main`, `ui-swing` `MainWindow`/`Themes`, smoke mode) | Done |
 | Synthetic data generators (`test-support`: `SyntheticActionGenerator`, `SyntheticEdges`, Tier 1-3 scales, O(1) access) | Done |
@@ -36,11 +36,39 @@ renumbered or re-scoped here.
 | Rendering spikes: table / timeline / graph (`:benchmarks:runTableSpike` etc., `--offscreen` mode) | Done — all pass, results in docs/performance.md |
 | SQLite paging spike (`:benchmarks:runSqlPagingSpike`) | Done — 1.68M rows/s insert; keyset vs OFFSET finding recorded |
 | JMH microbenchmark harness in `benchmarks` | Done — `SyntheticGeneratorBench`, `SqliteInsertBench` compile; not attached to `check` (run `./gradlew :benchmarks:jmh`) |
-| ADRs 001-007 | Done |
+| ADRs 001-008 | Done — ADR-008 supersedes ADR-002 |
 | CI (GitHub Actions, macOS 14 + Ubuntu, `check`) | Done |
 | Approved plan committed as `docs/product-plan.md` | Done |
 | Dependency lockfiles written | Done — `./gradlew resolveAndLockAll --write-locks --no-configuration-cache` regenerates them |
 | Phase 0 benchmark results recorded in docs/performance.md | Done |
+
+## Java 25 upgrade (2026-08-21)
+
+The language baseline moved from Java 21 LTS to Java 25 LTS.
+[ADR-008](adr/008-java-25.md) records the decision and supersedes ADR-002;
+ADR-002 remains in the tree, marked superseded, with its reasoning intact.
+The move was made now precisely because Phase 0 is the cheapest point to
+change a baseline — there is almost no product code to re-verify.
+
+What landed:
+
+- `bbv.java-common` pins `JavaLanguageVersion.of(25)`; the foojay resolver
+  provisions the toolchain, so no preinstalled JDK is required.
+- Every forked JVM (tests, `:app:run`, the spikes, the JMH benchmark JVMs,
+  packaged start scripts) gets `--enable-native-access=ALL-UNNAMED`. Without it, Java 25 warns that
+  FlatLaf and sqlite-jdbc call `System::load` from the unnamed module; a
+  future JDK will block those calls outright. Reader-facing writeup in
+  docs/troubleshooting.md.
+- Preview features remain forbidden — unchanged from ADR-002, and restated in
+  ADR-008 because a baseline bump is exactly when someone would assume
+  otherwise. In particular Structured Concurrency is still preview in 25 and
+  is not used.
+
+No source file changed for the upgrade; it is a toolchain change.
+
+Benchmark numbers are not restated here. `docs/performance.md` is the
+authority on every measured figure and on which JDK each one was taken under;
+read the JDK attribution there before comparing figures across the upgrade.
 
 ## Phase 0 audit
 

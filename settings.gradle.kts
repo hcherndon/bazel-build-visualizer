@@ -7,7 +7,7 @@ pluginManagement {
 }
 
 plugins {
-    // Auto-provisions the Java 21 toolchain (ADR-002) on machines that lack it.
+    // Auto-provisions the Java 25 toolchain (ADR-008) on machines that lack it.
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 

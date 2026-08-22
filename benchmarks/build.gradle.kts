@@ -24,6 +24,11 @@ dependencies {
 // slow for CI's inner loop.
 jmh {
     jmhVersion = libs.versions.jmh.get()
+    // SqliteInsertBench loads sqlite-jdbc's native library, so the benchmark
+    // JVMs JMH forks need the same grant every other forked JVM gets. Without
+    // this the JMH path is the one surface still printing restricted-method
+    // warnings, and the one that would break outright once the JDK enforces.
+    jvmArgs = listOf(extra["bbvNativeAccessArg"] as String)
 }
 
 // Phase 0 architectural spikes (plan section "Phase 0"). Each spike supports
@@ -42,6 +47,12 @@ val spikeMains = mapOf(
 // `-Dbbv.smoke=true` silently does nothing and a windowed spike never closes.
 val forwardedSpikeProperties = listOf("bbv.smoke", "bbv.theme", "bbv.appdir")
 
+// The spikes load native code through both sqlite-jdbc (SqlPagingSpike) and
+// FlatLaf (the Swing spikes), so their forked JVMs need the same native-access
+// grant the Test tasks get in bbv.java-common.gradle.kts. See that file for
+// why the target has to be ALL-UNNAMED.
+val nativeAccessArg = extra["bbvNativeAccessArg"] as String
+
 spikeMains.forEach { (taskName, mainName) ->
     tasks.register<JavaExec>(taskName) {
         group = "spikes"
@@ -49,6 +60,7 @@ spikeMains.forEach { (taskName, mainName) ->
         classpath = sourceSets["main"].runtimeClasspath
         mainClass = mainName
         maxHeapSize = "4g"
+        jvmArgs(nativeAccessArg)
         forwardedSpikeProperties.forEach { key ->
             providers.systemProperty(key).orNull?.let { systemProperty(key, it) }
         }

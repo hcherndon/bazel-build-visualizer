@@ -8,7 +8,9 @@
 **Bazel compatibility:** Bazel 6 through Bazel 9 using capability detection
 **Product model:** Local, single-user desktop application
 **UI technology:** Java Swing with custom Java2D visualization
-**Java baseline:** Java 21 LTS
+**Java baseline:** Java 21 LTS *(superseded — the baseline is now Java 25 LTS
+per [ADR-008](adr/008-java-25.md); this line and the ADR-002 section below are
+preserved as the historical approved text)*
 **Working title:** Bazel Build Visualizer
 **Intended implementer:** Agentic coding system such as Claude Code or Codex
 
@@ -214,6 +216,11 @@ This is not a claim that Swing intrinsically renders more data than SWT. Perform
 Reconsider this decision only if the Phase 0 macOS benchmark fails the stated responsiveness targets after the data model and painting paths have been optimized.
 
 ## ADR-002: Use Java 21 LTS
+
+> **Superseded as of 2026-08-21 by [docs/adr/008-java-25.md](adr/008-java-25.md).**
+> The language baseline is now Java 25 LTS; the "do not require preview
+> features" constraint below is unchanged and still binding. The plan text
+> that follows is preserved verbatim as the historical baseline.
 
 Use Java 21 language and runtime features.
 
@@ -2845,7 +2852,7 @@ Implement phases in order. Each phase must end with tests, documentation, and an
 ### Tasks
 
 - Create Gradle multi-module repository.
-- Configure Java 21 toolchains.
+- Configure Java 21 toolchains. *(Delivered as Java 25 toolchains; see ADR-008.)*
 - Add CI for macOS and Linux.
 - Configure dependency locking.
 - Add logging.

@@ -15,7 +15,7 @@ drive native packaging.
 Gradle (wrapper-pinned, currently 9.7.1) with the Kotlin DSL and an included
 `build-logic` build providing convention plugins:
 
-- `bbv.java-common` — toolchain (Java 21, ADR-002), UTF-8, `-parameters`,
+- `bbv.java-common` — toolchain (Java 25, ADR-008), UTF-8, `-parameters`,
   JUnit Jupiter + AssertJ test wiring, slf4j-api, reproducible archives
   (no timestamps, stable file order), dependency locking on all
   configurations.

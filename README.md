@@ -17,7 +17,8 @@ shows a number it cannot define.
 ## Building
 
 Prerequisites: none beyond a JVM able to run the Gradle wrapper — the Java
-21 toolchain is auto-provisioned on first build.
+25 toolchain ([ADR-008](docs/adr/008-java-25.md)) is auto-provisioned on
+first build.
 
 ```
 ./gradlew check
@@ -84,7 +85,8 @@ Build conventions live in `build-logic/` (see
 
 - [docs/architecture.md](docs/architecture.md) — module map, the six graph
   representations, session state machine, pipeline, threading model
-- [docs/adr/](docs/adr/) — ADR-001 … ADR-007, the fixed decisions
+- [docs/adr/](docs/adr/) — ADR-001 … ADR-008, the fixed decisions
+  (ADR-008 supersedes ADR-002)
 - [docs/performance.md](docs/performance.md) — benchmark tiers, Phase 0
   targets and measurements
 - [docs/implementation-status.md](docs/implementation-status.md) — what
