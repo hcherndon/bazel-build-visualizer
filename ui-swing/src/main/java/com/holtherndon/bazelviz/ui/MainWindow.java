@@ -21,11 +21,17 @@ import com.holtherndon.bazelviz.ui.capture.ConsoleView;
 import com.holtherndon.bazelviz.ui.capture.InstrumentationPlanDialog;
 import com.holtherndon.bazelviz.ui.capture.LaunchController;
 import com.holtherndon.bazelviz.ui.events.EventValueFormat;
+import com.holtherndon.bazelviz.ui.actions.ActionsView;
 import com.holtherndon.bazelviz.ui.events.EventsView;
+import com.holtherndon.bazelviz.ui.failures.FailuresView;
+import com.holtherndon.bazelviz.ui.overview.OverviewPanel;
+import com.holtherndon.bazelviz.ui.targets.TargetsView;
+import com.holtherndon.bazelviz.ui.tests.TestsView;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.ImportController;
 import com.holtherndon.bazelviz.ui.session.ImportProgressModel;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
+import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -101,6 +107,20 @@ public final class MainWindow extends JFrame {
     private final Path sessionsRoot;
     private final SessionManager sessions;
     private final EventsView eventsView = new EventsView();
+    private final OverviewPanel overviewPanel = new OverviewPanel();
+    private final ActionsView actionsView = new ActionsView();
+    private final TargetsView targetsView = new TargetsView();
+    private final TestsView testsView = new TestsView();
+    private final FailuresView failuresView = new FailuresView();
+
+    /**
+     * The open session, owned here rather than by any one view.
+     *
+     * <p>Six views read it. If each closed the source when it was torn down,
+     * the first would take the database out from under the other five, so the
+     * window opens it once, hands it round, and closes it once.
+     */
+    private SessionSource currentSource;
     private final ExecutorService worker;
     private final ExecutorService captureWorker;
     private final ImportController importController;
@@ -175,6 +195,17 @@ public final class MainWindow extends JFrame {
         setJMenuBar(buildMenuBar());
 
         eventsView.progressPanel().setCancelAction(importController::cancel);
+
+        // Every entity view's inspector can jump to the bytes its row came
+        // from. One handler, so the behaviour is the same from all five.
+        actionsView.onShowSourceEvent(this::revealEvent);
+        // The status bar's counts come from the overview's own read, so the two
+        // can never disagree about how many actions the session holds.
+        overviewPanel.onSnapshot(snapshot -> actionStatus.setText(
+                "Actions: " + EventValueFormat.count(snapshot.actions())));
+        targetsView.onShowSourceEvent(this::revealEvent);
+        testsView.onShowSourceEvent(this::revealEvent);
+        failuresView.onShowSourceEvent(this::revealEvent);
         // The manifest's event count is absent for a session whose import never
         // finished; the database always knows, so the status bar takes the real
         // number from the view once it is open rather than keeping an em dash
@@ -401,7 +432,7 @@ public final class MainWindow extends JFrame {
                 }
                 SqliteSessionSource opened = SqliteSessionSource.open(sessions, root);
                 SwingUtilities.invokeLater(() -> {
-                    eventsView.openSession(opened, this::showSessionFailure);
+                    installSession(opened);
                     showSessionInfo(opened.info());
                 });
             } catch (Exception failure) {
@@ -427,6 +458,52 @@ public final class MainWindow extends JFrame {
         }
     }
 
+    /**
+     * Hands one session to every view and takes ownership of it.
+     *
+     * <p>The previous source is closed only after the views have let go of it,
+     * which they do synchronously here — their own teardown continues on
+     * background threads, but each has already stopped issuing new queries.
+     */
+    private void installSession(SessionSource opened) {
+        releaseViews();
+        SessionSource previous = currentSource;
+        currentSource = opened;
+        eventsView.openSession(opened, this::showSessionFailure);
+        overviewPanel.openSession(opened);
+        actionsView.openSession(opened);
+        targetsView.openSession(opened);
+        testsView.openSession(opened);
+        failuresView.openSession(opened);
+        closeSource(previous);
+    }
+
+    /** Tells every view to let go, without closing the source. */
+    private void releaseViews() {
+        eventsView.closeSession();
+        overviewPanel.closeSession();
+        actionsView.closeSession();
+        targetsView.closeSession();
+        testsView.closeSession();
+        failuresView.closeSession();
+    }
+
+    /**
+     * Closes a source once its views have released it.
+     *
+     * <p>On a background thread: the views' executors are shutting down at the
+     * same time, and closing JDBC connections behind an in-flight query can
+     * block. The source itself is idempotent about being closed twice.
+     */
+    private void closeSource(SessionSource source) {
+        if (source == null) {
+            return;
+        }
+        Thread closer = new Thread(source::close, "bbv-source-close");
+        closer.setDaemon(true);
+        closer.start();
+    }
+
     private void showSessionInfo(SessionInfo info) {
         sessionStatus.setText("Session: " + info.state() + (info.isPartial() ? " (partial)" : ""));
         OptionalLong count = info.manifestEventCount();
@@ -448,13 +525,28 @@ public final class MainWindow extends JFrame {
     }
 
     private void closeSession() {
-        eventsView.closeSession();
+        releaseViews();
+        SessionSource closing = currentSource;
+        currentSource = null;
+        closeSource(closing);
         eventsView.showEmpty("No session is open. Use File ▸ Open BEP File… or"
                 + " File ▸ Open Session…");
+        actionsView.showEmpty("No session is open.");
+        targetsView.showEmpty("No session is open.");
+        testsView.showEmpty("No session is open.");
+        failuresView.showEmpty("No session is open.");
         sessionStatus.setText("Session: none");
         eventStatus.setText("Events: " + UNKNOWN);
         actionStatus.setText("Actions: " + UNKNOWN);
         closeSessionItem.setEnabled(false);
+    }
+
+    /** Shows the Events card with {@code eventId}'s raw payload loaded. */
+    private void revealEvent(long eventId) {
+        showEventsCard();
+        if (!eventsView.revealEvent(eventId)) {
+            eventsView.showEmpty("The events view is not ready yet.");
+        }
     }
 
     private void showEventsCard() {
@@ -739,6 +831,11 @@ public final class MainWindow extends JFrame {
     /** The real view for an entry whose phase has arrived, else a placeholder. */
     private JComponent cardFor(NavEntry entry) {
         return switch (entry) {
+            case OVERVIEW -> overviewPanel;
+            case ACTIONS -> actionsView;
+            case TARGETS -> targetsView;
+            case TESTS -> testsView;
+            case FAILURES -> failuresView;
             case EVENTS -> eventsView;
             case CONSOLE -> consoleView;
             case CAPTURE -> capturePanel;

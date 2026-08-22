@@ -173,12 +173,18 @@ public final class EventsView extends JPanel {
     }
 
     /**
-     * Closes whatever session is open and stops its executors.
+     * Releases this view's hold on the session and stops its executors.
      *
-     * <p>The teardown itself — waiting for in-flight fetches to stop and
-     * closing JDBC connections — happens on a separate thread. Doing it inline
-     * would put a bounded-but-real wait plus file I/O on the EDT, which is the
-     * one thing this view exists to avoid.
+     * <p>The teardown itself — waiting for in-flight fetches to stop — happens
+     * on a separate thread. Doing it inline would put a bounded-but-real wait
+     * plus file I/O on the EDT, which is the one thing this view exists to
+     * avoid.
+     *
+     * <p>It does <em>not</em> close the {@link SessionSource}. Several views
+     * share one source, and the first to be torn down closing it would leave
+     * the others querying a closed database. The window that opened the source
+     * closes it, once, after every view has let go; the source closes the
+     * readers it handed out.
      */
     public void closeSession() {
         pendingSelectionRow = -1;
@@ -186,24 +192,41 @@ public final class EventsView extends JPanel {
         tableModel = null;
         table.setModel(new javax.swing.table.DefaultTableModel());
         inspector.show(EventInspection.none());
-        SessionSource closing = source;
         ExecutorService pages = pageExecutor;
         ExecutorService details = detailExecutor;
         source = null;
         pageExecutor = null;
         detailExecutor = null;
-        if (closing == null && pages == null && details == null) {
+        if (pages == null && details == null) {
             return;
         }
         Thread closer = new Thread(() -> {
             shutdown(pages);
             shutdown(details);
-            if (closing != null) {
-                closing.close();
-            }
         }, "bbv-session-close");
         closer.setDaemon(true);
         closer.start();
+    }
+
+    /**
+     * Shows one event's raw bytes, whatever the table is scrolled to.
+     *
+     * <p>This is the far end of "event-to-domain provenance is inspectable":
+     * an entity view hands over the event id its row came from, and the raw
+     * payload appears here. The table's selection is deliberately left alone —
+     * finding the row would mean mapping an id back to a position, which under
+     * a filter or a sort is a different question from the one the user asked,
+     * and getting it wrong would scroll them somewhere misleading.
+     *
+     * @return false when no session is open, so the caller can say so rather
+     *     than switching to a blank card
+     */
+    public boolean revealEvent(long eventId) {
+        if (inspectorModel == null) {
+            return false;
+        }
+        inspectorModel.select(eventId);
+        return true;
     }
 
     /** The session currently open, or null. */

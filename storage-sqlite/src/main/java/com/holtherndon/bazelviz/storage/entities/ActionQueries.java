@@ -122,9 +122,106 @@ public final class ActionQueries implements AutoCloseable {
      * ended even when many rows share a sort value.
      */
     public List<ActionRow> pageAfter(
-            ActionRow anchor, ActionFilter filter, ActionSort sort, boolean descending, int limit)
+            Anchor anchor, ActionFilter filter, ActionSort sort, boolean descending, int limit)
             throws SQLException {
         return page(filter, sort, descending, limit, Optional.of(anchor));
+    }
+
+    /** Convenience for walking forward from a row already on screen. */
+    public List<ActionRow> pageAfter(
+            ActionRow anchor, ActionFilter filter, ActionSort sort, boolean descending, int limit)
+            throws SQLException {
+        return pageAfter(Anchor.of(anchor, sort), filter, sort, descending, limit);
+    }
+
+    /**
+     * The row a page can be sought from: its position in the sort, and its id.
+     *
+     * <p>Deliberately not a row index. An index would have to be turned back
+     * into a position by counting, which is {@code OFFSET} wearing a different
+     * name.
+     */
+    public record Anchor(Optional<Object> sortValue, long id) {
+
+        public Anchor {
+            Objects.requireNonNull(sortValue, "sortValue");
+        }
+
+        public static Anchor of(ActionRow row, ActionSort sort) {
+            return new Anchor(sortValueOf(row, sort), row.id());
+        }
+    }
+
+    /**
+     * Anchors for every page boundary, plus the row count, from one ordered
+     * scan.
+     *
+     * <p>This is what lets a table model jump to page 20,000 without walking
+     * the 19,999 before it and without {@code OFFSET}. It reads only the sort
+     * value and the id — not the rows — so the scan stays inside the index for
+     * the sorts that have one.
+     *
+     * @param pageSize rows per page; an anchor is kept for the last row of each
+     */
+    public Index buildIndex(
+            ActionFilter filter, ActionSort sort, boolean descending, int pageSize)
+            throws SQLException {
+        if (pageSize < 1) {
+            throw new IllegalArgumentException("pageSize must be positive, got " + pageSize);
+        }
+        String column = sort.column();
+        StringBuilder sql = new StringBuilder("SELECT ").append(column).append(", a.id")
+                .append(FROM).append(" WHERE 1=1");
+        appendFilter(sql, filter);
+        sql.append(Keyset.orderBy(column, "a.id", descending));
+
+        List<Anchor> anchors = new ArrayList<>();
+        long rowCount = 0;
+        try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+            running = statement;
+            try {
+                bindFilter(statement, 1, filter);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        rowCount++;
+                        if (rowCount % pageSize == 0) {
+                            Object value = rows.getObject(1);
+                            anchors.add(new Anchor(
+                                    rows.wasNull() ? Optional.empty() : Optional.ofNullable(value),
+                                    rows.getLong(2)));
+                        }
+                    }
+                }
+            } finally {
+                running = null;
+            }
+        }
+        // The last anchor is only useful if a page follows it.
+        if (!anchors.isEmpty() && rowCount % pageSize == 0) {
+            anchors.removeLast();
+        }
+        return new Index(rowCount, anchors);
+    }
+
+    /**
+     * A row count and the anchors that address every page of it.
+     *
+     * @param anchors the last row of page {@code i}, for {@code i} from 0; page
+     *     0 needs none
+     */
+    public record Index(long rowCount, List<Anchor> anchors) {
+        public Index {
+            anchors = List.copyOf(anchors);
+        }
+
+        /** The anchor for {@code pageIndex}, empty for the first page. */
+        public Optional<Anchor> anchorFor(long pageIndex) {
+            if (pageIndex <= 0) {
+                return Optional.empty();
+            }
+            int previous = (int) (pageIndex - 1);
+            return previous < anchors.size() ? Optional.of(anchors.get(previous)) : Optional.empty();
+        }
     }
 
     private List<ActionRow> page(
@@ -132,7 +229,7 @@ public final class ActionQueries implements AutoCloseable {
             ActionSort sort,
             boolean descending,
             int limit,
-            Optional<ActionRow> anchor)
+            Optional<Anchor> anchor)
             throws SQLException {
         String column = sort.column();
         StringBuilder sql = new StringBuilder("SELECT ").append(COLUMNS).append(FROM)
@@ -147,7 +244,7 @@ public final class ActionQueries implements AutoCloseable {
                 int index = bindFilter(statement, 1, filter);
                 if (anchor.isPresent()) {
                     index = Keyset.bindSeek(
-                            statement, index, sortValueOf(anchor.get(), sort), anchor.get().id());
+                            statement, index, anchor.get().sortValue(), anchor.get().id());
                 }
                 statement.setInt(index, limit);
                 return readRows(statement);

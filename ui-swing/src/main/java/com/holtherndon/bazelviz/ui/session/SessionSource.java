@@ -25,6 +25,17 @@ public interface SessionSource extends AutoCloseable {
      */
     SessionReader openReader();
 
+    /**
+     * Opens a reader over the normalized entity tables, for the Phase 3 views.
+     *
+     * <p>Separate from {@link #openReader()} rather than merged into it because
+     * the two answer different questions and are used by different views on
+     * different executors. A view that shows actions has no use for the raw
+     * journal, and a reader that carried both would keep a journal file handle
+     * open for every table on screen.
+     */
+    EntityReader openEntityReader();
+
     @Override
     void close();
 }

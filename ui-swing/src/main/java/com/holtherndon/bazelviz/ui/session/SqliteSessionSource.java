@@ -49,6 +49,7 @@ public final class SqliteSessionSource implements SessionSource {
     private final SessionDatabase database;
     private final Path journalDirectory;
     private final List<SqliteSessionReader> readers = new CopyOnWriteArrayList<>();
+    private final List<EntityReader> entityReaders = new CopyOnWriteArrayList<>();
     private volatile boolean closed;
 
     private SqliteSessionSource(
@@ -117,12 +118,32 @@ public final class SqliteSessionSource implements SessionSource {
     }
 
     @Override
+    public EntityReader openEntityReader() {
+        if (closed) {
+            throw new SessionDataException("session " + root + " is closed");
+        }
+        Connection connection;
+        try {
+            connection = database.newReadConnection();
+        } catch (SQLException e) {
+            throw new SessionDataException("cannot open a read connection to " + root, e);
+        }
+        EntityReader reader = new SqliteEntityReader(root.toString(), connection);
+        entityReaders.add(reader);
+        return reader;
+    }
+
+    @Override
     public void close() {
         closed = true;
         for (SqliteSessionReader reader : readers) {
             reader.close();
         }
         readers.clear();
+        for (EntityReader reader : entityReaders) {
+            reader.close();
+        }
+        entityReaders.clear();
         try {
             database.close();
         } catch (SQLException e) {

@@ -132,6 +132,31 @@ public final class PagedTableModel<T> extends AbstractTableModel {
         return columns.get(columnIndex).extractor().apply(cached.rows().get(offset));
     }
 
+    /**
+     * The row object at {@code rowIndex}, or null when its page is not cached.
+     *
+     * <p>Never blocks and never schedules a fetch: it answers from the cache or
+     * says it cannot. A selection handler uses it to describe the selected row
+     * without doing I/O on the EDT, and treats null as "not yet" — the model
+     * fires a row update when the page lands, and the handler runs again.
+     *
+     * <p>Deliberately does not fetch. A selection that triggered its own fetch
+     * would race the viewport's, and the losing one would be discarded as
+     * obsolete after the work was already done.
+     */
+    public T rowAt(int rowIndex) {
+        if (rowIndex < 0 || rowIndex >= rowCount) {
+            return null;
+        }
+        long page = pageIndexForRow(rowIndex);
+        Page<T> cached = cache.peekPage(page);
+        if (cached == null) {
+            return null;
+        }
+        int offset = (int) (rowIndex - page * pageSize);
+        return offset < cached.rows().size() ? cached.rows().get(offset) : null;
+    }
+
     public long pageIndexForRow(long rowIndex) {
         return rowIndex / pageSize;
     }

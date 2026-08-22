@@ -72,12 +72,18 @@ public record OverviewSnapshot(
     }
 
     /**
-     * True when the actions table is showing only what failed.
+     * True when the build was known not to be publishing successful actions.
      *
-     * <p>An imported BEP usually was not captured with
-     * {@code --build_event_publish_all_actions}, and then an almost-empty
-     * actions table is the correct result rather than a bug. The view says
-     * which it is instead of leaving the user to guess.
+     * <p>A statement about the options, not about the rows. Bazel publishes an
+     * action event for a successful action only under
+     * {@code --build_event_publish_all_actions}, so an imported BEP captured
+     * without it has an actions table of failures and cache-miss stragglers —
+     * which is the correct result rather than a bug, and which the view has to
+     * be able to explain.
+     *
+     * <p>Absent (rather than false) when no {@code OptionsParsed} event arrived:
+     * unknown is not the same as "the flag was off", and only the first of the
+     * two justifies saying nothing.
      */
     public boolean actionsAreFailuresOnly() {
         return publishesAllActions.map(all -> !all).orElse(false);

@@ -61,6 +61,29 @@ public final class PageCache<T> {
         return pages.containsKey(pageIndex);
     }
 
+    /**
+     * The cached page or {@code null}, without counting a hit or a miss and
+     * without touching LRU recency.
+     *
+     * <p>For readers that are not the viewport: a selection handler asking
+     * "what is at this row" should not make the cache believe the row was
+     * displayed, or the eviction order would follow the selection instead of
+     * the scroll position.
+     *
+     * <p>Found by iteration rather than by {@code get}, because the backing map
+     * is in access order and every {@code get} — {@code getOrDefault} included —
+     * reorders it. The scan is over at most {@code capacity} entries, and a
+     * capacity that made that expensive would be a capacity too large to hold.
+     */
+    public synchronized Page<T> peekPage(long pageIndex) {
+        for (Map.Entry<Long, Page<T>> entry : pages.entrySet()) {
+            if (entry.getKey() == pageIndex) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
     /** Inserts (or replaces) a page, evicting the least recently used page when over capacity. */
     public synchronized void put(Page<T> page) {
         pages.put(page.pageIndex(), page);

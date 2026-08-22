@@ -114,6 +114,67 @@ public final class TestQueries implements AutoCloseable {
         }
     }
 
+    /**
+     * Anchors for every page boundary, plus the row count, from one ordered
+     * scan.
+     *
+     * <p>The same device the actions table uses, and for the same reason: a
+     * table model addresses rows by index and this is what turns an index into
+     * a seek without {@code OFFSET}. It reads only the two ordering columns.
+     */
+    public Index buildIndex(int pageSize) throws SQLException {
+        if (pageSize < 1) {
+            throw new IllegalArgumentException("pageSize must be positive, got " + pageSize);
+        }
+        String sql = "SELECT " + RANK + ", te.id" + FROM
+                + " ORDER BY " + RANK + " ASC, te.id ASC";
+        List<Anchor> anchors = new ArrayList<>();
+        long rowCount = 0;
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                rowCount++;
+                if (rowCount % pageSize == 0) {
+                    anchors.add(new Anchor(rows.getInt(1), rows.getLong(2)));
+                }
+            }
+        }
+        if (!anchors.isEmpty() && rowCount % pageSize == 0) {
+            anchors.removeLast();
+        }
+        return new Index(rowCount, anchors);
+    }
+
+    /** The page after an anchor, in the same order. */
+    public List<TestRow> pageAfter(Anchor anchor, int limit) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(PAGE_AFTER)) {
+            statement.setInt(1, anchor.rank());
+            statement.setInt(2, anchor.rank());
+            statement.setLong(3, anchor.id());
+            statement.setInt(4, limit);
+            return readRows(statement);
+        }
+    }
+
+    /** A row's position in the tests ordering. */
+    public record Anchor(int rank, long id) {}
+
+    /** A row count and the anchors that address every page of it. */
+    public record Index(long rowCount, List<Anchor> anchors) {
+        public Index {
+            anchors = List.copyOf(anchors);
+        }
+
+        /** The anchor for {@code pageIndex}, empty for the first page. */
+        public Optional<Anchor> anchorFor(long pageIndex) {
+            if (pageIndex <= 0) {
+                return Optional.empty();
+            }
+            int previous = (int) (pageIndex - 1);
+            return previous < anchors.size() ? Optional.of(anchors.get(previous)) : Optional.empty();
+        }
+    }
+
     public Optional<TestRow> test(long id) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(ONE)) {
             statement.setLong(1, id);

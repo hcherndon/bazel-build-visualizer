@@ -249,7 +249,72 @@ final class ActionQueriesTest {
         }
     }
 
+    @ParameterizedTest
+    @EnumSource(ActionSort.class)
+    @DisplayName("a page reached by its anchor is the same page reached by walking")
+    void indexAnchorsAddressTheSamePages(ActionSort sort) throws Exception {
+        for (boolean descending : new boolean[] {false, true}) {
+            try (ActionQueries queries = queries()) {
+                ActionQueries.Index index =
+                        queries.buildIndex(ActionFilter.NONE, sort, descending, PAGE);
+                List<ActionRow> walked = pageAll(queries, ActionFilter.NONE, sort, descending);
+
+                assertThat(index.rowCount()).isEqualTo(walked.size());
+
+                // Jumping straight to a page must give the same rows as
+                // scrolling to it. This is the whole point of the anchor
+                // array -- and the thing that breaks silently when the seek
+                // predicate and the ORDER BY drift apart.
+                long pages = (walked.size() + PAGE - 1) / PAGE;
+                for (long page = 0; page < pages; page++) {
+                    List<ActionRow> jumped = index.anchorFor(page)
+                            .map(anchor -> fetch(queries, anchor, sort, descending))
+                            .orElseGet(() -> fetchFirst(queries, sort, descending));
+                    int from = (int) (page * PAGE);
+                    int to = Math.min(from + PAGE, walked.size());
+                    assertThat(jumped.stream().map(ActionRow::id).toList())
+                            .as("%s %s page %d", sort, descending ? "desc" : "asc", page)
+                            .isEqualTo(walked.subList(from, to).stream().map(ActionRow::id).toList());
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("the index counts what the filter counts")
+    void indexAgreesWithTheFilteredCount() throws Exception {
+        try (ActionQueries queries = queries()) {
+            ActionFilter cpp = ActionFilter.NONE.withMnemonic(Optional.of("CppCompile"));
+            ActionQueries.Index index = queries.buildIndex(cpp, ActionSort.ARRIVAL, false, PAGE);
+
+            // Two rows and a page size of three: one page, no anchors, and a
+            // count that matches the separate COUNT query rather than the
+            // unfiltered total.
+            assertThat(index.rowCount()).isEqualTo(queries.count(cpp));
+            assertThat(index.anchors()).isEmpty();
+            assertThat(index.anchorFor(0)).isEmpty();
+        }
+    }
+
     // --- helpers ---------------------------------------------------------
+
+    private static List<ActionRow> fetch(
+            ActionQueries queries, ActionQueries.Anchor anchor, ActionSort sort, boolean descending) {
+        try {
+            return queries.pageAfter(anchor, ActionFilter.NONE, sort, descending, PAGE);
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static List<ActionRow> fetchFirst(
+            ActionQueries queries, ActionSort sort, boolean descending) {
+        try {
+            return queries.firstPage(ActionFilter.NONE, sort, descending, PAGE);
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
 
     private ActionQueries queries() throws SQLException {
         return new ActionQueries(database.newReadConnection());
