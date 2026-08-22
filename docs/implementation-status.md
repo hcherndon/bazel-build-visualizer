@@ -347,7 +347,7 @@ application's code.
 | Normalize outputs and logs | Done — output groups with their `incomplete` flag, tree artifacts kept out of the file roll-up, test logs merged across their two sources |
 | Normalize tests and summaries | Done — verdict from `testSummary.overallStatus` only; every attempt kept |
 | Build string/path dictionaries | Done — `labels` and `mnemonics` interned; artifact paths are the artifact table |
-| Implement incremental overview aggregates | **Partial** — the overview is one consistent read on a timer, not an incrementally maintained aggregate. See the interpretations below. |
+| Implement incremental overview aggregates | **Partial** — the overview is one consistent read in one transaction, on a timer, not an incrementally maintained aggregate. See the interpretations below. |
 | Add source completeness | Done — `build_invocation.saw_last_message`, `configurations.declared`, depsets with no defining event, and the output-group `incomplete` flag; each is surfaced |
 | UI: overview, actions table, targets tree, tests table, failures table, shared inspector | Done |
 | BEP content ground truth recorded | Done — `docs/bep-content.md`, five experiments across four Bazel versions, 91 findings, five unresolved contradictions stated as such |
@@ -359,7 +359,7 @@ application's code.
 |---|---|
 | Successful and failed builds produce coherent action/target/test records | Met — `RealBazelNormalizationTest` runs four real builds (success, failure under `--keep_going`, a test run with retries, an analysis abort) plus the same build across 6.5.0, 7.6.1, 8.4.1 and 9.2.0. Every run asserts `PRAGMA foreign_key_check` is empty, so "nothing was dropped to protect referential tidiness" is checked rather than claimed. |
 | Action table supports paging, filtering, and sorting | Met — keyset paging under six sorts in both directions, with `ActionQueriesTest` walking every page of every sort and asserting each row is visited exactly once. `ActionsViewWiringTest` drives the toolbar over an imported session and checks the table and the status line agree. No path uses `OFFSET`. |
-| Live updates are coalesced | Met — the overview re-reads one whole snapshot on a timer rather than reacting to rows. `OverviewPanelTest` advances the underlying numbers a few thousand times in 400 ms against a 40 ms interval and observes about ten reads: reads follow the clock, not the data. |
+| Live updates are coalesced | Met — the overview attaches to the running capture as soon as its session directory exists, and re-reads one whole snapshot in one transaction on a timer rather than reacting to rows. `OverviewPanelTest` advances the underlying numbers a few thousand times in 400 ms against a 40 ms interval and observes about ten reads: reads follow the clock, not the data. `RealBazelNormalizationTest` reads a session while the build writing it is still running, which is the part the audit found had never been exercised. |
 | Unknown values are visibly unknown | Met — `Measured` and the `Optional`-typed row records carry absence through the query layer; `Inspection.Field` carries the absence *and* its reason, and the shared inspector renders that as the word "unknown" followed by why. A field that claims both a value and a reason is refused by the constructor. |
 | Event-to-domain provenance is inspectable | Met — every normalized row carries `bep_event_id`; the inspector offers the source event from any of the five views; `EntityViewsWiringTest` follows an action row to its event, to its journal location, to bytes that equal the ones the stream contained. |
 
@@ -411,3 +411,52 @@ duration. In both cases the pair legitimately disagrees — `actionsExecuted`
 excludes cache hits, and `totalRunDuration` excludes failed retries and
 understated real wall time by 13x on a measured six-attempt test — so each is
 labelled rather than reconciled into a figure true of neither.
+
+## Phase 3 audit
+
+Eight lenses, three independent refuters per finding, and a completeness critic
+whose job was to audit what no lens owned. 171 agents, 62 distinct candidates,
+20 confirmed and 8 more from the critic. `docs/phase3-audit.md` is the full
+report, including the 42 that did not survive and why.
+
+**Eight defects made the tool say untrue things.** Every session claimed its
+capture was truncated, because the completeness flag the phase's own "add source
+completeness" task exists to provide was declared, selected, rendered — and
+never written. A test's "elapsed across attempts" was Bazel's summary window,
+which excludes failed retries and understated real wall time by 13x in
+measurement, while three comments and a UI label said it was computed from the
+attempts. An aborted target existed only in the abort log, so a build that
+failed during analysis — which produces nothing else — showed no targets at all.
+A test that failed to build reached the tests view not at all. "N actions" named
+a total the source cannot support, because a cache hit publishes no event.
+Empty `targetMetrics` became a confident zero. An interrupted build was reported
+as failed. The Exit column showed Bazel's constant 1 as the process's code.
+
+**Six lost work or leaked.** Live-captured sessions had no indexes at all,
+because the only caller of the finalize step was the import path. Resuming an
+import never migrated the schema. The read path never checked it either.
+Closing the window leaked five views and the session. The entity buffer was
+bounded in events, which bounds nothing. Truncation evidence was computed and
+discarded.
+
+**One was a security defect.** Swing renders any string beginning with
+`<html>` as a live document and fetches its remote images, so a string in a
+session file could make this application open a network connection — which plan
+22.1 says it never does. Verified before and after the fix.
+
+**Two were found by re-reading rather than by the audit**, and both are the same
+kind of mistake. The actions view closed the reader its own page source needed,
+so every page fetch failed and the table showed the error placeholder — and its
+test passed, because the assertion excluded only the *loading* placeholder. And
+keyset paging cost the same as `OFFSET`, twice over: sorting on a null flag cost
+18.8 ms at the tail of a 200,000-row table, and its obvious replacement planned
+three different ways at three depths. Neither was visible from the code and
+neither had a measurement; `:benchmarks:runEntityScaleSpike` exists because of
+it.
+
+**The completeness critic again found what no lens looked at**, for the fourth
+phase running — including two defects it verified by running Bazel itself rather
+than by reading, and the fact that the "live overview" was never attached to a
+running capture at all. The card showed "No session is open." for the whole
+build and populated only when it ended, so the phase's own UI deliverable was
+not delivered and its exit criterion rested on a unit test's fake reader.
