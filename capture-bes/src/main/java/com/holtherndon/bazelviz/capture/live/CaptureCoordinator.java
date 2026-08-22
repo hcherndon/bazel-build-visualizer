@@ -489,6 +489,21 @@ public final class CaptureCoordinator implements AutoCloseable {
                         "the build was stopped with " + outcome.terminatedBy().orElseThrow()
                                 + " after " + outcome.duration().toSeconds() + "s",
                         nowMicros()));
+            } else if (outcome != null
+                    && outcome.exitCode().orElse(0) == CaptureResult.BES_TRANSPORT_FAILURE_EXIT) {
+                // Bazel reports 38 when the event-stream upload failed, whatever
+                // the build itself did. Recorded as a capture problem, not as a
+                // failed build: blaming the user's build for our transport would
+                // be exactly backwards.
+                events.recordDiagnostic(ImportDiagnostic.general(
+                        DiagnosticSeverity.ERROR,
+                        CaptureDiagnosticCodes.STREAM_FAILED,
+                        "bazel exited 38: the build event upload failed. The build's own outcome"
+                                + " cannot be read from the exit code and must come from the event"
+                                + " stream.",
+                        nowMicros()));
+                warnings.add("bazel exited 38 (build event upload failed); the build's own result"
+                        + " is not knowable from its exit code");
             } else if (outcome != null && !outcome.isSuccess()) {
                 events.recordDiagnostic(ImportDiagnostic.general(
                         DiagnosticSeverity.INFO,

@@ -45,9 +45,34 @@ public record CaptureResult(
         warnings = List.copyOf(Objects.requireNonNull(warnings, "warnings"));
     }
 
+    /**
+     * Bazel's exit code when the Build Event Protocol upload failed.
+     *
+     * <p>It masks the build's own result: a build whose actions failed exits 1
+     * normally, and 38 when a BES backend is also configured and broken. So an
+     * exit of 38 says something about the transport and nothing reliable about
+     * the build.
+     */
+    public static final int BES_TRANSPORT_FAILURE_EXIT = 38;
+
     /** True when Bazel reported success. Says nothing about the capture. */
     public boolean buildSucceeded() {
-        return process.map(ProcessOutcome::isSuccess).orElse(false);
+        return buildOutcomeKnown() && process.map(ProcessOutcome::isSuccess).orElse(false);
+    }
+
+    /**
+     * Whether the exit code can be believed as a statement about the build.
+     *
+     * <p>False when Bazel exited 38, which it does when the event-stream upload
+     * failed — and which it does <em>whatever</em> the build did. Reporting
+     * "build failed" from that code would blame the user's build for this
+     * application's transport problem. The build's real outcome is in the event
+     * stream, where later phases read it from {@code BuildFinished}.
+     */
+    public boolean buildOutcomeKnown() {
+        return process
+                .map(outcome -> outcome.exitCode().orElse(0) != BES_TRANSPORT_FAILURE_EXIT)
+                .orElse(false);
     }
 
     /** True when everything Bazel sent was kept. Says nothing about the build. */

@@ -142,6 +142,70 @@ class BesServerTest {
     }
 
     @Test
+    @DisplayName("acknowledgements echo the exact sequence numbers Bazel sent")
+    void acknowledgementsEchoExactSequenceNumbers() throws Exception {
+        // This is not a stylistic preference. An acknowledgement carrying the
+        // wrong sequence_number does not merely fail the upload: on Bazel 6.5
+        // and 9.2 it kills the Bazel server with a fatal internal error, taking
+        // the user's analysis cache with it. 7.6 and 8.4 fail gracefully, so a
+        // regression here would look harmless on half the supported range.
+        RecordingSink sink = new RecordingSink();
+        try (BesServer server = new BesServer(sink, BesServerConfig.defaults())) {
+            BesEndpoint endpoint = server.start();
+            try (Client client = new Client(endpoint)) {
+                for (int sequence = 1; sequence <= 25; sequence++) {
+                    client.send(sequence);
+                }
+                client.halfCloseAndAwait(20);
+
+                assertThat(client.acknowledged())
+                        .isEqualTo(java.util.stream.LongStream.rangeClosed(1, 25).boxed().toList());
+            }
+        } finally {
+            sink.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("a stream replayed on a new connection is recognised, not journaled twice")
+    void replayedStreamIsNotJournaledTwice() throws Exception {
+        // Bazel's uploader outlives its client process. If it loses the
+        // connection it opens another and replays the stream from sequence 1
+        // with the same StreamId. Tracking state per connection would journal
+        // every one of those events a second time.
+        RecordingSink sink = new RecordingSink();
+        try (BesServer server = new BesServer(sink, BesServerConfig.defaults())) {
+            BesEndpoint endpoint = server.start();
+
+            try (Client first = new Client(endpoint)) {
+                first.send(1);
+                first.send(2);
+                first.send(3);
+                assertThat(sink.awaitEvents(3, 5_000)).isTrue();
+                first.cancel();
+            }
+            assertThat(sink.awaitStreamEnd(5_000)).isTrue();
+
+            try (Client replay = new Client(endpoint)) {
+                for (int sequence = 1; sequence <= 5; sequence++) {
+                    replay.send(sequence);
+                }
+                replay.halfCloseAndAwait(20);
+
+                // Every replayed sequence is acknowledged, so the client can
+                // finish; only the two it had never sent before are journaled.
+                assertThat(replay.acknowledged()).contains(1L, 2L, 3L, 4L, 5L);
+            }
+
+            assertThat(sink.events()).hasSize(5);
+            assertThat(sink.events().stream().map(RawBesEvent::sequence).toList())
+                    .containsExactly(1L, 2L, 3L, 4L, 5L);
+        } finally {
+            sink.stop();
+        }
+    }
+
+    @Test
     @DisplayName("the endpoint is always loopback, and a non-loopback one cannot be built")
     void bindingIsLoopbackOnly() throws Exception {
         RecordingSink sink = new RecordingSink();

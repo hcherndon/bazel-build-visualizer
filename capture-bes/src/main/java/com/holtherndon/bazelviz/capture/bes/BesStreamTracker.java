@@ -151,6 +151,24 @@ final class BesStreamTracker {
         return range;
     }
 
+    /**
+     * Reopens a stream that a previous connection left ended.
+     *
+     * <p>Bazel's uploader survives the client process. If this application is
+     * restarted while an upload is in flight, the uploader reconnects — to a
+     * new port if it can find one — and <em>replays the stream from the
+     * beginning</em>. The replay carries the same {@code StreamId}, so it is the
+     * same stream, and reusing its tracker is what makes the replayed events
+     * recognisable as duplicates instead of being journaled a second time.
+     *
+     * <p>The watermarks and counters are deliberately kept: they are what the
+     * duplicate detection is made of.
+     */
+    synchronized void reopen() {
+        completion = BesStreamState.Completion.OPEN;
+        error = null;
+    }
+
     /** Marks how the stream ended. The first ending wins; a later one is noise. */
     synchronized void end(BesStreamState.Completion how, String detail) {
         if (completion.isTerminal()) {

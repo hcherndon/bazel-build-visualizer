@@ -55,6 +55,24 @@ public final class InstrumentationPlanner {
     /** File name for the BEP fallback, under the session's {@code raw/}. */
     public static final String FALLBACK_BEP_FILE = "bep-fallback.bin";
 
+    /**
+     * The upload timeout injected alongside the local backend.
+     *
+     * <p>Bazel's default {@code --bes_timeout} is {@code 0s}, which means no
+     * timeout at all. That is a reasonable default for a real backend and a
+     * dangerous one for this application: measured, a BES server that stops
+     * acknowledging makes Bazel wait <em>indefinitely</em> at the end of an
+     * otherwise successful build — no error, no retry, no give-up, and the
+     * workspace lock held the whole time. A bug in this application would then
+     * wedge the user's workspace until they found and killed a Bazel server.
+     *
+     * <p>Sixty seconds converts every such failure into a bounded, single-line
+     * error and a normal exit. It is far longer than a healthy capture ever
+     * needs — acknowledgement follows a journal append — so it costs nothing
+     * when things work.
+     */
+    public static final String BES_TIMEOUT_VALUE = "60s";
+
     public InstrumentationPlan plan(PlanRequest request) {
         Objects.requireNonNull(request, "request");
         BazelCommand original = request.original();
@@ -188,6 +206,8 @@ public final class InstrumentationPlanner {
                             + " about the one it shadowed."));
         }
 
+        addBesTimeout(request, capabilities, added, userFlags);
+
         availability.put(DataSource.BES_ENVELOPE, new SourceAvailability.Entry(
                 status.isSupported()
                         ? SourceAvailability.Availability.PLANNED
@@ -204,6 +224,42 @@ public final class InstrumentationPlanner {
                         ? "every build event arrives inside the BES stream"
                         : explain(status, "--" + flagName),
                 Optional.of("--" + flagName)));
+    }
+
+    /**
+     * Bounds the wait for the upload, so a fault in this application cannot
+     * hang the user's build.
+     *
+     * <p>Skipped when the user set their own {@code --bes_timeout}: they have
+     * expressed an intent about how long to wait, and overriding it to protect
+     * them from us would be presumptuous. The plan still shows the flag, marked
+     * as not applied, so the choice is visible.
+     */
+    private void addBesTimeout(
+            PlanRequest request,
+            BazelCapabilities capabilities,
+            List<AddedFlag> added,
+            UserFlags userFlags) {
+        CapabilityStatus status = capabilities.status(Capability.BES_TIMEOUT);
+        String flagName = capabilities.preferredFlag(Capability.BES_TIMEOUT).orElse("bes_timeout");
+        if (userFlags.has(flagName)) {
+            return;
+        }
+        added.add(new AddedFlag(
+                "--" + flagName + "=" + BES_TIMEOUT_VALUE,
+                AddedFlag.Placement.COMMAND,
+                Capability.BES_TIMEOUT,
+                request.vetoed().contains(Capability.BES_TIMEOUT)
+                        ? CapabilityStatus.UNSUPPORTED
+                        : status,
+                "Bounds how long Bazel waits for this application to acknowledge the event"
+                        + " stream. Bazel's own default is to wait forever, so without this a"
+                        + " fault here would hang your build with no error.",
+                DataSource.BES_ENVELOPE,
+                Overhead.LOW,
+                Optional.empty(),
+                false,
+                true));
     }
 
     private void addBepFileFallback(

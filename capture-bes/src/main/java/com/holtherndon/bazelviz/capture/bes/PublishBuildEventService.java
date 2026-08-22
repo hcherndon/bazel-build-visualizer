@@ -61,6 +61,21 @@ final class PublishBuildEventService {
     private final MicrosClock clock;
     private final AtomicInteger openStreams = new AtomicInteger();
 
+    /**
+     * Stream state, kept per {@code StreamId} for the life of this server rather
+     * than per connection.
+     *
+     * <p>One BES stream can span more than one connection. Bazel's uploader
+     * outlives the client process, and when it loses its connection it reopens
+     * one and replays the stream from sequence 1 — same {@code StreamId}, same
+     * events. A tracker owned by the connection would see that replay as a
+     * fresh stream and journal every event twice. Keyed by identity, it sees
+     * what it is: retransmission, handled idempotently, exactly as the plan
+     * requires.
+     */
+    private final java.util.concurrent.ConcurrentMap<BesStreamKey, BesStreamTracker> trackers =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     /** Epoch-microsecond source; injectable so tests are deterministic. */
     @FunctionalInterface
     interface MicrosClock {
@@ -328,7 +343,12 @@ final class PublishBuildEventService {
         }
 
         private void start(BesRequestHeader header) {
-            tracker = new BesStreamTracker(header.streamKey());
+            BesStreamKey key = header.streamKey();
+            tracker = trackers.computeIfAbsent(key, BesStreamTracker::new);
+            // A stream this server has seen before is a replay, not a new one.
+            // Reopening keeps its watermarks, which is what lets the replayed
+            // events be recognised as duplicates.
+            tracker.reopen();
             streamId = StreamId.newBuilder()
                     .setBuildId(header.buildId().orElse(""))
                     .setInvocationId(header.invocationId().orElse(""))
