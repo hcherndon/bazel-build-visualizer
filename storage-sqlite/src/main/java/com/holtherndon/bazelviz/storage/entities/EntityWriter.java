@@ -286,6 +286,29 @@ public final class EntityWriter implements AutoCloseable {
                     + CONFIGURED_TARGET_JOIN + CONFIGURED_TARGET_WHERE
                     + " ON CONFLICT (configured_target_id) DO NOTHING";
 
+    /**
+     * Records a test target that never ran.
+     *
+     * <p>Bazel emits no {@code testResult} and no {@code testSummary} for a
+     * test whose own build failed (TS6), so without this such a target reaches
+     * the tests view not at all — and a run where every test failed to build
+     * showed "this session recorded no tests". Requirement 39 asks for the
+     * explicit state, and {@code FAILED_TO_BUILD} is the one Bazel's own
+     * vocabulary has for it.
+     *
+     * <p>Guarded on the target actually being a test: {@code testSize} comes
+     * from the analysis payload under either command, and
+     * {@code testTimeoutSeconds} from the completion under {@code bazel test}.
+     * A non-test target that failed to build is a failed target and nothing
+     * more.
+     */
+    private static final String MARK_TEST_FAILED_TO_BUILD =
+            "INSERT INTO tests (configured_target_id, overall_status)"
+                    + " SELECT ct.id, 'FAILED_TO_BUILD'" + CONFIGURED_TARGET_JOIN
+                    + CONFIGURED_TARGET_WHERE
+                    + " AND (t.test_size IS NOT NULL OR ct.test_timeout_seconds IS NOT NULL)"
+                    + " ON CONFLICT (configured_target_id) DO NOTHING";
+
     private static final String TEST_JOIN =
             " FROM tests te JOIN configured_targets ct ON ct.id = te.configured_target_id"
                     + " JOIN targets t ON t.id = ct.target_id"
@@ -807,6 +830,14 @@ public final class EntityWriter implements AutoCloseable {
             row.setLong(8, streamId);
             row.setString(9, target.configurationId());
             row.executeUpdate();
+        }
+        if (!target.success()) {
+            PreparedStatement failedTest = prepare(MARK_TEST_FAILED_TO_BUILD);
+            failedTest.setString(1, target.label());
+            failedTest.setString(2, aspect);
+            failedTest.setLong(3, streamId);
+            failedTest.setString(4, target.configurationId());
+            failedTest.executeUpdate();
         }
         for (FileRef directory : target.directoryOutputs()) {
             artifact(directory);

@@ -340,6 +340,56 @@ final class EntityWriterTest {
     }
 
     @Test
+    @DisplayName("a test target that failed to build is still a test")
+    void testsThatFailedToBuildGetAState() throws Exception {
+        // Bazel emits no testResult and no testSummary for a test whose own
+        // build failed, so without an explicit state such a target reaches the
+        // tests view not at all -- and a run where every test failed to build
+        // reported that the session recorded no tests.
+        apply(event(), new EntityCommand.TargetConfigured(
+                "//t:broken_test",
+                Optional.empty(),
+                Optional.of("java_test rule"),
+                Optional.of("SMALL"),
+                List.of()));
+        apply(event(), completed("//t:broken_test", "cfg-1", false, List.of()));
+
+        assertThat(scalar("SELECT COUNT(*) FROM tests")).isEqualTo(1);
+        assertThat(text("SELECT overall_status FROM tests")).isEqualTo("FAILED_TO_BUILD");
+        assertThat(scalar("SELECT COUNT(*) FROM test_attempts")).isZero();
+    }
+
+    @Test
+    @DisplayName("a plain target that failed to build is not turned into a test")
+    void failedNonTestTargetsAreNotTests() throws Exception {
+        apply(event(), new EntityCommand.TargetConfigured(
+                "//pkg:lib", Optional.empty(), Optional.of("java_library rule"),
+                Optional.empty(), List.of()));
+        apply(event(), completed("//pkg:lib", "cfg-1", false, List.of()));
+
+        assertThat(scalar("SELECT COUNT(*) FROM tests")).isZero();
+        assertThat(text("SELECT outcome FROM configured_targets")).isEqualTo("FAILED");
+    }
+
+    @Test
+    @DisplayName("a test that ran keeps the verdict its summary gave")
+    void aRealVerdictSurvivesTheFailedToBuildPath() throws Exception {
+        apply(event(), new EntityCommand.TargetConfigured(
+                "//t:failing_test", Optional.empty(), Optional.of("java_test rule"),
+                Optional.of("SMALL"), List.of()));
+        // A test that runs and fails completes with success = true, measured on
+        // all four versions -- so the failed-to-build path must not fire, and
+        // must not overwrite the summary if it somehow did.
+        apply(event(), completed("//t:failing_test", "cfg-1", true, List.of()));
+        apply(event(), new EntityCommand.TestSummarized(
+                "//t:failing_test", "cfg-1", TestOutcome.FAILED,
+                OptionalInt.of(1), OptionalInt.of(1), OptionalInt.empty(), OptionalInt.of(1),
+                0, OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(), List.of()));
+
+        assertThat(text("SELECT overall_status FROM tests")).isEqualTo("FAILED");
+    }
+
+    @Test
     @DisplayName("a summary's log and its attempt's log are one file, not two")
     void testLogsMergeAcrossSources() throws Exception {
         String uri = "file:///out/t/test.log";

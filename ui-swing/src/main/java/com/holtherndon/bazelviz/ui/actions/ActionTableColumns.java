@@ -32,7 +32,11 @@ public final class ActionTableColumns {
                 // not report renders as an em dash here and explains itself in
                 // the inspector.
                 new ColumnSpec<>("Duration", row -> EntityFormat.duration(row.duration())),
-                new ColumnSpec<>("Exit", row -> EntityFormat.exitCode(row.effectiveExitCode())),
+                // The process's code or nothing. Bazel's own exit_code field is
+                // 1 for every failure whatever the command returned, and a
+                // failure with no spawn -- a genrule that produced no output --
+                // has no process code at all.
+                new ColumnSpec<>("Exit", row -> EntityFormat.exitCode(row.processExitCode())),
                 new ColumnSpec<>("Output", ActionRow::primaryOutput));
     }
 

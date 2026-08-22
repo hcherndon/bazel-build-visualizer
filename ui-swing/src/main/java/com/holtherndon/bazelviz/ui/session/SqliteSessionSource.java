@@ -11,6 +11,7 @@ import com.holtherndon.bazelviz.storage.events.EventPage;
 import com.holtherndon.bazelviz.storage.events.EventQueries;
 import com.holtherndon.bazelviz.storage.events.EventSummary;
 import com.holtherndon.bazelviz.storage.events.RawLocation;
+import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -91,8 +92,53 @@ public final class SqliteSessionSource implements SessionSource {
         } catch (SQLException e) {
             throw new SessionDataException("cannot open " + layout.databaseFile(), e);
         }
+        try {
+            requireCurrentSchema(root, database);
+        } catch (SessionDataException refused) {
+            try {
+                database.close();
+            } catch (SQLException ignored) {
+                // The refusal is what matters; a database that will not close
+                // adds nothing the caller can act on.
+            }
+            throw refused;
+        }
         return new SqliteSessionSource(
                 root, SessionInfo.of(root, manifest), database, layout.rawDirectory());
+    }
+
+    /**
+     * Refuses a session this build cannot read, with a reason.
+     *
+     * <p>Opening is read-only, so it does not migrate: a view is not a licence
+     * to rewrite the file the user opened. It does have to <em>check</em>,
+     * though. Without this, a session written before a schema version opened
+     * happily and then answered every entity query with "no such table" — five
+     * views each showing a different SQL error, and an overview whose headline
+     * was a stack-trace string. The raw journal is the source of truth
+     * (ADR-004), so re-importing rebuilds the session from its own bytes.
+     */
+    private static void requireCurrentSchema(Path root, SessionDatabase database) {
+        int version;
+        try {
+            version = MigrationRunner.currentVersion(database.writerConnection());
+        } catch (SQLException e) {
+            throw new SessionDataException("cannot read the schema version of " + root, e);
+        }
+        MigrationRunner runner = MigrationRunner.standard();
+        if (version > runner.latestVersion()) {
+            throw new SessionDataException("session " + root + " was written by a newer build"
+                    + " (schema version " + version + "; this build understands "
+                    + runner.latestVersion() + "). Upgrade, or open it with the build that"
+                    + " wrote it.");
+        }
+        if (version < runner.latestVersion()) {
+            throw new SessionDataException("session " + root + " was indexed by an older build"
+                    + " (schema version " + version + "; this build reads "
+                    + runner.latestVersion() + "), so its targets, actions and tests were never"
+                    + " normalized. Import its source again — the raw events are preserved, so"
+                    + " nothing is lost by rebuilding.");
+        }
     }
 
     @Override

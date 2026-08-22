@@ -403,7 +403,7 @@ public final class BepImporter {
             totalBytes = preserved.byteSize();
             recordManifestSource(Completeness.UNKNOWN);
 
-            openDatabase(true);
+            openDatabase();
             try {
                 captureSourceId = SessionTables.insertCaptureSource(
                         writerConnection(),
@@ -443,7 +443,7 @@ public final class BepImporter {
                     0);
             totalBytes = preserved.byteSize();
 
-            openDatabase(false);
+            openDatabase();
             try {
                 captureSourceId = SessionTables.findCaptureSource(writerConnection()).orElse(-1);
             } catch (SQLException e) {
@@ -593,15 +593,24 @@ public final class BepImporter {
 
         // -------------------------------------------------------------- database
 
-        private void openDatabase(boolean migrate) throws IOException {
+        /**
+         * Opens the session database and brings it to the current schema.
+         *
+         * <p>Both callers migrate, including resume. That is not an oversight
+         * corrected — it is the correction: resume used to only check
+         * compatibility, which rejects a database newer than this build and
+         * applies nothing to an older one. A session interrupted under a build
+         * that predates a schema version would then be replayed into tables it
+         * does not have, and the first write would fail with "no such table"
+         * on a session the UI had just offered to resume.
+         *
+         * <p>Migration is forward-only and transactional, so applying it to a
+         * session that is already current does nothing at all.
+         */
+        private void openDatabase() throws IOException {
             try {
                 database = SessionDatabase.open(layout.databaseFile());
-                if (migrate) {
-                    new MigrationRunner(MigrationRunner.standard().migrations())
-                            .migrate(database);
-                } else {
-                    MigrationRunner.standard().requireCompatible(database.writerConnection());
-                }
+                MigrationRunner.standard().migrate(database);
             } catch (SQLException e) {
                 throw new IOException("cannot open the session database at " + layout.databaseFile(), e);
             }

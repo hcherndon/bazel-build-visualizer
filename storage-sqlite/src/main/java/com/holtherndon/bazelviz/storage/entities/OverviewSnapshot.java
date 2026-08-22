@@ -89,6 +89,19 @@ public record OverviewSnapshot(
         return publishesAllActions.map(all -> !all).orElse(false);
     }
 
+    /**
+     * True when the user stopped the build.
+     *
+     * <p>Its own state, not a kind of failure. Requirement 49 is explicit about
+     * why: the per-target reason for an interrupted build reads
+     * {@code INCOMPLETE}, which is the same value a sibling skipped under
+     * {@code --nokeep_going} carries, so nothing below the top level can tell
+     * the two apart. Bazel's exit code can: 8, named {@code INTERRUPTED}.
+     */
+    public boolean wasInterrupted() {
+        return exitCodeName.map("INTERRUPTED"::equals).orElse(false);
+    }
+
     /** Work Bazel attributed to one action type. */
     public record MnemonicWork(String mnemonic, OptionalLong created, OptionalLong executed) {}
 }

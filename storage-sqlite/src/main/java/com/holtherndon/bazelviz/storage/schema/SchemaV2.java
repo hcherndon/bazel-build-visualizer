@@ -457,19 +457,16 @@ public final class SchemaV2 {
             // (TS1, finding 36). shard_count is nullable, absent meaning not
             // sharded; zero would put phantom zero-shard tests in a histogram.
             //
-            // Three timing columns, and all three are Bazel's own. The
-            // summary's window excludes failed retries and its first start
-            // landed 218-747 ms after the earliest attempt (TS2), so none of
-            // them is the elapsed time of the test. They are stored under
-            // Bazel's name and shown as Bazel's figure.
+            // Three timing columns, and all three are Bazel's own. Schema v3
+            // renames the first two to say so; they are declared here under
+            // their original names because this file is what version 2 created
+            // and a migration is not a licence to rewrite history.
             //
-            // The elapsed time the views present is computed from
-            // `test_attempts` at read time (TestQueries), because that is the
-            // only place the failed retries appear. An earlier version of this
-            // schema stored the summary's numbers in columns named as though
-            // they were the attempts', and the comment here said they were
-            // computed -- which is how a 13x understatement gets a label saying
-            // "Elapsed across attempts".
+            // The summary's window excludes failed retries and its first start
+            // landed 218-747 ms after the earliest attempt (TS2), so none of
+            // these is the elapsed time of the test. That is computed from
+            // `test_attempts` at read time (TestQueries), because the retries
+            // appear nowhere else.
             //
             // total_num_cached is NOT NULL at 0 when absent — proto3 default,
             // a known value (TS3).
@@ -484,8 +481,8 @@ public final class SchemaV2 {
               shard_count                   INTEGER,
               attempt_count                 INTEGER,
               total_num_cached              INTEGER NOT NULL DEFAULT 0,
-              bazel_first_start_micros      INTEGER,
-              bazel_last_stop_micros        INTEGER,
+              first_start_micros            INTEGER,
+              last_stop_micros              INTEGER,
               bazel_reported_duration_micros INTEGER,
               bep_event_id                  INTEGER REFERENCES bep_events(id)
             )

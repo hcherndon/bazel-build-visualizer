@@ -189,8 +189,10 @@ public final class TestsView extends JPanel {
     private void install(TestRowSource rows) {
         if (rows.rowCount() == 0) {
             // A build with no tests is not a broken view. Saying so beats an
-            // empty table the user has to interpret.
-            showEmpty("This build ran no tests.");
+            // empty table the user has to interpret -- but the claim is about
+            // this session, not about the build: a truncated stream records no
+            // tests whether or not any ran.
+            showEmpty("This session recorded no tests.");
             return;
         }
         tableModel = new PagedTableModel<>(

@@ -223,7 +223,10 @@ public final class FailuresView extends JPanel {
 
     private void installCounts(List<FailureQueries.ReasonCount> reasons) {
         if (counts.isEmpty()) {
-            showEmpty("Nothing failed and nothing was skipped.");
+            // A statement about this session, not about the build. Aborted
+            // events arrive after buildFinished, so a stream that stopped early
+            // has no failures recorded whether or not the build had any.
+            showEmpty("This session recorded no failures and no skipped targets.");
             return;
         }
         // When aborts are all there is, listing them is the only thing to

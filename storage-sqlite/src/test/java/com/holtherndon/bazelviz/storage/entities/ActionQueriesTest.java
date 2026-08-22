@@ -148,8 +148,12 @@ final class ActionQueriesTest {
             ActionRow untimed = queries.actionByOutput("bazel-out/status.txt").orElseThrow();
 
             assertThat(untimed.duration().isKnown()).isFalse();
+            // Says only what the row knows. "This Bazel version does not
+            // report action timestamps" is true on 6.5.0 and 7.6.1 and false on
+            // 8.4.1 and 9.2.0, where a third of actions lack timestamps because
+            // they ran no spawn -- and the row cannot tell those apart.
             assertThat(untimed.duration().warning().orElseThrow())
-                    .contains("does not report action timestamps");
+                    .isEqualTo("Bazel reported no start or end time for it");
             assertThat(untimed.label()).isEmpty();
 
             ActionRow timed = queries.actionByOutput("bazel-out/a1.o").orElseThrow();

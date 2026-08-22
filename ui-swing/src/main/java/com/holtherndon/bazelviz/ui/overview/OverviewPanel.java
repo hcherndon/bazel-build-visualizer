@@ -74,7 +74,17 @@ public final class OverviewPanel extends JPanel {
 
     private ScheduledExecutorService refresher;
     private SessionSource source;
-    private EntityReader reader;
+
+    /**
+     * Written by the refresher thread and read by the EDT during close, so it
+     * is volatile. It used to be a plain field: a close arriving while
+     * {@code openEntityReader()} was still in flight read null and left the
+     * reader open for the life of the process.
+     */
+    private volatile EntityReader reader;
+
+    /** Cleared once a refresh succeeds, so only the first failure is shown. */
+    private volatile boolean everRendered;
     private java.util.function.Consumer<OverviewSnapshot> snapshotListener = snapshot -> { };
 
     public OverviewPanel() {
@@ -145,6 +155,7 @@ public final class OverviewPanel extends JPanel {
             thread.setDaemon(true);
             return thread;
         });
+        everRendered = false;
         ScheduledExecutorService running = refresher;
         running.execute(() -> {
             try {
@@ -197,9 +208,15 @@ public final class OverviewPanel extends JPanel {
         snapshotListener.accept(snapshot);
 
         tiles.removeAll();
-        tiles.add(tile("Targets", EntityFormat.count(snapshot.configuredTargets()),
-                snapshot.targetsFailed() + " failed"));
-        tiles.add(tile("Actions", EntityFormat.count(snapshot.actions()),
+        // Every target analysis reported, not only the ones that completed. A
+        // build interrupted during analysis has configured targets and no
+        // completed ones -- six and zero in one measured interrupt -- so a tile
+        // counting completions would show that build as having no targets.
+        tiles.add(tile("Targets", EntityFormat.count(snapshot.targets()), targetsNote(snapshot)));
+        // "Executed", because a cache hit publishes no event and is therefore
+        // not here. The unqualified word would name a total the source cannot
+        // support.
+        tiles.add(tile("Actions executed", EntityFormat.count(snapshot.actions()),
                 snapshot.actionsFailed() + " failed"));
         tiles.add(tile("Tests", EntityFormat.count(snapshot.tests()),
                 snapshot.testsFailed() + " not passing"));
@@ -211,7 +228,7 @@ public final class OverviewPanel extends JPanel {
         details.add(section("Bazel reported", bazelRows(snapshot)));
         if (!snapshot.topMnemonics().isEmpty()) {
             details.add(Box.createVerticalStrut(12));
-            details.add(section("Work by action type", mnemonicRows(snapshot)));
+            details.add(section(mnemonicHeading(snapshot), mnemonicRows(snapshot)));
         }
         revalidate();
         repaint();
@@ -238,23 +255,52 @@ public final class OverviewPanel extends JPanel {
             OverviewSnapshot snapshot = current.overview();
             SwingUtilities.invokeLater(() -> {
                 if (source == opened) {
+                    everRendered = true;
                     show(snapshot);
                 }
             });
         } catch (RuntimeException failure) {
             // A refresh failing mid-capture is not fatal: the next tick tries
-            // again. Blanking the panel would lose numbers that were true.
+            // again, and blanking the panel would lose numbers that were true.
+            // But the *first* one has nothing to preserve, and staying silent
+            // left the panel reading "Reading…" for ever with no explanation.
             log.warn("overview refresh failed", failure);
+            if (!everRendered) {
+                SwingUtilities.invokeLater(() -> {
+                    if (source == opened && !everRendered) {
+                        headline.setText("The overview could not be read.");
+                        subhead.setText(failure.getMessage());
+                    }
+                });
+            }
         }
+    }
+
+    /** What is worth saying under the target count, when there is something. */
+    private static String targetsNote(OverviewSnapshot snapshot) {
+        List<String> parts = new ArrayList<>();
+        if (snapshot.targetsFailed() > 0) {
+            parts.add(snapshot.targetsFailed() + " failed");
+        }
+        if (snapshot.targetsNotCompleted() > 0) {
+            parts.add(snapshot.targetsNotCompleted() + " not completed");
+        }
+        return parts.isEmpty() ? " " : String.join(", ", parts);
     }
 
     private static String headlineFor(OverviewSnapshot snapshot) {
         String command = snapshot.command().map(text -> "bazel " + text).orElse("Session");
+        if (snapshot.wasInterrupted()) {
+            // Its own state. The user stopped this build; calling that "failed"
+            // tells them something about their own action that they know to be
+            // untrue, and the subhead beside it already reads "exit
+            // INTERRUPTED" -- so the screen would contradict itself.
+            return command + " — interrupted";
+        }
         return snapshot.overallSuccess()
                 .map(success -> command + (success ? " — succeeded" : " — failed"))
-                // Three states, and the third is not "failed": a build whose
-                // BuildFinished never arrived died before it could say, which
-                // is a different thing to report.
+                // A fourth state, and it is not "failed" either: a build whose
+                // BuildFinished never arrived died before it could say.
                 .orElse(command + " — outcome not reported");
     }
 
@@ -285,7 +331,7 @@ public final class OverviewPanel extends JPanel {
                 EntityFormat.count(snapshot.targetsNotCompleted())});
         rows.add(new String[] {"Targets named by an abort",
                 EntityFormat.count(snapshot.abortedEvents())});
-        rows.add(new String[] {"Actions observed", EntityFormat.count(snapshot.actions())});
+        rows.add(new String[] {"Actions with an event", EntityFormat.count(snapshot.actions())});
         rows.add(new String[] {"All actions published?",
                 EntityFormat.yesNo(snapshot.publishesAllActions())});
         return rows;
@@ -307,6 +353,23 @@ public final class OverviewPanel extends JPanel {
         rows.add(new String[] {"Execution phase", millis(snapshot.executionPhaseMillis())});
         rows.add(new String[] {"Critical path", EntityFormat.duration(snapshot.criticalPathMicros())});
         return rows;
+    }
+
+    /**
+     * The breakdown's heading, which says when the breakdown is partial.
+     *
+     * <p>On Bazel 6.5.0 and 7.6.1 a mnemonic whose actions were all cache hits
+     * is absent from {@code actionData} entirely (M4), so the list is a subset
+     * with nothing in the data to say so. A chart that looked complete and was
+     * not is exactly what rule 13 is about.
+     */
+    private static String mnemonicHeading(OverviewSnapshot snapshot) {
+        boolean partial = snapshot.bazelVersion()
+                .map(version -> version.startsWith("6.") || version.startsWith("7."))
+                .orElse(false);
+        return partial
+                ? "Work by action type (partial: this Bazel omits fully-cached types)"
+                : "Work by action type";
     }
 
     private List<String[]> mnemonicRows(OverviewSnapshot snapshot) {

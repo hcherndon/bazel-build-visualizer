@@ -41,6 +41,7 @@ class ActionInspectionTest {
         // code" would send the reader looking for a failure that did not happen.
         assertThat(valueOf(inspection, "Exit code")).hasValue("7");
         assertThat(valueOf(inspection, "Bazel's status code")).hasValue("1");
+        assertThat(failed.processExitCode()).hasValue(7);
         assertThat(valueOf(inspection, "Failure category")).hasValue("spawn/NON_ZERO_EXIT");
         assertThat(inspection.sourceEventId()).hasValue(900L);
     }
@@ -66,8 +67,12 @@ class ActionInspectionTest {
 
         Inspection inspection = ActionInspection.of(untimed);
 
+        // Says only what the row knows. Two different facts produce an untimed
+        // action -- a Bazel that reports no action timestamps at all, and an
+        // action that ran no spawn on one that does -- and the row cannot tell
+        // them apart, so it must not pick one.
         assertThat(noteOf(inspection, "Duration"))
-                .hasValueSatisfying(note -> assertThat(note).contains("does not report"));
+                .hasValue("Bazel reported no start or end time for it");
         assertThat(valueOf(inspection, "Target")).isEmpty();
         assertThat(noteOf(inspection, "Start")).isPresent();
         // The workspace-status action has no label on three of the four

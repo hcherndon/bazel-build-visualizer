@@ -264,16 +264,19 @@ public final class ActionsView extends JPanel {
                     }
                     detailReader = reader;
                     populateMnemonics(mnemonics);
-                    // Worded about the flag rather than about the table: what
-                    // is known is what Bazel was asked to publish, not whether
-                    // a particular row is missing. "Only failures appear here"
-                    // would be a claim about the rows, and a stream captured
-                    // some other way can contradict it.
+                    // Two different qualifications, and the second one is
+                    // always true. Bazel publishes an action event only for an
+                    // action that actually executed, so every cache hit is
+                    // missing from this table on every build -- a warm rebuild
+                    // of one target published one event where the build
+                    // declared two. Saying "N actions" with nothing beside it
+                    // states a total the source cannot support (rule 13).
                     captureNote.setText(failuresOnly
                             ? "--build_event_publish_all_actions was not in effect; Bazel"
                                     + " publishes an event for a successful action only under"
                                     + " that flag, so successful actions may be missing."
-                            : " ");
+                            : "Actions that were cache hits publish no event, so this is what"
+                                    + " executed this invocation, not what the build declared.");
                     reload();
                 });
             } catch (RuntimeException failure) {
@@ -442,10 +445,11 @@ public final class ActionsView extends JPanel {
         long shown = built.rowCount();
         long total = built.unfilteredCount();
         if (built.filter().isEmpty()) {
-            return EntityFormat.count(shown) + (shown == 1 ? " action" : " actions");
+            return EntityFormat.count(shown)
+                    + (shown == 1 ? " action executed" : " actions executed");
         }
         return EntityFormat.count(shown) + " of " + EntityFormat.count(total)
-                + " actions match the filter";
+                + " executed actions match the filter";
     }
 
     private ActionFilter currentFilter() {

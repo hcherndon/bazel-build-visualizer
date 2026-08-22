@@ -60,9 +60,21 @@ public record ActionRow(
         return Measured.unknown(DataSource.BEP, Completeness.UNAVAILABLE, explain(reason));
     }
 
-    /** The exit code worth showing: the process's, not Bazel's constant 1. */
-    public OptionalInt effectiveExitCode() {
-        return spawnExitCode.isPresent() ? spawnExitCode : bazelExitCode;
+    /**
+     * The process's exit code, when Bazel reported one.
+     *
+     * <p>Does <em>not</em> fall back to {@link #bazelExitCode}. That field was
+     * measured as 1 for every failure regardless of what the command returned,
+     * and a failure whose {@code failureDetail} carries no spawn sub-message —
+     * a genrule that produced no output, for instance — has no process exit
+     * code at all: the command there exited 0. Showing 1 would state a number
+     * the build did not produce, for a process that succeeded.
+     *
+     * <p>Bazel's own field is kept and shown beside it in the inspector, under
+     * a name that says whose it is.
+     */
+    public OptionalInt processExitCode() {
+        return spawnExitCode;
     }
 
     /** The output's file name, for a column too narrow for the path. */
@@ -73,8 +85,12 @@ public record ActionRow(
 
     private static String explain(String reason) {
         return switch (reason) {
-            case ActionTiming.NOT_REPORTED ->
-                    "this Bazel version does not report action timestamps";
+            // Deliberately not "this Bazel version does not report action
+            // timestamps". That is true on 6.5.0 and 7.6.1, where no action has
+            // them, and false on 8.4.1 and 9.2.0, where roughly a third of
+            // actions lack them because they ran no spawn. The row cannot tell
+            // the two apart, so it says only what it knows.
+            case ActionTiming.NOT_REPORTED -> "Bazel reported no start or end time for it";
             case ActionTiming.ZERO_LENGTH_SPAN ->
                     "Bazel reported the same time for start and end, which it does for every"
                             + " action on 8.4.x regardless of how long the action took";
