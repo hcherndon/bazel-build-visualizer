@@ -187,7 +187,16 @@ public final class SqliteSessionSource implements SessionSource {
         }
         readers.clear();
         for (EntityReader reader : entityReaders) {
-            reader.close();
+            try {
+                reader.close();
+            } catch (RuntimeException failure) {
+                // A view's executor may still be finishing a query on this
+                // connection: the views are asked to let go first, but their
+                // shutdown is asynchronous. Closing under an in-flight
+                // statement throws, and there is nothing a caller could do
+                // about it -- the session is being torn down either way.
+                log.debug("a reader for {} would not close", root, failure);
+            }
         }
         entityReaders.clear();
         try {

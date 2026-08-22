@@ -15,6 +15,7 @@ import java.awt.FlowLayout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -64,6 +65,16 @@ public final class FailuresView extends JPanel {
 
     /** Rows added per load. */
     private static final int PAGE = 500;
+
+    /**
+     * Console-output rows shown.
+     *
+     * <p>A cap, and one the status line accounts for: a long build writes
+     * thousands of progress events and listing every one would bury the
+     * failures. The ones that matter are few, because only the events carrying
+     * stderr are indexed at all.
+     */
+    private static final int OUTPUT_EVENTS = 200;
 
     private final CardLayout cards = new CardLayout();
     private final JPanel deck = new JPanel(cards);
@@ -235,8 +246,10 @@ public final class FailuresView extends JPanel {
         // unavailable while displaying them.
         abortsListed = counts.failedActions() == 0 && counts.failedTargets() == 0;
         if (counts.aborted() > 0) {
+            // "Abort events", not "targets": patterns and other id kinds abort
+            // too and name no target, so the two counts differ.
             StringBuilder text = new StringBuilder(EntityFormat.count(counts.aborted()))
-                    .append(" target(s) were not built");
+                    .append(" abort event(s) recorded");
             if (!reasons.isEmpty()) {
                 List<String> parts = new ArrayList<>();
                 for (FailureQueries.ReasonCount reason : reasons) {
@@ -275,6 +288,7 @@ public final class FailuresView extends JPanel {
                 List<FailureRow> rows = switch (kind) {
                     case ACTION -> current.failedActions(after, PAGE);
                     case TARGET -> current.failedTargets(after, PAGE);
+                    case OUTPUT -> outputRows(current);
                     case NOT_BUILT -> current.abortedTargets(after, PAGE);
                 };
                 SwingUtilities.invokeLater(() -> {
@@ -289,21 +303,47 @@ public final class FailuresView extends JPanel {
         });
     }
 
+    /**
+     * Bazel's console error output, as rows.
+     *
+     * <p>Read once and in full: there are a handful of these on a failing build
+     * and they are the only diagnostic most failures have. The rows carry the
+     * byte counts; the text is reached through the inspector's source-event
+     * button, because the bytes live in the journal and copying them here would
+     * duplicate the largest thing in the stream.
+     */
+    private static List<FailureRow> outputRows(EntityReader reader) {
+        List<FailureRow> rows = new ArrayList<>();
+        for (FailureQueries.ProgressRef ref : reader.progressOutputEvents(OUTPUT_EVENTS)) {
+            rows.add(new FailureRow(
+                    FailureRow.Kind.OUTPUT,
+                    ref.bepEventId(),
+                    "console output at event " + ref.sequence(),
+                    Optional.of(EntityFormat.count(ref.stderrBytes()) + " bytes on stderr"),
+                    Optional.empty(),
+                    OptionalLong.of(ref.bepEventId())));
+        }
+        return rows;
+    }
+
     /** Which kind the next page comes from, given what is already loaded. */
     private FailureRow.Kind nextKind(FailureRow last) {
         if (last == null) {
             return counts.failedActions() > 0 ? FailureRow.Kind.ACTION
                     : counts.failedTargets() > 0 ? FailureRow.Kind.TARGET
-                    : FailureRow.Kind.NOT_BUILT;
+                    : FailureRow.Kind.OUTPUT;
         }
         long loadedOfKind = tableModel.countOf(last.kind());
         return switch (last.kind()) {
             case ACTION -> loadedOfKind < counts.failedActions()
                     ? FailureRow.Kind.ACTION
-                    : counts.failedTargets() > 0 ? FailureRow.Kind.TARGET : FailureRow.Kind.NOT_BUILT;
+                    : counts.failedTargets() > 0 ? FailureRow.Kind.TARGET : FailureRow.Kind.OUTPUT;
             case TARGET -> loadedOfKind < counts.failedTargets()
                     ? FailureRow.Kind.TARGET
-                    : FailureRow.Kind.NOT_BUILT;
+                    : FailureRow.Kind.OUTPUT;
+            // Output rows arrive in one batch, so the next kind after them is
+            // always the aborts.
+            case OUTPUT -> FailureRow.Kind.NOT_BUILT;
             case NOT_BUILT -> FailureRow.Kind.NOT_BUILT;
         };
     }
@@ -311,6 +351,7 @@ public final class FailuresView extends JPanel {
     private void updateStatus() {
         long shown = tableModel.getRowCount();
         long available = counts.failedActions() + counts.failedTargets()
+                + tableModel.countOf(FailureRow.Kind.OUTPUT)
                 + (abortsListed ? counts.aborted() : 0);
         statusLabel.setText(EntityFormat.count(shown) + " of " + EntityFormat.count(available)
                 + " shown  ·  " + EntityFormat.count(counts.failedActions()) + " failed action(s), "

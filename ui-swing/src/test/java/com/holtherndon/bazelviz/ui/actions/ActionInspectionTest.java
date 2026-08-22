@@ -33,6 +33,7 @@ class ActionInspectionTest {
                 Optional.of("spawn/NON_ZERO_EXIT"),
                 Optional.of("Action failed: /bin/sh -c 'exit 7'"),
                 Optional.of("cfg-1"),
+                Optional.of("[\"/bin/sh\",\"-c\",\"exit 7\"]"),
                 OptionalLong.of(900));
 
         Inspection inspection = ActionInspection.of(failed);
@@ -42,6 +43,10 @@ class ActionInspectionTest {
         assertThat(valueOf(inspection, "Exit code")).hasValue("7");
         assertThat(valueOf(inspection, "Bazel's status code")).hasValue("1");
         assertThat(failed.processExitCode()).hasValue(7);
+        // The argv survives as arguments, not as one string: an argument may
+        // contain a newline and joining on one destroys the boundaries.
+        assertThat(valueOf(inspection, "Arguments"))
+                .hasValue("[0] /bin/sh  [1] -c  [2] exit 7");
         assertThat(valueOf(inspection, "Failure category")).hasValue("spawn/NON_ZERO_EXIT");
         assertThat(inspection.sourceEventId()).hasValue(900L);
     }
@@ -63,6 +68,7 @@ class ActionInspectionTest {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.of("system"),
+                Optional.empty(),
                 OptionalLong.empty());
 
         Inspection inspection = ActionInspection.of(untimed);
@@ -98,6 +104,7 @@ class ActionInspectionTest {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.of("cfg-1"),
+                Optional.empty(),
                 OptionalLong.of(12));
 
         assertThat(noteOf(ActionInspection.of(zero), "Duration"))

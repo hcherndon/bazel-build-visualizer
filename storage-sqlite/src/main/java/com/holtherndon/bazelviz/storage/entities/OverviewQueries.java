@@ -48,7 +48,9 @@ public final class OverviewQueries implements AutoCloseable {
                     + " (SELECT COUNT(*) FROM tests WHERE overall_status NOT IN"
                     + "    ('PASSED', 'SKIPPED')),"
                     + " (SELECT COUNT(*) FROM artifacts),"
-                    + " (SELECT COUNT(*) FROM aborted_events)";
+                    + " (SELECT COUNT(*) FROM aborted_events),"
+                    + " (SELECT COUNT(DISTINCT label_id) FROM aborted_events"
+                    + "    WHERE label_id IS NOT NULL)";
 
     private static final String METRICS =
             "SELECT actions_created, actions_executed, action_cache_hits, targets_configured,"
@@ -76,6 +78,27 @@ public final class OverviewQueries implements AutoCloseable {
     }
 
     public OverviewSnapshot snapshot(int topMnemonics) throws SQLException {
+        // One transaction, so the four statements see one state of the
+        // database. In auto-commit each is its own implicit read transaction,
+        // and during a live capture the counts and the metrics would come from
+        // different instants -- a screen whose totals disagree with each other,
+        // which is the thing the timer-based refresh exists to avoid. SQLite's
+        // WAL gives a reader a snapshot for the life of its transaction, so
+        // this costs nothing beyond the two statements that open and close it,
+        // and it is still a short read transaction (plan 10.9).
+        boolean autoCommit = connection.getAutoCommit();
+        connection.setAutoCommit(false);
+        try {
+            return readSnapshot(topMnemonics);
+        } finally {
+            // Read-only, so there is nothing to commit; ending the transaction
+            // is what releases the snapshot and lets WAL checkpoints proceed.
+            connection.rollback();
+            connection.setAutoCommit(autoCommit);
+        }
+    }
+
+    private OverviewSnapshot readSnapshot(int topMnemonics) throws SQLException {
         Invocation invocation = readInvocation();
         Counts counts = readCounts();
         Metrics metrics = readMetrics();
@@ -99,6 +122,7 @@ public final class OverviewQueries implements AutoCloseable {
                 counts.failedTests,
                 counts.artifacts,
                 counts.aborted,
+                counts.abortedTargets,
                 metrics.actionsCreated,
                 metrics.actionsExecuted,
                 metrics.cacheHits,
@@ -147,7 +171,7 @@ public final class OverviewQueries implements AutoCloseable {
             return new Counts(
                     rows.getLong(1), rows.getLong(2), rows.getLong(3), rows.getLong(4),
                     rows.getLong(5), rows.getLong(6), rows.getLong(7), rows.getLong(8),
-                    rows.getLong(9), rows.getLong(10), rows.getLong(11));
+                    rows.getLong(9), rows.getLong(10), rows.getLong(11), rows.getLong(12));
         }
     }
 
@@ -203,7 +227,8 @@ public final class OverviewQueries implements AutoCloseable {
             long tests,
             long failedTests,
             long artifacts,
-            long aborted) {}
+            long aborted,
+            long abortedTargets) {}
 
     private record Metrics(
             OptionalLong actionsCreated,

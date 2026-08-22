@@ -47,10 +47,14 @@ import org.slf4j.LoggerFactory;
  *
  * <h2>What the status line has to say</h2>
  *
- * <p>Two facts that a table alone cannot carry, and that make the difference
+ * <p>Three facts that a table alone cannot carry, and that make the difference
  * between a number and a misleading number:
  *
  * <ul>
+ *   <li>That these are the actions that <em>executed</em>. A cache hit
+ *       publishes no event, so a warm rebuild of one target produced one event
+ *       where the build declared two: an unqualified "N actions" names a total
+ *       the source cannot support (rule 13).</li>
  *   <li>When a filter is on, the filtered count <em>and</em> the total. A table
  *       showing 12 rows above the number 12 is indistinguishable from a build
  *       that ran 12 actions.</li>

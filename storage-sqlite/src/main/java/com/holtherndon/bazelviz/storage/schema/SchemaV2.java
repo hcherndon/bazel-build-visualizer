@@ -418,10 +418,15 @@ public final class SchemaV2 {
             // on this row is the whole of what the stream says. Outputs arrive
             // with the execution log in Phase 4.
             //
-            // No is_test_runner column: the mnemonic is right there, and a
-            // TestRunner row must be excluded from action aggregates so tests
-            // are not counted twice (TS7). Tests are keyed off testResult only —
-            // never by parsing shard_N_of_M out of a path.
+            // No is_test_runner column: the mnemonic is right there.
+            //
+            // A test execution appears both here, with mnemonic TestRunner, and
+            // in the tests tables (TS7). The action row is a real action and is
+            // counted as one; what must never happen is deriving a test's
+            // result from it, or adding its duration into a "time spent
+            // testing" figure alongside the test attempts that describe the
+            // same work. Tests are keyed off testResult only — never by parsing
+            // shard_N_of_M out of a path.
             """
             CREATE TABLE actions (
               id                      INTEGER PRIMARY KEY,

@@ -355,7 +355,13 @@ public final class OverviewPanel extends JPanel {
         rows.add(new String[] {"Failed", EntityFormat.count(snapshot.targetsFailed())});
         rows.add(new String[] {"Configured but never completed",
                 EntityFormat.count(snapshot.targetsNotCompleted())});
+        // Two numbers, because they are two facts. Abort events ride four id
+        // kinds and patterns abort too, so an event count is not a target
+        // count -- and the target count is the one the word "targets" belongs
+        // to.
         rows.add(new String[] {"Targets named by an abort",
+                EntityFormat.count(snapshot.abortedTargets())});
+        rows.add(new String[] {"Abort events recorded",
                 EntityFormat.count(snapshot.abortedEvents())});
         rows.add(new String[] {"Actions with an event", EntityFormat.count(snapshot.actions())});
         rows.add(new String[] {"All actions published?",

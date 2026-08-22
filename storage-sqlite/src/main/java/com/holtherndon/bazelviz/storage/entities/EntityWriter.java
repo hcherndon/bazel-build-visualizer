@@ -437,10 +437,18 @@ public final class EntityWriter implements AutoCloseable {
                     // SQLite cannot tell this ON CONFLICT from a join's ON.
                     + " WHERE true ON CONFLICT (bep_event_id) DO NOTHING";
 
+    // Selected FROM bep_events rather than through a scalar subquery, which
+    // matters more than it looks: bep_event_id is INTEGER NOT NULL PRIMARY KEY,
+    // which makes it a rowid alias, and SQLite assigns a rowid when NULL is
+    // inserted into one -- so an unresolved lookup would have attributed the
+    // console output to an event id it made up. Selecting from the table
+    // inserts nothing when the event is not there, which is a missing index
+    // entry rather than a wrong one.
     private static final String INSERT_PROGRESS =
             "INSERT INTO progress_output (bep_event_id, ordinal, stdout_bytes, stderr_bytes)"
-                    + " SELECT " + EVENT_LOOKUP + ", ?, ?, ?"
-                    + " WHERE true ON CONFLICT (bep_event_id) DO NOTHING";
+                    + " SELECT e.id, ?, ?, ? FROM bep_events e"
+                    + " WHERE e.stream_id = ? AND e.sequence = ?"
+                    + " ON CONFLICT (bep_event_id) DO NOTHING";
 
     private static final String COUNT_UNDEFINED_DEPSETS =
             "SELECT COUNT(*) FROM depsets WHERE stream_id = ? AND bep_event_id IS NULL";
@@ -982,18 +990,63 @@ public final class EntityWriter implements AutoCloseable {
     }
 
     /**
-     * The argv as one string.
+     * The argv as a JSON array.
      *
-     * <p>Newline-separated rather than shell-quoted: the arguments are stored so
-     * a user can read what ran, and re-quoting them would produce something that
-     * looks executable and is not — the command was never run through a shell
-     * (plan 22.2). Empty means the event carried no command line, which happens
-     * for every action that did not run a spawn.
+     * <p>Not shell-quoted: re-quoting would produce something that looks
+     * executable and is not, and the command was never run through a shell
+     * (plan 22.2). Not newline-joined either, which is what this used to do —
+     * an argument may itself contain a newline (every {@code /bin/bash -c}
+     * script does), so joining on one destroys the argument boundaries and no
+     * reader can recover them. JSON is what requirement 21 asks for and the
+     * only form here that round-trips.
+     *
+     * <p>Written by hand rather than through a JSON library because the shape
+     * is fixed — an array of strings — and pulling a binding into the storage
+     * layer to emit six escapes would be the larger cost.
+     *
+     * <p>Empty means the event carried no command line, which is every action
+     * that did not run a spawn.
      */
     private static Optional<String> commandLineText(EntityCommand.ActionCompleted action) {
-        return action.commandLine().isEmpty()
-                ? Optional.empty()
-                : Optional.of(String.join("\n", action.commandLine()));
+        if (action.commandLine().isEmpty()) {
+            return Optional.empty();
+        }
+        StringBuilder json = new StringBuilder("[");
+        for (int i = 0; i < action.commandLine().size(); i++) {
+            if (i > 0) {
+                json.append(',');
+            }
+            appendJsonString(json, action.commandLine().get(i));
+        }
+        return Optional.of(json.append(']').toString());
+    }
+
+    /**
+     * RFC 8259 string escaping: the six named escapes, then the numeric form
+     * for the remaining control characters.
+     */
+    private static void appendJsonString(StringBuilder out, String value) {
+        out.append('"');
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\b' -> out.append("\\b");
+                case '\f' -> out.append("\\f");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+                }
+            }
+        }
+        out.append('"');
     }
 
     // --- tests ------------------------------------------------------------
@@ -1193,11 +1246,11 @@ public final class EntityWriter implements AutoCloseable {
     private void progress(long streamId, long sequence, EntityCommand.ProgressOutputSeen progress)
             throws SQLException {
         PreparedStatement statement = prepare(INSERT_PROGRESS);
-        statement.setLong(1, streamId);
-        statement.setLong(2, sequence);
-        statement.setLong(3, sequence);
-        statement.setInt(4, progress.stdoutBytes());
-        statement.setInt(5, progress.stderrBytes());
+        statement.setLong(1, sequence);
+        statement.setInt(2, progress.stdoutBytes());
+        statement.setInt(3, progress.stderrBytes());
+        statement.setLong(4, streamId);
+        statement.setLong(5, sequence);
         statement.executeUpdate();
     }
 

@@ -47,7 +47,8 @@ public final class ActionQueries implements AutoCloseable {
                     + " CASE WHEN a.duration_unknown_reason IS NULL"
                     + "   THEN a.end_micros - a.start_micros END,"
                     + " a.duration_unknown_reason, a.bazel_exit_code, a.spawn_exit_code,"
-                    + " a.failure_category, a.failure_message, c.bep_id, a.bep_event_id";
+                    + " a.failure_category, a.failure_message, c.bep_id, a.command_line,"
+                    + " a.bep_event_id";
 
     private static final String FROM =
             " FROM actions a"
@@ -484,7 +485,8 @@ public final class ActionQueries implements AutoCloseable {
                 text(result, 11),
                 text(result, 12),
                 text(result, 13),
-                number(result, 14));
+                text(result, 14),
+                number(result, 15));
     }
 
     /**

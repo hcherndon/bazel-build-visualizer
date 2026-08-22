@@ -57,7 +57,7 @@ final class FakeEntityReader implements EntityReader {
                 false,
                 0, 0, 0, 0, 0,
                 actions.get(),
-                0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
                 OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),
                 OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),
                 OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),

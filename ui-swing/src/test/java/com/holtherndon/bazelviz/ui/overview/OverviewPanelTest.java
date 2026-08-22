@@ -117,7 +117,7 @@ class OverviewPanelTest {
                 OptionalLong.of(1_000_000L),
                 sawLastMessage,
                 4, 4, 4, 0, 0,
-                12, 0, 0, 0, 9, 0,
+                12, 0, 0, 0, 9, 0, 0,
                 OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),
                 OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),
                 OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),

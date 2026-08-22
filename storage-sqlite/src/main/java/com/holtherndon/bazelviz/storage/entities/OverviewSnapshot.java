@@ -30,6 +30,11 @@ import java.util.OptionalLong;
  *     table holds failures only, and can honestly say so
  * @param overallSuccess three states: succeeded, failed, or never reported —
  *     the last being a build that died before it could say
+ * @param abortedEvents {@code aborted} events, which is not a count of targets:
+ *     patterns and other id kinds abort too and name none
+ * @param abortedTargets the distinct labels those events named, which is the
+ *     number worth showing beside "targets"
+
  * @param elapsedMicros what the user watched in the terminal
  * @param bazelWallMillis Bazel's own internal span, which was measured
  *     disagreeing with the above by up to a second
@@ -54,6 +59,7 @@ public record OverviewSnapshot(
         long testsFailed,
         long artifacts,
         long abortedEvents,
+        long abortedTargets,
         OptionalLong bazelActionsCreated,
         OptionalLong bazelActionsExecuted,
         OptionalLong bazelCacheHits,

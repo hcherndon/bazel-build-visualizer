@@ -90,13 +90,20 @@ class RealBazelNormalizationTest {
             assertThat(scalar(c, "SELECT COUNT(DISTINCT primary_output) FROM actions"))
                     .isEqualTo(scalar(c, "SELECT COUNT(*) FROM actions"));
 
-            // The measured absences, confirmed on this machine's Bazel rather
-            // than assumed: some action carries no label, and the configuration
-            // id "system" is referenced without ever being declared.
+            // The measured absence, confirmed on this machine's Bazel rather
+            // than assumed: a configuration id is referenced that Bazel never
+            // publishes a Configuration event for. The placeholder row is what
+            // keeps the referencing actions in the table.
+            //
+            // This assertion used to read isGreaterThanOrEqualTo(0), which is
+            // true of every count there has ever been.
             assertThat(scalar(c, "SELECT COUNT(*) FROM configurations WHERE declared = 0"))
-                    .isGreaterThanOrEqualTo(0);
+                    .isPositive();
             assertThat(scalar(c, "SELECT COUNT(*) FROM configurations WHERE declared = 1"))
                     .isPositive();
+            assertThat(labels(c,
+                            "SELECT bep_id FROM configurations WHERE declared = 0"))
+                    .contains("system");
 
             // Outputs are reachable only through the file sets on Bazel 8+, so
             // the depset graph has to be real, not incidental.

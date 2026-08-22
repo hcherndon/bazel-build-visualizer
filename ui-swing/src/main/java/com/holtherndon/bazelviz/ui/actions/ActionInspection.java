@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
+import java.util.List;
 
 /**
  * Describes an action for the shared inspector.
@@ -35,6 +36,9 @@ public final class ActionInspection {
                         ? Inspection.Field.of("Start", EntityFormat.count(row.startMicros()) + " µs")
                         : Inspection.Field.unknown("Start", startNote(row)));
 
+        row.commandLine().ifPresent(argv -> builder.section("Command")
+                .field("Arguments", describeArgv(argv)));
+
         builder.section("Result").field("Outcome", row.outcome().name());
         if (row.outcome() == com.holtherndon.bazelviz.core.domain.ActionOutcome.FAILED) {
             // Two exit codes, labelled for what they are. Bazel's own field was
@@ -55,6 +59,32 @@ public final class ActionInspection {
                     .field(EntityFormat.field("Message", row.failureMessage()));
         }
         return builder.build();
+    }
+
+    /**
+     * The stored argv, one argument per numbered line.
+     *
+     * <p>Stored as a JSON array because an argument can contain a newline, and
+     * shown numbered because that is the only way a reader can see where one
+     * argument ends and the next begins in a {@code /bin/bash -c} script. The
+     * text is never re-quoted into something that looks executable: the command
+     * was not run through a shell (plan 22.2).
+     */
+    private static String describeArgv(String json) {
+        List<String> arguments = JsonArgv.parse(json);
+        if (arguments.isEmpty()) {
+            // Not JSON this build understands. Showing it verbatim beats
+            // showing nothing and beats guessing at its structure.
+            return json;
+        }
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < arguments.size(); i++) {
+            if (i > 0) {
+                text.append("  ");
+            }
+            text.append('[').append(i).append("] ").append(arguments.get(i));
+        }
+        return text.toString();
     }
 
     /**

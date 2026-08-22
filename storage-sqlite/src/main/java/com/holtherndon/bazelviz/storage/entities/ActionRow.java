@@ -22,6 +22,8 @@ import java.util.OptionalLong;
  * @param id the row id, which is also the keyset anchor
  * @param primaryOutput the action's identity, from its event id
  * @param durationUnknownReason why no duration is derivable, when none is
+ * @param commandLine the argv as a JSON array, absent for every action that
+ *     ran no spawn
  * @param bepEventId the event this row came from, for the inspector
  */
 public record ActionRow(
@@ -38,6 +40,7 @@ public record ActionRow(
         Optional<String> failureCategory,
         Optional<String> failureMessage,
         Optional<String> configurationId,
+        Optional<String> commandLine,
         OptionalLong bepEventId) {
 
     public ActionRow {

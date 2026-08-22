@@ -118,9 +118,12 @@ final class EntityWriterTest {
         assertThat(scalar("SELECT spawn_exit_code FROM actions")).isEqualTo(7);
         assertThat(text("SELECT failure_category FROM actions")).isEqualTo("spawn/NON_ZERO_EXIT");
         assertThat(text("SELECT outcome FROM actions")).isEqualTo("FAILED");
-        // The argv is stored as it arrived, newline-joined -- never re-quoted
-        // into something that looks executable and is not.
-        assertThat(text("SELECT command_line FROM actions")).isEqualTo("/bin/sh\n-c\nexit 7");
+        // A JSON array, never a shell-quoted string that would look
+        // executable and is not -- and never a newline-joined one, because an
+        // argument may itself contain a newline and joining on one destroys
+        // the boundaries no reader could then recover.
+        assertThat(text("SELECT command_line FROM actions"))
+                .isEqualTo("[\"/bin/sh\",\"-c\",\"exit 7\"]");
     }
 
     @Test
@@ -337,6 +340,29 @@ final class EntityWriterTest {
             // Not sharded means no shard count, not zero shards.
             assertThat(rows.wasNull()).isTrue();
         }
+    }
+
+    @Test
+    @DisplayName("an argument containing a newline survives being stored")
+    void argvBoundariesSurvive() throws Exception {
+        // Every `/bin/bash -c` script is one argument with newlines in it, and
+        // the newline-joined form this replaced made it indistinguishable from
+        // several arguments.
+        apply(event(), new EntityCommand.ActionCompleted(
+                "bazel-out/bin/script.out",
+                Optional.of("//pkg:script"),
+                "cfg-1",
+                Optional.of("Genrule"),
+                true,
+                OptionalInt.empty(),
+                Optional.empty(),
+                ActionTiming.NONE,
+                List.of("/bin/bash", "-c", "set -e\necho \"hi\"\n"),
+                Optional.empty(),
+                Optional.empty()));
+
+        assertThat(text("SELECT command_line FROM actions"))
+                .isEqualTo("[\"/bin/bash\",\"-c\",\"set -e\\necho \\\"hi\\\"\\n\"]");
     }
 
     @Test

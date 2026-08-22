@@ -456,9 +456,14 @@ public final class EntityTranslator {
         return List.of(new EntityCommand.TestAttemptCompleted(
                 id.getLabel(),
                 id.getConfiguration().getId(),
-                // Bazel omits these when they are 1, and an unset int32 reads
-                // as 0. A stored 0 would give the first attempt a key no other
-                // event shares and split one test's history in two.
+                // Measured present and 1-based on all four versions (TS1), so
+                // this guard should never fire. It exists because if one ever
+                // were absent, proto3 would hand back 0 -- an int32's default,
+                // not the 1 the field means -- and a stored 0 would give the
+                // first attempt a key no other event shares and split one
+                // test's history in two. The earlier comment here had this
+                // backwards, saying Bazel omits the field when it is 1; the
+                // wire cannot express that, because omission means zero.
                 atLeastOne(id.getRun()),
                 atLeastOne(id.getShard()),
                 atLeastOne(id.getAttempt()),

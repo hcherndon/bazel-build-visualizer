@@ -39,7 +39,22 @@ public record FailureRow(
          * failure aborts every sibling, so these can outnumber the real
          * failures by thousands and are summarized rather than listed.
          */
-        NOT_BUILT("Not built");
+        NOT_BUILT("Not built"),
+
+        /**
+         * Console output Bazel wrote while the build failed.
+         *
+         * <p>For most failures this is the only diagnostic there is. A syntax
+         * error produces thirteen events and zero structured messages: the
+         * compiler's own text exists solely in {@code progress.stderr}, and a
+         * failures view without these rows shows nothing at all for the most
+         * common kind of failure a build has.
+         *
+         * <p>The row carries the size, not the text — the bytes stay in the
+         * journal (ADR-004) and the inspector's source-event button is what
+         * reaches them.
+         */
+        OUTPUT("Build output");
 
         private final String title;
 
