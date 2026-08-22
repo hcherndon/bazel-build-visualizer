@@ -49,13 +49,34 @@ public sealed interface EnrichmentCommand {
             implements EnrichmentCommand {}
 
     /**
+     * A path the log named, given an id that later entries reference.
+     *
+     * <p>The compact log references paths by id rather than repeating them,
+     * which is most of why it is 3.5x smaller than the binary format (S4). The
+     * parser passes the id through rather than resolving it, so that no
+     * component has to hold every path in the build: the writer interns the
+     * path once and keeps a primitive {@code long -> long} map. At five million
+     * actions the difference is a few hundred megabytes of strings against a
+     * flat array.
+     *
+     * @param kind File, Directory or UnresolvedSymlink — all three carry
+     *     {@code path = 1} and an {@code output_id} may reference any of them,
+     *     so a resolver that assumes files loses every tree artifact (S5)
+     */
+    record PathDeclared(long logId, String path, OutputRef.Kind kind, Optional<Digest> digest)
+            implements EnrichmentCommand {}
+
+    /**
      * An input set: a node in the DAG of a spawn's inputs.
      *
      * <p>Kept as a DAG, never flattened (plan 10.7, S5). Per the proto, a set
      * may legitimately be serialized more than once under different ids, so two
      * of these can describe the same content.
+     *
+     * <p>Both lists are ids, resolved by the writer against {@link
+     * PathDeclared} and against earlier sets.
      */
-    record InputSetDeclared(long logId, List<Long> childSetIds, List<String> filePaths)
+    record InputSetDeclared(long logId, List<Long> childSetIds, List<Long> fileLogIds)
             implements EnrichmentCommand {}
 
     /**
@@ -230,8 +251,36 @@ public sealed interface EnrichmentCommand {
      *     made. On 7.6.1 a failing test's entire output list is these, so they
      *     are recorded rather than skipped (K2).
      */
-    record OutputRef(
-            String path, Kind kind, boolean produced, Optional<Digest> digest) {
+    record OutputRef(OptionalLong logId, Optional<String> unproducedPath, Kind kind) {
+
+        public OutputRef {
+            if (logId.isPresent() == unproducedPath.isPresent()) {
+                throw new IllegalArgumentException(
+                        "an output is either a reference to a declared path or an"
+                                + " unproduced path, never both and never neither");
+            }
+        }
+
+        /** An output the spawn produced, named by the id of its path entry. */
+        public static OutputRef produced(long logId, Kind kind) {
+            return new OutputRef(OptionalLong.of(logId), Optional.empty(), kind);
+        }
+
+        /**
+         * An {@code invalid_output_path}: declared and not made.
+         *
+         * <p>Recorded rather than skipped because on 7.6.1 a failing test's
+         * entire output list is these, and a spawn showing none of them is
+         * indistinguishable from one that declared no outputs (K2).
+         */
+        public static OutputRef unproduced(String path) {
+            return new OutputRef(OptionalLong.empty(), Optional.of(path), Kind.UNKNOWN);
+        }
+
+        /** True when the spawn actually made this output. */
+        public boolean wasProduced() {
+            return logId.isPresent();
+        }
 
         /** What an output turned out to be. */
         public enum Kind {

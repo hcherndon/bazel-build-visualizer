@@ -3,6 +3,7 @@
 # performance justification) and must keep dependency locking green.
 
 [versions]
+aircompressor = "2.0.3"
 assertj = "3.27.3"
 flatlaf = "3.7.2"
 grpc = "1.83.1"
@@ -14,6 +15,7 @@ slf4j = "2.0.18"
 sqlite-jdbc = "3.53.2.1"
 
 [libraries]
+aircompressor = { module = "io.airlift:aircompressor", version.ref = "aircompressor" }
 assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
 flatlaf = { module = "com.formdev:flatlaf", version.ref = "flatlaf" }
 grpc-api = { module = "io.grpc:grpc-api", version.ref = "grpc" }

@@ -1,0 +1,41 @@
+¶
+	/bin/bash
+-c
+ssource external/bazel_tools/tools/genrule/genrule-setup.sh; echo a > bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txt$
+PATH/bin:/usr/bin:/usr/local/bin"…
+3external/bazel_tools/tools/genrule/genrule-setup.shN
+@2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139fâSHA-256*.bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txt08RGenruleZ
+.bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txtM
+@87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7SHA-256bdarwin-sandbox€’//pkg:gen_a¢"
+ÀØBÀØ¢ñ¨¨Ô€ð‚Ù¨€ø}
+	/bin/bash
+-c
+Ùsource external/bazel_tools/tools/genrule/genrule-setup.sh; cat bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txt > bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txt; echo b >> bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txt$
+PATH/bin:/usr/bin:/usr/local/bin"
+.bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txtM
+@87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7SHA-256"…
+3external/bazel_tools/tools/genrule/genrule-setup.shN
+@2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139fâSHA-256*.bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txt08RGenruleZ
+.bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txtM
+@911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2SHA-256bdarwin-sandbox€’//pkg:gen_b¢!
+ÀðõBÀðõ¢ò¨¨Ô€Æý¨€ø~ê
+	/bin/bash
+-c
+œsource external/bazel_tools/tools/genrule/genrule-setup.sh; for i in $(seq 1 20000); do echo line$i; done > bazel-out/darwin_arm64-fastbuild/bin/pkg/big.txt$
+PATH/bin:/usr/bin:/usr/local/bin"…
+3external/bazel_tools/tools/genrule/genrule-setup.shN
+@2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139fâSHA-256*0bazel-out/darwin_arm64-fastbuild/bin/pkg/big.txt08RGenruleZƒ
+0bazel-out/darwin_arm64-fastbuild/bin/pkg/big.txtO
+@378ed4f2e21cea05c9574b7c967d0e018065c7bb98479c28b6a30f5b3ac6afccÞÃSHA-256bdarwin-sandbox€’//pkg:gen_big¢#
+ÀÏŽ1BÀÏŽ1¢ñ¨¨Ô€ð‚Ù¨€¸èý
+	/bin/bash
+-c
+«source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 1; cat bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txt > bazel-out/darwin_arm64-fastbuild/bin/pkg/slow.txt$
+PATH/bin:/usr/bin:/usr/local/bin"
+.bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txtM
+@911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2SHA-256"…
+3external/bazel_tools/tools/genrule/genrule-setup.shN
+@2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139fâSHA-256*1bazel-out/darwin_arm64-fastbuild/bin/pkg/slow.txt08RGenruleZ‚
+1bazel-out/darwin_arm64-fastbuild/bin/pkg/slow.txtM
+@911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2SHA-256bdarwin-sandbox€’//pkg:gen_slow¢%
+À‹äBÀ‹ä¢ò¨¨ÔÀÈç"¨€ø~
