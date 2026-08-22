@@ -224,7 +224,13 @@ public final class MainWindow extends JFrame {
 
     @Override
     public void dispose() {
-        eventsView.closeSession();
+        // Every view, not just the events one: since this window took ownership
+        // of the session source, closing only one view left the other five
+        // holding executors and JDBC connections, and left the source open.
+        releaseViews();
+        SessionSource closing = currentSource;
+        currentSource = null;
+        closeSource(closing);
         // Only a plan that was never launched is discarded here, and only
         // because that releases its BES port. Discarding unconditionally meant
         // closing the window during a build called BesServer.close() on the

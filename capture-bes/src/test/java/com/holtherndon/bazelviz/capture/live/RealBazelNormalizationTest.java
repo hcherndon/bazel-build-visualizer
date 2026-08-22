@@ -123,6 +123,19 @@ class RealBazelNormalizationTest {
             // silence.
             assertThat(scalar(c, "SELECT COUNT(*) FROM build_metrics")).isEqualTo(1);
             assertThat(scalar(c, "SELECT actions_created FROM build_metrics")).isPositive();
+
+            // The stream reached its end marker, so the overview must not tell
+            // the user their capture was truncated. Aborted events arrive after
+            // buildFinished, so this flag is what says the failed-target list
+            // is complete.
+            assertThat(scalar(c, "SELECT saw_last_message FROM build_invocation")).isEqualTo(1);
+
+            // A live capture builds its indexes like an import does. Without
+            // this every view query on a captured session is a scan, and
+            // nothing about the session says so.
+            assertThat(indexNames(c))
+                    .contains("idx_bep_events_sequence", "idx_actions_start", "idx_actions_label",
+                            "idx_configured_targets_target", "idx_test_attempts_test");
         }
     }
 
@@ -389,6 +402,18 @@ class RealBazelNormalizationTest {
         List<String> argv = new ArrayList<>(BazelWorkspaceFixture.hermeticStartupOptions());
         argv.addAll(List.of(command));
         return List.copyOf(argv);
+    }
+
+    private static List<String> indexNames(Connection c) throws SQLException {
+        List<String> names = new ArrayList<>();
+        try (Statement statement = c.createStatement();
+                ResultSet rows = statement.executeQuery(
+                        "SELECT name FROM sqlite_master WHERE type = 'index'")) {
+            while (rows.next()) {
+                names.add(rows.getString(1));
+            }
+        }
+        return names;
     }
 
     /** SQLite's own answer to "does every foreign key point at a row". */

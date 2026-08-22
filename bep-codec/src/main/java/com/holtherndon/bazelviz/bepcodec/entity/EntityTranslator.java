@@ -65,6 +65,20 @@ public final class EntityTranslator {
      *     convenience symlinks)
      */
     public List<EntityCommand> translate(BuildEvent event) {
+        List<EntityCommand> commands = fromPayload(event);
+        if (!event.getLastMessage()) {
+            return commands;
+        }
+        // The end marker is a flag on the envelope, not a payload, and the
+        // event carrying it changed between 7.6.1 and 8.4.1 -- so it is read
+        // here rather than from any particular event type.
+        List<EntityCommand> withEnd = new ArrayList<>(commands.size() + 1);
+        withEnd.addAll(commands);
+        withEnd.add(new EntityCommand.StreamEnded());
+        return withEnd;
+    }
+
+    private List<EntityCommand> fromPayload(BuildEvent event) {
         return switch (event.getPayloadCase()) {
             case STARTED -> List.of(started(event.getStarted()));
             case OPTIONS_PARSED -> List.of(optionsParsed(event));

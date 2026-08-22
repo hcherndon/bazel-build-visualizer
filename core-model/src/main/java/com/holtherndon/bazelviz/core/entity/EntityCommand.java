@@ -346,6 +346,22 @@ public sealed interface EntityCommand {
     }
 
     /**
+     * The stream reached its end marker.
+     *
+     * <p>The only trustworthy signal that a capture is whole. "Saw
+     * {@code buildFinished}" and "saw {@code buildMetrics}" each declare
+     * premature completion on half the supported versions, and the event that
+     * carries the flag changed between 7.6.1 and 8.4.1 — so the flag is what is
+     * keyed on, not the event holding it.
+     *
+     * <p>Its absence matters more than its presence: {@code aborted} events
+     * arrive after {@code buildFinished}, so a stream that stopped early is
+     * missing the whole failed and skipped target list, and the overview has to
+     * be able to say so.
+     */
+    record StreamEnded() implements EntityCommand {}
+
+    /**
      * A progress event carried console output.
      *
      * <p>Only the sizes: the bytes stay in the journal, which is the source of

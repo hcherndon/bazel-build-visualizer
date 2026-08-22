@@ -348,6 +348,13 @@ public final class CaptureCoordinator implements AutoCloseable {
             }
             closeJournalQuietly(journal, warnings);
             recordOutcome(events, outcome, summary, warnings);
+            // Bulk-load-then-index, the same as the import path: nothing has
+            // created a secondary index yet, because maintaining one per row
+            // during a live capture is what the deferral exists to avoid. A
+            // session that skipped this is correct and slow -- every view query
+            // falls back to a scan -- which is why it runs here and not only
+            // on the import path, where it used to be the only caller.
+            finalizeIndexesQuietly(entities, events, warnings);
             closeQuietly(entities, "entity writer", warnings);
             closeQuietly(events, "event writer", warnings);
             closeQuietly(streams, "stream registry", warnings);
@@ -873,6 +880,30 @@ public final class CaptureCoordinator implements AutoCloseable {
             journal.close();
         } catch (IOException | RuntimeException failure) {
             warnings.add("the raw journal could not be closed cleanly: " + failure);
+        }
+    }
+
+    /**
+     * Creates the post-load indexes and refreshes the planner's statistics.
+     *
+     * <p>Quiet by design: a session whose indexes were never built still holds
+     * every row and answers every query, just more slowly. Failing the capture
+     * over it would discard a complete session to protect its speed.
+     */
+    private static void finalizeIndexesQuietly(
+            EntityWriter entities, EventWriter events, List<String> warnings) {
+        if (events == null) {
+            return;
+        }
+        try {
+            if (entities != null) {
+                entities.flush();
+            }
+            events.finalizeIngest();
+        } catch (SQLException failure) {
+            log.warn("could not build the session's indexes", failure);
+            warnings.add("the session's indexes could not be built; it is complete but its"
+                    + " views will be slower to query");
         }
     }
 

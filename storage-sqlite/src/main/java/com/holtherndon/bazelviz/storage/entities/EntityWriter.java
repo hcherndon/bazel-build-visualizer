@@ -343,6 +343,11 @@ public final class EntityWriter implements AutoCloseable {
                     + " finished_micros = coalesce(excluded.finished_micros,"
                     + "   build_invocation.finished_micros)";
 
+    private static final String MARK_LAST_MESSAGE =
+            "INSERT INTO build_invocation (singleton, stream_id, saw_last_message)"
+                    + " VALUES (1, ?, 1)"
+                    + " ON CONFLICT (singleton) DO UPDATE SET saw_last_message = 1";
+
     private static final String INSERT_BUILD_METRICS =
             "INSERT INTO build_metrics (singleton, actions_created, actions_executed,"
                     + " action_cache_hits, action_cache_misses, targets_configured, targets_loaded,"
@@ -527,7 +532,21 @@ public final class EntityWriter implements AutoCloseable {
             case EntityCommand.TargetAborted aborted -> aborted(streamId, sequence, aborted);
             case EntityCommand.ProgressOutputSeen progress ->
                     progress(streamId, sequence, progress);
+            case EntityCommand.StreamEnded ignored -> streamEnded(streamId);
         }
+    }
+
+    /**
+     * Records that the stream reached its end marker.
+     *
+     * <p>Only ever sets the flag, never clears it. A session can be re-indexed,
+     * resumed, or fed a fallback file after a live capture, and none of those
+     * unsees an end marker that arrived.
+     */
+    private void streamEnded(long streamId) throws SQLException {
+        PreparedStatement statement = prepare(MARK_LAST_MESSAGE);
+        statement.setLong(1, streamId);
+        statement.executeUpdate();
     }
 
     /** Commits everything applied since the last flush. */

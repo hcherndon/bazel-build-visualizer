@@ -482,6 +482,28 @@ final class EntityWriterTest {
     }
 
     @Test
+    @DisplayName("the end marker is recorded, and nothing later unsees it")
+    void streamEndIsStickyOnceSeen() throws Exception {
+        long stream = event();
+        apply(stream, new EntityCommand.InvocationStarted(
+                "abc", "9.2.0", "build", "/ws", "/ws", "", 0, OptionalLong.of(1)));
+        assertThat(scalar("SELECT saw_last_message FROM build_invocation")).isZero();
+
+        apply(event(), new EntityCommand.StreamEnded());
+        assertThat(scalar("SELECT saw_last_message FROM build_invocation")).isEqualTo(1);
+
+        // A fallback file ingested after a live capture, or a re-index, writes
+        // the invocation row again. None of that unsees an end marker that
+        // arrived, and a session that flipped back to "truncated" would tell
+        // the user their complete capture was not.
+        apply(event(), new EntityCommand.InvocationStarted(
+                "abc", "9.2.0", "build", "/ws", "/ws", "", 0, OptionalLong.of(1)));
+        apply(event(), new EntityCommand.InvocationFinished(
+                "SUCCESS", 0, true, OptionalLong.of(9)));
+        assertThat(scalar("SELECT saw_last_message FROM build_invocation")).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("applying the same commands twice leaves the same rows")
     void replayIsIdempotent() throws Exception {
         List<EntityCommand> commands = List.of(
