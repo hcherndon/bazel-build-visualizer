@@ -234,6 +234,7 @@ public final class BazelCapabilityDetector {
                 info.getName(),
                 commands,
                 info.hasHasNegativeFlag() && info.getHasNegativeFlag(),
+                info.hasAllowsMultiple() && info.getAllowsMultiple(),
                 // hasField, not the getter: an absent optional bool reads as
                 // false, and "this flag takes no value" is a different claim
                 // from "this Bazel does not say".

@@ -23,16 +23,24 @@ import java.util.Set;
  * @param name flag name without leading dashes
  * @param commands the Bazel commands that accept it
  * @param hasNegativeForm true when {@code --noname} also exists
+ * @param accumulates true when repeating the flag adds a value rather than
+ *     replacing it. This distinction decides whether appending an injected flag
+ *     overrides the user's copy or silently adds a second one beside it —
+ *     {@code --bes_backend} replaces, {@code --bes_header} accumulates — and
+ *     getting it backwards produces a command that runs and does the wrong thing
  * @param requiresValue whether a value must be supplied, when known
  * @param defaultValue the binary's own default, for showing the user what the
  *     injected flag is changing
  * @param enumValues the legal values for an enum-typed flag, empty when the flag
- *     is not enum-typed or the probe could not tell
+ *     is not enum-typed or the probe could not tell. Empty is common and is not
+ *     evidence: {@code --output} accepts {@code proto} on every supported
+ *     version and reports no enum values on any of them
  */
 public record FlagSpec(
         String name,
         Set<String> commands,
         boolean hasNegativeForm,
+        boolean accumulates,
         Optional<Boolean> requiresValue,
         Optional<String> defaultValue,
         List<String> enumValues) {
@@ -50,15 +58,36 @@ public record FlagSpec(
 
     /** A flag known only by name and the commands that take it. */
     public static FlagSpec of(String name, Set<String> commands) {
-        return new FlagSpec(name, commands, false, Optional.empty(), Optional.empty(), List.of());
+        return new FlagSpec(name, commands, false, false, Optional.empty(), Optional.empty(), List.of());
     }
 
     public boolean appliesTo(String command) {
         return commands.contains(command);
     }
 
-    /** True when {@code value} is one this flag will accept, as far as the probe knows. */
+    /**
+     * True when {@code value} is one this flag will accept, as far as the probe
+     * knows.
+     *
+     * <p>Case-insensitive, and permissive when the probe reported no enum
+     * values — which is the common case and means "unknown", not "nothing is
+     * accepted". Enum values come back as uppercase Java constant names while
+     * defaults are lowercase, and Bazel itself accepts either.
+     */
     public boolean accepts(String value) {
-        return enumValues.isEmpty() || enumValues.contains(value);
+        return enumValues.isEmpty() || enumValues.stream().anyMatch(known -> known.equalsIgnoreCase(value));
+    }
+
+    /**
+     * True when appending this flag would override an earlier occurrence.
+     *
+     * <p>The last occurrence of a single-valued flag wins, silently — Bazel
+     * emits no warning about the shadowed one. That is what makes appending a
+     * safe way to inject instrumentation, and it is also why an override has to
+     * be surfaced by this application: nothing else will tell the user their
+     * {@code --build_event_json_file} was redirected.
+     */
+    public boolean appendingOverrides() {
+        return !accumulates;
     }
 }

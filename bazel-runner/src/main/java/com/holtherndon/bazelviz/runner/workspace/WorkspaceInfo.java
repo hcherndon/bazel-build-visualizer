@@ -44,14 +44,21 @@ public record WorkspaceInfo(
     /**
      * Files that mark a Bazel workspace root, most authoritative first.
      *
-     * <p>{@code MODULE.bazel} leads because Bazel 7 and later prefer it and
-     * Bazel 9 has dropped {@code WORKSPACE} entirely; the older names stay
-     * because Bazel 6 is a supported target and its repositories will not have
-     * a module file. {@code WORKSPACE.bzlmod} is included since a repository
-     * mid-migration has one alongside a legacy {@code WORKSPACE}.
+     * <p>Each of these four is independently sufficient on every version from
+     * 6.5 to 9.2, verified by building in a directory containing only one of
+     * them at a time. That includes a {@code WORKSPACE}-only directory on Bazel
+     * 9.2, which still builds despite {@code WORKSPACE} being deprecated — so
+     * no version-conditional marker logic is needed, and adding some would make
+     * this tool refuse to open repositories Bazel itself is happy with.
+     *
+     * <p>{@code WORKSPACE.bzlmod} is deliberately absent. It looks like a
+     * marker and is not one: Bazel does not treat it as a workspace root, and a
+     * repository mid-migration has one in a directory that is already marked by
+     * something else. Including it would find a "root" one level too deep in
+     * exactly the repositories most likely to be complicated.
      */
     public static final java.util.List<String> MARKERS = java.util.List.of(
-            "MODULE.bazel", "REPO.bazel", "WORKSPACE.bzlmod", "WORKSPACE.bazel", "WORKSPACE");
+            "MODULE.bazel", "REPO.bazel", "WORKSPACE.bazel", "WORKSPACE");
 
     public WorkspaceInfo {
         Objects.requireNonNull(workingDirectory, "workingDirectory");
