@@ -74,6 +74,12 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(LiveCapturePipeline.class);
 
+    /**
+     * How long {@link #finish()} waits to hand the journal thread its sentinel
+     * before concluding that it is never going to take it.
+     */
+    private static final java.time.Duration SENTINEL_HANDOVER = java.time.Duration.ofSeconds(5);
+
     /** Queue sentinel meaning "no more work is coming". */
     private static final Submission END_OF_STREAM =
             new Submission(null, null);
@@ -81,6 +87,16 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     private record Submission(RawBesEvent event, Runnable onJournaled) {}
 
     private record Journaled(RawBesEvent event, JournalLocation location) {}
+
+    /**
+     * The stream a locally-captured BEP file becomes.
+     *
+     * <p>A file is not a BES stream and does not pretend to be one: it gets its
+     * own {@code event_streams} row so that the session can say which of its
+     * events arrived live and which were read from a file afterwards
+     * (plan 11.5, provenance).
+     */
+    public static final String FILE_STREAM_KEY = "file:bep-fallback";
 
     private static final Journaled NORMALIZE_END =
             new Journaled(null, null);
@@ -115,6 +131,9 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     private final AtomicLong nonEventEnvelopes = new AtomicLong();
     private final AtomicBoolean lagged = new AtomicBoolean();
     private final AtomicBoolean accepting = new AtomicBoolean(true);
+
+    private final AtomicInteger fileStreamOrdinal = new AtomicInteger(-1);
+    private long fileStreamRowId = -1;
 
     private volatile Throwable failure;
     private volatile long lastProgressMillis;
@@ -397,6 +416,70 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     // ------------------------------------------------------------ lifecycle
 
     /**
+     * Journals and indexes one record read from a local BEP file.
+     *
+     * <p>The fallback path for a BES conflict (plan 8.5 option 2): the user
+     * keeps their own backend and this application reads a local copy instead.
+     * Called from the coordinator's thread after the build has finished and
+     * both pipeline threads have been joined, so this is the only writer —
+     * which is why it appends directly rather than going through the queue.
+     *
+     * <p>The bytes are journaled with {@link SourceKind#BEP_BINARY}, not a BES
+     * kind, because that is what they are. A session that mixed the two without
+     * saying so could not later tell a live event from a file-read one.
+     *
+     * @return true when a {@code bep_events} row was written
+     */
+    public boolean ingestFileRecord(byte[] payload, int offset, int length, long ordinal)
+            throws IOException, SQLException {
+        long receiveMicros = nowMicros();
+        JournalLocation location = journal.append(
+                SourceKind.BEP_BINARY, fileStreamOrdinal(), ordinal, receiveMicros,
+                payload, offset, length);
+        journaledCount.incrementAndGet();
+        bytesJournaled.addAndGet(length);
+        received.incrementAndGet();
+
+        long streamId = resolveFileStreamRow();
+        EventNormalizer.Normalization normalization = normalizer.normalize(
+                SourceKind.BEP_BINARY, payload, offset, length, streamId, ordinal,
+                location, receiveMicros);
+        events.write(normalization.normalized());
+        normalizedCount.incrementAndGet();
+        if (normalization.status() == DecodeStatus.FAILED) {
+            decodeFailures.incrementAndGet();
+            events.recordDiagnostic(ImportDiagnostic.at(
+                    DiagnosticSeverity.ERROR,
+                    com.holtherndon.bazelviz.storage.events.DiagnosticCodes.DECODE_FAILED,
+                    "record " + ordinal + " of the local build event file: "
+                            + normalization.failureDetail(),
+                    location.segmentIndex(),
+                    location.frameOffset(),
+                    receiveMicros));
+        }
+        return true;
+    }
+
+    /** Commits whatever {@link #ingestFileRecord} has written. */
+    public void flushFileRecords() throws IOException, SQLException {
+        events.flush();
+        journal.flush();
+        writeCheckpoint();
+    }
+
+    private int fileStreamOrdinal() {
+        return fileStreamOrdinal.updateAndGet(
+                current -> current >= 0 ? current : nextStreamOrdinal.getAndIncrement());
+    }
+
+    private long resolveFileStreamRow() throws SQLException {
+        if (fileStreamRowId < 0) {
+            fileStreamRowId = streams.open(FILE_STREAM_KEY, Optional.empty(), Optional.empty());
+        }
+        return fileStreamRowId;
+    }
+
+    /**
      * Stops accepting events, drains what is already queued, and commits.
      *
      * <p>Draining rather than discarding is what makes a cancelled build
@@ -408,14 +491,22 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
      */
     public CaptureSummary finish() throws IOException, SQLException, InterruptedException {
         accepting.set(false);
-        receiveQueue.put(END_OF_STREAM);
+        signalEndOfStream();
         joinQuietly(journalThread);
         joinQuietly(storeThread);
 
         persistStreamStates();
         events.flush();
         writeCheckpoint();
-        journal.force();
+        // Skipped when the journal has already failed: force() throws
+        // IllegalStateException on a failed writer, and that unchecked
+        // exception escaping here aborted the caller's entire cleanup — the
+        // session was left non-terminal with its lock still on disk. There is
+        // nothing to force in that state anyway; the writer dropped its staged
+        // bytes when it failed, and said so.
+        if (!journal.isFailed()) {
+            journal.force();
+        }
         publishProgress(true);
 
         return new CaptureSummary(
@@ -428,6 +519,55 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                 List.copyOf(finalStates.values()),
                 lagged.get(),
                 Optional.ofNullable(failure));
+    }
+
+    /**
+     * Tells the journal thread to stop, without waiting forever for it.
+     *
+     * <p>The sentinel goes through the same bounded queue as everything else,
+     * and the journal thread is its only consumer. When that thread has already
+     * died — which is exactly what a failed journal write does to it — a
+     * blocking {@code put} on a full queue never returns, and the caller hangs
+     * holding the session lock with the database open. So the handover is
+     * bounded, and a queue that will never drain is drained here instead.
+     *
+     * <p>Also tolerant of an interrupted caller. {@code put} throws before
+     * touching the queue when the interrupt flag is set, which would skip the
+     * entire drain — the persist, the flush, the checkpoint — on the one path
+     * where finishing matters most.
+     */
+    private void signalEndOfStream() {
+        boolean interrupted = Thread.interrupted();
+        try {
+            long deadline = System.nanoTime() + SENTINEL_HANDOVER.toNanos();
+            while (System.nanoTime() < deadline) {
+                if (receiveQueue.offer(END_OF_STREAM)) {
+                    return;
+                }
+                if (!journalThread.isAlive()) {
+                    break;
+                }
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException again) {
+                    interrupted = true;
+                }
+            }
+            // The consumer is gone or wedged. Whatever is still queued was
+            // accepted and will never be journaled, which the counters already
+            // report as received != journaled; clearing the queue is what lets
+            // this method return at all.
+            int abandoned = receiveQueue.size();
+            receiveQueue.clear();
+            if (abandoned > 0) {
+                log.error("{} accepted event(s) were never journaled: the journal writer stopped",
+                        abandoned);
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     /** Writes the final {@code event_streams} bookkeeping for every stream seen. */

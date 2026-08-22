@@ -243,7 +243,7 @@ class RealBazelCaptureTest {
             // user's build results away from a backend their team relies on.
             assertThat(org.assertj.core.api.Assertions.catchThrowable(coordinator::run))
                     .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("already sends build results somewhere");
+                    .hasMessageContaining("already sends its results somewhere");
 
             // Nothing was created for a build that never ran.
             assertThat(Files.exists(sessionsRoot) && Files.list(sessionsRoot).findAny().isPresent())

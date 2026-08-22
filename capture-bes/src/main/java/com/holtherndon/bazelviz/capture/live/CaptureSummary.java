@@ -44,23 +44,49 @@ public record CaptureSummary(
     }
 
     /**
-     * True when every accepted event reached the journal and every frame is
-     * accounted for downstream, and no stream ended badly.
+     * True when a stream arrived and everything in it was kept.
      *
-     * <p>This is the machine-checkable form of the Phase 2 exit criterion "no
-     * accepted event is silently dropped". A capture that returns false here
-     * must not be finalized as {@code READY}.
+     * <p>Two questions, and both have to be answered. The arithmetic —
+     * everything received reached the journal, and every frame is accounted for
+     * as a row or as an envelope that legitimately has none — is the
+     * machine-checkable form of "no accepted event is silently dropped". But
+     * every clause of it is <em>vacuously true at zero</em>: {@code 0 == 0},
+     * {@code 0 == 0 + 0}, and {@code allMatch} over an empty list. A capture
+     * that received nothing at all would have reported itself complete, and
+     * did: a build that failed during option parsing, or one whose events went
+     * to somebody else's backend, produced a session that claimed a COMPLETE
+     * capture source containing no events, and exited 0.
+     *
+     * <p>So {@link #capturedAnything()} is asked first. A capture that got
+     * nothing is not complete; it is empty, and the difference is the whole
+     * value of the tool.
      */
     public boolean isComplete() {
-        return failure.isEmpty()
+        return capturedAnything()
+                && failure.isEmpty()
                 && received == journaled
                 && journaled == normalized + nonEventEnvelopes
                 && streams.stream().allMatch(BesStreamState::isCleanlyComplete);
     }
 
+    /**
+     * Whether any BES stream was ever opened.
+     *
+     * <p>Separate from {@link #isComplete()} because the two failures need
+     * different words: "we lost some of what arrived" and "nothing arrived"
+     * are not the same problem and do not have the same cause.
+     */
+    public boolean capturedAnything() {
+        return !streams.isEmpty() || received > 0;
+    }
+
     /** One line per discrepancy, for a warning the user can act on. */
     public List<String> discrepancies() {
         List<String> problems = new java.util.ArrayList<>();
+        if (!capturedAnything()) {
+            problems.add("no build events arrived at all: the build published none, or it"
+                    + " published them somewhere else");
+        }
         if (received != journaled) {
             problems.add((received - journaled) + " event(s) were accepted but never journaled");
         }

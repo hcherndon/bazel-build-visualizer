@@ -9,6 +9,7 @@ import com.holtherndon.bazelviz.format.session.SessionManifest;
 import com.holtherndon.bazelviz.capture.live.CaptureProgress;
 import com.holtherndon.bazelviz.capture.live.CaptureRequest;
 import com.holtherndon.bazelviz.capture.live.CaptureResult;
+import com.holtherndon.bazelviz.capture.live.CaptureSummary;
 import com.holtherndon.bazelviz.capture.live.Preflight;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
@@ -34,6 +35,7 @@ import java.awt.Toolkit;
 import java.awt.event.KeyEvent;
 import java.io.File;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.OptionalLong;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -600,14 +602,25 @@ public final class MainWindow extends JFrame {
         private String describe(CaptureResult result) {
             StringBuilder text = new StringBuilder();
             result.process().ifPresent(process -> text.append(
-                    process.isSuccess() ? "build succeeded"
-                            : process.wasCancelled() ? "build cancelled"
+                    process.wasCancelled() ? "build cancelled"
+                            : !result.buildOutcomeKnown()
+                                    ? "build outcome unknown (event upload failed)"
+                            : process.isSuccess() ? "build succeeded"
                             : "build failed").append(" · "));
             result.capture().ifPresent(capture -> text
                     .append(capture.isComplete() ? "capture complete" : "capture incomplete")
                     .append(" · ")
                     .append(capture.normalized())
                     .append(" events indexed"));
+            // The discrepancies and warnings are the reason an incomplete
+            // capture is incomplete. Showing "capture incomplete" without them
+            // tells the user something is wrong and nothing about what.
+            List<String> problems = new java.util.ArrayList<>(
+                    result.capture().map(CaptureSummary::discrepancies).orElse(List.of()));
+            problems.addAll(result.warnings());
+            if (!problems.isEmpty()) {
+                text.append(" — ").append(String.join("; ", problems));
+            }
             return text.toString();
         }
     }

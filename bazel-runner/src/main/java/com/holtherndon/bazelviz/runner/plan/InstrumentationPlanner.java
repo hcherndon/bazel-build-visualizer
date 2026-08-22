@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Turns a user's command into the command that will run, and explains every
@@ -103,14 +104,35 @@ public final class InstrumentationPlanner {
                     Optional.of(original.command())));
         }
 
-        UserFlags userFlags = UserFlags.of(original, capabilities);
+        UserFlags userFlags = UserFlags.of(original, request.effectiveOptions());
+        if (request.effectiveOptions().isEmpty()) {
+            // Said out loud. Without the expansion this planner can only see
+            // what the user typed, and an option set in a .bazelrc -- their
+            // team's BES backend, say -- is invisible to every conflict check
+            // below. Injecting over one silently is the failure ADR-007 exists
+            // to prevent, so the inability to check is reported rather than
+            // quietly treated as "nothing was set".
+            warnings.add("Bazel's own option expansion could not be read, so options set in"
+                    + " .bazelrc files were not inspected. If one of them sets --bes_backend,"
+                    + " this build's results will go here instead, without being reported as a"
+                    + " conflict.");
+        } else if (!"build".equals(original.command()) && !original.isEmpty()) {
+            // The expansion reports the common and build sections. A line under
+            // a section this command does not inherit -- a test-only one, say --
+            // is not visible, and claiming to have checked would be worse than
+            // saying which part was checked.
+            warnings.add("Options in .bazelrc's 'common' and 'build' sections were inspected."
+                    + " A '" + original.command() + "'-specific section was not, so an option set"
+                    + " only there is not reflected in this plan.");
+        }
 
         // --- conflict: the user already names a BES backend (plan 8.5) -------
         boolean useFileFallback = false;
         if (userFlags.has("bes_backend")) {
             String chosen = request.resolutionFor(PlanConflict.Kind.EXISTING_BES_BACKEND).orElse(null);
             if (chosen == null) {
-                conflicts.add(existingBesBackendConflict(userFlags.raw("bes_backend")));
+                conflicts.add(existingBesBackendConflict(
+                        userFlags.raw("bes_backend"), userFlags.originOf("bes_backend")));
             } else if (PlanConflict.RESOLUTION_KEEP_BES_USE_FILE.equals(chosen)) {
                 useFileFallback = true;
             } else if (PlanConflict.RESOLUTION_CANCEL.equals(chosen)) {
@@ -122,7 +144,8 @@ public final class InstrumentationPlanner {
 
         // --- the embedded backend, or the file fallback ----------------------
         if (useFileFallback) {
-            addBepFileFallback(request, capabilities, added, outputs, availability, warnings);
+            addBepFileFallback(request, capabilities, added, outputs, availability, warnings,
+                    conflicts, replaced, userFlags);
         } else if (request.besEndpoint().isEmpty()) {
             errors.add("the embedded Build Event Service is not listening, so no events could be"
                     + " captured from this build");
@@ -268,11 +291,50 @@ public final class InstrumentationPlanner {
             List<AddedFlag> added,
             List<Path> outputs,
             Map<DataSource, SourceAvailability.Entry> availability,
-            List<String> warnings) {
+            List<String> warnings,
+            List<PlanConflict> conflicts,
+            List<ReplacedFlag> replaced,
+            UserFlags userFlags) {
         CapabilityStatus status = capabilities.status(Capability.BEP_BINARY_FILE);
         String flagName = capabilities.preferredFlag(Capability.BEP_BINARY_FILE)
                 .orElse("build_event_binary_file");
         Path file = request.sessionRawDirectory().resolve(FALLBACK_BEP_FILE).toAbsolutePath();
+
+        // The user may already be writing a BEP file for something else — a CI
+        // step that consumes it downstream is the ordinary case. This flag is
+        // single-valued and injected flags are appended, so adding ours would
+        // silently win and their file would never be written. That is exactly
+        // the silent override the contract forbids, so it is a decision, not a
+        // default.
+        if (userFlags.has(flagName)) {
+            String chosen = request.resolutionFor(PlanConflict.Kind.EXISTING_BEP_OUTPUT).orElse(null);
+            if (chosen == null) {
+                conflicts.add(existingBepOutputConflict(
+                        userFlags.raw(flagName), userFlags.originOf(flagName)));
+                return;
+            }
+            if (RESOLUTION_READ_USER_BEP_FILE.equals(chosen)) {
+                // Their file, read where it lands. Nothing is injected, so
+                // nothing of theirs is overridden.
+                Optional<String> theirPath = CommandLineParser.attachedValue(userFlags.raw(flagName));
+                availability.put(DataSource.BEP, new SourceAvailability.Entry(
+                        SourceAvailability.Availability.PLANNED,
+                        "captured from the build event file your command already writes",
+                        Optional.of("--" + flagName)));
+                // Deliberately not added to expectedOutputs: that list is
+                // "files this plan causes to be written", and this one is
+                // written by the user's own flag whether or not we are here.
+                // Listing it would raise a DESTINATION_EXISTS conflict about a
+                // file we are not going to touch.
+                theirPath.ifPresent(path -> warnings.add(
+                        "Reading the build event file your command already writes: " + path));
+                return;
+            }
+            if (PlanConflict.RESOLUTION_CANCEL.equals(chosen)) {
+                return;
+            }
+            // RESOLUTION_REDIRECT_BEP_FILE falls through and is recorded below.
+        }
 
         added.add(new AddedFlag(
                 "--" + flagName + "=" + file,
@@ -291,6 +353,14 @@ public final class InstrumentationPlanner {
         outputs.add(file);
         warnings.add("Your own --bes_backend is being kept, so events are captured through a local"
                 + " file instead. Capture finishes when the build does, rather than arriving live.");
+        if (userFlags.has(flagName)) {
+            replaced.add(new ReplacedFlag(
+                    userFlags.raw(flagName),
+                    "--" + flagName + "=" + file,
+                    RESOLUTION_REDIRECT_BEP_FILE,
+                    "Your build event file will not be written. Bazel takes the last value on the"
+                            + " command line and reports nothing about the one it shadowed."));
+        }
 
         availability.put(DataSource.BEP, new SourceAvailability.Entry(
                 status.isSupported()
@@ -399,12 +469,12 @@ public final class InstrumentationPlanner {
 
     // ------------------------------------------------------------- conflicts
 
-    private static PlanConflict existingBesBackendConflict(String offending) {
+    private static PlanConflict existingBesBackendConflict(String offending, String origin) {
         return new PlanConflict(
                 PlanConflict.Kind.EXISTING_BES_BACKEND,
                 true,
-                "Your command already sends build results somewhere",
-                "'" + offending + "' is on your command line. Two Build Event Service backends"
+                "This build already sends its results somewhere",
+                "'" + offending + "' " + origin + ". Two Build Event Service backends"
                         + " cannot both receive this build, and this application does not forward"
                         + " events on to another one.",
                 List.of(
@@ -420,6 +490,36 @@ public final class InstrumentationPlanner {
                                 "Your backend still receives everything. This application reads a"
                                         + " local copy instead, so capture completes when the build"
                                         + " does rather than arriving live."),
+                        new PlanConflict.Resolution(
+                                PlanConflict.RESOLUTION_CANCEL,
+                                "Cancel and edit the command",
+                                "Nothing runs and nothing is captured.")),
+                Optional.of(offending));
+    }
+
+    /** Resolution ids for a user who is already writing a build event file. */
+    public static final String RESOLUTION_REDIRECT_BEP_FILE = "redirect-bep-file";
+    public static final String RESOLUTION_READ_USER_BEP_FILE = "read-user-bep-file";
+
+    private static PlanConflict existingBepOutputConflict(String offending, String origin) {
+        return new PlanConflict(
+                PlanConflict.Kind.EXISTING_BEP_OUTPUT,
+                true,
+                "This build already writes a build event file",
+                "'" + offending + "' " + origin + ". Bazel writes only the last one it is"
+                        + " given, so adding a second would silently stop yours from being written.",
+                List.of(
+                        new PlanConflict.Resolution(
+                                RESOLUTION_READ_USER_BEP_FILE,
+                                "Read the file you already write",
+                                "Nothing is added to your command. This application reads the file"
+                                        + " your build writes, so whatever consumes it downstream"
+                                        + " still gets it."),
+                        new PlanConflict.Resolution(
+                                RESOLUTION_REDIRECT_BEP_FILE,
+                                "Write it into the session instead",
+                                "Your file will not be written at all, and anything downstream that"
+                                        + " reads it will see nothing, or last run's copy."),
                         new PlanConflict.Resolution(
                                 PlanConflict.RESOLUTION_CANCEL,
                                 "Cancel and edit the command",
@@ -487,17 +587,51 @@ public final class InstrumentationPlanner {
         };
     }
 
-    /** The flags already on the user's command line, indexed by name. */
-    private record UserFlags(Map<String, String> byName, boolean hasSeparator) {
+    /**
+     * The options that will apply to the build, indexed by name, and where each
+     * came from.
+     *
+     * <p>The origin matters for the message, not just the decision. Telling
+     * someone their {@code --bes_backend} "is on your command line" when they
+     * set it in a workspace {@code .bazelrc} sends them looking in the wrong
+     * place, and the whole purpose of the conflict is to help them decide.
+     */
+    private record UserFlags(
+            Map<String, String> byName, Set<String> fromRcFiles, boolean hasSeparator) {
 
-        static UserFlags of(BazelCommand command, BazelCapabilities capabilities) {
+        /**
+         * @param effectiveOptions what Bazel will really apply, when it could be
+         *     asked. Merged <em>under</em> the typed argv so that a flag the
+         *     user typed is reported with the spelling they typed, which is
+         *     what a conflict message has to quote back to them.
+         */
+        static UserFlags of(BazelCommand command, Optional<List<String>> effectiveOptions) {
             Map<String, String> byName = new LinkedHashMap<>();
-            List<String> all = new ArrayList<>(command.startupArgs());
-            all.addAll(command.commandArgs());
-            for (String token : all) {
-                CommandLineParser.flagName(token).ifPresent(name -> byName.put(name, token));
+            Set<String> fromRc = new java.util.LinkedHashSet<>();
+            effectiveOptions.ifPresent(options -> {
+                for (String token : options) {
+                    CommandLineParser.flagName(token).ifPresent(name -> {
+                        byName.put(name, token);
+                        fromRc.add(name);
+                    });
+                }
+            });
+            List<String> typed = new ArrayList<>(command.startupArgs());
+            typed.addAll(command.commandArgs());
+            for (String token : typed) {
+                CommandLineParser.flagName(token).ifPresent(name -> {
+                    byName.put(name, token);
+                    fromRc.remove(name);
+                });
             }
-            return new UserFlags(byName, !command.argsAfterDoubleDash().isEmpty());
+            return new UserFlags(byName, fromRc, !command.argsAfterDoubleDash().isEmpty());
+        }
+
+        /** Where this option came from, in words a message can use. */
+        String originOf(String flagName) {
+            return fromRcFiles.contains(flagName) || fromRcFiles.contains("no" + flagName)
+                    ? "is set in a .bazelrc file that applies to this build"
+                    : "is on your command line";
         }
 
         boolean has(String flagName) {

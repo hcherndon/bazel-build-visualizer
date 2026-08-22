@@ -220,10 +220,7 @@ final class RunCommand {
         out.println("session:  " + result.sessionRoot());
         out.println("state:    " + result.state());
         result.process().ifPresent(process -> out.println("build:    "
-                + (process.isSuccess() ? "succeeded"
-                        : process.wasCancelled() ? "cancelled (" + process.terminatedBy().orElseThrow() + ")"
-                        : "failed, exit " + process.exitCode().stream().mapToObj(Integer::toString)
-                                .findFirst().orElse("unknown"))
+                + describeBuild(result, process)
                 + " in " + process.duration().toMillis() + " ms"));
         result.capture().ifPresent(capture -> {
             out.println("events:   " + capture.received() + " received, " + capture.journaled()
@@ -244,6 +241,30 @@ final class RunCommand {
             out.println("  ! " + warning);
         }
         out.flush();
+    }
+
+    /**
+     * How the build ended, in words that do not overstate the exit code.
+     *
+     * <p>Exit 38 means the event upload failed, and Bazel reports it whatever
+     * the build itself did — so calling it "failed" blames the user's build for
+     * this application's transport. The build's real result is in the event
+     * stream, which later phases read.
+     */
+    private static String describeBuild(
+            CaptureResult result, com.holtherndon.bazelviz.runner.proc.ProcessOutcome process) {
+        if (process.wasCancelled()) {
+            return "cancelled (" + process.terminatedBy().orElseThrow() + ")";
+        }
+        if (!result.buildOutcomeKnown()) {
+            return "outcome unknown: bazel exited "
+                    + CaptureResult.BES_TRANSPORT_FAILURE_EXIT
+                    + ", which reports a build event upload failure and hides the build's own result";
+        }
+        return process.isSuccess()
+                ? "succeeded"
+                : "failed, exit " + process.exitCode().stream().mapToObj(Integer::toString)
+                        .findFirst().orElse("unknown");
     }
 
     /**
@@ -277,7 +298,14 @@ final class RunCommand {
             process.terminatedBy().ifPresent(
                     mode -> build.put("terminatedBy", JsonValue.of(mode.name())));
             build.put("durationMillis", JsonValue.of(process.duration().toMillis()));
-            build.put("succeeded", JsonValue.of(process.isSuccess()));
+            // Three states, not two. "succeeded": false for exit 38 would tell
+            // a scripted consumer the build failed when nothing knows whether
+            // it did; outcomeKnown is how it finds out that it must read the
+            // event stream instead.
+            build.put("outcomeKnown", JsonValue.of(result.buildOutcomeKnown()));
+            if (result.buildOutcomeKnown()) {
+                build.put("succeeded", JsonValue.of(process.isSuccess()));
+            }
             root.put("build", new JsonValue.JsonObject(build));
         });
         result.capture().ifPresent(capture -> {

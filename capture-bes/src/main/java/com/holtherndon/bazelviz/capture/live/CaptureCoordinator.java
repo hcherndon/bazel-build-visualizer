@@ -3,6 +3,9 @@ package com.holtherndon.bazelviz.capture.live;
 import com.holtherndon.bazelviz.capture.bes.BesEndpoint;
 import com.holtherndon.bazelviz.capture.bes.BesServer;
 import com.holtherndon.bazelviz.capture.bes.BesServerConfig;
+import com.holtherndon.bazelviz.capture.file.binary.BinaryBepParseOutcome;
+import com.holtherndon.bazelviz.capture.file.binary.BinaryBepParseResult;
+import com.holtherndon.bazelviz.capture.file.binary.BinaryBepParser;
 import com.holtherndon.bazelviz.capture.normalize.EventNormalizer;
 import com.holtherndon.bazelviz.core.id.SessionId;
 import com.holtherndon.bazelviz.core.session.SessionState;
@@ -15,8 +18,10 @@ import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
 import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.format.session.SessionManifest;
 import com.holtherndon.bazelviz.runner.caps.BazelCapabilityDetector;
+import com.holtherndon.bazelviz.runner.caps.Capability;
 import com.holtherndon.bazelviz.runner.command.BazelCommand;
 import com.holtherndon.bazelviz.runner.command.CommandLineParser;
+import com.holtherndon.bazelviz.runner.command.EffectiveOptions;
 import com.holtherndon.bazelviz.runner.exec.BazelExecutable;
 import com.holtherndon.bazelviz.runner.exec.BazelExecutableResolver;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
@@ -36,6 +41,7 @@ import com.holtherndon.bazelviz.storage.events.StreamRegistry;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import com.holtherndon.bazelviz.storage.schema.SchemaV1;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.time.Clock;
@@ -87,6 +93,18 @@ public final class CaptureCoordinator implements AutoCloseable {
 
     private final SettableRawEventSink sink = new SettableRawEventSink();
     private final AtomicReference<BazelLauncher.BazelProcess> running = new AtomicReference<>();
+
+    /**
+     * A stop requested before there was anything to stop.
+     *
+     * <p>Cancellation used to read {@code running} and return silently when it
+     * was null — which is the state for the whole of preflight and for the
+     * session setup that follows it. A user pressing Ctrl-C during the
+     * capability probe was told "asking Bazel to stop", and then the build they
+     * had just cancelled was launched. The request is now remembered, and the
+     * launch path asks before starting anything.
+     */
+    private final AtomicReference<CancellationMode> pendingCancel = new AtomicReference<>();
 
     private BesServer server;
     private Preflight preflight;
@@ -146,28 +164,34 @@ public final class CaptureCoordinator implements AutoCloseable {
         // the capture onto that path; the directory is created before anything
         // is written to it.
         Path provisionalRaw = request.sessionsRoot().resolve("pending-raw");
-        InstrumentationPlan plan = new InstrumentationPlanner().plan(PlanRequest.initial(
-                original, capabilities, request.preset(), provisionalRaw,
-                Optional.of(endpoint.besBackendUri())));
+        // Asked of Bazel, in the workspace, with the rc files in force: an
+        // option the user set in a .bazelrc is one they set, and injecting over
+        // it without saying so is the same defect as doing it to a typed flag.
+        PlanRequest planRequest = PlanRequest.initial(
+                        original, capabilities, request.preset(), provisionalRaw,
+                        Optional.of(endpoint.besBackendUri()))
+                .withEffectiveOptions(EffectiveOptions.resolve(
+                        executable.resolved(), request.workingDirectory(), original));
 
-        preflight = new Preflight(executable, workspace, capabilities, endpoint, plan);
+        preflight = new Preflight(executable, workspace, capabilities, endpoint,
+                new InstrumentationPlanner().plan(planRequest), planRequest);
         return preflight;
     }
 
-    /** Re-plans with the user's answers, keeping the same endpoint and probe. */
+    /**
+     * Re-plans with the user's answers, keeping the same endpoint and probe.
+     *
+     * <p>Adjusts the request that produced the current plan rather than
+     * building a fresh one, so answers accumulate: a user who resolves a
+     * conflict and then vetoes a flag still has both.
+     */
     public synchronized Preflight replan(java.util.function.UnaryOperator<PlanRequest> adjust)
             throws IOException {
         Preflight current = preflight();
-        PlanRequest base = PlanRequest.initial(
-                current.plan().original(),
-                current.capabilities(),
-                request.preset(),
-                request.sessionsRoot().resolve("pending-raw"),
-                Optional.of(current.endpoint().besBackendUri()));
-        InstrumentationPlan replanned = new InstrumentationPlanner().plan(adjust.apply(base));
+        PlanRequest adjusted = adjust.apply(current.request());
         preflight = new Preflight(
                 current.executable(), current.workspace(), current.capabilities(),
-                current.endpoint(), replanned);
+                current.endpoint(), new InstrumentationPlanner().plan(adjusted), adjusted);
         return preflight;
     }
 
@@ -200,23 +224,27 @@ public final class CaptureCoordinator implements AutoCloseable {
         ConsoleCapture console = null;
         ProcessOutcome outcome = null;
         CaptureSummary summary = null;
+        // FAILED_TO_START only until the session starts capturing. After that
+        // it is unreachable -- CAPTURING goes to BUILD_FINISHED, CANCELLED,
+        // INCOMPLETE or CORRUPT_PARTIAL and nowhere else -- so a failure after
+        // launch used to ask for a transition the state machine refuses, and
+        // the session stayed in CAPTURING for ever with no record of why.
         SessionState terminal = SessionState.FAILED_TO_START;
+        // The plan that actually ran, which differs from the preflight plan in
+        // the paths it names. Reporting the preflight one meant `--json` could
+        // print an injected flag pointing at a directory nothing ever created.
+        InstrumentationPlan executedPlan = ready.plan();
 
         try {
             session.transitionTo(SessionState.PREFLIGHT);
 
             // The plan named a provisional raw directory during preflight, when
-            // no session existed. Re-plan against the real one so the recorded
-            // command and any file it writes agree with where they actually go.
-            InstrumentationPlan plan = new InstrumentationPlanner().plan(new PlanRequest(
-                    ready.plan().original(),
-                    ready.capabilities(),
-                    request.preset(),
-                    layout.rawDirectory(),
-                    Optional.of(ready.endpoint().besBackendUri()),
-                    java.util.Set.of(),
-                    resolutionsOf(ready.plan()),
-                    true));
+            // no session existed. Re-plan against the real one -- from the same
+            // request, with only that field changed, so every answer the user
+            // gave survives.
+            InstrumentationPlan plan = new InstrumentationPlanner()
+                    .plan(ready.request().inSession(layout.rawDirectory()));
+            executedPlan = plan;
 
             writeManifest(session, ready, plan);
             InstrumentationPlanCodec.write(layout.instrumentationPlanFile(), plan, ready);
@@ -245,12 +273,41 @@ public final class CaptureCoordinator implements AutoCloseable {
             // once, and a session that was not yet capturing would have nowhere
             // to put the first events.
             session.transitionTo(SessionState.CAPTURING);
+            terminal = SessionState.INCOMPLETE;
 
-            BazelLauncher.BazelProcess process = BazelLauncher.start(
-                    LaunchRequest.of(plan.effective(), console));
-            running.set(process);
-            outcome = process.await();
-            awaitStreamsToSettle(outcome);
+            CancellationMode requestedBeforeLaunch = pendingCancel.get();
+            if (requestedBeforeLaunch != null) {
+                // Asked to stop before there was anything to stop. Launching
+                // now would run the build the user has already cancelled, which
+                // is what this used to do.
+                warnings.add("the launch was cancelled before Bazel was started");
+                events.recordDiagnostic(ImportDiagnostic.general(
+                        DiagnosticSeverity.WARNING,
+                        CaptureDiagnosticCodes.CAPTURE_CANCELLED,
+                        "cancelled during preparation, before Bazel was started",
+                        nowMicros()));
+                outcome = ProcessOutcome.cancelled(
+                        OptionalInt.empty(), requestedBeforeLaunch, Duration.ZERO);
+            } else {
+                BazelLauncher.BazelProcess process = BazelLauncher.start(
+                        LaunchRequest.of(plan.effective(), console));
+                running.set(process);
+                // A stop that arrived while the process was starting would have
+                // found `running` still null a moment ago. Re-checked here so
+                // that window cannot swallow it either.
+                CancellationMode raced = pendingCancel.get();
+                if (raced != null) {
+                    process.cancel(raced, true);
+                }
+                outcome = process.await();
+                awaitStreamsToSettle(outcome);
+            }
+
+            // The keep-your-own-backend resolution (plan 8.5 option 2) told
+            // Bazel to write a local copy of the stream. Reading it is the
+            // whole point of offering that choice, and the dialog says so:
+            // "This application reads a local copy instead."
+            ingestFallbackFile(plan, pipeline, warnings);
 
             summary = pipeline.finish();
             terminal = terminalStateFor(outcome, summary, warnings);
@@ -262,6 +319,14 @@ public final class CaptureCoordinator implements AutoCloseable {
             warnings.add("the capture was interrupted");
             terminal = SessionState.INCOMPLETE;
         } finally {
+            // Cleared for the duration of the finalization, and restored at the
+            // end. An interrupted thread cannot drain a queue, cannot join, and
+            // cannot write to a FileChannel -- NIO closes the channel out from
+            // under it -- so finalizing while interrupted loses the journal
+            // buffer that was already acknowledged to Bazel. The interrupt is a
+            // request to stop capturing, not a request to abandon what was
+            // captured.
+            boolean interrupted = Thread.interrupted();
             running.set(null);
             sink.detach();
             // Closed in the order that preserves the most: the pipeline first
@@ -276,13 +341,16 @@ public final class CaptureCoordinator implements AutoCloseable {
             closeQuietly(streams, "stream registry", warnings);
             closeQuietly(database, "session database", warnings);
             terminal = finalizeSession(session, terminal, summary, outcome, warnings);
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
 
         return new CaptureResult(
                 sessionRoot,
                 sessionId,
                 terminal,
-                preflight.plan(),
+                executedPlan,
                 Optional.ofNullable(outcome),
                 Optional.ofNullable(summary),
                 warnings);
@@ -296,6 +364,11 @@ public final class CaptureCoordinator implements AutoCloseable {
      * result describing a cancelled session once the drain completes.
      */
     public void cancel(CancellationMode mode) {
+        Objects.requireNonNull(mode, "mode");
+        // Remembered first, and unconditionally. Whether or not a process
+        // exists yet, the user has asked to stop, and that fact must outlive
+        // this call.
+        pendingCancel.accumulateAndGet(mode, CaptureCoordinator::harsherOf);
         BazelLauncher.BazelProcess process = running.get();
         if (process == null) {
             return;
@@ -316,6 +389,16 @@ public final class CaptureCoordinator implements AutoCloseable {
         return running.get() != null;
     }
 
+    /** True once a stop has been asked for, whether or not it could be applied. */
+    public boolean isCancelRequested() {
+        return pendingCancel.get() != null;
+    }
+
+    /** The harsher of two stops, so a second request never softens the first. */
+    private static CancellationMode harsherOf(CancellationMode current, CancellationMode next) {
+        return current == null || next.ordinal() > current.ordinal() ? next : current;
+    }
+
     @Override
     public synchronized void close() {
         if (closed) {
@@ -327,6 +410,86 @@ public final class CaptureCoordinator implements AutoCloseable {
             server = null;
         }
     }
+
+    /**
+     * Reads the local BEP file the plan asked Bazel to write, if there is one.
+     *
+     * <p>Runs after the process has exited and before the pipeline is drained,
+     * on this thread, which is the only writer at that point. A file that was
+     * planned and never appeared is a warning rather than a failure: Bazel may
+     * have died before creating it, and that is a fact about the build, not a
+     * fault in the capture.
+     */
+    private void ingestFallbackFile(
+            InstrumentationPlan plan, LiveCapturePipeline pipeline, List<String> warnings) {
+        // Read from the effective command rather than from the plan's added
+        // flags, so both branches are covered by one rule: the file Bazel was
+        // told to write is the file to read, whether this application named it
+        // or the user did.
+        Optional<Path> fallback = localBepFileOf(plan);
+        if (fallback.isEmpty()) {
+            return;
+        }
+        Path file = fallback.get();
+        if (!Files.isRegularFile(file)) {
+            warnings.add("the build was asked to write " + file
+                    + " and did not, so no events were captured from it");
+            return;
+        }
+        try {
+            long[] ordinal = {0};
+            BinaryBepParseResult result = BinaryBepParser.withDefaults().parseFile(
+                    file, 0, frame -> {
+                        try {
+                            // Copied rather than passed through: the frame's
+                            // buffer is a view that is only valid for the
+                            // duration of this callback, and the journal writes
+                            // from a byte array.
+                            byte[] payload = frame.copyPayload();
+                            pipeline.ingestFileRecord(payload, 0, payload.length, ordinal[0]++);
+                        } catch (SQLException storeFailure) {
+                            throw new IOException(storeFailure);
+                        }
+                    });
+            pipeline.flushFileRecords();
+            fallbackSource = Optional.of(new FallbackSource(file, ordinal[0], result.outcome()));
+            if (result.outcome() != BinaryBepParseOutcome.COMPLETE) {
+                warnings.add(file.getFileName() + " was " + result.outcome()
+                        + "; " + ordinal[0] + " event(s) were read before the damage");
+            }
+        } catch (IOException | SQLException | RuntimeException failure) {
+            warnings.add("could not read the local build event file " + file + ": " + failure);
+            log.warn("could not read the local build event file {}", file, failure);
+        }
+    }
+
+    /**
+     * The local build event file the effective command writes, if any.
+     *
+     * <p>Only consulted on the keep-your-backend path. On the ordinary path
+     * events arrive live through the embedded server and no file is written, so
+     * an empty answer here is the normal case, not a failure.
+     */
+    private static Optional<Path> localBepFileOf(InstrumentationPlan plan) {
+        if (plan.sourceAvailability().entry(com.holtherndon.bazelviz.core.source.DataSource.BES_ENVELOPE)
+                .availability() == com.holtherndon.bazelviz.runner.plan.SourceAvailability.Availability.PLANNED) {
+            return Optional.empty();
+        }
+        Path found = null;
+        for (String token : plan.effective().commandArgs()) {
+            Optional<String> name = CommandLineParser.flagName(token);
+            if (name.isPresent() && name.get().equals("build_event_binary_file")) {
+                // Last one wins, exactly as Bazel resolves it.
+                found = CommandLineParser.attachedValue(token).map(Path::of).orElse(found);
+            }
+        }
+        return Optional.ofNullable(found).map(Path::toAbsolutePath);
+    }
+
+    /** A locally-captured BEP file that was read into this session. */
+    private record FallbackSource(Path file, long events, BinaryBepParseOutcome outcome) {}
+
+    private Optional<FallbackSource> fallbackSource = Optional.empty();
 
     // ------------------------------------------------------------- internals
 
@@ -387,6 +550,9 @@ public final class CaptureCoordinator implements AutoCloseable {
             return SessionState.INCOMPLETE;
         }
         if (!summary.isComplete()) {
+            // Includes the empty case. A session that received nothing is
+            // INCOMPLETE, not READY: READY is a promise that the session
+            // contains the build, and an empty one does not.
             warnings.addAll(summary.discrepancies());
             return SessionState.INCOMPLETE;
         }
@@ -403,15 +569,20 @@ public final class CaptureCoordinator implements AutoCloseable {
             SessionState current = session.state();
             if (!current.isTerminal()) {
                 updateManifestCounts(session, summary, outcome);
-                for (String warning : warnings) {
-                    session.addWarning(warning);
-                }
-                session.finalizeSession(terminal);
+                finalizeReachable(session, current, terminal, warnings);
             }
             return session.state();
         } catch (IOException | RuntimeException failure) {
             log.error("could not finalize the capture session at {}", session.root(), failure);
+            // Appended and persisted in the same breath. Added to the list
+            // alone it would arrive after the loop that writes warnings to the
+            // manifest and never reach disk.
             warnings.add("the session could not be finalized cleanly: " + failure);
+            try {
+                session.addWarning("the session could not be finalized cleanly: " + failure);
+            } catch (IOException | RuntimeException alsoFailed) {
+                log.error("could not even record the finalization failure", alsoFailed);
+            }
             return session.state();
         } finally {
             try {
@@ -422,20 +593,75 @@ public final class CaptureCoordinator implements AutoCloseable {
         }
     }
 
+    /**
+     * Finalizes as {@code wanted}, falling back to a state the session can
+     * actually reach.
+     *
+     * <p>The state machine is deliberately strict and refuses an impossible
+     * transition rather than guessing — which is right, and means the caller
+     * must not ask for one. A capture that failed after it started cannot be
+     * {@code FAILED_TO_START}, because it did start.
+     *
+     * <p>Reachability is asked of the state machine by attempting the
+     * transition, not re-derived here: {@code finalizeSession} walks a
+     * multi-step path, so a single-step check would reject legal endings such
+     * as PREFLIGHT to READY and quietly downgrade a good session.
+     */
+    private static void finalizeReachable(
+            ManagedSession session, SessionState current, SessionState wanted, List<String> warnings)
+            throws IOException {
+        for (String warning : warnings) {
+            session.addWarning(warning);
+        }
+        try {
+            session.finalizeSession(wanted);
+            return;
+        } catch (IllegalStateException unreachable) {
+            log.warn("cannot finalize a session in {} as {}; recording INCOMPLETE instead",
+                    current, wanted);
+        }
+        String note = "the capture ended as " + wanted + ", which a session already in " + current
+                + " cannot record; it is marked INCOMPLETE instead";
+        warnings.add(note);
+        session.addWarning(note);
+        session.finalizeSession(SessionState.INCOMPLETE);
+    }
+
     private void updateManifestCounts(
             ManagedSession session, CaptureSummary summary, ProcessOutcome outcome) throws IOException {
         session.updateManifest(builder -> {
             if (summary != null) {
                 builder.eventCount(OptionalLong.of(summary.normalized()));
+                // A source that never delivered anything is not a COMPLETE
+                // source: it is one this session knows nothing about. UNKNOWN
+                // is the honest record, and the note says which case it was.
+                Completeness besCompleteness = !summary.capturedAnything()
+                        ? Completeness.UNKNOWN
+                        : summary.isComplete() ? Completeness.COMPLETE : Completeness.TRUNCATED;
                 builder.addSource(SessionManifest.CaptureSourceEntry.of(
                         "BES_STREAM",
                         Optional.empty(),
                         Optional.empty(),
                         OptionalLong.of(summary.bytesJournaled()),
-                        summary.isComplete() ? Completeness.COMPLETE : Completeness.TRUNCATED,
-                        Optional.of(summary.streams().size() + " stream(s), "
-                                + summary.received() + " event(s) received")));
+                        besCompleteness,
+                        Optional.of(summary.capturedAnything()
+                                ? summary.streams().size() + " stream(s), "
+                                        + summary.received() + " event(s) received"
+                                : "no stream was ever opened")));
             }
+            fallbackSource.ifPresent(fallback -> builder.addSource(
+                    SessionManifest.CaptureSourceEntry.of(
+                            "BEP_BINARY",
+                            Optional.of(fallback.file().getFileName().toString()),
+                            Optional.empty(),
+                            sizeOf(fallback.file()),
+                            switch (fallback.outcome()) {
+                                case COMPLETE -> Completeness.COMPLETE;
+                                case TRUNCATED -> Completeness.TRUNCATED;
+                                default -> Completeness.CORRUPT_PARTIAL;
+                            },
+                            Optional.of(fallback.events() + " event(s) read from the local"
+                                    + " build event file"))));
             builder.addSource(SessionManifest.CaptureSourceEntry.of(
                     "STDOUT",
                     Optional.of(ManagedSessionLayout.STDOUT_LOG_FILE_NAME),
@@ -474,6 +700,15 @@ public final class CaptureCoordinator implements AutoCloseable {
                 .containsAbsolutePaths(Optional.of(true))
                 .containsEnvironmentValues(
                         Optional.of(!request.environmentOverrides().isEmpty())));
+    }
+
+    /** The file's size, or unknown when it cannot be read. Never zero as a guess. */
+    private static OptionalLong sizeOf(Path file) {
+        try {
+            return OptionalLong.of(Files.size(file));
+        } catch (IOException unreadable) {
+            return OptionalLong.empty();
+        }
     }
 
     private void recordOutcome(
@@ -532,17 +767,28 @@ public final class CaptureCoordinator implements AutoCloseable {
 
     private CaptureSummary finishQuietly(
             LiveCapturePipeline pipeline, CaptureSummary already, List<String> warnings) {
-        if (pipeline == null || already != null) {
+        if (pipeline == null) {
             return already;
         }
         try {
-            return pipeline.finish();
+            // Already drained on the happy path; closing is still owed, and
+            // returning early used to skip it.
+            return already != null ? already : pipeline.finish();
         } catch (IOException | SQLException failure) {
             warnings.add("the capture pipeline could not be drained: " + failure);
             return null;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             warnings.add("draining the capture pipeline was interrupted");
+            return null;
+        } catch (RuntimeException unexpected) {
+            // Caught deliberately. Everything after this call in the caller's
+            // finally -- closing the journal, recording the outcome, closing
+            // the database, finalizing the session and releasing its lock --
+            // is what makes a failed capture inspectable, and an unchecked
+            // throw here used to skip all of it.
+            log.error("draining the capture pipeline failed", unexpected);
+            warnings.add("the capture pipeline could not be drained: " + unexpected);
             return null;
         } finally {
             pipeline.close();
@@ -569,47 +815,6 @@ public final class CaptureCoordinator implements AutoCloseable {
         } catch (Exception failure) {
             warnings.add("the " + what + " could not be closed cleanly: " + failure);
         }
-    }
-
-    private static java.util.Map<com.holtherndon.bazelviz.runner.plan.PlanConflict.Kind, String>
-            resolutionsOf(InstrumentationPlan plan) {
-        java.util.Map<com.holtherndon.bazelviz.runner.plan.PlanConflict.Kind, String> resolutions =
-                new java.util.EnumMap<>(com.holtherndon.bazelviz.runner.plan.PlanConflict.Kind.class);
-        for (var replaced : plan.replacedFlags()) {
-            com.holtherndon.bazelviz.runner.plan.PlanConflict.Kind kind =
-                    PlanConflictKinds.forResolution(replaced.approvedBy());
-            if (kind != null) {
-                resolutions.put(kind, replaced.approvedBy());
-            }
-        }
-        // A conflict the user resolved by keeping their backend produced no
-        // ReplacedFlag, because nothing of theirs was replaced. It is recovered
-        // from the fallback file the plan decided to write.
-        boolean usesFallback = plan.appliedFlags().stream()
-                .anyMatch(flag -> flag.capability()
-                        == com.holtherndon.bazelviz.runner.caps.Capability.BEP_BINARY_FILE);
-        if (usesFallback) {
-            resolutions.put(
-                    com.holtherndon.bazelviz.runner.plan.PlanConflict.Kind.EXISTING_BES_BACKEND,
-                    com.holtherndon.bazelviz.runner.plan.PlanConflict.RESOLUTION_KEEP_BES_USE_FILE);
-        }
-        return resolutions;
-    }
-
-    /** Maps a resolution id back to the conflict it answers. */
-    private static final class PlanConflictKinds {
-        static com.holtherndon.bazelviz.runner.plan.PlanConflict.Kind forResolution(String id) {
-            return switch (id) {
-                case com.holtherndon.bazelviz.runner.plan.PlanConflict.RESOLUTION_REPLACE_BES,
-                        com.holtherndon.bazelviz.runner.plan.PlanConflict.RESOLUTION_KEEP_BES_USE_FILE ->
-                        com.holtherndon.bazelviz.runner.plan.PlanConflict.Kind.EXISTING_BES_BACKEND;
-                case "overwrite" ->
-                        com.holtherndon.bazelviz.runner.plan.PlanConflict.Kind.DESTINATION_EXISTS;
-                default -> null;
-            };
-        }
-
-        private PlanConflictKinds() {}
     }
 
     /**

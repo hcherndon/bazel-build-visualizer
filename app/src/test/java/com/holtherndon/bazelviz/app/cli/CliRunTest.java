@@ -150,7 +150,7 @@ class CliRunTest {
 
         assertThat(result.code()).isEqualTo(ExitCode.USAGE.code());
         assertThat(result.err())
-                .contains("already sends build results somewhere")
+                .contains("already sends its results somewhere")
                 .contains("--replace-bes")
                 .contains("--keep-bes");
         // Each choice states what it costs, so neither is picked blind.
