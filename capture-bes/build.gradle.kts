@@ -20,13 +20,15 @@ dependencies {
     implementation(libs.grpc.stub)
     implementation(libs.grpc.protobuf)
 
-    // grpc-netty-shaded rather than grpc-netty: the shaded artifact keeps
-    // Netty's classes out of the application classpath, which matters because
-    // this is a desktop application that may one day be packaged with other
-    // libraries that carry their own Netty.
-    runtimeOnly(libs.grpc.netty.shaded)
+    // grpc-netty-shaded is a compile dependency, not runtimeOnly: binding
+    // loopback only (plan 22.1) needs NettyServerBuilder.forAddress, and the
+    // transport-agnostic ServerBuilder.forPort can only bind every interface.
+    // The shaded artifact keeps Netty's own classes off the application
+    // classpath, which matters for a desktop application that may one day be
+    // packaged alongside libraries carrying their own Netty.
+    implementation(libs.grpc.netty.shaded)
 
     testImplementation(project(":test-support"))
     testImplementation(project(":bep-codec"))
-    testImplementation(libs.grpc.netty.shaded)
+    testImplementation(project(":proto"))
 }
