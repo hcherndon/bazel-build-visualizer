@@ -41,6 +41,17 @@ public final class ConsoleCapture implements ConsoleSink, AutoCloseable {
     private final AtomicLong stderrBytes = new AtomicLong();
     private volatile boolean closed;
 
+    /**
+     * Set when a write to either log failed.
+     *
+     * <p>The failure cannot be thrown — the thread that calls this is also what
+     * keeps the build's pipe drained, and letting an exception out would stall
+     * the build over a log file. But swallowing it and then recording the log
+     * as COMPLETE would make the session claim a console capture it does not
+     * have, so the fact is kept and the manifest asks for it.
+     */
+    private volatile boolean writeFailed;
+
     private ConsoleCapture(OutputStream stdout, OutputStream stderr, ConsoleSink downstream) {
         this.stdout = stdout;
         this.stderr = stderr;
@@ -95,6 +106,7 @@ public final class ConsoleCapture implements ConsoleSink, AutoCloseable {
                 // Logged, not thrown: the pump thread that calls this is also
                 // what keeps the build's pipe drained, and letting an exception
                 // out would stall the build over a console log.
+                writeFailed = true;
                 log.warn("could not write {} to the session log", stream, failure);
             }
         }
@@ -113,6 +125,11 @@ public final class ConsoleCapture implements ConsoleSink, AutoCloseable {
         return stderrBytes.get();
     }
 
+    /** True when any console bytes could not be written to their log. */
+    public boolean hasWriteFailure() {
+        return writeFailed;
+    }
+
     @Override
     public void close() throws IOException {
         if (closed) {
@@ -120,6 +137,9 @@ public final class ConsoleCapture implements ConsoleSink, AutoCloseable {
         }
         closed = true;
         IOException failure = null;
+        // A close that fails can leave buffered bytes unwritten, so it counts
+        // as a write failure for the purpose of the manifest.
+
         synchronized (stdout) {
             try {
                 stdout.close();
@@ -139,6 +159,7 @@ public final class ConsoleCapture implements ConsoleSink, AutoCloseable {
             }
         }
         if (failure != null) {
+            writeFailed = true;
             throw failure;
         }
     }

@@ -41,12 +41,27 @@ public final class BazelBinary {
 
     private BazelBinary() {}
 
-    /** The executable to test with, or empty when this machine has none. */
+    /**
+     * The executable to test with, or empty when this machine has none.
+     *
+     * @throws IllegalStateException when {@link #OVERRIDE_ENV} is set to
+     *     something unusable. An explicit override that cannot be run is a
+     *     configuration error, not an absent Bazel: collapsing the two made a
+     *     typo in the variable skip the entire real-Bazel suite and leave
+     *     {@code ./gradlew check} green — hiding exactly the evidence every
+     *     Phase 2 exit criterion rests on.
+     */
     public static Optional<Path> find() {
         String override = System.getenv(OVERRIDE_ENV);
         if (override != null && !override.isBlank()) {
             Path path = Paths.get(override);
-            return Files.isExecutable(path) ? Optional.of(path) : Optional.empty();
+            if (!Files.isExecutable(path)) {
+                throw new IllegalStateException(OVERRIDE_ENV + " is set to '" + override
+                        + "', which is not an executable file. Fix it or unset it; it will not"
+                        + " fall back to PATH, because an explicit choice that cannot be honoured"
+                        + " must not look like no choice at all.");
+            }
+            return Optional.of(path);
         }
         Path devBazelisk = Paths.get(System.getProperty("user.home"), ".cache", "bbv-dev", "bin", "bazelisk");
         if (Files.isExecutable(devBazelisk)) {
@@ -60,6 +75,10 @@ public final class BazelBinary {
      * would make it run, not merely that it did not.
      */
     public static String whyUnavailable() {
+        String override = System.getenv(OVERRIDE_ENV);
+        if (override != null && !override.isBlank()) {
+            return "no Bazel found: " + OVERRIDE_ENV + " names '" + override + "'";
+        }
         return "no Bazel found: set " + OVERRIDE_ENV + " to an executable, put bazelisk at "
                 + "~/.cache/bbv-dev/bin/bazelisk, or put bazel or bazelisk on PATH";
     }

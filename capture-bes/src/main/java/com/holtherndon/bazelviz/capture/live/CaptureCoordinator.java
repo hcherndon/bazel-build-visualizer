@@ -334,7 +334,15 @@ public final class CaptureCoordinator implements AutoCloseable {
             // the database. Closing the database first would leave rows the
             // journal had already promised.
             summary = finishQuietly(pipeline, summary, warnings);
+            if (console != null) {
+                consoleWriteFailed = console.hasWriteFailure();
+            }
             closeQuietly(console, "console log", warnings);
+            if (console != null && console.hasWriteFailure()) {
+                consoleWriteFailed = true;
+                warnings.add("some of the build's console output could not be written to the"
+                        + " session's log files");
+            }
             closeJournalQuietly(journal, warnings);
             recordOutcome(events, outcome, summary, warnings);
             closeQuietly(events, "event writer", warnings);
@@ -627,6 +635,28 @@ public final class CaptureCoordinator implements AutoCloseable {
         session.finalizeSession(SessionState.INCOMPLETE);
     }
 
+    /** Whether the console logs are a complete record of what the build printed. */
+    private Completeness consoleCompleteness(ProcessOutcome outcome) {
+        if (consoleWriteFailed) {
+            // Bytes the build printed did not reach the log. Saying COMPLETE
+            // would claim a console record the session does not have.
+            return Completeness.CORRUPT_PARTIAL;
+        }
+        if (outcome == null) {
+            return Completeness.UNKNOWN;
+        }
+        // A force-killed client stops producing output at an arbitrary point,
+        // so what was captured is a prefix, not the whole of what the build
+        // would have printed.
+        return outcome.terminatedBy()
+                        .filter(com.holtherndon.bazelviz.runner.proc.CancellationMode.FORCE_KILL::equals)
+                        .isPresent()
+                ? Completeness.TRUNCATED
+                : Completeness.COMPLETE;
+    }
+
+    private boolean consoleWriteFailed;
+
     private void updateManifestCounts(
             ManagedSession session, CaptureSummary summary, ProcessOutcome outcome) throws IOException {
         session.updateManifest(builder -> {
@@ -666,15 +696,15 @@ public final class CaptureCoordinator implements AutoCloseable {
                     "STDOUT",
                     Optional.of(ManagedSessionLayout.STDOUT_LOG_FILE_NAME),
                     Optional.empty(),
-                    OptionalLong.empty(),
-                    outcome == null ? Completeness.UNKNOWN : Completeness.COMPLETE,
+                    sizeOf(layoutOf(session).stdoutLog()),
+                    consoleCompleteness(outcome),
                     Optional.empty()));
             builder.addSource(SessionManifest.CaptureSourceEntry.of(
                     "STDERR",
                     Optional.of(ManagedSessionLayout.STDERR_LOG_FILE_NAME),
                     Optional.empty(),
-                    OptionalLong.empty(),
-                    outcome == null ? Completeness.UNKNOWN : Completeness.COMPLETE,
+                    sizeOf(layoutOf(session).stderrLog()),
+                    consoleCompleteness(outcome),
                     Optional.empty()));
             return builder;
         });
@@ -699,8 +729,44 @@ public final class CaptureCoordinator implements AutoCloseable {
                 // is honest before anyone reads the session (plan 22.2).
                 .containsAbsolutePaths(Optional.of(true))
                 .containsEnvironmentValues(
-                        Optional.of(!request.environmentOverrides().isEmpty())));
+                        Optional.of(!request.environmentOverrides().isEmpty()))
+                .warnings(sensitivityWarnings(plan)));
     }
+
+    private static ManagedSessionLayout layoutOf(ManagedSession session) {
+        return session.layout();
+    }
+
+    /**
+     * Warnings about what the recorded command line may contain.
+     *
+     * <p>The manifest stores the effective command verbatim, which is what
+     * makes a session reproducible and is also how a credential passed on a
+     * command line ends up on disk. {@code containsEnvironmentValues} does not
+     * cover it — that field is about the environment — so the fact is said
+     * plainly here, before anyone shares the session (plan 22.2).
+     *
+     * <p>A name-shaped heuristic, deliberately: the full redaction machinery is
+     * a later phase, and a warning that occasionally fires without cause is a
+     * far better failure than silence about a leaked token.
+     */
+    private static List<String> sensitivityWarnings(InstrumentationPlan plan) {
+        List<String> warnings = new ArrayList<>();
+        for (String argument : plan.effective().toArgv()) {
+            String lower = argument.toLowerCase(java.util.Locale.ROOT);
+            if (SECRET_NAME_HINTS.stream().anyMatch(lower::contains)) {
+                warnings.add("this session records a command line containing an argument whose"
+                        + " name suggests a credential; review it before sharing the session");
+                break;
+            }
+        }
+        return warnings;
+    }
+
+    /** Default secret-name patterns (plan 22.2), to be user-editable in a later phase. */
+    private static final List<String> SECRET_NAME_HINTS =
+            List.of("token", "password", "passwd", "secret", "credential", "api_key", "apikey",
+                    "auth", "_key=");
 
     /** The file's size, or unknown when it cannot be read. Never zero as a guess. */
     private static OptionalLong sizeOf(Path file) {

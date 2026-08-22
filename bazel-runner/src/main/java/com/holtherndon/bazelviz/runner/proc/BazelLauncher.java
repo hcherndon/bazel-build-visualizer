@@ -264,7 +264,11 @@ public final class BazelLauncher {
         private void apply(CancellationMode mode) {
             switch (mode) {
                 case CANCEL -> sendInterrupt();
-                case TERMINATE -> process.destroy();
+                case TERMINATE -> {
+                    if (process.isAlive()) {
+                        process.destroy();
+                    }
+                }
                 case FORCE_KILL -> {
                     // The descendant sweep is kept for launchers that do have
                     // children — a corporate wrapper script, or shell mode. It
@@ -289,6 +293,14 @@ public final class BazelLauncher {
          * cancel button that does nothing.
          */
         private void sendInterrupt() {
+            if (!process.isAlive()) {
+                // The client exits within about 25 ms of the first signal, so
+                // by the time an escalation rung fires it is usually already
+                // gone. Signalling a bare pid then is at best a no-op and at
+                // worst reaches whatever the operating system has since given
+                // that number to.
+                return;
+            }
             try {
                 Process kill = new ProcessBuilder("/bin/kill", "-INT", Long.toString(process.pid()))
                         .redirectErrorStream(true)

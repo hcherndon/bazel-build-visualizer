@@ -12,7 +12,7 @@ renumbered or re-scoped here.
 |---|---|---|
 | 0 | Repository and architectural spikes | **Complete** — all exit criteria met (see below) |
 | 1 | Session, journal, and offline BEP import | **Complete** — all five exit criteria verified end to end (see below) |
-| 2 | Bazel launcher and embedded BES | **Complete** — all six exit criteria verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0 (see below) |
+| 2 | Bazel launcher and embedded BES | **Complete** — all six exit criteria verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0, audited, and remediated (see below) |
 | 3 | Core target, action, test, and artifact normalization | Not started |
 | 4 | Execution-log and profile enrichment | Not started |
 | 5 | `aquery`, `cquery`, and graph construction | Not started |
@@ -272,3 +272,65 @@ close the throughput gap, and is not tried: an acknowledgement with a wrong
 sequence number kills the user's Bazel server on 6.5.0 and 9.2.0, and no
 experiment has established that Bazel accepts one acknowledgement covering a
 run of sequences.
+
+## Phase 2 audit
+
+Eight lenses over the Phase 2 surface, three independent refuters per finding,
+and a completeness critic whose job was to audit what no lens owned. 193
+agents, 61 candidates, 32 confirmed. `docs/phase2-audit.md` is the full report,
+including the refuted candidates and the dissents that changed a fix's
+location rather than its verdict.
+
+**Four defects made the tool say untrue things.**
+
+A capture that received nothing reported itself complete. Every clause of
+`isComplete()` is vacuously true at zero, so a build that died during option
+parsing — or one whose events went to somebody else's backend — produced a
+session claiming a COMPLETE capture source with no events in it, finalized
+READY, exit 0. A CI job would have archived it as good.
+
+Ctrl-C before the process existed was acknowledged and then discarded. The
+whole of preflight ran with nothing to signal, so the tool printed "asking
+Bazel to stop" and then launched the build the user had just cancelled.
+Measured: SIGINT at t=3s produced a completed build reporting success.
+
+The keep-your-own-backend resolution wrote a BEP file that nothing read. The
+dialog promises "This application reads a local copy instead"; Bazel wrote
+32,933 bytes into the session and the session reported zero events.
+
+A `--bes_backend` set in a `.bazelrc` was invisible, so plan 8.5's mandatory
+conflict never fired and the team's backend silently missed the invocation.
+
+**Two could leave a session unfinalized with its lock on disk**: `force()`
+throws on a failed journal and that unchecked exception escaped the cleanup
+block, and `finish()` blocked forever handing a sentinel to a journal thread
+that had already died.
+
+**One test asserted the behaviour of the bug it was meant to catch** — the
+second time in this project. The out-of-order bound counted pipeline depth
+rather than disorder, and the unit test pinned the wrong quantity; with one
+message in flight the two are indistinguishable, so it took a 200,000-event
+burst to expose it.
+
+**The completeness critic again found what no lens looked at**, including a
+claim in `docs/performance.md` that this phase had written: an "accepted"
+throughput column that divided the server's event count by the client's send
+duration and reported 869k–1.3M events/sec for a path that cannot have
+accepted more than its flow-control window. It read as though the transport
+were fast and this application's storage slow. Both halves were false, and the
+column is gone.
+
+Also fixed: the parser could swallow the Bazel command as an unknown startup
+option's value (found by the audit, and hit immediately when the fixture
+started passing `--nohome_rc`); `BazelBinary` silently skipped the entire
+real-Bazel suite when its override was mistyped, hiding the evidence every
+exit criterion rests on; the fixture's empty `.bazelrc` did not make a run
+hermetic and its comment claimed it did; exit 38 was reported as a failed
+build on both surfaces; and the instrumentation dialog said which flags could
+be turned off while offering no way to turn one off.
+
+**Deliberately not fixed, and recorded instead** in `docs/phase2-contracts.md`
+§10: rc detection covers the `common` and `build` sections and not
+command-specific ones; `--json` omits the plan's warnings; the veto is in the
+dialog and not in the CLI; and objective 1 is missed for reasons outside this
+application's code.

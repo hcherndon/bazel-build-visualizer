@@ -13,6 +13,7 @@ import com.holtherndon.bazelviz.capture.live.CaptureSummary;
 import com.holtherndon.bazelviz.capture.live.Preflight;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
+import com.holtherndon.bazelviz.runner.proc.CancellationMode;
 import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
 import com.holtherndon.bazelviz.ui.capture.CapturePanel;
 import com.holtherndon.bazelviz.ui.capture.CaptureStatusModel;
@@ -193,12 +194,28 @@ public final class MainWindow extends JFrame {
     @Override
     public void dispose() {
         eventsView.closeSession();
-        // Abandons a plan that was never launched, which releases its BES port.
-        // A running build is deliberately not killed here: closing a window is
-        // not a request to destroy a capture in progress.
-        launchController.discardPlan();
+        // Only a plan that was never launched is discarded here, and only
+        // because that releases its BES port. Discarding unconditionally meant
+        // closing the window during a build called BesServer.close() on the
+        // EDT, which waits out its ten-second graceful-shutdown budget with the
+        // stream still open -- a frozen, unrepainted window -- and then killed
+        // the live stream. The shutdownNow() below then interrupted the capture
+        // thread mid-finalization, which is what discards journal frames that
+        // were already acknowledged to Bazel.
+        if (!launchController.isBusy()) {
+            launchController.discardPlan();
+        } else {
+            // A capture is running. Ask it to stop and let it finalize on its
+            // own thread; do not wait for it here, because here is the EDT.
+            log.info("window closed during a capture; asking the build to stop");
+            launchController.cancel(CancellationMode.CANCEL);
+        }
         worker.shutdownNow();
-        captureWorker.shutdownNow();
+        // Deliberately not shutdownNow(): interrupting the capture thread is
+        // what loses the staged journal buffer. The thread is a daemon, so it
+        // does not hold the JVM open, and shutdown() lets an in-flight
+        // finalization finish.
+        captureWorker.shutdown();
         super.dispose();
     }
 
@@ -545,6 +562,12 @@ public final class MainWindow extends JFrame {
                     // the dialog reopens showing what the answer actually
                     // changed instead of asserting that it worked.
                     launchController.resolve(kind, dialog.resolutionId().orElseThrow());
+                }
+                case VETO -> {
+                    // Re-planned, not patched: the dialog reopens showing what
+                    // the veto actually changed rather than asserting it worked.
+                    launchController.replan(request ->
+                            request.vetoing(dialog.vetoedCapability().orElseThrow()));
                 }
                 case CANCEL -> {
                     launchController.discardPlan();

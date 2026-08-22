@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.capture;
 
 import com.holtherndon.bazelviz.capture.live.Preflight;
+import com.holtherndon.bazelviz.runner.caps.Capability;
 import com.holtherndon.bazelviz.runner.plan.AddedFlag;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
@@ -44,12 +45,15 @@ public final class InstrumentationPlanDialog extends JDialog {
         LAUNCH,
         CANCEL,
         /** A conflict resolution was picked; the caller re-plans and reopens. */
-        RESOLVE
+        RESOLVE,
+        /** A flag was turned off; the caller re-plans and reopens. */
+        VETO
     }
 
     private Choice choice = Choice.CANCEL;
     private String resolutionId;
     private PlanConflict.Kind resolvedKind;
+    private Capability vetoedCapability;
 
     public InstrumentationPlanDialog(java.awt.Window owner, Preflight preflight) {
         super(owner, "Instrumentation plan", ModalityType.APPLICATION_MODAL);
@@ -147,15 +151,57 @@ public final class InstrumentationPlanDialog extends JDialog {
         return Optional.ofNullable(resolvedKind);
     }
 
+    /** The capability the user turned off, when {@link #choice()} is {@link Choice#VETO}. */
+    public Optional<Capability> vetoedCapability() {
+        return Optional.ofNullable(vetoedCapability);
+    }
+
     // ------------------------------------------------------------------ parts
 
     private JComponent addedFlagRow(AddedFlag flag) {
+        JComponent description = addedFlagDescription(flag);
+        if (!flag.userCanDisable() || !flag.isApplied()) {
+            return description;
+        }
+        // ADR-007: "any flag can be vetoed". The dialog said which flags could
+        // be turned off and offered no way to turn one off, which is a promise
+        // rendered as text. Unticking re-plans and reopens, so the effective
+        // command the user finally approves is the one that runs.
+        javax.swing.JCheckBox enabled = new javax.swing.JCheckBox(flag.argv(), true);
+        enabled.setAlignmentX(Component.LEFT_ALIGNMENT);
+        enabled.setToolTipText("Untick to leave this flag out. "
+                + describeLoss(flag));
+        enabled.addActionListener(event -> {
+            if (!enabled.isSelected()) {
+                choice = Choice.VETO;
+                vetoedCapability = flag.capability();
+                dispose();
+            }
+        });
+
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.Y_AXIS));
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.add(enabled);
+        row.add(description);
+        return row;
+    }
+
+    private static String describeLoss(AddedFlag flag) {
+        return "Without it, " + flag.enables().name().toLowerCase(java.util.Locale.ROOT)
+                + " data this flag provides will not be in the session.";
+    }
+
+    private JComponent addedFlagDescription(AddedFlag flag) {
         StringBuilder text = new StringBuilder();
-        text.append(flag.isApplied() ? "+ " : "· ").append(flag.argv());
-        text.append("      ").append(flag.overhead().displayName()).append(" overhead");
+        if (!flag.userCanDisable() || !flag.isApplied()) {
+            text.append(flag.isApplied() ? "+ " : "· ").append(flag.argv()).append("      ");
+        }
+        text.append(flag.overhead().displayName()).append(" overhead");
         if (!flag.isApplied()) {
             text.append("   — not applied: ").append(explain(flag));
         }
+        text.append("      enables: ").append(flag.enables());
         text.append('\n').append(flag.reason());
         flag.writesFile().ifPresent(file -> {
             text.append("\nWrites ").append(file);

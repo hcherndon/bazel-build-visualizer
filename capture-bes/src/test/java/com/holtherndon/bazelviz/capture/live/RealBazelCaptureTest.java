@@ -51,7 +51,7 @@ class RealBazelCaptureTest {
                         "test",
                         bazel.orElseThrow().toString(),
                         workspace.root(),
-                        List.of("build", "//..."))
+                        hermetic("build", "//..."))
                 .withPreset(CapturePreset.LIVE_ESSENTIALS);
 
         CaptureResult result;
@@ -129,7 +129,7 @@ class RealBazelCaptureTest {
                         "test",
                         bazel.orElseThrow().toString(),
                         workspace.root(),
-                        List.of("build", "//..."))
+                        hermetic("build", "//..."))
                 .withPreset(CapturePreset.LIVE_ESSENTIALS);
 
         CaptureResult result;
@@ -200,7 +200,7 @@ class RealBazelCaptureTest {
         try (CaptureCoordinator coordinator = coordinatorFor(
                 CaptureRequest.of(
                                 sessionsRoot, "test", bazel.orElseThrow().toString(),
-                                workspace.root(), List.of("build", "//..."))
+                                workspace.root(), hermetic("build", "//..."))
                         .withPreset(CapturePreset.LIVE_ESSENTIALS),
                 sessionsRoot)) {
             coordinator.preflight();
@@ -229,7 +229,7 @@ class RealBazelCaptureTest {
 
         CaptureRequest request = CaptureRequest.of(
                 sessionsRoot, "test", bazel.orElseThrow().toString(), workspace.root(),
-                List.of("build", "--bes_backend=grpc://corp.example:443", "//..."));
+                hermetic("build", "--bes_backend=grpc://corp.example:443", "//..."));
 
         try (CaptureCoordinator coordinator = coordinatorFor(request, sessionsRoot)) {
             Preflight preflight = coordinator.preflight();
@@ -249,6 +249,67 @@ class RealBazelCaptureTest {
             assertThat(Files.exists(sessionsRoot) && Files.list(sessionsRoot).findAny().isPresent())
                     .isFalse();
         }
+    }
+
+    @Test
+    @DisplayName("a stop asked for before the launch is honoured, not discarded")
+    void cancelBeforeLaunchDoesNotStartTheBuild(@TempDir Path directory) throws Exception {
+        Optional<Path> bazel = BazelBinary.find();
+        assumeTrue(bazel.isPresent(), BazelBinary::whyUnavailable);
+
+        // A build long enough that, if it started, it would still be running
+        // when this test asserted otherwise.
+        BazelWorkspaceFixture workspace =
+                BazelWorkspaceFixture.slow(directory.resolve("ws"), 6, 5);
+        Path sessionsRoot = directory.resolve("sessions");
+
+        CaptureResult result;
+        try (CaptureCoordinator coordinator = coordinatorFor(
+                CaptureRequest.of(
+                                sessionsRoot, "test", bazel.orElseThrow().toString(),
+                                workspace.root(), hermetic("build", "//..."))
+                        .withPreset(CapturePreset.LIVE_ESSENTIALS),
+                sessionsRoot)) {
+            coordinator.preflight();
+
+            // The window this covers is the whole of preflight and the session
+            // setup that follows it. A cancel here used to read a null process
+            // handle and return silently, and the build the user had just
+            // cancelled was launched anyway.
+            coordinator.cancel(CancellationMode.CANCEL);
+            assertThat(coordinator.isCancelRequested()).isTrue();
+
+            long startedAt = System.nanoTime();
+            result = coordinator.run();
+            java.time.Duration elapsed = java.time.Duration.ofNanos(System.nanoTime() - startedAt);
+
+            // The fixture build takes about thirty seconds. Returning in a
+            // fraction of that is the evidence that it never ran.
+            assertThat(elapsed).isLessThan(java.time.Duration.ofSeconds(20));
+        }
+
+        assertThat(result.wasCancelled()).isTrue();
+        assertThat(result.state()).isEqualTo(SessionState.CANCELLED);
+        assertThat(result.warnings())
+                .anyMatch(warning -> warning.contains("cancelled before Bazel was started"));
+        // The session still exists and still opens: a cancelled capture is a
+        // capture, even one that captured nothing.
+        assertThat(Files.isDirectory(result.sessionRoot())).isTrue();
+    }
+
+    /**
+     * The command with the startup options that keep a developer's
+     * {@code ~/.bazelrc} out of the result.
+     *
+     * <p>Without them a home rc setting {@code --bes_backend}, a remote cache
+     * or a {@code --config} turns these assertions into a measurement of
+     * somebody's laptop. An empty workspace rc does not suppress it.
+     */
+    private static List<String> hermetic(String... command) {
+        List<String> argv =
+                new java.util.ArrayList<>(BazelWorkspaceFixture.hermeticStartupOptions());
+        argv.addAll(List.of(command));
+        return List.copyOf(argv);
     }
 
     private static CaptureCoordinator coordinatorFor(CaptureRequest request, Path sessionsRoot) {

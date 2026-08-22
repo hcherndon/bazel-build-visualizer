@@ -120,6 +120,38 @@ class CommandLineParserTest {
     }
 
     @Test
+    @DisplayName("an unknown startup option does not swallow the Bazel command")
+    void unknownStartupOptionsDoNotEatTheCommand() {
+        // --nohome_rc and --nosystem_rc are startup options and are filtered out
+        // of the capability table, which lists only flags a command accepts. The
+        // parser therefore knows nothing about them, and guessing that they take
+        // a value ate the command: 'build' became a flag argument, '//...' became
+        // the command, and the plan refused a valid build with a false reason.
+        BazelCommand command = new CommandLineParser().parse(BAZEL, CWD, List.of(
+                "--nohome_rc", "--nosystem_rc", "build", "//..."));
+
+        assertThat(command.startupArgs()).containsExactly("--nohome_rc", "--nosystem_rc");
+        assertThat(command.command()).isEqualTo("build");
+        assertThat(command.targets()).containsExactly("//...");
+    }
+
+    @Test
+    @DisplayName("a startup option whose value is known to be required still binds it")
+    void knownStartupValuesAreStillBound() {
+        BazelCapabilities capabilities = capabilitiesWith(new FlagSpec(
+                "output_base", Set.of("startup"), false, false, Optional.of(true),
+                Optional.empty(), List.of()));
+
+        BazelCommand command = new CommandLineParser(Optional.of(capabilities)).parse(
+                BAZEL, CWD, List.of("--output_base", "/tmp/ob", "build", "//..."));
+
+        // The capability table drops startup-only flags, so this is the
+        // behaviour when something else supplies the knowledge.
+        assertThat(command.startupArgs()).containsExactly("--output_base", "/tmp/ob");
+        assertThat(command.command()).isEqualTo("build");
+    }
+
+    @Test
     @DisplayName("a flag name is read without dashes or negation, and its attached value separately")
     void flagNamesAndValues() {
         assertThat(CommandLineParser.flagName("--bes_backend=grpc://x")).contains("bes_backend");

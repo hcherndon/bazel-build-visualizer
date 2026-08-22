@@ -71,6 +71,7 @@ public final class BesThroughputSpike {
             return;
         }
 
+        boolean passed = false;
         Path root = Files.createTempDirectory("bbv-bes-throughput");
         Path raw = Files.createDirectories(root.resolve("raw"));
         Path checkpoints = Files.createDirectories(root.resolve("checkpoints"));
@@ -102,13 +103,18 @@ public final class BesThroughputSpike {
                     BesEndpoint endpoint = server.start();
                     Result result = drive(endpoint, events, payloadBytes);
                     CaptureSummary summary = pipeline.finish();
-                    report(result, summary, events);
+                    passed = report(result, summary, events);
                 } finally {
                     pipeline.close();
                 }
             }
         } finally {
             deleteTree(root);
+        }
+        // The shared spike contract (README): a budget breach is a nonzero exit,
+        // so a regression fails a script rather than scrolling past in a log.
+        if (!passed) {
+            System.exit(1);
         }
     }
 
@@ -230,28 +236,46 @@ public final class BesThroughputSpike {
                 .build();
     }
 
-    private static void report(Result result, CaptureSummary summary, int expected) {
-        double sendSeconds = result.sendNanos() / 1e9;
+    /** Objective 1 in docs/performance.md, in events per second. */
+    private static final double OBJECTIVE_EVENTS_PER_SECOND = 100_000;
+
+    private static boolean report(Result result, CaptureSummary summary, int expected) {
         double ackSeconds = result.ackNanos() / 1e9;
-        System.out.printf("accepted:      %,d events in %.2fs  =  %,.0f events/sec%n",
-                summary.received(), sendSeconds, summary.received() / sendSeconds);
+        double rate = result.acknowledged() / ackSeconds;
+
+        // One throughput number, and it is the end-to-end one. There used to be
+        // an "accepted" figure here dividing the server's received count by the
+        // client's send duration -- two different intervals -- which reported
+        // 869k-1.3M events/sec for a path that cannot have accepted more than
+        // the flow-control window plus the receive queue by the time the client
+        // stopped sending. It read as though the transport were fast and our
+        // storage slow, and both halves of that were false.
+        System.out.printf("client sent:   %,d events in %.2fs (enqueue only, not a capture rate)%n",
+                expected, result.sendNanos() / 1e9);
         System.out.printf("acknowledged:  %,d events in %.2fs  =  %,.0f events/sec%n",
-                result.acknowledged(), ackSeconds, result.acknowledged() / ackSeconds);
+                result.acknowledged(), ackSeconds, rate);
         System.out.printf("journaled:     %,d frames, %,d bytes%n",
                 summary.journaled(), summary.bytesJournaled());
         System.out.printf("indexed:       %,d rows (+%,d stream-control)%n",
                 summary.normalized(), summary.nonEventEnvelopes());
         System.out.printf("complete:      %s   lagged: %s%n",
                 summary.isComplete(), summary.lagged());
-        if (summary.received() != expected) {
-            System.out.printf("MISMATCH:      expected %,d, received %,d%n", expected, summary.received());
-        }
         for (String problem : summary.discrepancies()) {
             System.out.println("  ! " + problem);
         }
+
+        boolean lossFree = summary.isComplete() && summary.received() == expected;
+        if (summary.received() != expected) {
+            System.out.printf("MISMATCH:      expected %,d, received %,d%n", expected, summary.received());
+        }
+        boolean pass = lossFree && rate >= OBJECTIVE_EVENTS_PER_SECOND;
         System.out.println();
-        System.out.println("objective 1 is 100,000 events/sec on the capture path"
-                + " (docs/performance.md)");
+        System.out.printf("%s: objective 1 is %,.0f events/sec without loss; measured %,.0f%s%n",
+                pass ? "PASS" : "FAIL",
+                OBJECTIVE_EVENTS_PER_SECOND,
+                rate,
+                lossFree ? "" : " WITH LOSS");
+        return pass;
     }
 
     /**

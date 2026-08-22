@@ -62,6 +62,9 @@ final class RunCommand {
     private static final Set<String> OPTIONS =
             Set.of("sessions-root", "bazel", "cwd", "preset");
 
+    /** How many further events between progress lines on stderr. */
+    private static final long REPORT_EVERY = 5_000;
+
     private RunCommand() {}
 
     static ExitCode run(List<String> tokens, CliContext ctx) throws CliUsageException {
@@ -355,12 +358,18 @@ final class RunCommand {
 
     private static com.holtherndon.bazelviz.capture.live.CaptureProgressListener progressTo(
             PrintStream err) {
+        // Reports every REPORT_EVERY events, tracked rather than tested for an
+        // exact multiple: progress is already throttled to four times a second,
+        // so the count jumps in irregular steps and "== 0 mod 5000" almost
+        // never matched. The line effectively never appeared.
+        long[] lastReported = {0};
         return progress -> {
-            // Deliberately terse and on one carriage-returned line: this shares
-            // stderr with Bazel's own progress display, and two competing
-            // multi-line reports would be unreadable.
-            if (progress.received() > 0 && progress.received() % 5_000 == 0) {
-                err.printf("[bbv] %d events captured, %d indexed%n",
+            // Deliberately terse and on one line: this shares stderr with
+            // Bazel's own progress display, and two competing multi-line
+            // reports would be unreadable.
+            if (progress.received() - lastReported[0] >= REPORT_EVERY) {
+                lastReported[0] = progress.received();
+                err.printf("[bbv] %,d events captured, %,d indexed%n",
                         progress.received(), progress.normalized());
                 err.flush();
             }
@@ -438,7 +447,12 @@ final class RunCommand {
         out.println();
         out.println("The exit code describes the capture, not the build: a failing build whose");
         out.println("events were all captured exits 0, and the build's own result is in the");
-        out.println("summary. Exit 1 means the capture is incomplete, 4 that it was cancelled.");
+        out.println("summary. Exit 1 means the capture is incomplete.");
+        out.println();
+        out.println("Ctrl-C exits 130, the shell's convention for SIGINT, not 4: the JVM is");
+        out.println("already shutting down by the time this command could return a code of its");
+        out.println("own. The session is still finalized as cancelled and the summary is still");
+        out.println("printed.");
         out.flush();
     }
 }

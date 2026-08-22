@@ -76,7 +76,7 @@ public final class CommandLineParser {
             }
             startupArgs.add(token);
             index++;
-            if (takesSeparateValue(token, "startup", args, index)) {
+            if (takesSeparateValue(token, "startup", args, index, true)) {
                 startupArgs.add(args.get(index));
                 index++;
             }
@@ -113,7 +113,7 @@ public final class CommandLineParser {
             }
             if (isFlag(token)) {
                 commandArgs.add(token);
-                if (takesSeparateValue(token, command, args, index)) {
+                if (takesSeparateValue(token, command, args, index, false)) {
                     commandArgs.add(args.get(index));
                     index++;
                 }
@@ -198,7 +198,16 @@ public final class CommandLineParser {
         return equals < 0 ? Optional.empty() : Optional.of(token.substring(equals + 1));
     }
 
-    private boolean takesSeparateValue(String token, String command, List<String> args, int nextIndex) {
+    /**
+     * @param beforeCommand true while scanning startup options, where the next
+     *     non-flag token is the Bazel command itself. Guessing wrong there does
+     *     not merely mis-attribute an argument: it eats the command, and the
+     *     plan then refuses a perfectly good build with a reason that is not
+     *     true. So an unknown flag never binds a value in that position — the
+     *     cost of being wrong is asymmetric.
+     */
+    private boolean takesSeparateValue(
+            String token, String command, List<String> args, int nextIndex, boolean beforeCommand) {
         if (attachedValue(token).isPresent() || nextIndex >= args.size()) {
             return false;
         }
@@ -220,6 +229,11 @@ public final class CommandLineParser {
                 .flatMap(FlagSpec::requiresValue);
         if (requiresValue.isPresent()) {
             return requiresValue.get() && !looksLikeTarget(next);
+        }
+        if (beforeCommand) {
+            // Nothing is known about this flag and the next token is where the
+            // command lives. Leave it alone.
+            return false;
         }
         // Unknown. Take the conservative reading: a token that looks like a
         // target or another flag is not swallowed as a value, because turning a

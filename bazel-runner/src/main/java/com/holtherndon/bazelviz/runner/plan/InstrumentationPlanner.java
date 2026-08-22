@@ -497,6 +497,9 @@ public final class InstrumentationPlanner {
                 Optional.of(offending));
     }
 
+    /** Everything Bazel reads as false for a boolean option. */
+    private static final Set<String> FALSE_SPELLINGS = Set.of("false", "no", "0");
+
     /** Resolution ids for a user who is already writing a build event file. */
     public static final String RESOLUTION_REDIRECT_BEP_FILE = "redirect-bep-file";
     public static final String RESOLUTION_READ_USER_BEP_FILE = "read-user-bep-file";
@@ -575,6 +578,14 @@ public final class InstrumentationPlanner {
             // report UNKNOWN and are not injected.
             return true;
         }
+        if (capabilities.detection() == BazelCapabilities.DetectionMethod.HELP_TEXT) {
+            // The text fallback scrapes a fixed handful of commands, so a
+            // command it did not scrape has an empty command set — which is
+            // absence of evidence, not evidence of absence. Refusing on that
+            // basis told a user that `bazel run` does not publish events, which
+            // is false, and blocked a build that would have worked.
+            return true;
+        }
         return capabilities.flag("bes_backend").map(spec -> spec.appliesTo(command)).orElse(false);
     }
 
@@ -638,10 +649,23 @@ public final class InstrumentationPlanner {
             return byName.containsKey(flagName) || byName.containsKey("no" + flagName);
         }
 
+        /**
+         * Whether this option is set to false, in any spelling Bazel accepts.
+         *
+         * <p>Bazel reads {@code false}, {@code no} and {@code 0} as false and
+         * {@code true}, {@code yes} and {@code 1} as true, case-insensitively,
+         * as well as the {@code --noflag} prefix form. Recognising only two of
+         * them meant {@code --build_event_publish_all_actions=no} looked like a
+         * flag the user had not set, and the planner injected the positive form
+         * over it without raising the conflict that exists to prevent exactly
+         * that.
+         */
         boolean hasNegated(String flagName) {
-            return byName.containsKey("no" + flagName)
-                    || "false".equals(valueOf(flagName))
-                    || "0".equals(valueOf(flagName));
+            if (byName.containsKey("no" + flagName)) {
+                return true;
+            }
+            String value = valueOf(flagName);
+            return value != null && FALSE_SPELLINGS.contains(value.toLowerCase(java.util.Locale.ROOT));
         }
 
         String raw(String flagName) {

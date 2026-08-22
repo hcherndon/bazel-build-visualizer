@@ -259,7 +259,11 @@ public final class BazelCapabilityDetector {
         List<String> warnings = new ArrayList<>();
         Map<String, Set<String>> commandsByFlag = new HashMap<>();
 
-        for (String command : List.of("build", "test", "aquery", "cquery")) {
+        // The commands a user is likely to launch, plus the two the auxiliary
+        // queries use. A command missing from this list gets an empty command
+        // set, which the planner must not read as "this command publishes no
+        // events" — see isInstrumentable.
+        for (String command : List.of("build", "test", "run", "coverage", "aquery", "cquery")) {
             List<String> argv = new ArrayList<>();
             argv.add(executable.resolved().toString());
             argv.add("--ignore_all_rc_files");

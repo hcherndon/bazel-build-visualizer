@@ -243,3 +243,32 @@ Stated so that a reviewer does not read absence as oversight:
   provenance. Targets, actions and tests are Phase 3.
 - No BES forwarding relay, in v1 at all (plan 8.5).
 - No non-loopback binding, and no developer-only switch for it yet.
+
+### Known limits, found by the Phase 2 audit
+
+Each of these is a place where the implementation is honest about doing less
+than the ideal, rather than a gap nobody noticed. `docs/phase2-audit.md` is the
+full record.
+
+- **rc-file detection covers `common` and `build`, not every section.** The
+  planner reads Bazel's own `--announce_rc` output, which reports the sections
+  `canonicalize-flags` inherits. An option set only under a command-specific
+  section — a `test`-only `--bes_backend` — is not visible, and the plan says
+  so rather than claiming to have checked. Closing it needs either a full rc
+  parser or an announcement obtained for the user's actual command.
+- **`--json` reports the plan's flags but not its warnings.** A scripted
+  consumer sees `injectedFlags` and the capture counters; the unapplied flags
+  and the plan's notes are on stderr for a human. A machine-readable plan
+  belongs with the Phase 7 planner UI.
+- **The veto is in the dialog, not in the CLI.** Unticking a flag re-plans and
+  reopens; `bbv run` has no equivalent switch, so a headless caller takes the
+  preset as it is.
+- **Objective 1 is not met**: 84,000–88,000 events/sec against 100,000, and the
+  gap is gRPC's per-event acknowledgement round trip rather than this
+  application's code. Coalescing acknowledgements would close it and is not
+  attempted, because an acknowledgement with a wrong sequence number kills the
+  user's Bazel server on 6.5 and 9.2 and no experiment has established that
+  Bazel accepts a coalesced one. See `docs/performance.md`.
+- **Everything was measured on macOS arm64.** Linux and Windows behaviour —
+  particularly signal handling and the `flags-as-proto` line format — is
+  unverified.

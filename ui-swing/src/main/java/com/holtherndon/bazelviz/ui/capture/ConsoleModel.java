@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.capture;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
@@ -144,6 +145,48 @@ public final class ConsoleModel {
     /** The retained lines, oldest first. */
     public List<String> lines() {
         return List.copyOf(lines);
+    }
+
+    /**
+     * Lines committed since the caller last asked, and how many were dropped
+     * from the front in the meantime.
+     *
+     * <p>Exists so a view can append rather than re-render. Rebuilding the whole
+     * document on every progress repaint is quadratic in the log's length, and
+     * Bazel repaints several times a second.
+     *
+     * @param alreadySeen how many lines the caller has already rendered,
+     *     counted in the same total this returns
+     */
+    public Delta since(long alreadySeen) {
+        long available = droppedLines + lines.size();
+        if (alreadySeen < droppedLines) {
+            // The cap discarded lines the caller had not rendered yet, so the
+            // document it holds no longer corresponds to anything. It has to
+            // start again, and is told so rather than silently losing the
+            // middle of the log.
+            return new Delta(List.copyOf(lines), droppedLines, available, true);
+        }
+        int skip = (int) (alreadySeen - droppedLines);
+        List<String> fresh = skip >= lines.size()
+                ? List.of()
+                : List.copyOf(new ArrayList<>(lines).subList(skip, lines.size()));
+        return new Delta(fresh, droppedLines, available, false);
+    }
+
+    /**
+     * What changed since a caller last rendered.
+     *
+     * @param lines the lines to append, in order
+     * @param dropped how many lines the retention cap has discarded in total
+     * @param total how many lines have existed in total, dropped ones included
+     * @param resetRequired true when the caller's rendered text is no longer a
+     *     prefix of the model and must be rebuilt
+     */
+    public record Delta(List<String> lines, long dropped, long total, boolean resetRequired) {
+        public Delta {
+            lines = List.copyOf(lines);
+        }
     }
 
     /** The line still being built, which has not ended in a newline yet. */

@@ -29,8 +29,20 @@ Three rules the code enforces rather than documents:
   unprobed Bazel gets nothing and is told apart from an incapable one.
 - Replacing a user's option requires the id of the resolution they chose.
   `ReplacedFlag` cannot be constructed without it.
+- A flag the plan marks disableable can be unticked in the dialog. That
+  re-plans and reopens, so what the user finally approves is what runs; the
+  approved `PlanRequest` is carried through to launch rather than rebuilt,
+  which is what stops a veto being silently dropped between the two.
 
 The catalog currently covers the Phase 2 flags: the local BES backend, the
 upload timeout, complete action publication, and the binary-BEP fallback for a
 BES conflict. Phases 4 and 5 add entries for the profile, the execution log
 and the auxiliary queries; the mechanism does not change.
+
+The planner sees more than the argv. Options also come from `.bazelrc` files,
+and one setting `--bes_backend` used to be invisible — so the mandatory
+conflict never fired and the team's backend silently missed the invocation.
+Bazel's own `--announce_rc` output is now read and fed into the same conflict
+checks. It covers the `common` and `build` sections; a command-specific
+section is not visible, and the plan says which part was inspected rather than
+claiming to have checked everything.

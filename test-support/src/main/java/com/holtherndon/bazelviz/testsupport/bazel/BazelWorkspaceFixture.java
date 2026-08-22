@@ -39,6 +39,23 @@ public final class BazelWorkspaceFixture {
         this.root = root;
     }
 
+    /**
+     * The startup options a test needs so that its result is about the code and
+     * not about the developer's machine.
+     *
+     * <p>{@code ~/.bazelrc} and {@code /etc/bazel.bazelrc} apply to every
+     * invocation, and either can set {@code --bes_backend}, a remote cache or a
+     * {@code --config} that changes what the build does. Writing an empty
+     * workspace rc does not suppress them — only these do. Demonstrated: with a
+     * home rc containing one unrecognized flag, a fixture build fails with
+     * "Unrecognized option" before it starts.
+     *
+     * <p>These are startup options, so they go before the Bazel command.
+     */
+    public static List<String> hermeticStartupOptions() {
+        return List.of("--nohome_rc", "--nosystem_rc");
+    }
+
     /** The workspace root, which is also the working directory to launch from. */
     public Path root() {
         return root;
@@ -107,6 +124,10 @@ public final class BazelWorkspaceFixture {
         // Keeps a test run from inheriting the developer's ~/.bazelrc, which can
         // set --bes_backend, --config or a remote cache and turn a hermetic test
         // into a measurement of someone's laptop.
+        // Empty, so the workspace itself contributes no options. It does NOT
+        // make a run hermetic: a workspace rc does not suppress the user's
+        // ~/.bazelrc or the system one, and the comment here used to claim it
+        // did. Use hermeticStartupOptions() for that.
         write(directory.resolve(".bazelrc"), "");
         return new BazelWorkspaceFixture(directory);
     }

@@ -37,7 +37,7 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 
 | # | Objective | Measurable from | Measured |
 |---|---|---|---|
-| 1 | Raw capture path sustains 100,000 small synthetic events per second for burst tests without loss | **Phase 2** | **not met — 86,000/s** end to end, without loss; the shortfall is entirely gRPC's per-message cost, not this application's (see below) |
+| 1 | Raw capture path sustains 100,000 small synthetic events per second for burst tests without loss | **Phase 2** | **not met — 84,000–88,000/s** end to end, without loss; the shortfall is entirely gRPC's per-message cost, not this application's (see below) |
 | 2 | Normalization sustains at least 25,000 representative events per second | Phase 3 | not yet measurable |
 | 3 | Capture remains correct if normalization temporarily falls behind | **Phase 2** | **met** — every burst above completed with `received == journaled == normalized + stream-control` while backpressure was active |
 | 4 | Live UI updates at least four times per second under ordinary load | Phase 3 | not yet measurable |
@@ -397,15 +397,28 @@ real embedded BES server over a real loopback socket with a real gRPC client,
 through the real journal and the real SQLite writer. Machine: Apple Silicon,
 Java 25.0.1 (Corretto), macOS 26.
 
-| Configuration | Accepted (wire to receive queue) | Acknowledged (durable, end to end) |
-|---|---:|---:|
-| 200k events, ~0-byte payloads | 1,323,930/s | 87,446/s |
-| 200k events, ~64-byte payloads | 1,136,739/s | 88,449/s |
-| 200k events, ~512-byte payloads | 869,248/s | 86,086/s |
-| 200k events, ~512-byte, **transport only** (no journal, no database) | — | 80,058/s |
+One number, measured end to end: how fast events become *durable and
+acknowledged*, which is what Bazel waits for.
+
+| Configuration | Acknowledged (durable, end to end) |
+|---|---:|
+| 200k events, ~0-byte payloads | 87,446/s |
+| 200k events, ~64-byte payloads | 88,449/s |
+| 200k events, ~512-byte payloads | 83,857–86,086/s |
+| 200k events, ~512-byte, **transport only** (no journal, no database) | 80,058/s |
 
 Every run completed with no loss: `received == journaled`, and
 `journaled == normalized + stream-control envelopes`.
+
+An earlier version of this table carried a second column, "accepted (wire to
+receive queue)", reporting 869k–1.3M events/sec. It was wrong, and wrong in a
+flattering direction: it divided the *server's* received count by the
+*client's* send duration — two different intervals — so it measured how fast
+the benchmark's client could enqueue into gRPC, not how fast anything was
+captured. The server cannot have accepted 200,000 events by the time the
+client stopped sending, because it requests at most 64 ahead of a 4,096-deep
+queue. Read as a capture rate it said the transport was fast and this
+application's storage slow; both halves were false. The column is gone.
 
 **The bottleneck is not this application.** Replacing the whole pipeline with
 a sink that acknowledges immediately and stores nothing produces the *same*
@@ -414,6 +427,9 @@ and the indexer are therefore free at this scale, and the ~11.5 µs per event
 is the gRPC message and acknowledgement round trip. The rate being
 independent of payload size, from 0 to 512 bytes, says the same thing: this is
 per-event overhead, not bandwidth.
+
+The spike prints PASS or FAIL against the objective and exits non-zero on a
+breach, like every other spike. It currently exits 1.
 
 ### The ADR-008 question, answered as far as it can be
 
