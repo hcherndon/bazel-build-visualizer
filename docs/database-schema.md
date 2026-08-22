@@ -57,7 +57,6 @@ behind each non-obvious column.
 | `artifacts` | files and directories by exec-root-relative path |
 | `depsets`, `depset_children`, `depset_files` | the `NamedSetOfFiles` DAG, stored as edges |
 | `actions` | one row per observed action, keyed on its primary output |
-| `action_outputs` | action → artifact membership |
 | `tests`, `test_attempts`, `test_logs` | test verdicts, every attempt, and the log URIs |
 | `build_metrics`, `mnemonic_metrics`, `runner_counts`, `cache_miss_details`, `garbage_metrics` | what `BuildMetrics` reported, all nullable |
 | `aborted_events` | every `aborted`, across all four id kinds it rides |
@@ -69,10 +68,12 @@ behind each non-obvious column.
 The original inventory listed six tables that are not in v2. Each absence is a
 decision, not an oversight.
 
-- **`action_inputs`** — the BEP does not report action inputs at all. Nothing in
-  a build event stream can populate it. Inputs arrive in Phase 4 from the
-  execution log, and the table arrives with them; an empty one now would read as
-  "this build's actions had no inputs".
+- **`action_inputs` and `action_outputs`** — the BEP reports neither.
+  `ActionExecuted` carries a `primary_output` File with a uri and nothing else,
+  and no list of either kind; the primary output path on the action row is the
+  whole of what the stream says. Both arrive in Phase 4 from the execution log,
+  and the tables arrive with them. Empty ones now would read as "this build's
+  actions had no inputs and produced nothing".
 - **`problems`** — split into `aborted_events` (which needs its own table because
   abort volume scales with target count: 12,000 rows from a single interrupt),
   the `failure_category`/`failure_message` columns on `actions` and
