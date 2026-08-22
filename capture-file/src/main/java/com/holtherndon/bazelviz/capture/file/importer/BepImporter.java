@@ -7,7 +7,9 @@ import com.holtherndon.bazelviz.capture.file.detect.FormatDetection;
 import com.holtherndon.bazelviz.capture.file.detect.FormatDetector;
 import com.holtherndon.bazelviz.capture.file.json.JsonBepListener;
 import com.holtherndon.bazelviz.capture.file.json.JsonBepParseResult;
+import com.holtherndon.bazelviz.bepcodec.entity.EntityTranslator;
 import com.holtherndon.bazelviz.capture.normalize.EventNormalizer;
+import com.holtherndon.bazelviz.core.entity.EntityCommand;
 import com.holtherndon.bazelviz.capture.file.json.JsonBepParser;
 import com.holtherndon.bazelviz.capture.file.json.JsonBepRecord;
 import com.holtherndon.bazelviz.capture.file.json.JsonParseDiagnostic;
@@ -37,11 +39,12 @@ import com.holtherndon.bazelviz.format.session.SessionManifest;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.events.DiagnosticCodes;
 import com.holtherndon.bazelviz.storage.events.DiagnosticSeverity;
+import com.holtherndon.bazelviz.storage.entities.EntityWriter;
 import com.holtherndon.bazelviz.storage.events.EventWriter;
 import com.holtherndon.bazelviz.storage.events.ImportDiagnostic;
 import com.holtherndon.bazelviz.storage.events.StreamRegistry;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
-import com.holtherndon.bazelviz.storage.schema.SchemaV1;
+import com.holtherndon.bazelviz.storage.schema.SchemaV2;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -305,6 +308,24 @@ public final class BepImporter {
 
         private SessionDatabase database;
         private EventWriter events;
+        private EntityWriter entities;
+
+        /**
+         * Entity commands waiting for their {@code bep_events} rows.
+         *
+         * <p>{@link EventWriter} batches, so the event row for a sequence does
+         * not exist until the batch is executed — and every entity row resolves
+         * its provenance by looking that row up. So the commands are held until
+         * {@link #flushEvents()} has put the events in, and only then applied.
+         * The buffer is bounded by the event batch size, and the commands hold
+         * a small fraction of what the already-decoded events do.
+         */
+        private final List<PendingEntities> pendingEntities = new ArrayList<>();
+
+        private final EntityTranslator translator = new EntityTranslator();
+
+        /** One event's worth of entity commands, and the sequence they came from. */
+        private record PendingEntities(long sequence, List<EntityCommand> commands) {}
         private StreamRegistry streams;
         private JournalWriter journal;
 
@@ -574,6 +595,7 @@ public final class BepImporter {
                 events = new EventWriter(
                         database.writerConnection(), options.batchSize(),
                         com.holtherndon.bazelviz.storage.events.StringDictionary.DEFAULT_CACHE_ENTRIES);
+                entities = new EntityWriter(database.writerConnection());
                 streams = new StreamRegistry(database.writerConnection());
                 streamId = streams.open(streamKey());
                 nextOrdinal = SessionTables.maxSequence(database.writerConnection(), streamId)
@@ -880,6 +902,13 @@ public final class BepImporter {
                         e);
             }
             eventsNormalized++;
+            normalization.event().ifPresent(event -> {
+                List<EntityCommand> commands = translator.translate(event);
+                if (!commands.isEmpty()) {
+                    pendingEntities.add(new PendingEntities(
+                            normalization.normalized().event().sequence(), commands));
+                }
+            });
             if (invocationId.isEmpty() && normalization.invocationId().isPresent()) {
                 invocationId = normalization.invocationId();
             }
@@ -963,6 +992,29 @@ public final class BepImporter {
                 events.flush();
             } catch (SQLException e) {
                 throw new IOException("failed to commit a batch of events", e);
+            }
+            drainEntities();
+        }
+
+        /**
+         * Applies the buffered entity commands, now that their events are in the
+         * database and their provenance lookups can resolve.
+         */
+        private void drainEntities() throws IOException {
+            if (pendingEntities.isEmpty()) {
+                return;
+            }
+            try {
+                for (PendingEntities pending : pendingEntities) {
+                    for (EntityCommand command : pending.commands()) {
+                        entities.apply(streamId, pending.sequence(), command);
+                    }
+                }
+                entities.flush();
+            } catch (SQLException e) {
+                throw new IOException("failed to normalize a batch of entities", e);
+            } finally {
+                pendingEntities.clear();
             }
         }
 
@@ -1226,7 +1278,7 @@ public final class BepImporter {
                             + "; resume to continue, or abandon to mark it incomplete")
                     .sources(List.of(manifestSource(Completeness.UNKNOWN)))
                     .eventCount(OptionalLong.of(eventCount))
-                    .schemaVersion(java.util.OptionalInt.of(SchemaV1.VERSION)));
+                    .schemaVersion(java.util.OptionalInt.of(SchemaV2.VERSION)));
             writeSessionInfo(session.state(), OptionalLong.empty());
             return result(ImportOutcome.CANCELLED, Optional.empty());
         }
@@ -1285,8 +1337,8 @@ public final class BepImporter {
             session.updateManifest(builder -> {
                 builder.sources(List.of(manifestSource(completeness)))
                         .eventCount(OptionalLong.of(eventCount))
-                        .schemaVersion(java.util.OptionalInt.of(SchemaV1.VERSION))
-                        .indexVersions(Optional.of(Map.of("sqlite-schema", SchemaV1.VERSION)))
+                        .schemaVersion(java.util.OptionalInt.of(SchemaV2.VERSION))
+                        .indexVersions(Optional.of(Map.of("sqlite-schema", SchemaV2.VERSION)))
                         .containsAbsolutePaths(Optional.of(true));
                 for (String warning : warnings) {
                     builder.addWarning(warning);
@@ -1429,6 +1481,15 @@ public final class BepImporter {
                         streams.close();
                     } catch (SQLException e) {
                         throw new IOException("failed to close the stream registry", e);
+                    }
+                }
+            });
+            failure = closeStep(failure, () -> {
+                if (entities != null) {
+                    try {
+                        entities.close();
+                    } catch (SQLException e) {
+                        throw new IOException("failed to close the entity writer", e);
                     }
                 }
             });

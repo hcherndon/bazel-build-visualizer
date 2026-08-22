@@ -227,7 +227,8 @@ public final class EventNormalizer {
                 new NormalizedEvent(record, identity, children),
                 status,
                 decoded.detail(),
-                invocationId(event));
+                invocationId(event),
+                Optional.ofNullable(event));
     }
 
     /**
@@ -287,12 +288,19 @@ public final class EventNormalizer {
 
     /**
      * One normalized record plus what the caller has to act on: the decode
-     * status (for a diagnostic) and the invocation id (for
-     * {@code event_streams}).
+     * status (for a diagnostic), the invocation id (for {@code event_streams}),
+     * and the decoded event itself.
+     *
+     * <p>The event is carried so that entity normalization (Phase 3) can run
+     * from the same decode rather than parsing the payload a second time.
+     * Empty when the decode failed, which is why it is an {@code Optional}
+     * rather than a nullable field: there is no event to hand on, and the
+     * distinction has to survive being passed around.
      */
     public record Normalization(
             NormalizedEvent normalized,
             DecodeStatus status,
             String failureDetail,
-            Optional<String> invocationId) {}
+            Optional<String> invocationId,
+            Optional<BuildEvent> event) {}
 }

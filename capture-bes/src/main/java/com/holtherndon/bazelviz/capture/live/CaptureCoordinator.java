@@ -35,6 +35,7 @@ import com.holtherndon.bazelviz.runner.workspace.WorkspaceDetector;
 import com.holtherndon.bazelviz.runner.workspace.WorkspaceInfo;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.events.DiagnosticSeverity;
+import com.holtherndon.bazelviz.storage.entities.EntityWriter;
 import com.holtherndon.bazelviz.storage.events.EventWriter;
 import com.holtherndon.bazelviz.storage.events.ImportDiagnostic;
 import com.holtherndon.bazelviz.storage.events.StreamRegistry;
@@ -218,6 +219,7 @@ public final class CaptureCoordinator implements AutoCloseable {
 
         SessionDatabase database = null;
         EventWriter events = null;
+        EntityWriter entities = null;
         StreamRegistry streams = null;
         JournalWriter journal = null;
         LiveCapturePipeline pipeline = null;
@@ -253,6 +255,7 @@ public final class CaptureCoordinator implements AutoCloseable {
             new MigrationRunner(MigrationRunner.standard().migrations()).migrate(database);
             events = new EventWriter(database.writerConnection(), request.options().batchSize(),
                     com.holtherndon.bazelviz.storage.events.StringDictionary.DEFAULT_CACHE_ENTRIES);
+            entities = new EntityWriter(database.writerConnection());
             streams = new StreamRegistry(database.writerConnection());
 
             journal = JournalWriter.create(
@@ -260,7 +263,7 @@ public final class CaptureCoordinator implements AutoCloseable {
                     JournalWriterConfig.defaults()
                             .withMaxPayloadBytes(request.options().maxMessageBytes()));
             pipeline = new LiveCapturePipeline(
-                    journal, events, streams,
+                    journal, events, entities, streams,
                     new EventNormalizer(request.options().maxMessageBytes()),
                     new ImportCheckpointStore(layout.checkpointsDirectory()),
                     request.options(), request.progress(), clock);
@@ -345,6 +348,7 @@ public final class CaptureCoordinator implements AutoCloseable {
             }
             closeJournalQuietly(journal, warnings);
             recordOutcome(events, outcome, summary, warnings);
+            closeQuietly(entities, "entity writer", warnings);
             closeQuietly(events, "event writer", warnings);
             closeQuietly(streams, "stream registry", warnings);
             closeQuietly(database, "session database", warnings);

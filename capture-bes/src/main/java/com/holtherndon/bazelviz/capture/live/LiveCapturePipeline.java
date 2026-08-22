@@ -4,7 +4,9 @@ import com.holtherndon.bazelviz.capture.bes.BesStreamKey;
 import com.holtherndon.bazelviz.capture.bes.BesStreamState;
 import com.holtherndon.bazelviz.capture.bes.RawBesEvent;
 import com.holtherndon.bazelviz.capture.bes.RawEventSink;
+import com.holtherndon.bazelviz.bepcodec.entity.EntityTranslator;
 import com.holtherndon.bazelviz.capture.normalize.EventNormalizer;
+import com.holtherndon.bazelviz.core.entity.EntityCommand;
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import com.holtherndon.bazelviz.core.journal.JournalFormat.SourceKind;
 import com.holtherndon.bazelviz.format.journal.ImportCheckpoint;
@@ -12,6 +14,7 @@ import com.holtherndon.bazelviz.format.journal.ImportCheckpointStore;
 import com.holtherndon.bazelviz.format.journal.JournalLocation;
 import com.holtherndon.bazelviz.format.journal.JournalWriter;
 import com.holtherndon.bazelviz.storage.events.DiagnosticSeverity;
+import com.holtherndon.bazelviz.storage.entities.EntityWriter;
 import com.holtherndon.bazelviz.storage.events.EventWriter;
 import com.holtherndon.bazelviz.storage.events.ImportDiagnostic;
 import com.holtherndon.bazelviz.storage.events.StreamRegistry;
@@ -103,6 +106,23 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
 
     private final JournalWriter journal;
     private final EventWriter events;
+    private final EntityWriter entities;
+    private final EntityTranslator translator = new EntityTranslator();
+
+    /**
+     * Entity commands waiting for their {@code bep_events} rows.
+     *
+     * <p>{@link EventWriter} batches, so an event's row does not exist until the
+     * batch is executed — and every entity row finds its provenance by looking
+     * that row up. The commands therefore wait here until {@code events.flush()}
+     * has run, and are applied immediately afterwards.
+     *
+     * <p>Touched only by whichever thread is currently storing: the store thread
+     * while the build runs, and the coordinator afterwards for fallback file
+     * ingestion. The two never overlap, because fallback ingestion begins only
+     * after {@link #finish()} has joined the store thread.
+     */
+    private final List<PendingEntities> pendingEntities = new ArrayList<>();
     private final StreamRegistry streams;
     private final EventNormalizer normalizer;
     private final ImportCheckpointStore checkpoints;
@@ -145,17 +165,20 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     public LiveCapturePipeline(
             JournalWriter journal,
             EventWriter events,
+            EntityWriter entities,
             StreamRegistry streams,
             EventNormalizer normalizer,
             ImportCheckpointStore checkpoints,
             CaptureOptions options,
             CaptureProgressListener listener) {
-        this(journal, events, streams, normalizer, checkpoints, options, listener, Clock.systemUTC());
+        this(journal, events, entities, streams, normalizer, checkpoints, options, listener,
+                Clock.systemUTC());
     }
 
     public LiveCapturePipeline(
             JournalWriter journal,
             EventWriter events,
+            EntityWriter entities,
             StreamRegistry streams,
             EventNormalizer normalizer,
             ImportCheckpointStore checkpoints,
@@ -164,6 +187,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
             Clock clock) {
         this.journal = Objects.requireNonNull(journal, "journal");
         this.events = Objects.requireNonNull(events, "events");
+        this.entities = Objects.requireNonNull(entities, "entities");
         this.streams = Objects.requireNonNull(streams, "streams");
         this.normalizer = Objects.requireNonNull(normalizer, "normalizer");
         this.checkpoints = Objects.requireNonNull(checkpoints, "checkpoints");
@@ -314,6 +338,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                 if (journaled == null) {
                     if (pending > 0 && clock.millis() - lastCommitMillis >= options.flushInterval().toMillis()) {
                         events.flush();
+                        drainEntities();
                         pending = 0;
                         lastCommitMillis = clock.millis();
                         publishProgress(true);
@@ -322,6 +347,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                 }
                 if (journaled == NORMALIZE_END) {
                     events.flush();
+                    drainEntities();
                     break;
                 }
                 if (store(journaled)) {
@@ -333,6 +359,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                 if (pending >= options.batchSize()
                         || clock.millis() - lastCommitMillis >= options.flushInterval().toMillis()) {
                     events.flush();
+                    drainEntities();
                     pending = 0;
                     lastCommitMillis = clock.millis();
                     publishProgress(true);
@@ -380,6 +407,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
 
         EventNormalizer.Normalization result = normalization.get();
         events.write(result.normalized());
+        bufferEntities(streamId, event.sequence(), result);
         if (result.status() == DecodeStatus.FAILED) {
             decodeFailures.incrementAndGet();
             events.recordDiagnostic(ImportDiagnostic.at(
@@ -392,6 +420,37 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
         }
         return true;
     }
+
+    /** Holds one event's entity commands until its {@code bep_events} row exists. */
+    private void bufferEntities(
+            long streamId, long sequence, EventNormalizer.Normalization normalization) {
+        normalization.event().ifPresent(event -> {
+            List<EntityCommand> commands = translator.translate(event);
+            if (!commands.isEmpty()) {
+                pendingEntities.add(new PendingEntities(streamId, sequence, commands));
+            }
+        });
+    }
+
+    /** Applies the buffered commands, whose provenance lookups can now resolve. */
+    private void drainEntities() throws SQLException {
+        if (pendingEntities.isEmpty()) {
+            return;
+        }
+        try {
+            for (PendingEntities pending : pendingEntities) {
+                for (EntityCommand command : pending.commands()) {
+                    entities.apply(pending.streamId(), pending.sequence(), command);
+                }
+            }
+            entities.flush();
+        } finally {
+            pendingEntities.clear();
+        }
+    }
+
+    /** One event's worth of entity commands, and where it came from. */
+    private record PendingEntities(long streamId, long sequence, List<EntityCommand> commands) {}
 
     /**
      * The {@code event_streams} row id for a stream, created on first use.
@@ -445,6 +504,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
                 SourceKind.BEP_BINARY, payload, offset, length, streamId, ordinal,
                 location, receiveMicros);
         events.write(normalization.normalized());
+        bufferEntities(streamId, ordinal, normalization);
         normalizedCount.incrementAndGet();
         if (normalization.status() == DecodeStatus.FAILED) {
             decodeFailures.incrementAndGet();
@@ -463,6 +523,7 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     /** Commits whatever {@link #ingestFileRecord} has written. */
     public void flushFileRecords() throws IOException, SQLException {
         events.flush();
+        drainEntities();
         journal.flush();
         writeCheckpoint();
     }

@@ -117,6 +117,71 @@ public final class BazelWorkspaceFixture {
         return fixture;
     }
 
+    /**
+     * A workspace with {@code passing} tests that succeed and {@code failing}
+     * tests that do not, plus one genrule so the build has a non-test action.
+     *
+     * <p>Tests rather than genrules because a test target is the only thing
+     * that produces {@code testResult} and {@code testSummary} events, and those
+     * carry facts nothing else does: per-attempt status, the effective timeout,
+     * and an {@code overallStatus} that disagrees with the target's own
+     * {@code success} flag when a test fails.
+     *
+     * <p>The test rule is written in Starlark rather than using {@code sh_test},
+     * which Bazel 9 no longer provides natively — it lives in {@code rules_shell}
+     * now, and depending on that would make this fixture need the network. A
+     * local rule works identically on 6.5 through 9.2.
+     */
+    public static BazelWorkspaceFixture withTests(Path directory, int passing, int failing)
+            throws IOException {
+        BazelWorkspaceFixture fixture = create(directory);
+        write(fixture.root.resolve("test.bzl"), SIMPLE_TEST_RULE);
+        List<String> rules = new ArrayList<>();
+        rules.add("load(\":test.bzl\", \"simple_test\")\n");
+        rules.add(genrule("gen", null, "echo generated"));
+        for (int i = 0; i < passing; i++) {
+            rules.add(simpleTest("pass" + i, "exit 0"));
+        }
+        for (int i = 0; i < failing; i++) {
+            rules.add(simpleTest(
+                    "fail" + i, "echo 'the test failed on purpose' >&2\\nexit 3"));
+        }
+        fixture.writeBuildFile(String.join("\n", rules));
+        return fixture;
+    }
+
+    /**
+     * A test rule that needs no toolchain and no external repository: it writes
+     * its own shell script and declares it as the executable.
+     */
+    private static final String SIMPLE_TEST_RULE = """
+            def _simple_test_impl(ctx):
+                script = ctx.actions.declare_file(ctx.label.name + "_runner.sh")
+                ctx.actions.write(
+                    output = script,
+                    content = "#!/bin/sh\\n" + ctx.attr.body + "\\n",
+                    is_executable = True,
+                )
+                return [DefaultInfo(executable = script)]
+
+            simple_test = rule(
+                implementation = _simple_test_impl,
+                test = True,
+                attrs = {"body": attr.string(default = "exit 0")},
+            )
+            """;
+
+    private static String simpleTest(String name, String body) {
+        return """
+                simple_test(
+                    name = "%s",
+                    body = "%s",
+                    size = "small",
+                    tags = ["fixture-tag"],
+                )
+                """.formatted(name, body);
+    }
+
     private static BazelWorkspaceFixture create(Path directory) throws IOException {
         Files.createDirectories(directory);
         write(directory.resolve("WORKSPACE"), "");

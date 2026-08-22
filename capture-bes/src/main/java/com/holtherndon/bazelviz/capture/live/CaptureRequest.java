@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.runner.command.EnvironmentInheritance;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -93,6 +94,21 @@ public record CaptureRequest(
     public CaptureRequest withProgress(CaptureProgressListener value) {
         return new CaptureRequest(sessionsRoot, appVersion, executable, workingDirectory, args,
                 preset, environmentOverrides, inheritance, shellMode, console, value, options);
+    }
+
+    /**
+     * Sets or unsets one environment variable for the build.
+     *
+     * <p>An empty value means "unset this for the child", which is a different
+     * instruction from "set it to the empty string" and has to stay
+     * distinguishable — {@code USE_BAZEL_VERSION=""} makes bazelisk fall back
+     * to its own resolution rather than pinning nothing.
+     */
+    public CaptureRequest withEnvironment(String name, Optional<String> value) {
+        Map<String, Optional<String>> merged = new LinkedHashMap<>(environmentOverrides);
+        merged.put(Objects.requireNonNull(name, "name"), Objects.requireNonNull(value, "value"));
+        return new CaptureRequest(sessionsRoot, appVersion, executable, workingDirectory, args,
+                preset, merged, inheritance, shellMode, console, progress, options);
     }
 
     public CaptureRequest withOptions(CaptureOptions value) {

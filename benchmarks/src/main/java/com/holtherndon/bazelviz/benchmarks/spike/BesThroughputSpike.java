@@ -19,6 +19,7 @@ import com.holtherndon.bazelviz.format.journal.ImportCheckpointStore;
 import com.holtherndon.bazelviz.format.journal.JournalWriter;
 import com.holtherndon.bazelviz.format.journal.JournalWriterConfig;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
+import com.holtherndon.bazelviz.storage.entities.EntityWriter;
 import com.holtherndon.bazelviz.storage.events.EventWriter;
 import com.holtherndon.bazelviz.storage.events.StreamRegistry;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
@@ -87,12 +88,13 @@ public final class BesThroughputSpike {
             new MigrationRunner(MigrationRunner.standard().migrations()).migrate(database);
             try (EventWriter writer = new EventWriter(database.writerConnection(),
                             CaptureOptions.defaults().batchSize(), 4096);
+                    EntityWriter entities = new EntityWriter(database.writerConnection());
                     StreamRegistry streams = new StreamRegistry(database.writerConnection());
                     JournalWriter journal = JournalWriter.create(
                             raw, UUID.randomUUID(), JournalWriterConfig.defaults())) {
 
                 LiveCapturePipeline pipeline = new LiveCapturePipeline(
-                        journal, writer, streams,
+                        journal, writer, entities, streams,
                         new EventNormalizer(64 * 1024 * 1024),
                         new ImportCheckpointStore(checkpoints),
                         CaptureOptions.defaults(),
