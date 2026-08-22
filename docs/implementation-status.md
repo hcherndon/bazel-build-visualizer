@@ -552,3 +552,19 @@ unbounded JDBC batch. Two more came from running the code against real Bazel
 and could not have been found any other way: a paging benchmark that measured
 an empty table and passed, and capability detection probing a different Bazel
 than the build ran. `docs/phase4-audit.md` is the full report.
+
+### Verified from clean (Phase 4)
+
+`rm -rf build */build build-logic/build && ./gradlew build --no-build-cache`:
+**BUILD SUCCESSFUL in 2m 35s, 76 tasks all executed, 1,002 tests across 121
+classes, 0 failures, 0 errors, 0 skipped** — up from 907 at the end of Phase 3.
+
+The same caveat as then applies and is worth repeating: *0 skipped* is a fact
+about this machine. The real-Bazel tests are guarded by
+`assumeTrue(bazel.isPresent())`, and Phase 4 added `RealBazelEnrichmentTest`,
+whose four-version sweep needs 6.5.0, 7.6.1, 8.4.1 and 9.2.0 all installed. On
+a machine without them the count stays 1,002 and the skipped count rises.
+
+One warning is expected and is not a failure: `io.airlift.compress.zstd`
+calls `sun.misc.Unsafe::objectFieldOffset`, which Java 25 warns about
+terminally. See ADR-008 for the exposure and the exit.

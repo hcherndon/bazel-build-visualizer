@@ -266,3 +266,74 @@ with the counts above.
 - *Caveats:* they do not scale together. The first two are bounded by what broke;
   the third by the size of the build. Presenting a total would make one broken
   target in a large workspace look like a catastrophe.
+
+## Phase 4 catalog
+
+### Spawn total time
+- *Definition:* `SpawnMetrics.total_time`, the wall time Bazel measured for one
+  subprocess, from the execution log.
+- *Source:* execution log. **Not** the action's BEP duration, which measures a
+  different span and is kept separately under its own name (ADR-009).
+- *Unavailable when:* the record carries no metrics. On Bazel 6.5.0 without
+  `--experimental_execution_log_spawn_metrics` the duration is in the legacy
+  `walltime` field instead, and is recovered from there.
+
+### Spawn start
+- *Definition:* `SpawnMetrics.start_time`, the instant a subprocess began.
+- *Unavailable when:* the Bazel is 6.5.0, on any flag setting. Such an attempt
+  has a length and no position and must not be drawn on a timeline;
+  `start_unknown_reason` carries the sentence.
+
+### Timing breakdown
+- *Definition:* the separately-measured components of a spawn's elapsed time —
+  parse, queue, setup, network, execution, fetch, process outputs, upload,
+  retries.
+- *Note:* these do not sum to the total, because the total is measured
+  independently. The difference is shown as "unaccounted" rather than folded
+  into execution.
+- *Unavailable when:* the spawn ran locally, in which case queue, upload,
+  fetch and network were never measured. They render as absent, never as zero.
+
+### Runner
+- *Definition:* the string Bazel put in `SpawnExec.runner` — `darwin-sandbox`,
+  `worker`, `remote`, `disk cache hit`, `remote cache hit`.
+- *Note:* free text, never parsed into an enum. `spawn.proto` constrains it to
+  nothing and says it varies under the dynamic strategy.
+- *Unavailable when:* no execution log, or the action never spawned a
+  subprocess. On the actions table an action with several spawns shows the
+  count instead: two spawns under different runners give the action none.
+
+### Actions with attempt data
+- *Definition:* `COUNT(DISTINCT action_id)` over `action_attempts`.
+- *Note:* legitimately far below the action count — measured 4 against 13.
+  Most actions run inside the Bazel server and never start a subprocess. Every
+  place showing the ratio says so.
+
+### Build phase duration
+- *Definition:* the gap between one phase marker and the next.
+- *Source:* trace profile. **Derived, not measured:** the profile records when
+  each phase began and never when it ended. `build_phases.end_is_derived`
+  records that, and the last phase has no end at all.
+
+### Bazel's critical path
+- *Definition:* the `critical path component` spans Bazel wrote into the
+  profile, in order.
+- *Note:* kept as Bazel's own answer and never joined to the actions table —
+  its entries identify themselves with a progress message and nothing else.
+  The visualizer's own dependency critical path is a separate Phase 6 metric
+  and ADR-009 requires both to survive separately.
+
+### Profile span absolute time
+- *Definition:* a span's trace timestamp plus the profile's anchor.
+- *Uncertainty:* zero on Bazel 8.4.1+, **±1 second on 6.5.0 and 7.6.1**, where
+  the anchor is floored to the whole second. Any view placing a profile span
+  against an execution-log timing on those versions must surface that;
+  `ProfileAnchor.precisionCaveat()` is the wording.
+
+### Output size from disk
+- *Definition:* `Files.size` of an output that no source reported a size for.
+- *Note:* fills holes only. A size Bazel reported is a different measurement,
+  taken at execution time, of a file that may since have been rebuilt.
+- *Unavailable when:* the file is not on this machine — the normal answer for
+  an artifact that only ever existed on a remote executor. Counted as absent,
+  never written as zero.
