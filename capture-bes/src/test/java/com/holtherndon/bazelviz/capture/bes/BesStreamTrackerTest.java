@@ -114,18 +114,45 @@ class BesStreamTrackerTest {
     }
 
     @Test
-    @DisplayName("out-of-order buffering is bounded, and the bound refuses rather than grows")
-    void outOfOrderBufferingIsBounded() {
+    @DisplayName("events held above an unfilled gap are bounded, and the bound refuses")
+    void disorderIsBounded() {
         BesStreamTracker tracker = new BesStreamTracker(KEY, 3);
 
-        // 1 never arrives, so nothing can become contiguous and everything piles
-        // up above the watermark.
-        assertThat(tracker.accept(2, 100)).isEqualTo(Decision.ACCEPTED);
-        assertThat(tracker.accept(3, 100)).isEqualTo(Decision.ACCEPTED);
-        assertThat(tracker.accept(4, 100)).isEqualTo(Decision.ACCEPTED);
-        assertThat(tracker.accept(5, 100)).isEqualTo(Decision.TOO_FAR_AHEAD);
+        // 1 never arrives, so nothing below these can become contiguous and each
+        // one that reaches the journal is genuinely held.
+        for (long sequence = 2; sequence <= 4; sequence++) {
+            assertThat(tracker.accept(sequence, 100)).isEqualTo(Decision.ACCEPTED);
+            tracker.journaled(sequence);
+        }
 
+        assertThat(tracker.accept(5, 100)).isEqualTo(Decision.TOO_FAR_AHEAD);
         assertThat(tracker.snapshot().outOfOrderBuffered()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("a deep pipeline is not disorder, and does not trip the bound")
+    void pipelineDepthIsNotDisorder() {
+        BesStreamTracker tracker = new BesStreamTracker(KEY, 3);
+
+        // Ten events accepted in order, none journaled yet: the pipeline is
+        // simply behind. An earlier version counted this as disorder and
+        // refused the stream with FAILED_PRECONDITION at exactly the moment
+        // backpressure was doing its job — which a real 200,000-event burst
+        // reproduced and a single-message-in-flight test could never have.
+        for (long sequence = 1; sequence <= 10; sequence++) {
+            assertThat(tracker.accept(sequence, 100))
+                    .describedAs("sequence %d", sequence)
+                    .isEqualTo(Decision.ACCEPTED);
+        }
+
+        // Draining them in order acknowledges the whole run.
+        for (long sequence = 1; sequence <= 10; sequence++) {
+            tracker.journaled(sequence);
+        }
+        BesStreamState state = tracker.snapshot();
+        assertThat(state.highestAcknowledged()).isEqualTo(10);
+        assertThat(state.hasGap()).isFalse();
+        assertThat(state.outOfOrderBuffered()).isZero();
     }
 
     @Test

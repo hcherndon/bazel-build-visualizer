@@ -1,0 +1,18 @@
+<configuration>
+  <statusListener class="ch.qos.logback.core.status.NopStatusListener"/>
+
+  <!--
+    Spikes print measurements, and a measurement buried in gRPC frame logging
+    is not a measurement anyone reads. Logback defaults to DEBUG when it finds
+    no configuration, which for a spike that drives a real socket means tens of
+    thousands of frame dumps between the numbers.
+  -->
+  <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
+    <encoder><pattern>%d{HH:mm:ss.SSS} %-5level %logger{24} - %msg%n</pattern></encoder>
+  </appender>
+
+  <root level="${bbv.log.level:-WARN}">
+    <appender-ref ref="STDERR"/>
+  </root>
+</configuration>

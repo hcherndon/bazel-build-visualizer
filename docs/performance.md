@@ -37,9 +37,9 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 
 | # | Objective | Measurable from | Measured |
 |---|---|---|---|
-| 1 | Raw capture path sustains 100,000 small synthetic events per second for burst tests without loss | Phase 2 | not yet measurable |
+| 1 | Raw capture path sustains 100,000 small synthetic events per second for burst tests without loss | **Phase 2** | **not met — 86,000/s** end to end, without loss; the shortfall is entirely gRPC's per-message cost, not this application's (see below) |
 | 2 | Normalization sustains at least 25,000 representative events per second | Phase 3 | not yet measurable |
-| 3 | Capture remains correct if normalization temporarily falls behind | Phase 2 | not yet measurable |
+| 3 | Capture remains correct if normalization temporarily falls behind | **Phase 2** | **met** — every burst above completed with `received == journaled == normalized + stream-control` while backpressure was active |
 | 4 | Live UI updates at least four times per second under ordinary load | Phase 3 | not yet measurable |
 | 5 | Panning and zooming aggregate timeline/graph views targets 30 frames per second | **Phase 0** (spike) | **met** — timeline p95 0.88–0.94 ms, graph p95 0.87–1.28 ms vs 33 ms |
 | 6 | A cached action-table page appears within 100 milliseconds | **Phase 0** (spike) | **met** — table cache max 25.0 µs; SQLite keyset p95 0.65 ms |
@@ -389,6 +389,64 @@ gives objective 10 something real to measure.
 
 Preview features remain out of scope under ADR-008; all three flags above are
 final product features in JDK 25, not preview.
+
+## Capture path throughput (Phase 2)
+
+Measured by `./gradlew :benchmarks:runBesThroughputSpike`, which drives the
+real embedded BES server over a real loopback socket with a real gRPC client,
+through the real journal and the real SQLite writer. Machine: Apple Silicon,
+Java 25.0.1 (Corretto), macOS 26.
+
+| Configuration | Accepted (wire to receive queue) | Acknowledged (durable, end to end) |
+|---|---:|---:|
+| 200k events, ~0-byte payloads | 1,323,930/s | 87,446/s |
+| 200k events, ~64-byte payloads | 1,136,739/s | 88,449/s |
+| 200k events, ~512-byte payloads | 869,248/s | 86,086/s |
+| 200k events, ~512-byte, **transport only** (no journal, no database) | — | 80,058/s |
+
+Every run completed with no loss: `received == journaled`, and
+`journaled == normalized + stream-control envelopes`.
+
+**The bottleneck is not this application.** Replacing the whole pipeline with
+a sink that acknowledges immediately and stores nothing produces the *same*
+rate — 80k/s against 86k/s, i.e. slightly slower, within noise. The journal
+and the indexer are therefore free at this scale, and the ~11.5 µs per event
+is the gRPC message and acknowledgement round trip. The rate being
+independent of payload size, from 0 to 512 bytes, says the same thing: this is
+per-event overhead, not bandwidth.
+
+### The ADR-008 question, answered as far as it can be
+
+ADR-008 recorded that grpc-netty disables `sun.misc.Unsafe` on Java 25 and
+that the effect on the capture path was unmeasured. It is now measured:
+`PlatformDependent.hasUnsafe()` is `false`, and the path runs at 86,000
+events/sec.
+
+What could **not** be established is the counterfactual. Netty refuses to use
+`Unsafe` on Java 24 and later regardless of `-Dio.netty.tryUnsafe=true`
+(verified: `hasUnsafe` stays `false`), so the comparison would require running
+the same spike on Java 21 — which is no longer the baseline. The honest
+statement is that 86k/s is what the supported configuration does, not that
+Unsafe is what costs the missing 14%.
+
+### What the shortfall means in practice
+
+Objective 1 is a burst target for synthetic events. Real builds do not
+approach it: a Tier 3 build of five million actions emits its events over
+minutes, and the largest real stream measured in Phase 2 was 38 events. The
+gap matters for a burst test, not for a capture keeping up with Bazel.
+
+The obvious way to close it is to stop sending one acknowledgement message per
+event. That is deliberately **not** attempted here: an acknowledgement with the
+wrong sequence number kills the user's Bazel server on 6.5.0 and 9.2.0
+(docs/bazel-compatibility.md), and no experiment has established that Bazel
+accepts a coalesced acknowledgement covering a run of sequences. Changing ack
+semantics needs its own experiment against all four versions first.
+
+The flow-control window is 64 messages, chosen by measurement: at 1 the path
+is latency-bound at 45,000/s, at 64 it reaches 86,000/s, and 128, 256 and 512
+are indistinguishable from 64. The smallest window that reaches the plateau is
+the one that keeps the memory ceiling lowest.
 
 ## Build performance
 

@@ -76,6 +76,22 @@ final class PublishBuildEventService {
     private final java.util.concurrent.ConcurrentMap<BesStreamKey, BesStreamTracker> trackers =
             new java.util.concurrent.ConcurrentHashMap<>();
 
+    /**
+     * How many messages may be in flight from the client at once.
+     *
+     * <p>Requesting one at a time is the simplest correct backpressure and it
+     * is also a round trip per event: measured, the whole capture path settled
+     * at about 45,000 events per second, latency-bound rather than work-bound,
+     * against an objective of 100,000. A window lets the transport keep the
+     * pipeline fed while the bound still holds — at most this many events are
+     * outstanding, so the memory ceiling is the window times the maximum
+     * message size, and the receive queue behind it is bounded independently.
+     *
+     * <p>64 rather than something larger because the gain flattens: the point
+     * is to stop paying a round trip per event, not to buffer the build.
+     */
+    private static final int FLOW_CONTROL_WINDOW = 64;
+
     /** Epoch-microsecond source; injectable so tests are deterministic. */
     @FunctionalInterface
     interface MicrosClock {
@@ -231,7 +247,7 @@ final class PublishBuildEventService {
         ToolStreamObserver(ServerCallStreamObserver<PublishBuildToolEventStreamResponse> responses) {
             this.responses = responses;
             responses.setOnCancelHandler(this::onCancelled);
-            responses.request(1);
+            responses.request(FLOW_CONTROL_WINDOW);
         }
 
         @Override

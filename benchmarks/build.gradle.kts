@@ -9,6 +9,14 @@ dependencies {
     implementation(project(":ui-swing"))
     implementation(project(":graph-core"))
     implementation(project(":storage-sqlite"))
+
+    // BesThroughputSpike drives the real embedded server over a real socket,
+    // so it needs the capture path and a gRPC client to push events at it.
+    implementation(project(":capture-bes"))
+    implementation(project(":proto"))
+    implementation(libs.grpc.stub)
+    implementation(libs.grpc.netty.shaded)
+
     runtimeOnly(libs.logback.classic)
 
     // The jmh source set does not inherit main's project dependencies; wire
@@ -40,12 +48,18 @@ val spikeMains = mapOf(
     "runTimelineSpike" to "com.holtherndon.bazelviz.benchmarks.spike.TimelineSpike",
     "runGraphSpike" to "com.holtherndon.bazelviz.benchmarks.spike.GraphSpike",
     "runSqlPagingSpike" to "com.holtherndon.bazelviz.benchmarks.spike.SqlPagingSpike",
+    "runBesThroughputSpike" to "com.holtherndon.bazelviz.benchmarks.spike.BesThroughputSpike",
 )
 
 // Gradle's own JVM properties do not reach a forked JavaExec, so the spike
 // switches a caller sets with -D are forwarded explicitly. Without this,
 // `-Dbbv.smoke=true` silently does nothing and a windowed spike never closes.
-val forwardedSpikeProperties = listOf("bbv.smoke", "bbv.theme", "bbv.appdir")
+// io.netty.tryUnsafe is forwarded so the BES throughput spike can measure the
+// counterfactual for ADR-008's open question: grpc-netty disables
+// sun.misc.Unsafe on Java 25, and asking it to try anyway is the only way to
+// find out whether that is what costs the capture path its headroom.
+val forwardedSpikeProperties =
+    listOf("bbv.smoke", "bbv.theme", "bbv.appdir", "io.netty.tryUnsafe", "io.netty.noUnsafe")
 
 // The spikes load native code through both sqlite-jdbc (SqlPagingSpike) and
 // FlatLaf (the Swing spikes), so their forked JVMs need the same native-access

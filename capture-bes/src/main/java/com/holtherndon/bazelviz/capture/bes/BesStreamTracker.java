@@ -29,15 +29,21 @@ import java.util.TreeSet;
 final class BesStreamTracker {
 
     /**
-     * How many events may be held above the contiguous watermark before the
-     * stream is treated as broken.
+     * How many events may sit above an unfilled gap before the stream is
+     * treated as broken (plan 9.2, "buffer only a bounded number of
+     * out-of-order events").
      *
-     * <p>On a single BES stream this should never be reached: the events arrive
-     * on one ordered HTTP/2 stream, so sequence numbers come in order. The bound
-     * exists because "should never" is not "cannot", and an unbounded set here
-     * would turn a misbehaving client into an out-of-memory failure of the whole
-     * application (plan 9.2, "buffer only a bounded number of out-of-order
-     * events").
+     * <p>This counts <em>disorder</em>, not depth. An event that has been
+     * accepted and is on its way to the journal is not out of order — it is in
+     * a bounded queue, being processed in the order it arrived, which is what
+     * backpressure looks like when it is working. Only an event journaled
+     * <em>above</em> a sequence that never arrived is genuinely being held.
+     *
+     * <p>Counting depth instead was a real bug, and a well-hidden one: with a
+     * single message in flight the two are indistinguishable, so it only
+     * appeared under load, where it aborted the capture with
+     * {@code FAILED_PRECONDITION} at precisely the moment backpressure was
+     * doing its job.
      */
     static final int DEFAULT_MAX_OUT_OF_ORDER = 1024;
 
@@ -109,7 +115,7 @@ final class BesStreamTracker {
             duplicateCount++;
             return Decision.DUPLICATE;
         }
-        if (inFlight.size() + journaledAhead.size() >= maxOutOfOrder) {
+        if (journaledAhead.size() >= maxOutOfOrder) {
             return Decision.TOO_FAR_AHEAD;
         }
         inFlight.add(sequence);
