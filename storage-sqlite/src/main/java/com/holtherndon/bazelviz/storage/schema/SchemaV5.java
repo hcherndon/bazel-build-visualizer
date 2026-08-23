@@ -44,6 +44,16 @@ final class SchemaV5 {
             // checksum, which was equal to the BEP's configuration id on all
             // four versions with none left over (Q6).
             //
+            // There is no exit_code. The importer is handed a file and never
+            // sees one, and the runner that does already puts its stderr in
+            // error_excerpt -- which is the part a person reads. A column only
+            // ever set to NULL is the defect the Phase 3 audit found in
+            // saw_last_message, and this one was caught by the same grep.
+            //
+            // raw_output_path is written and matters: plan 12.4 requires the
+            // user be able to inspect raw query output, and this is where the
+            // UI finds it.
+            //
             // command is kept so the user can see what ran and rerun it edited,
             // which plan 12.4 also requires. It is stored as a JSON array for
             // the same reason `actions.command_line` is: an argument can
@@ -53,7 +63,6 @@ final class SchemaV5 {
               id                      INTEGER PRIMARY KEY,
               kind                    TEXT    NOT NULL,
               command                 TEXT,
-              exit_code               INTEGER,
               state                   TEXT    NOT NULL,
               error_excerpt           TEXT,
               configuration_match     TEXT    NOT NULL,
@@ -264,24 +273,6 @@ final class SchemaV5 {
               built_micros  INTEGER NOT NULL,
               source_id     INTEGER REFERENCES graph_sources(id),
               UNIQUE (kind, direction)
-            )
-            """,
-
-            // --- what may be claimed about a graph -------------------------------
-            //
-            // Rule 13: never claim a graph or total is complete unless its
-            // source supports it. One row per GraphKind the session holds,
-            // carrying the sentence the UI shows.
-            //
-            // node_count and edge_count are the graph's own size; they are NOT
-            // the build's action count and nothing may present them as such.
-            """
-            CREATE TABLE graph_completeness (
-              kind        TEXT PRIMARY KEY,
-              completeness TEXT NOT NULL,
-              node_count  INTEGER,
-              edge_count  INTEGER,
-              detail      TEXT NOT NULL
             )
             """);
 }

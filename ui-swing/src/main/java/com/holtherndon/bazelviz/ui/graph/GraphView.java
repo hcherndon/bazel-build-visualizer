@@ -229,6 +229,33 @@ public final class GraphView extends JPanel {
         });
     }
 
+    /**
+     * Roots the trees at the graph node for an executed action.
+     *
+     * <p>The "selected-action neighbourhood" of plan 24: a user looking at a row
+     * in the actions table asks what it depended on, and this is the bridge.
+     *
+     * <p>An action the graph does not declare — {@code stable-status.txt}, which
+     * aquery never mentions (Q7) — says so rather than showing an empty tree
+     * that reads as "nothing depends on it".
+     */
+    public void showAction(long actionId) {
+        onWorker(work -> {
+            java.util.OptionalLong nodeIndex = work.nodeForAction(actionId);
+            if (nodeIndex.isEmpty()) {
+                SwingUtilities.invokeLater(() -> {
+                    clearTrees();
+                    pathResult.setText("This action is not in the dependency graph."
+                            + " Some actions run without being declared by analysis.");
+                });
+                return;
+            }
+            Optional<GraphQueries.GraphNode> found =
+                    work.node(Math.toIntExact(nodeIndex.getAsLong()));
+            found.ifPresent(node -> SwingUtilities.invokeLater(() -> showNode(node)));
+        });
+    }
+
     /** Roots both trees at {@code node} and loads its immediate neighbours. */
     void showNode(GraphQueries.GraphNode node) {
         setRoot(dependencies, node, true);

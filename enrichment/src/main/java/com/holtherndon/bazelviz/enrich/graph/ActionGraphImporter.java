@@ -118,7 +118,8 @@ public final class ActionGraphImporter {
 
             return new Result(
                     actions, correlated, artifacts, depsets, unresolved, size,
-                    match, match.describe(missing, extra), Optional.empty());
+                    match, match.describe(missing, extra),
+                    Optional.of(file.toString()), Optional.empty());
         }
     }
 
@@ -277,7 +278,7 @@ public final class ActionGraphImporter {
                         + " started_micros) VALUES (?, ?, 'RUNNING', 'UNKNOWN', ?)"
                         + " ON CONFLICT (kind) DO UPDATE SET command = excluded.command,"
                         + " state = 'RUNNING', configuration_match = 'UNKNOWN',"
-                        + " started_micros = excluded.started_micros, exit_code = NULL,"
+                        + " started_micros = excluded.started_micros,"
                         + " error_excerpt = NULL, mismatch_detail = NULL,"
                         + " declared_actions = NULL, correlated_actions = NULL")) {
             statement.setString(1, KIND);
@@ -294,7 +295,8 @@ public final class ActionGraphImporter {
         try (PreparedStatement statement = connection.prepareStatement(
                 "UPDATE graph_sources SET state = ?, error_excerpt = ?, configuration_match = ?,"
                         + " mismatch_detail = ?, declared_actions = ?, correlated_actions = ?,"
-                        + " raw_output_bytes = ?, finished_micros = ? WHERE id = ?")) {
+                        + " raw_output_bytes = ?, raw_output_path = ?, finished_micros = ?"
+                        + " WHERE id = ?")) {
             statement.setString(1, state);
             if (error.isPresent()) {
                 statement.setString(2, error.get());
@@ -306,9 +308,21 @@ public final class ActionGraphImporter {
             statement.setLong(5, result.declaredActions());
             statement.setLong(6, result.correlatedActions());
             statement.setLong(7, result.bytes());
-            statement.setLong(8, clock.getAsLong());
-            statement.setLong(9, sourceId);
+            // Plan 12.4: the user may inspect the raw query output, and this is
+            // where the UI finds it.
+            setNullable(statement, 8, result.rawOutputPath());
+            statement.setLong(9, clock.getAsLong());
+            statement.setLong(10, sourceId);
             statement.executeUpdate();
+        }
+    }
+
+    private static void setNullable(PreparedStatement statement, int index, Optional<String> value)
+            throws SQLException {
+        if (value.isPresent()) {
+            statement.setString(index, value.get());
+        } else {
+            statement.setNull(index, java.sql.Types.VARCHAR);
         }
     }
 
@@ -360,11 +374,13 @@ public final class ActionGraphImporter {
             long bytes,
             ConfigurationMatch configurationMatch,
             String configurationDetail,
+            Optional<String> rawOutputPath,
             Optional<String> error) {
 
         static Result failed(String message) {
             return new Result(0, 0, 0, 0, 0, 0, ConfigurationMatch.UNKNOWN,
-                    "the query did not produce a graph", Optional.of(message));
+                    "the query did not produce a graph", Optional.empty(),
+                    Optional.of(message));
         }
 
         public boolean succeeded() {

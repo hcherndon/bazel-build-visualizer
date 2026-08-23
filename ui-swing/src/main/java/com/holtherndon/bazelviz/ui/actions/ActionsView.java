@@ -105,6 +105,7 @@ public final class ActionsView extends JPanel {
     private final JTextField textFilter = new JTextField(18);
     private final JComboBox<ActionSort> sortChoice = new JComboBox<>(ActionSort.values());
     private final JCheckBox descendingBox = new JCheckBox("Descending");
+    private final javax.swing.JButton graphButton = new javax.swing.JButton("Dependencies");
 
     private ExecutorService pageExecutor;
     private ExecutorService detailExecutor;
@@ -124,6 +125,14 @@ public final class ActionsView extends JPanel {
     private PagedTableModel<ActionRow> tableModel;
     private ActionRowSource rowSource;
     private LongConsumer showEventHandler = eventId -> { };
+
+    /**
+     * Where "show this action's dependencies" goes.
+     *
+     * <p>The bridge for plan 24's selected-action neighbourhood: a user
+     * reading a row here asks what it depended on, and the graph card answers.
+     */
+    private LongConsumer showInGraphHandler = actionId -> { };
 
     /** Bumped on every reload so a slow one cannot overwrite a newer one. */
     private long reloadGeneration;
@@ -169,6 +178,14 @@ public final class ActionsView extends JPanel {
         });
 
         inspector.onShowSourceEvent(eventId -> showEventHandler.accept(eventId));
+        graphButton.setEnabled(false);
+        graphButton.addActionListener(event -> {
+            int row = table.getSelectedRow();
+            ActionRow selected = row < 0 || tableModel == null ? null : tableModel.rowAt(row);
+            if (selected != null) {
+                showInGraphHandler.accept(selected.id());
+            }
+        });
 
         JScrollPane tableScroll = new JScrollPane(table);
         tableScroll.setMinimumSize(new Dimension(320, 160));
@@ -233,10 +250,20 @@ public final class ActionsView extends JPanel {
         bar.add(new JLabel("Sort:"));
         bar.add(sortChoice);
         bar.add(descendingBox);
+        // Plan 24's selected-action neighbourhood: the bridge from a row here
+        // to what it depended on.
+        graphButton.setToolTipText(PlainText.tooltip(
+                "Show this action's dependencies in the graph"));
+        bar.add(graphButton);
         return bar;
     }
 
     /** Called on the EDT with an event id when the user asks to see the source. */
+    /** Called with an action id when the user asks to see it in the graph. */
+    public void onShowInGraph(LongConsumer handler) {
+        this.showInGraphHandler = Objects.requireNonNull(handler, "handler");
+    }
+
     public void onShowSourceEvent(LongConsumer handler) {
         this.showEventHandler = Objects.requireNonNull(handler, "handler");
     }
@@ -511,6 +538,7 @@ public final class ActionsView extends JPanel {
         // Shown immediately from the row already in hand, so selecting is never
         // waiting on a query.
         inspector.show(ActionInspection.of(row));
+        graphButton.setEnabled(true);
         loadAttempts(row);
     }
 

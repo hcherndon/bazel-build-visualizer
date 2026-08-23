@@ -248,10 +248,36 @@ final class ActionGraphImporterTest {
                 .importFrom(fixture(name + "-aquery.proto"), List.of("aquery", "//pkg:all"));
     }
 
+    /**
+     * Declares configurations the way a real build does: with a configured
+     * target actually built in each.
+     *
+     * <p>The check compares against the configurations targets were built in,
+     * not every configuration the event stream mentioned — Bazel publishes a
+     * `none` placeholder that no query can report, and comparing against it
+     * made EXACT unreachable.
+     */
     private void declareConfigurations(List<String> checksums) throws SQLException {
+        exec("INSERT INTO labels (value) VALUES ('//pkg:configured') ON CONFLICT DO NOTHING");
+        exec("INSERT INTO targets (label_id, aspect, outcome) VALUES"
+                + " ((SELECT id FROM labels WHERE value = '//pkg:configured'), '', 'COMPLETED')"
+                + " ON CONFLICT DO NOTHING");
+        int ordinal = 0;
         for (String checksum : checksums) {
             exec("INSERT INTO configurations (stream_id, bep_id, declared)"
                     + " VALUES (1, '" + checksum + "', 1)");
+            exec("INSERT INTO configured_targets (target_id, configuration_id, outcome)"
+                    + " VALUES ((SELECT id FROM targets LIMIT 1),"
+                    + " (SELECT id FROM configurations WHERE bep_id = '" + checksum + "'),"
+                    + " 'BUILT')");
+            ordinal++;
+        }
+        // A `none` placeholder alongside them, which nothing is built in --
+        // exactly what a real session holds, and what the first version of the
+        // check tripped over.
+        if (ordinal > 0) {
+            exec("INSERT INTO configurations (stream_id, bep_id, declared)"
+                    + " VALUES (1, 'none', 1)");
         }
     }
 

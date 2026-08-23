@@ -227,6 +227,7 @@ public final class MainWindow extends JFrame {
         // Every entity view's inspector can jump to the bytes its row came
         // from. One handler, so the behaviour is the same from all five.
         actionsView.onShowSourceEvent(this::revealEvent);
+        actionsView.onShowInGraph(this::revealInGraph);
         // The status bar's counts come from the overview's own read, so the two
         // can never disagree about how many actions the session holds.
         overviewPanel.onSnapshot(snapshot -> actionStatus.setText(
@@ -583,6 +584,17 @@ public final class MainWindow extends JFrame {
     }
 
     /** Shows the Events card with {@code eventId}'s raw payload loaded. */
+    /**
+     * Switches to the graph card and roots it at an action.
+     *
+     * <p>An action the graph does not declare says so there rather than showing
+     * an empty tree, because an empty tree reads as "nothing depends on it".
+     */
+    private void revealInGraph(long actionId) {
+        showCard(NavEntry.GRAPH);
+        graphView.showAction(actionId);
+    }
+
     private void revealEvent(long eventId) {
         showEventsCard();
         if (!eventsView.revealEvent(eventId)) {

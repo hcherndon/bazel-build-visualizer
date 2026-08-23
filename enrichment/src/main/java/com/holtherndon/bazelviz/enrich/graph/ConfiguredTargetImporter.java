@@ -47,6 +47,16 @@ public final class ConfiguredTargetImporter {
     /** The kind recorded in {@code graph_sources}. */
     static final String KIND = "CONFIGURED_TARGETS";
 
+    /**
+     * Rows per JDBC batch.
+     *
+     * <p>The driver holds a batched statement's parameters until execution, so
+     * an unbounded batch is an unbounded allocation. A cquery over a large
+     * workspace has a configured target per target and several edges each; the
+     * first version of this class batched all of them and executed once.
+     */
+    private static final int BATCH = 5_000;
+
     private final Connection connection;
     private final java.util.function.LongSupplier clock;
 
@@ -177,10 +187,15 @@ public final class ConfiguredTargetImporter {
 
             // Labels first, for both endpoints: an edge names a target that may
             // be a source file and therefore never appears as a node.
+            int pending = 0;
             for (Node value : nodes) {
-                intern(label, value.label());
+                pending += intern(label, value.label());
                 for (Dep dep : value.deps()) {
-                    intern(label, dep.label());
+                    pending += intern(label, dep.label());
+                }
+                if (pending >= BATCH) {
+                    label.executeBatch();
+                    pending = 0;
                 }
             }
             label.executeBatch();
@@ -203,8 +218,13 @@ public final class ConfiguredTargetImporter {
                     node.setString(4, value.ruleClass());
                 }
                 node.addBatch();
+                if (++pending >= BATCH) {
+                    node.executeBatch();
+                    pending = 0;
+                }
             }
             node.executeBatch();
+            pending = 0;
 
             for (Node value : nodes) {
                 if (value.label().isEmpty()) {
@@ -215,6 +235,10 @@ public final class ConfiguredTargetImporter {
                     edge.setLong(2, sourceId);
                     edge.setString(3, value.label());
                     edge.addBatch();
+                    if (++pending >= BATCH) {
+                        edge.executeBatch();
+                        pending = 0;
+                    }
                 }
             }
             edge.executeBatch();
@@ -222,12 +246,14 @@ public final class ConfiguredTargetImporter {
         return scalar("SELECT count(*) FROM configured_target_nodes WHERE source_id = " + sourceId);
     }
 
-    private static void intern(PreparedStatement statement, String value) throws SQLException {
+    /** @return 1 when a row was batched, 0 when the value was nothing */
+    private static int intern(PreparedStatement statement, String value) throws SQLException {
         if (value == null || value.isEmpty()) {
-            return;
+            return 0;
         }
         statement.setString(1, value);
         statement.addBatch();
+        return 1;
     }
 
     /**

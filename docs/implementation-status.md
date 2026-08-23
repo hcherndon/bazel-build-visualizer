@@ -568,3 +568,70 @@ a machine without them the count stays 1,002 and the skipped count rises.
 One warning is expected and is not a failure: `io.airlift.compress.zstd`
 calls `sun.misc.Unsafe::objectFieldOffset`, which Java 25 warns about
 terminally. See ADR-008 for the exposure and the exit.
+
+## Phase 5 checklist (as of 2026-08-22)
+
+| Task | Status |
+|---|---|
+| Generate auxiliary command plans | Done — `AuxiliaryQueryPlanner`, plan 8.6's ten rules; options fall into three groups, not two (carried, rejected-and-named, instrumentation-left-behind-and-not-counted-as-a-loss) |
+| Capture protobuf query outputs | Done — run after the build, stdout redirected to a file because it is binary and `Subprocess.run` decodes UTF-8 |
+| Import action graph | Done — one sub-message at a time from a `CodedInputStream`; the container is never materialised |
+| Import configured-target graph | Done — same streaming treatment; edges reach labels that are not nodes, because a rule's inputs include its source files |
+| Correlate graph actions | Done — by reconstructed primary-output path; unmatched rows on both sides are expected and kept |
+| Preserve depset DAG | Done — `graph_depsets` and its two edge tables, never flattened |
+| Derive artifact producer/consumer edges | Done — plan 13.1 as one statement; source artifacts excluded by the join, pairs deduplicated by the group-by |
+| Implement external edge sorting | Done, by delegation — SQLite's external merge sort, and the code says so rather than claiming a fresh one |
+| Build forward/reverse CSR indexes | Done — `CsrFile` with magic, version, counts, CRC32C and atomic rename; reverse derived from forward so they cannot disagree |
+| Add graph completeness diagnostics | Done — on `graph_sources`, not in a second table; see the audit for why the second table was removed |
+| UI: dependency and reverse-dependency trees, selected-action neighbourhood, path-between-nodes, graph-source selector | Done — the Graph card, which therefore arrives in Phase 5 rather than 7 |
+| aquery/cquery ground truth recorded | Done — `docs/aquery-and-cquery.md`, four versions, twelve findings, with a "not measured" section |
+
+## Phase 5 exit criteria (plan section 24)
+
+| Criterion | Status |
+|---|---|
+| Direct action dependencies and reverse dependencies are queryable | Met — `ActionEdgeAndIndexTest` derives edges from a real `aquery` graph and walks the genrule chain in both directions: `gen_a -> gen_b -> gen_slow` forward, and nothing behind `gen_a` because it is at the head. The Graph card reaches both from a selected action. |
+| Large graph construction is bounded-memory | **Met in construction, unmeasured at scale.** No step holds the edge set: the file is read one sub-message at a time, staging is SQLite temp tables that spill to disk, the derivation never leaves the database, and the CSR build streams a query twice. What has not been done is running it on a five-million-action graph — the fixture is six targets. See the interpretation below. |
+| Configuration mismatches are visible | Met — `ConfigurationMatch` is a checked set comparison, not a judgement, and `EXACT` is the only state that permits a graph to be called the build's. A mismatched graph is imported, labelled in the selector, warned about above the trees, and still shown, because its actions are real. |
+| Forward and reverse indexes are consistent | Met — the reverse index is `CsrBuilder.reverse` of the forward one rather than a second query, so disagreement is impossible rather than unlikely; the test still asserts every forward edge appears reversed. A file whose header disagrees with its registry row is refused. |
+| A failed auxiliary query leaves the rest of the session usable | Met — the two graphs are independent `graph_sources` rows; a failed import writes no graph rows and leaves the executed actions untouched, which `ActionGraphImporterTest` asserts by counting them before and after. |
+
+### Interpretations worth knowing
+
+**"Bounded memory" is a property of the construction, not a measurement.**
+Every step is streaming or delegated to SQLite, and the code says which. But the
+largest graph this has run on is sixteen actions. Phase 0's spikes measured the
+CSR structures at five million nodes; the import path in front of them has not
+been measured at that size, and the honest statement is that it is built not to
+hold the graph rather than that it has been shown not to.
+
+**The external sort is SQLite's.** Plan 13.1 asks for bounded buffers, sorted
+runs, a merge and a dedup. A `GROUP BY` SQLite cannot satisfy from an index is
+exactly that, with far more testing behind it than a fresh implementation would
+have. Delegating is recorded in the code as a decision, not presented as an
+implementation.
+
+**Bazel's own graph and this session's executions are different populations.**
+Measured: `aquery` declares the `TestRunner` action of every test that a `build`
+invocation never runs, and the event stream reports a `stable-status.txt` action
+`aquery` never declares. Neither count is "the build's actions", and the UI says
+which is which.
+
+**A configured-target edge names a label, not a configured target.** The proto
+*can* say more — `Rule.configured_rule_input` carries a dependency's label with
+its configuration checksum — and Bazel fills it zero times on all four versions,
+with and without `--proto:include_configurations`. So the limit is Bazel's, not
+the schema's, and the table has no column because there is nothing to put in it.
+
+**The Graph card arrives in Phase 5.** Plan 24 gives Phase 5 the trees, the
+neighbourhood, the path search and the source selector; Phase 7 is the rendered
+canvas with layouts and semantic zoom, which will read the same indexes.
+
+## Phase 5 audit
+
+Six findings, all fixed: a whole table declared and never written, a column only
+ever set to NULL, a column plan 12.4 needs that was never written, a
+configuration check that made its own success unreachable, binary query output
+about to be round-tripped through a UTF-8 String, and two bugs the CSR work
+surfaced. `docs/phase5-audit.md` is the full report, including what the
+validation sweep cost and why it was cut to one Bazel version.

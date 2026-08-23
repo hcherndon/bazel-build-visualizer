@@ -112,11 +112,19 @@ final class ConfiguredTargetImporterTest {
     @Test
     @DisplayName("a graph whose configurations are the build's is called exact")
     void matchingConfigurationsAreExact() throws Exception {
+        exec("INSERT INTO labels (value) VALUES ('//pkg:configured')");
+        exec("INSERT INTO targets (label_id, aspect, outcome) VALUES (1, '', 'COMPLETED')");
         for (String checksum : List.of(
                 "1a589d14ca3886895c1228db75ec6c30d0c253d2c9f4c3070e5f3535de94c607",
                 "2d8934052f1445fdec9fefac5a616f1fb9d9dea67b8c1b3f6e1572370634272c")) {
             exec("INSERT INTO configurations (stream_id, bep_id, declared)"
                     + " VALUES (1, '" + checksum + "', 1)");
+            // A configured target built in it: the check compares against the
+            // configurations targets were actually built in, not every one the
+            // event stream mentioned.
+            exec("INSERT INTO configured_targets (target_id, configuration_id, outcome)"
+                    + " VALUES (1, (SELECT id FROM configurations WHERE bep_id = '"
+                    + checksum + "'), 'BUILT')");
         }
 
         assertThat(importFixture("bazel920").configurationMatch())

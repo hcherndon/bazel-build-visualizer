@@ -97,11 +97,6 @@ public final class GraphQueries implements AutoCloseable {
         return out;
     }
 
-    /** True when an index for this derivation is loadable. */
-    public boolean hasIndex(EdgeDerivation derivation) throws SQLException, IOException {
-        return forwardIndex(derivation).isPresent();
-    }
-
     /** The node for an executed action, when the graph declares it. */
     public OptionalLong nodeForAction(long actionId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(NODE_BY_ACTION)) {
