@@ -635,3 +635,21 @@ configuration check that made its own success unreachable, binary query output
 about to be round-tripped through a UTF-8 String, and two bugs the CSR work
 surfaced. `docs/phase5-audit.md` is the full report, including what the
 validation sweep cost and why it was cut to one Bazel version.
+
+### Verified from clean (Phase 5)
+
+`rm -rf build */build build-logic/build && ./gradlew build --no-build-cache`:
+**BUILD SUCCESSFUL in 2m 50s, 76 tasks all executed, 1,090 tests across 131
+classes, 0 failures, 0 errors, 0 skipped** — up from 1,002 at the end of
+Phase 4.
+
+*0 skipped* remains a fact about this machine rather than the suite: the
+real-Bazel tests are assumption-guarded, and this machine has 6.5.0, 7.6.1,
+8.4.1 and 9.2.0 installed. Phase 5's own end-to-end test needs only whichever
+Bazel is on the path.
+
+The suite's memory cost is now bounded rather than machine-sized. Bazel picks a
+server heap from the machine's RAM, so on a large machine four version servers
+plus parallel test JVMs took a development machine past 120 GB. The fixture rc
+caps each server at 1 GB with `max_idle_secs=15`; four genrules need no more,
+and every existing version sweep still passes.
