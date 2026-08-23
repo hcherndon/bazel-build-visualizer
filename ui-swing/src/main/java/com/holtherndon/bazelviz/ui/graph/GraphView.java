@@ -79,9 +79,11 @@ public final class GraphView extends JPanel {
             new JLabel("No dependency graph has been imported.", SwingConstants.CENTER);
 
     private final JPanel deck = new JPanel(new java.awt.CardLayout());
+    private final GraphCanvasPanel canvasPanel = new GraphCanvasPanel();
 
     private ExecutorService worker;
     private GraphQueries queries;
+    private GraphLayoutService layouts;
     private long generation;
 
     public GraphView() {
@@ -121,10 +123,21 @@ public final class GraphView extends JPanel {
                 button("Find path", this::findPath)));
         path.add(pathResult);
 
+        JPanel lists = new JPanel(new BorderLayout());
+        lists.add(trees, BorderLayout.CENTER);
+        lists.add(path, BorderLayout.SOUTH);
+
+        // Two ways of reading the same graph. The trees answer "what exactly
+        // does this depend on" one level at a time; the canvas answers "what
+        // shape is this" all at once. Neither replaces the other, and the
+        // trees came first because they work at any size.
+        javax.swing.JTabbedPane views = new javax.swing.JTabbedPane();
+        views.addTab("Trees", lists);
+        views.addTab("Canvas", canvasPanel);
+
         JPanel body = new JPanel(new BorderLayout());
         body.add(top, BorderLayout.NORTH);
-        body.add(trees, BorderLayout.CENTER);
-        body.add(path, BorderLayout.SOUTH);
+        body.add(views, BorderLayout.CENTER);
 
         deck.add(empty, "empty");
         deck.add(body, "graph");
@@ -148,19 +161,30 @@ public final class GraphView extends JPanel {
         executor.execute(() -> {
             GraphQueries opened;
             List<GraphQueries.GraphSource> sources;
+            String[] labels;
+            long[] durations;
             try {
                 opened = source.openGraphQueries();
                 sources = opened.sources();
+                // Fetched here, once, because the canvas must never need a name
+                // or a duration during a paint (plan 17.7). Two queries for the
+                // whole session, not two per frame.
+                labels = opened.labelsByNodeIndex();
+                durations = opened.durationsByNodeIndex(false, GraphModel.UNKNOWN_DURATION);
             } catch (RuntimeException | java.sql.SQLException failure) {
                 log.debug("no graph for this session", failure);
                 return;
             }
+            GraphLayoutService service = new GraphLayoutService(opened);
             SwingUtilities.invokeLater(() -> {
                 if (wanted != generation) {
+                    service.close();
                     closeQuietly(opened);
                     return;
                 }
                 queries = opened;
+                layouts = service;
+                canvasPanel.attach(service, labels, durations);
                 installSources(sources);
             });
         });
@@ -173,8 +197,14 @@ public final class GraphView extends JPanel {
         worker = null;
         GraphQueries open = queries;
         queries = null;
+        GraphLayoutService openLayouts = layouts;
+        layouts = null;
         if (executor != null) {
             executor.shutdownNow();
+        }
+        canvasPanel.detach();
+        if (openLayouts != null) {
+            openLayouts.close();
         }
         closeQuietly(open);
         sourceChoice.setModel(new DefaultComboBoxModel<>());
@@ -260,6 +290,12 @@ public final class GraphView extends JPanel {
     void showNode(GraphQueries.GraphNode node) {
         setRoot(dependencies, node, true);
         setRoot(dependents, node, false);
+        canvasPanel.showNode(node.nodeIndex());
+    }
+
+    /** The canvas half of the view, for tests. */
+    GraphCanvasPanel canvasPanel() {
+        return canvasPanel;
     }
 
     private void setRoot(JTree tree, GraphQueries.GraphNode node, boolean forwards) {
