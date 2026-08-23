@@ -163,7 +163,13 @@ public final class BesThroughputSpike {
      * acknowledgement time is how fast they become durable, which is what Bazel
      * actually waits for at the end of a build.
      */
+    /** The monitor the transport's readiness is signalled through. */
+    private static final Object READY = new Object();
+
     private static Result drive(BesEndpoint endpoint, int count, int payloadBytes) throws Exception {
+        @SuppressWarnings("unchecked")
+        io.grpc.stub.ClientCallStreamObserver<PublishBuildToolEventStreamRequest>[] outbound =
+                new io.grpc.stub.ClientCallStreamObserver[1];
         ManagedChannel channel = NettyChannelBuilder
                 .forAddress(endpoint.host(), endpoint.port())
                 .usePlaintext()
@@ -171,25 +177,50 @@ public final class BesThroughputSpike {
         try {
             AtomicLong acknowledged = new AtomicLong();
             CountDownLatch done = new CountDownLatch(1);
-            StreamObserver<PublishBuildToolEventStreamRequest> requests =
-                    PublishBuildEventGrpc.newStub(channel).publishBuildToolEventStream(
-                            new StreamObserver<>() {
-                                @Override
-                                public void onNext(PublishBuildToolEventStreamResponse response) {
-                                    acknowledged.incrementAndGet();
-                                }
+            io.grpc.stub.ClientResponseObserver<
+                    PublishBuildToolEventStreamRequest,
+                    PublishBuildToolEventStreamResponse> responses =
+                    new io.grpc.stub.ClientResponseObserver<>() {
 
-                                @Override
-                                public void onError(Throwable failure) {
-                                    System.err.println("stream failed: " + failure);
-                                    done.countDown();
-                                }
-
-                                @Override
-                                public void onCompleted() {
-                                    done.countDown();
+                        @Override
+                        public void beforeStart(
+                                io.grpc.stub.ClientCallStreamObserver<
+                                        PublishBuildToolEventStreamRequest> stream) {
+                            // Manual flow control. Without it gRPC buffers
+                            // everything the transport cannot yet write, and at
+                            // Tier 3 that is fifty million messages in heap:
+                            // the first Tier 3 run of this spike died with an
+                            // OutOfMemoryError inside DelayedStream, in the
+                            // client, before the server had done anything at
+                            // all. A benchmark that cannot reach the scale it
+                            // is meant to measure is measuring its own defect.
+                            stream.setOnReadyHandler(() -> {
+                                synchronized (READY) {
+                                    READY.notifyAll();
                                 }
                             });
+                            outbound[0] = stream;
+                        }
+
+                        @Override
+                        public void onNext(PublishBuildToolEventStreamResponse response) {
+                            acknowledged.incrementAndGet();
+                        }
+
+                        @Override
+                        public void onError(Throwable failure) {
+                            System.err.println("stream failed: " + failure);
+                            done.countDown();
+                        }
+
+                        @Override
+                        public void onCompleted() {
+                            done.countDown();
+                        }
+                    };
+            PublishBuildEventGrpc.newStub(channel).publishBuildToolEventStream(responses);
+            io.grpc.stub.ClientCallStreamObserver<PublishBuildToolEventStreamRequest> requests =
+                    outbound[0];
 
             byte[] filler = new byte[Math.max(0, payloadBytes)];
             java.util.Arrays.fill(filler, (byte) 'x');
@@ -201,13 +232,26 @@ public final class BesThroughputSpike {
 
             long sendStart = System.nanoTime();
             for (int i = 1; i <= count; i++) {
+                // Wait for the transport rather than handing gRPC a message it
+                // will hold. This is what makes the send rate a measurement of
+                // the pipeline instead of a measurement of how fast a loop can
+                // allocate protobufs.
+                synchronized (READY) {
+                    while (!requests.isReady()) {
+                        READY.wait();
+                    }
+                }
                 requests.onNext(request(streamId, i, filler));
             }
             long sendNanos = System.nanoTime() - sendStart;
 
             requests.onCompleted();
-            if (!done.await(10, TimeUnit.MINUTES)) {
-                throw new IllegalStateException("the stream did not finish within ten minutes");
+            // Scaled to the run: ten minutes is generous for 200,000 events and
+            // not enough for fifty million.
+            long minutes = Math.max(10, count / 100_000L);
+            if (!done.await(minutes, TimeUnit.MINUTES)) {
+                throw new IllegalStateException(
+                        "the stream did not finish within " + minutes + " minutes");
             }
             long ackNanos = System.nanoTime() - sendStart;
             return new Result(sendNanos, ackNanos, acknowledged.get());
