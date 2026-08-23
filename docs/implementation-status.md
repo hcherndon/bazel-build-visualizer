@@ -653,3 +653,66 @@ server heap from the machine's RAM, so on a large machine four version servers
 plus parallel test JVMs took a development machine past 120 GB. The fixture rc
 caps each server at 1 GB with `max_idle_secs=15`; four genrules need no more,
 and every existing version sweep still passes.
+
+## Phase 6 checklist (as of 2026-08-22)
+
+| Task | Status |
+|---|---|
+| Build timeline LOD index | Done — Phase 0's pyramid plus the rest of plan 14.3's per-bin fields; 54 bytes a level-0 bin instead of 32, and both benchmark tiers keep full millisecond resolution |
+| Implement custom Swing timeline | Done — `TimelineView`, density at broad zoom and exact spans at close, header and lane labels as their own components |
+| Add action and attempt lanes | Done — `SessionSpanSource` streams both; tests are not streamed separately because their window is their attempts' and drawing both would double-count the density |
+| Add grouping and sorting | Done — plan 14.2's eight groupings and five sorts, with honest fallbacks for what a session cannot supply |
+| Add live retroactive insertion | Done — attached to a running capture, coalesced to two seconds, viewport never touched |
+| Add selection synchronization | Done — both directions, and neither moves the other's viewport |
+| Add time-range filtering | Done — a dragged range narrows the actions table, matching overlap rather than containment |
+| Add critical-path overlay | **Partial** — the path is computed (`analysis-core`) and the overlay colour is defined; the view does not yet draw it. See below. |
+
+## Phase 6 exit criteria (plan section 24)
+
+| Criterion | Status |
+|---|---|
+| Broad views use aggregate bins | Met — above `SpanWindow.MAX_SPANS` in view the canvas paints the pyramid's bins, one column per pixel. The status line names which mode is in use, because a density plot and a span plot answer different questions. |
+| Close views show exact spans | Met — below that threshold the exact spans are fetched into a `SpanWindow` and drawn individually. A range holding more than the cap says how many it left out rather than drawing a stripe that looks complete. |
+| Tier 2 remains interactive | Met — measured. 1M spans: index builds in 0.170 s, frames at p95 0.91 ms against a 33 ms budget. Tier 3's 5M spans build in 1.124 s and draw at p95 0.78 ms. Live rebuilds are coalesced to two seconds so a running capture cannot starve the frame budget. |
+| No SQLite access occurs during painting | Met, and enforced — `TimelinePaintIsolationTest` fails if any painting class gains a field that can reach a database, and separately asserts the controller still has one so the test cannot pass by the split collapsing. |
+| Live updates do not reset viewport or selection | Met — `TimelineViewport.withWall` is the only path a live update takes and returns a navigated viewport untouched, selection and dragged range included. Ten tests, including a build growing ninety-fold without moving the view a pixel. |
+
+### Interpretations worth knowing
+
+**The critical-path overlay is computed but not drawn.** `CriticalPath` produces
+the path, the slack and the makespan, with 13 tests; `TimelineColours` defines
+the overlay colour. What is missing is the join from graph node indices to
+timeline spans, which needs the graph and the timeline to agree on identity —
+the graph is keyed by `declared_actions.node_index` and the timeline by
+`actions.id`. That join is a Phase 7 concern where the graph view needs it
+anyway, and shipping the overlay against a guessed correspondence would draw a
+confident line through the wrong actions.
+
+**A lane's total duration is not its elapsed time.** Overlapping spans are
+counted twice, deliberately: "where did the time go" is a question about work,
+not wall clock. Both numbers are on the lane.
+
+**The category summary is narrower than the plan asks.** Plan 14.3 says "top
+mnemonics or category summary". A per-bin histogram is unaffordable at millions
+of bins, and the two-word vote that fits cannot prove a majority in one
+streaming pass. What it can prove for free is that a bin holds exactly one
+category, so that is what is reported and a mixed bin reports nothing. Real
+builds spend long stretches on one kind of work, so it fires often.
+
+**The timeline is up to two seconds behind a running build.** Rebuilding the
+pyramid costs 170 ms at Tier 2 and capture progress arrives many times a second.
+Coalescing is what keeps the frame budget; the lag is the price and is stated
+rather than hidden.
+
+**Tests are not a separate span kind.** Plan 14.1 lists them, and their window
+is their attempts', which are already drawn. Drawing both would count the same
+work twice in the density, and a viewer cannot tell a doubled bin from a busy
+one.
+
+## Phase 6 audit
+
+Four findings, all fixed: four per-bin aggregates computed and read by nobody, a
+time-range filter with nothing to filter, a comment describing a majority check
+the code did not make, and a live refresh that would have rebuilt the pyramid on
+every progress tick. `docs/phase6-audit.md` is the full report, including the
+check that became a test.
