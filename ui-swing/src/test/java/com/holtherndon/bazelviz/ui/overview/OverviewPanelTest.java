@@ -166,6 +166,11 @@ class OverviewPanelTest {
         }
 
         @Override
+        public java.sql.Connection openTimelineConnection() {
+            throw new UnsupportedOperationException("the overview draws no timeline");
+        }
+
+        @Override
         public EntityReader openEntityReader() {
             return reader;
         }

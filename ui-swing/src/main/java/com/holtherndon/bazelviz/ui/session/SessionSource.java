@@ -48,6 +48,17 @@ public interface SessionSource extends AutoCloseable {
      */
     GraphQueries openGraphQueries();
 
+    /**
+     * Opens a raw read connection for the timeline's own aggregation.
+     *
+     * <p>The timeline neither pages rows nor reads entities: it streams every
+     * span once to build a pyramid, then fetches a window of exact spans per
+     * viewport. Neither shape fits {@link EntityReader}, and giving the
+     * timeline its own connection is what lets it do that work on its own
+     * thread while the tables keep theirs.
+     */
+    java.sql.Connection openTimelineConnection();
+
     @Override
     void close();
 }

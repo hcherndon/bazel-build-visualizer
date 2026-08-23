@@ -165,6 +165,18 @@ public final class SqliteSessionSource implements SessionSource {
     }
 
     @Override
+    public java.sql.Connection openTimelineConnection() {
+        if (closed) {
+            throw new SessionDataException("session " + root + " is closed");
+        }
+        try {
+            return database.newReadConnection();
+        } catch (SQLException e) {
+            throw new SessionDataException("cannot open a read connection to " + root, e);
+        }
+    }
+
+    @Override
     public GraphQueries openGraphQueries() {
         if (closed) {
             throw new SessionDataException("session " + root + " is closed");
