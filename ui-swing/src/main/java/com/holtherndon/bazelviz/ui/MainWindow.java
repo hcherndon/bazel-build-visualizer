@@ -26,6 +26,7 @@ import com.holtherndon.bazelviz.ui.actions.ActionsView;
 import com.holtherndon.bazelviz.ui.events.EventsView;
 import com.holtherndon.bazelviz.ui.enrich.CoverageView;
 import com.holtherndon.bazelviz.ui.failures.FailuresView;
+import com.holtherndon.bazelviz.ui.graph.GraphView;
 import com.holtherndon.bazelviz.ui.overview.OverviewPanel;
 import com.holtherndon.bazelviz.ui.targets.TargetsView;
 import com.holtherndon.bazelviz.ui.tests.TestsView;
@@ -115,6 +116,7 @@ public final class MainWindow extends JFrame {
     private final TestsView testsView = new TestsView();
     private final FailuresView failuresView = new FailuresView();
     private final CoverageView coverageView = new CoverageView();
+    private final GraphView graphView = new GraphView();
 
     /**
      * The Overview card: the build's own summary above, what is known about it
@@ -508,6 +510,7 @@ public final class MainWindow extends JFrame {
         testsView.openSession(opened);
         failuresView.openSession(opened);
         coverageView.openSession(opened);
+        graphView.openSession(opened);
         closeSource(previous);
     }
 
@@ -520,6 +523,7 @@ public final class MainWindow extends JFrame {
         testsView.closeSession();
         failuresView.closeSession();
         coverageView.closeSession();
+        graphView.closeSession();
     }
 
     /**
@@ -920,6 +924,7 @@ public final class MainWindow extends JFrame {
             case TARGETS -> targetsView;
             case TESTS -> testsView;
             case FAILURES -> failuresView;
+            case GRAPH -> graphView;
             case EVENTS -> eventsView;
             case CONSOLE -> consoleView;
             case CAPTURE -> capturePanel;

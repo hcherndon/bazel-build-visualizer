@@ -161,6 +161,11 @@ class OverviewPanelTest {
         }
 
         @Override
+        public com.holtherndon.bazelviz.storage.graph.GraphQueries openGraphQueries() {
+            throw new UnsupportedOperationException("the overview does not read the graph");
+        }
+
+        @Override
         public EntityReader openEntityReader() {
             return reader;
         }

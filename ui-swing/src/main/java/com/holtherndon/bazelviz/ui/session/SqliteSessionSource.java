@@ -5,6 +5,7 @@ import com.holtherndon.bazelviz.format.journal.JournalFrame;
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
 import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.format.session.SessionManifest;
+import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.events.EventDetail;
 import com.holtherndon.bazelviz.storage.events.EventPage;
@@ -161,6 +162,25 @@ public final class SqliteSessionSource implements SessionSource {
                 connection, new EventQueries(connection), new JournalPayloadReader(journalDirectory));
         readers.add(reader);
         return reader;
+    }
+
+    @Override
+    public GraphQueries openGraphQueries() {
+        if (closed) {
+            throw new SessionDataException("session " + root + " is closed");
+        }
+        Connection connection;
+        try {
+            connection = database.newReadConnection();
+        } catch (SQLException e) {
+            throw new SessionDataException("cannot open a read connection to " + root, e);
+        }
+        // The CSR index files live beside the database, in the directory the
+        // session layout already reserves for them.
+        return new GraphQueries(
+                connection,
+                com.holtherndon.bazelviz.format.session.ManagedSessionLayout.at(root)
+                        .indexesDirectory());
     }
 
     @Override

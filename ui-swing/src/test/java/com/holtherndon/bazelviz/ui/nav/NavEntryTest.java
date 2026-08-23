@@ -36,7 +36,12 @@ class NavEntryTest {
     void planFixedArrivalPhasesAreCorrect() {
         assertThat(NavEntry.OVERVIEW.arrivalPhase()).isEqualTo(3);
         assertThat(NavEntry.TIMELINE.arrivalPhase()).isEqualTo(6);
-        assertThat(NavEntry.GRAPH.arrivalPhase()).isEqualTo(7);
+        // Phase 5, not 7. Plan 24 gives Phase 5 the dependency and
+        // reverse-dependency trees, the selected-action neighbourhood, the
+        // path-between-nodes and the graph-source selector -- all of which are
+        // this card. Phase 7 is the rendered canvas with layouts and semantic
+        // zoom, which replaces the trees' company rather than their arrival.
+        assertThat(NavEntry.GRAPH.arrivalPhase()).isEqualTo(5);
     }
 
     @Test

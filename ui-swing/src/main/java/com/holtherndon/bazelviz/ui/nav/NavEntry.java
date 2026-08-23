@@ -14,7 +14,7 @@ public enum NavEntry {
     TIMELINE("Timeline", 6),
     ACTIONS("Actions", 3),
     TARGETS("Targets", 3),
-    GRAPH("Graph", 7),
+    GRAPH("Graph", 5),
     TESTS("Tests", 3),
     FAILURES("Failures", 3),
     EVENTS("Events", 1),

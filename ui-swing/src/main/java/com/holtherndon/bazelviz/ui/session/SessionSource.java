@@ -1,5 +1,7 @@
 package com.holtherndon.bazelviz.ui.session;
 
+import com.holtherndon.bazelviz.storage.graph.GraphQueries;
+
 /**
  * An open session: its describable identity plus a factory for the per-thread
  * readers that actually query it.
@@ -35,6 +37,16 @@ public interface SessionSource extends AutoCloseable {
      * open for every table on screen.
      */
     EntityReader openEntityReader();
+
+    /**
+     * Opens a reader over the dependency graph, for the Phase 5 views.
+     *
+     * <p>A third reader rather than a third method on the second one, for the
+     * same reason: it holds memory-mapped CSR indexes that the tables views
+     * have no use for, and a session with no imported graph opens it and gets
+     * an empty answer rather than paying for indexes that do not exist.
+     */
+    GraphQueries openGraphQueries();
 
     @Override
     void close();
