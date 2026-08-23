@@ -88,6 +88,12 @@ final class SchemaV5 {
             // Recording only the positive keeps the column honest about a
             // distinction the encoding threw away.
             //
+            // node_index is this action's position in the CSR index, dense
+            // from zero. It is not the row id: row ids keep growing across
+            // re-imports, and a CSR is two arrays indexed from zero with no
+            // room for gaps. Assigned at import and null until an index is
+            // built.
+            //
             // action_key is stored and not used as a join key. Nothing has
             // measured whether it is stable between two runs of the same build,
             // and section 5 of the ground truth says so.
@@ -105,6 +111,7 @@ final class SchemaV5 {
               action_key             TEXT,
               discovers_inputs       INTEGER,
               is_executable          INTEGER,
+              node_index             INTEGER,
               UNIQUE (source_id, graph_id)
             )
             """,

@@ -136,6 +136,11 @@ public final class ActionGraphImporter {
     }
 
     private long insertDepsets(long sourceId) throws SQLException {
+        exec("DELETE FROM graph_depset_children WHERE parent_id IN"
+                + " (SELECT id FROM graph_depsets WHERE source_id = " + sourceId + ")");
+        exec("DELETE FROM graph_depset_artifacts WHERE depset_id IN"
+                + " (SELECT id FROM graph_depsets WHERE source_id = " + sourceId + ")");
+        exec("DELETE FROM graph_depsets WHERE source_id = " + sourceId);
         exec("INSERT INTO graph_depsets (source_id, graph_id)"
                 + " SELECT " + sourceId + ", id FROM stage_depset");
         exec("INSERT INTO graph_depset_children (parent_id, child_id)"
@@ -155,6 +160,20 @@ public final class ActionGraphImporter {
     }
 
     private long insertActions(long sourceId) throws SQLException {
+        // Re-importing replaces. The rows are keyed (source_id, graph_id) and
+        // graph_sources reuses its row per kind, so without this a second
+        // import violates the unique constraint rather than refreshing -- and
+        // a stale half of a graph is worse than no graph.
+        exec("DELETE FROM action_edges WHERE producer_id IN"
+                + " (SELECT id FROM declared_actions WHERE source_id = " + sourceId + ")"
+                + " OR consumer_id IN"
+                + " (SELECT id FROM declared_actions WHERE source_id = " + sourceId + ")");
+        exec("DELETE FROM declared_action_inputs WHERE action_row_id IN"
+                + " (SELECT id FROM declared_actions WHERE source_id = " + sourceId + ")");
+        exec("DELETE FROM declared_action_outputs WHERE action_row_id IN"
+                + " (SELECT id FROM declared_actions WHERE source_id = " + sourceId + ")");
+        exec("DELETE FROM declared_actions WHERE source_id = " + sourceId);
+
         exec("INSERT INTO labels (value) SELECT DISTINCT label FROM stage_target"
                 + " WHERE label <> '' ON CONFLICT DO NOTHING");
         exec("INSERT INTO mnemonics (value) SELECT DISTINCT mnemonic FROM stage_action"
@@ -189,6 +208,15 @@ public final class ActionGraphImporter {
                 + " JOIN stage_path sp ON sp.artifact = sao.artifact"
                 + " JOIN artifacts art ON art.path = sp.path"
                 + " ON CONFLICT DO NOTHING");
+
+        // Dense node numbering for the CSR index, assigned once the rows exist.
+        // Row ids keep growing across re-imports; a CSR is two arrays indexed
+        // from zero with no room for gaps.
+        exec("UPDATE declared_actions SET node_index = ("
+                + "   SELECT count(*) FROM declared_actions earlier"
+                + "    WHERE earlier.source_id = declared_actions.source_id"
+                + "      AND earlier.id < declared_actions.id)"
+                + " WHERE source_id = " + sourceId);
 
         return scalar("SELECT count(*) FROM declared_actions WHERE source_id = " + sourceId);
     }
