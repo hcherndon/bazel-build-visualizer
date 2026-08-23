@@ -138,6 +138,40 @@ public final class ConcurrencySweep {
         }
 
         /**
+         * How many spans were running at one instant.
+         *
+         * <p>Plan 15.1's start concurrency and completion concurrency: "number
+         * of active actions at start" and "number active immediately before
+         * completion", both per action. Two binary searches over the sorted
+         * endpoints, so asking for every action costs {@code n log n} rather
+         * than a sweep each.
+         *
+         * <p>Half-open as everywhere else, so an action's own start counts it
+         * and its own end does not. An action asking for its completion
+         * concurrency should therefore ask about the instant before it
+         * finished, which is what "immediately before completion" means.
+         */
+        public int activeAt(long instantMicros) {
+            sort();
+            return countAtMost(starts, instantMicros) - countAtMost(ends, instantMicros);
+        }
+
+        /** How many of the first {@code size} entries are at most {@code value}. */
+        private int countAtMost(long[] sorted, long value) {
+            int low = 0;
+            int high = size;
+            while (low < high) {
+                int middle = (low + high) >>> 1;
+                if (sorted[middle] <= value) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            return low;
+        }
+
+        /**
          * The stretches where fewer than {@code threshold} actions were
          * running.
          *
