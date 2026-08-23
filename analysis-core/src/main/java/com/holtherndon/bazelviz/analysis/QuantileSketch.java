@@ -72,7 +72,7 @@ public final class QuantileSketch {
      * that matters here is already far below the disagreement between the
      * sources being measured.
      */
-    public static final int SUB_BUCKETS = 64;
+    static final int SUB_BUCKETS = 64;
 
     private static final int SUB_BUCKET_BITS = 6;
 
@@ -374,16 +374,6 @@ public final class QuantileSketch {
             throw new IllegalStateException(
                     "bucket counts sum to less than the observation count: " + cumulative
                             + " < " + count);
-        }
-
-        /** Buckets in use; the trailing empty ones are not stored. */
-        public int bucketCount() {
-            return counts.length;
-        }
-
-        /** How many observations landed in one bucket. */
-        public long bucketCount(int bucket) {
-            return bucket < 0 || bucket >= counts.length ? 0 : counts[bucket];
         }
 
         @Override

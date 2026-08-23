@@ -307,15 +307,24 @@ final class MetricQueriesTest {
     }
 
     @Test
-    @DisplayName("start and completion concurrency come from the same sweep")
+    @DisplayName("start and completion concurrency are attached from the same sweep")
     void perActionConcurrency() throws Exception {
         SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
 
-        // Action 1 runs 1050-2950; action 2's attempts span 2000-3000. At 2000
-        // both are running; at 2999 only action 2 is.
-        assertThat(metrics.startConcurrency(java.util.OptionalLong.of(2_000))).hasValue(2);
-        assertThat(metrics.completionConcurrency(java.util.OptionalLong.of(3_000))).hasValue(1);
-        assertThat(metrics.startConcurrency(java.util.OptionalLong.empty())).isEmpty();
+        // Action 1 runs 1050-2950; action 2's attempts span 2000-3000. When
+        // action 2 starts at 2000 both are running; a microsecond before it
+        // ends at 3000, only it is.
+        com.holtherndon.bazelviz.analysis.ActionMetrics second = metrics.candidates().stream()
+                .filter(action -> action.actionId() == 2)
+                .findFirst()
+                .orElseThrow();
+        assertThat(second.startConcurrency()).hasValue(2);
+        assertThat(second.completionConcurrency()).hasValue(1);
+        // Action 5's spawn was a cache hit with a start, so it too is placed;
+        // an action with no observed start would carry neither figure.
+        assertThat(metrics.candidates()).allSatisfy(action ->
+                assertThat(action.startConcurrency().isPresent())
+                        .isEqualTo(action.startMicros().isPresent()));
     }
 
     @Test

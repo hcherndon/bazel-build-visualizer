@@ -634,6 +634,67 @@ and every other frame is far inside it; while a drag is in progress the canvas
 drops labels and, above 20,000 edges, edges too, which is what plan 17.7's
 "disable expensive detail while actively panning" is for.
 
+## Phase 8: the metric catalog and the finding rules
+
+Two separate measurements, because the work splits into two very different
+costs: the SQL scan that reads the session, and the arithmetic over what it
+read.
+
+### The formulas, at the plan's own Tier 3 ceiling
+
+`MetricFormulaScaleTest`, five million actions — plan 20.1's Tier 3 number, not
+a tenth of it. Neither formula needs a database or a Bazel server, so measuring
+at full size costs a second rather than the gigabytes a real build of that size
+would.
+
+| Operation | At 5,000,000 actions |
+|---|---|
+| Quantile sketch, every duration added | **13 ms** |
+| Concurrency sweep (sort, peak pass, histogram pass) | **110 ms** |
+| Low-parallelism windows, second walk | **24 ms** |
+
+Peak concurrency on that fixture is 112,036 and the reported p50 comes back as
+`6.82 s to 6.88 s` — an interval rather than a number, which is what the sketch
+actually knows. The interval is under 1% of its own value, which is the
+`SUB_BUCKETS` guarantee holding in practice.
+
+The sketch is 13 ms for five million values because it is a shift and an array
+increment per value, with no allocation after the bucket array has grown. That
+growth is bounded: a duration distribution reaching an hour uses about 1,900 of
+the 3,700 possible buckets, or 15 KB per group.
+
+### The whole collection, end to end
+
+`MetricScaleTest`, 250,000 actions with an execution-log attempt each, through
+the real query path:
+
+| Stage | At 250,000 actions |
+|---|---|
+| Collect: one scan, six aggregations, the sweep, coverage | **898 ms** |
+| Run all thirteen finding rules | **17 ms** |
+
+The rules are 17 ms because they never see the build. They run over a bounded
+candidate set — the top few actions by each of six criteria, collected in heaps
+during the scan that was happening anyway — so their cost is a function of
+`DEFAULT_CANDIDATE_LIMIT` and not of the session. On this fixture that is 98
+actions out of 250,000.
+
+**Extrapolating to Tier 3 honestly.** The collection is dominated by the SQL
+scan, and the formulas above show the arithmetic is not the cost: five million
+actions is 20× this fixture, so the scan is the part that grows and the
+collection would be on the order of fifteen to twenty seconds. That is why it
+runs once per session on its own thread rather than on the overview's
+two-second timer, and why the overview's own cards keep coming from the indexed
+counts (plan 20.2's "shows its overview within five seconds" is about those
+counts, not about this).
+
+**What the collection retains.** The sweep's spans stay in memory so each
+candidate's start and completion concurrency can be answered without a second
+sweep: two longs per timed action, 80 MB at Tier 3, against plan 20.2's 4 GB
+budget. The aggregations retain a fixed-size sketch per group rather than the
+durations, which is the whole reason a per-target aggregation over a build with
+100,000 targets is possible at all.
+
 ## Build performance
 
 `gradle.properties` enables parallel execution, the build cache, and the

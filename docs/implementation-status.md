@@ -18,7 +18,7 @@ renumbered or re-scoped here.
 | 5 | `aquery`, `cquery`, and graph construction | **Complete** — five of six exit criteria met, one partial with a stated reason (see below) |
 | 6 | Timeline | **Complete** — all five exit criteria met, one task partial with a stated reason (see below) |
 | 7 | Graph visualization | **Complete** — all six exit criteria met and proved by test (see below) |
-| 8 | Metrics and findings | Not started |
+| 8 | Metrics and findings | Done (2026-08-23) |
 | 9 | Session export, redaction, and macOS packaging | Not started |
 | 10 | Scale hardening and compatibility release gate | Not started |
 
@@ -761,12 +761,18 @@ about what a user sees.
 
 ### Interpretations worth knowing
 
-**Phase 6's critical-path overlay is now unblocked but still not drawn on the
-timeline.** Phase 7 supplies both halves of the join it was waiting for —
+**Phase 6's critical-path overlay is still not drawn on the timeline.** Phase 7
+supplies both halves of the join it was waiting for —
 `GraphQueries.durationsByNodeIndex` weights the path and `actionIdsByNodeIndex`
-maps a node back to an executed action — and the graph canvas draws paths. The
-timeline overlay itself belongs with Phase 8's metrics work, where the derived
-and Bazel-reported critical paths have to be kept distinct anyway.
+maps a node back to an executed action — and the graph canvas draws paths.
+
+*Corrected after Phase 8:* this section originally predicted the timeline
+overlay would land with Phase 8's metrics work. It did not. Phase 8 kept the two
+critical paths distinct, computed the derived one for the first time in
+production, and drew the chain on the **graph** canvas, which already had path
+rendering. The timeline overlay remains an unshipped Phase 6 deliverable rather
+than a Phase 8 omission, and it is recorded here as one so the prediction does
+not stand as a claim.
 
 **The far zoom band stops drawing individual edges above 30,000 of them.** Plan
 13.6's far band asks for aggregate edge thickness rather than individual edges,
@@ -819,3 +825,104 @@ nothing in graph drawing depends on Bazel's behaviour, so rule 18 does not
 apply. The scale figures come from the synthetic generator, which costs no
 server — the reason they could be taken at the plan's full 50,000-node limit
 without going near the memory ceiling that made the suite unrunnable earlier.
+
+## Phase 8 checklist (as of 2026-08-23)
+
+| Task | Status |
+|---|---|
+| Implement action/invocation metrics | Done — `ActionMetrics` for plan 15.1 and `InvocationMetrics` for plan 15.2, every optional value a `Measured` or an `Optional` so a view cannot render it without deciding what to say when it is missing |
+| Implement quantile sketches | Done — `QuantileSketch`, a fixed-layout integer histogram: bounded memory per group, mergeable so a live capture folds new actions into a total already drawn, and exact under merge because no floating point decides where a value goes |
+| Implement concurrency sweep | Done — `ConcurrencySweep`, an exact event-point walk rather than a binned count, with half-open spans so a handover is not an overlap |
+| Implement dependency critical path and slack | Done — `CriticalPath` (Phase 6) gains per-node accessors and is wired for the first time: `CriticalPaths` holds it beside Bazel's, the chain finding reports slack, and the graph canvas draws it |
+| Implement findings engine | Done — all thirteen of plan 16.1's rules, over a bounded candidate set collected during the scan |
+| Add evidence and caveats | Done — structurally: a `Finding` with no evidence cannot be constructed, and `FindingLanguage` refuses the phrasing plan 16.2 names |
+| Add dashboard navigation | Done — a Findings card, overview cards that navigate, and finding links that carry a `Kind` enum rather than a filter string |
+
+## Phase 8 exit criteria (plan section 24)
+
+Every criterion has a test in `Phase8ExitCriteriaTest`, run against a real
+session database with a real CSR index over a real action graph — the smallest
+session in which both critical paths exist at once, which the second criterion
+is about.
+
+| Criterion | Status |
+|---|---|
+| Every displayed metric reports source and completeness | Met — `MetricSeries` carries source, completeness and the count that did not report, and `describe()` is the sentence a view must print beside the number. The test walks every series in every aggregate, every coverage entry, and every number inside every finding. |
+| Bazel-reported and derived critical paths remain distinct | Met — and structurally, not editorially. `CriticalPaths` holds both and offers no accessor called `criticalPath`, no best-available fallback and no merge; the test asserts by reflection that no such accessor exists, and that the screen shows two rows rather than one. |
+| Findings link to supporting records | Met — a finding with no evidence throws at construction. The test resolves every action-kind evidence id back to a row in the session, so an id that named nothing would fail. |
+| Findings avoid unsupported causal language | Met — `FindingLanguage` refuses the phrases plan 16.2 lists and requires the sentence a reader acts on to hedge. "Root cause" is permitted only when the caller declares it holds a structured failure record. The test scans every finding the real session produces for the banned phrasing. |
+| Formulas have deterministic unit tests | Met — `QuantileSketchTest` (merge is commutative and associative; every reported interval contains the true quantile), `ConcurrencySweepTest` (agrees with a brute-force count; order-independent), `FindingRulesTest` (each rule fires on its own shape and not on others). And end to end: collecting the same session twice gives equal aggregates, equal findings and equal counts. |
+
+### Interpretations worth knowing
+
+**The duration source is measured, not assumed.** Two sources report how long
+an action took and they disagree about more than the number: the build event
+stream publishes no action timestamps on Bazel 6.5.0 or 7.6.1, publishes
+`endTime == startTime` for every action on 8.4.1, and omits a third of them on
+9.2.0, while the execution log times only the actions that spawned a
+subprocess. `bestDurationSource()` counts what each covers in *this* session and
+picks the larger. An action reporting the same start and end is untimed rather
+than a duration of zero — while its span still reaches the sweep, which reports
+it as instantaneous rather than losing it.
+
+**The two critical paths are meant to disagree.** Bazel's includes scheduling
+and machine limits; the derived one is what the dependency graph alone implies.
+`schedulingGapMicros()` is the difference, deliberately signed, and a build
+where the two are close was limited by its dependencies while one where Bazel's
+is much longer was limited by something else. They also cannot be joined:
+Bazel's components identify themselves by a progress message and nothing else.
+
+**A finding is a candidate, not a diagnosis.** Every rule reports a measurement
+and a threshold and stops. That is what one build on one machine supports: the
+queue-dominated rule can say queue time was most of an attempt and cannot say
+what the queue was, which is what plan 16.1's own text for that rule says too.
+
+**Two rules are grounded rather than guessed.** Cache-miss concentration refuses
+to fire without cache-state coverage, because an action with no execution-log
+record is not a miss. Non-cacheable concentration reads Bazel's own `cacheable`
+and `remotable` declarations rather than deciding what a runner string like
+`darwin-sandbox` implies — `spawn.proto` constrains that field to nothing and
+says it varies under the dynamic strategy.
+
+**The timeline's critical-path overlay is still not drawn, and Phase 8 is not
+where it went.** The Phase 7 notes predicted it would land here; that prediction
+was wrong and is corrected above. What Phase 8 delivered instead is the chain
+drawn on the *graph* canvas, which already had path rendering and needed only
+the node indices. The timeline overlay remains an unshipped Phase 6 deliverable.
+
+**Findings run once per session, not on a timer.** The overview refreshes every
+two seconds because its numbers are counts over indexed tables. A collection
+scans every action, sweeps every span and runs thirteen rules — 898 ms at
+250,000 actions — so it runs when a session opens and when the user asks again,
+and one collection feeds both the findings card and the overview's new cards.
+
+## Phase 8 audit
+
+Thirty-five findings, all fixed. Twenty of them were one defect wearing twenty
+faces: plan 15.2's invocation metrics and plan 15.3's aggregate distributions
+were computed on every collection and displayed nowhere — the same "work wired
+to nothing" the last two audits each found several of, at a larger scale. Six
+were genuinely dead API and were deleted. Two were plan requirements the rules
+had missed, found by asking what each unread accessor was *for*: plan 16.1
+requires a chain finding to show slack and graph coverage, and it showed
+neither. One was a link whose words promised to draw the dependency chain and
+whose handler opened the graph and stopped, which is the Phase 7 finding
+recurring in a new place and is fixed the same way — by making the link carry an
+enum a destination must handle to compile.
+
+`docs/phase8-audit.md` is the full report.
+
+### Verified from clean (Phase 8)
+
+`rm -rf build */build build-logic/build && ./gradlew build --no-build-cache`:
+**BUILD SUCCESSFUL in 2m 55s, 79 tasks all executed, 1,369 tests across 159
+classes, 0 failures, 0 errors, 0 skipped** — up from 1,281 at the end of
+Phase 7.
+
+*0 skipped* remains a fact about this machine, which has all four pinned Bazel
+versions installed. Phase 8, like Phases 6 and 7, added no test that needs
+Bazel: nothing in the metric catalog depends on Bazel's behaviour at run time,
+only on what four measured versions were already recorded as reporting, so
+rule 18 does not apply. Both scale measurements use synthetic data — which is
+why the formulas could be measured at the plan's full five-million Tier 3
+ceiling without going near the memory that made the suite unrunnable earlier.

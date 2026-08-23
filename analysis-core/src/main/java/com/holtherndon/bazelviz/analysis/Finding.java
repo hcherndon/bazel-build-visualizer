@@ -207,11 +207,25 @@ public record Finding(
             /** Just open it. */
             NONE,
             /** Filter to one mnemonic. */
-            MNEMONIC
+            MNEMONIC,
+            /**
+             * Draw the derived dependency chain itself.
+             *
+             * <p>A kind rather than a description, because a link that said
+             * "draw the dependency chain" and merely opened the graph would be
+             * a promise the code did not keep — which is the class of defect
+             * the Phase 7 audit found three of.
+             */
+            DERIVED_CRITICAL_PATH
         }
 
         public static Link to(View view, String description) {
             return new Link(view, Kind.NONE, "", description, OptionalLong.empty());
+        }
+
+        public static Link derivedCriticalPath(String description) {
+            return new Link(View.GRAPH, Kind.DERIVED_CRITICAL_PATH, "", description,
+                    OptionalLong.empty());
         }
 
         public static Link mnemonic(View view, String description, String mnemonic) {

@@ -399,3 +399,160 @@ with the counts above.
 - *Definition:* how much later an action could have started without delaying
   the build, from the backward pass.
 - *Note:* zero for every action on the critical path, by construction.
+
+## Phase 8 catalog
+
+Plan 15's metrics catalog, plan 16's findings, and the two questions every entry
+here has to answer before it may appear on a screen: where the number came from,
+and how much of the build it covers.
+
+### The duration source
+
+- *Definition:* which measurement fed every duration in a collection — the
+  build event stream's action start and end, or the execution log's per-spawn
+  total time.
+- *Formula:* `bestDurationSource()` counts, in this session, the actions with a
+  usable BEP pair (`end > start`, both present) against the actions with an
+  execution-log total, and picks the larger. Ties go to the execution log.
+- *Why it is not a constant:* the event stream publishes no action timestamps on
+  Bazel 6.5.0 or 7.6.1, publishes `endTime == startTime` for every action on
+  8.4.1, and omits roughly a third of them on 9.2.0; the execution log times
+  only the actions that spawned a subprocess, which is a minority. Choosing from
+  the Bazel version would be wrong for a session captured with different flags.
+- *Caveats:* the two sources measure different spans and are named differently
+  on screen for that reason — **Action wall duration** from the event stream,
+  **Subprocess time** from the log. The second is a sum over an action's
+  attempts, so an action raced by the dynamic strategy consumed more of it than
+  it held the wall clock for.
+
+### Quantile (median, p90, p95, p99)
+
+- *Definition:* the value at a rank in a group's distribution.
+- *Source:* a fixed-layout integer histogram over the group's observations.
+- *Formula:* rank is `ceil(q × count)`, clamped to at least one; the answer is
+  the exact integer range of the bucket that rank falls in.
+- *Reported as an interval, not a number.* A histogram does not know where
+  inside a bucket its values fell, and a midpoint would be a derived guess with
+  the same face as a measurement. The interval is never wider than about 1.6% of
+  its own value. `p0` and `p100` come back as single values because the minimum
+  and maximum are tracked exactly.
+- *Unavailable when:* the group has no observations — in which case the minimum,
+  maximum, sum and mean are all absent rather than zero, and the count is the
+  one number that says why.
+
+### Peak concurrency
+
+- *Definition:* the largest number of actions observed running at one instant.
+- *Source:* an exact sweep over every observed span's endpoints.
+- *Formula:* spans are half-open, `[start, end)`, and every end at an instant is
+  applied before every start at it — so a chain of back-to-back actions reports
+  one, not briefly two.
+- *Caveats:* **a span of zero length is never running.** Bazel 8.4.1 reports
+  every action with `endTime == startTime`, so a sweep of its event-stream
+  timings finds nothing running at any instant. That is true of the timings and
+  false of the build, and `instantaneousSpans` is how the answer says so.
+- *Unavailable when:* nothing had a usable span. Reported as unknown, never as a
+  peak of zero.
+
+### Average concurrency, parallelism factor
+
+- *Definition:* summed span time divided by the wall-clock interval swept.
+- *Note:* plan 15.2 and plan 15.4 ask for the same quantity under two names, and
+  both names exist in the API because a reader who found only one would
+  reasonably conclude the other was missing.
+- *Caveats:* **an aggregate concurrency indicator, not CPU utilization.** A build
+  of remote actions can report far more than the machine has cores, and a build
+  of one long local action reports one whatever it did to the CPU. A second
+  figure, average *while busy*, divides by the time something was running, so a
+  build with one long stall does not lower its own baseline.
+
+### Time with zero active actions, time with low concurrency
+
+- *Definition:* microseconds inside the swept window at concurrency zero, and at
+  concurrency below a threshold.
+- *Note:* over the observed spans, not over Bazel's execution phase. A caller
+  that knows the phase boundaries can compare the two; one that does not should
+  not be told that it does.
+- *Threshold:* the low-parallelism windows use this session's own typical
+  concurrency — the average while busy — divided by two, and ignore stretches
+  shorter than 500 ms.
+
+### Slack
+
+- *Definition:* how much later an action could have started without making the
+  build longer.
+- *Source:* the backward pass of the derived dependency schedule.
+- *Note:* zero for every action on the derived critical path, by construction —
+  which is exactly what distinguishes "on the chain" from "merely slow", and is
+  why the chain finding reports it per contributor.
+- *Unavailable when:* there is no imported action graph, or the action is not in
+  it. An action that ran without being declared by analysis has no slack rather
+  than slack of zero.
+
+### Start concurrency, completion concurrency
+
+- *Definition:* actions running when one action started, and running immediately
+  before it finished.
+- *Formula:* two binary searches over the sorted endpoints. "Immediately before"
+  is one microsecond before the end, because spans are half-open and an action's
+  own end instant is a moment at which it is no longer running.
+- *Unavailable when:* the session's duration source did not place the action on
+  the clock.
+
+### Cache state, per action
+
+- *Definition:* hit, miss, or **not reported**.
+- *Formula:* an action is a miss if any of its attempts reported one, a hit if
+  they all did, and not reported if none of them said.
+- *Caveats:* **not reported is not a miss.** Most actions run inside the Bazel
+  server and never spawn a subprocess, so no execution-log record exists for
+  them. Every rate is over the actions that reported, and every place showing a
+  rate shows the count it was taken over. Plan 16.1 requires sufficient
+  cache-state coverage before a cache finding may be raised at all, and the rule
+  refuses below half.
+
+### Runner, per action
+
+- *Definition:* the runner string Bazel wrote, verbatim.
+- *Formula:* an action's runner is the one its attempts share. An action whose
+  spawns ran under different runners, or whose spawns did not all report one,
+  has **no** runner rather than whichever name sorted first.
+- *Caveats:* free text, never parsed into a category. `spawn.proto` constrains
+  the field to nothing and says it varies under the dynamic strategy, so
+  "local", "remote" and "worker" are readings of the data and not the data.
+
+### Declared uncacheable, declared not remotable
+
+- *Definition:* counts of actions whose spawns Bazel marked `cacheable = 0` or
+  `remotable = 0`.
+- *Source:* execution log, Bazel's own declaration, read verbatim.
+- *Why it exists:* it is the grounded answer to plan 16.1's "non-cacheable or
+  local-only concentration", which would otherwise require guessing what a
+  runner name implies.
+
+### Coverage figures
+
+- *Definition:* what share of the build each source describes — timing, runner,
+  cache state, input size, output size, action graph, target graph, correlation.
+- *Note:* every incomplete figure carries the reason. "No aquery output was
+  imported" and "an action the graph declares and the build served from cache
+  never executed" are different problems with different fixes, and a bare
+  percentage cannot tell them apart.
+- *Caveats:* a source that produced nothing is reported as **unavailable** rather
+  than as zero per cent, because zero of zero divides by nothing and reads as
+  complete.
+
+### Findings
+
+- *Definition:* an evidence-backed optimization candidate (plan section 16),
+  carrying a title, severity, confidence, evidence, metric values, the threshold
+  used, why it may matter, caveats, a suggested next investigation, and links.
+- *Severity is not confidence.* Severity is how much of the build the finding is
+  about; confidence is how well the data supports it. A large effect measured
+  through a source that covered a third of the actions is high severity and low
+  confidence, and one combined number could not express that.
+- *Caveats:* every finding is a correlation over one build that ran once, on one
+  machine, under one set of flags. The rules report a measurement and a
+  threshold and stop. `FindingLanguage` refuses "will improve", "definitely",
+  "is caused by" and their relatives at construction, and permits "root cause"
+  only when the finding rests on a structured failure record.

@@ -82,6 +82,10 @@ public final class MetricFormat {
         return String.format(Locale.ROOT, "%,d", value);
     }
 
+    public static String count(OptionalLong value) {
+        return value.isPresent() ? count(value.getAsLong()) : UNKNOWN;
+    }
+
     /** A ratio such as a parallelism factor, which is not a percentage. */
     public static String ratio(OptionalDouble value) {
         return value.isPresent()

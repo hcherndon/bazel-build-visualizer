@@ -1127,7 +1127,7 @@ public final class MetricQueries implements AutoCloseable {
     }
 
     /** The name a duration series goes under, which says what was measured. */
-    public static String durationName(CriticalPath.DurationSource source) {
+    private static String durationName(CriticalPath.DurationSource source) {
         return switch (source) {
             case BEP_ACTION -> "Action wall duration";
             case EXECUTION_ATTEMPT -> "Subprocess time";

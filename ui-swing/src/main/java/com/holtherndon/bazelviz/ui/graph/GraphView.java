@@ -80,6 +80,7 @@ public final class GraphView extends JPanel {
 
     private final JPanel deck = new JPanel(new java.awt.CardLayout());
     private final GraphCanvasPanel canvasPanel = new GraphCanvasPanel();
+    private final javax.swing.JTabbedPane views = new javax.swing.JTabbedPane();
 
     private ExecutorService worker;
     private GraphQueries queries;
@@ -131,7 +132,6 @@ public final class GraphView extends JPanel {
         // does this depend on" one level at a time; the canvas answers "what
         // shape is this" all at once. Neither replaces the other, and the
         // trees came first because they work at any size.
-        javax.swing.JTabbedPane views = new javax.swing.JTabbedPane();
         views.addTab("Trees", lists);
         views.addTab("Canvas", canvasPanel);
 
@@ -289,6 +289,27 @@ public final class GraphView extends JPanel {
                     work.node(Math.toIntExact(nodeIndex.getAsLong()));
             found.ifPresent(node -> SwingUtilities.invokeLater(() -> showNode(node)));
         });
+    }
+
+    /**
+     * Draws a chain of graph nodes on the canvas.
+     *
+     * <p>The nodes come from the metric collection's derived critical path,
+     * which computed them with whichever duration source covered this session
+     * — so this draws the chain the findings describe rather than recomputing
+     * one from a different weighting and drawing something else.
+     */
+    public void showCriticalPath(List<Integer> nodes) {
+        if (nodes.isEmpty()) {
+            pathResult.setText("There is no derived dependency chain to draw:"
+                    + " this session has no imported action graph.");
+            return;
+        }
+        views.setSelectedComponent(canvasPanel);
+        canvasPanel.showPath(
+                nodes, com.holtherndon.bazelviz.analysis.GraphExtract.Mode.CRITICAL_PATH);
+        pathResult.setText("Visualizer-computed dependency critical path: " + nodes.size()
+                + " actions. This is what the dependencies imply, not what Bazel scheduled.");
     }
 
     /** Roots both trees at {@code node} and loads its immediate neighbours. */

@@ -157,6 +157,15 @@ public final class MainWindow extends JFrame {
      */
     private SessionSource liveSource;
     private MetricsService metricsService;
+    /**
+     * The derived chain's node indices, from the last metric collection.
+     *
+     * <p>Kept rather than recomputed: the collection weighted the graph with
+     * whichever duration source covered this session, and a second computation
+     * with a different weighting would draw a different chain from the one the
+     * findings describe.
+     */
+    private List<Integer> derivedCriticalPath = List.of();
     private final ExecutorService worker;
     private final ExecutorService captureWorker;
     private final ImportController importController;
@@ -249,7 +258,7 @@ public final class MainWindow extends JFrame {
         findingsView.onNavigate(this::followFindingLink);
         // Plan 17.3: every card navigates. The overview names a destination and
         // the window decides what showing it means.
-        overviewPanel.onNavigate(this::showCard);
+        overviewPanel.onNavigate(this::openFromOverview);
         timeline.onSelection(actionId -> actionsView.selectAction(actionId));
         // A range dragged out on the timeline narrows the actions table (plan
         // 14.5). Cleared the same way, so the two never disagree about what is
@@ -549,6 +558,10 @@ public final class MainWindow extends JFrame {
         // cards, so opening a session scans its actions once rather than twice.
         metricsService = new MetricsService(opened);
         metricsService.addListener(overviewPanel::showMetrics);
+        metricsService.addListener(result -> derivedCriticalPath =
+                result.metrics().invocation().criticalPaths().derived()
+                        .map(com.holtherndon.bazelviz.analysis.CriticalPath.Result::path)
+                        .orElse(List.of()));
         findingsView.attach(metricsService);
         closeSource(previous);
     }
@@ -565,6 +578,7 @@ public final class MainWindow extends JFrame {
         graphView.closeSession();
         timeline.closeSession();
         findingsView.detach();
+        derivedCriticalPath = List.of();
         MetricsService closing = metricsService;
         metricsService = null;
         if (closing != null) {
@@ -678,9 +692,32 @@ public final class MainWindow extends JFrame {
         }
         switch (link.kind()) {
             case MNEMONIC -> actionsView.applyFilter(link.value(), ActionSort.DURATION, true);
+            case DERIVED_CRITICAL_PATH -> {
+                openGraphOnDerivedPath();
+                return;
+            }
             case NONE -> { }
         }
         showCard(destination);
+    }
+
+    /**
+     * Opens the graph with the derived dependency chain drawn on it.
+     *
+     * <p>The only overview card that points at the graph is the derived-path
+     * one, so arriving there from the overview means the same request.
+     */
+    private void openGraphOnDerivedPath() {
+        showCard(NavEntry.GRAPH);
+        graphView.showCriticalPath(derivedCriticalPath);
+    }
+
+    private void openFromOverview(NavEntry entry) {
+        if (entry == NavEntry.GRAPH) {
+            openGraphOnDerivedPath();
+            return;
+        }
+        showCard(entry);
     }
 
     /** Shows one action in the actions table, selected. */

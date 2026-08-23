@@ -9,7 +9,6 @@ import com.holtherndon.bazelviz.storage.metrics.SessionMetrics;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -45,30 +44,31 @@ public final class MetricsService implements AutoCloseable {
     private final AtomicLong generation = new AtomicLong();
 
     private final List<Consumer<Result>> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
-    private volatile FindingThresholds thresholds = FindingThresholds.defaults();
-    private volatile Result last;
+    private final FindingThresholds thresholds;
 
     public MetricsService(SessionSource source) {
-        this(source, SwingUtilities::invokeLater);
+        this(source, SwingUtilities::invokeLater, FindingThresholds.defaults());
     }
 
     /**
      * @param onEventThread how a result gets back to the UI thread; a parameter
      *     so a headless test can run the whole path without an event queue
+     * @param thresholds the numbers the rules compare against, fixed for the
+     *     life of this service — every finding states the threshold it used,
+     *     and a setter would let those printed numbers disagree with the
+     *     findings already on screen
      */
-    public MetricsService(SessionSource source, Consumer<Runnable> onEventThread) {
+    public MetricsService(
+            SessionSource source, Consumer<Runnable> onEventThread,
+            FindingThresholds thresholds) {
         this.source = Objects.requireNonNull(source, "source");
         this.onEventThread = Objects.requireNonNull(onEventThread, "onEventThread");
+        this.thresholds = Objects.requireNonNull(thresholds, "thresholds");
         this.worker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "bbv-metrics");
             thread.setDaemon(true);
             return thread;
         });
-    }
-
-    /** The thresholds the next collection will use. */
-    public void setThresholds(FindingThresholds thresholds) {
-        this.thresholds = Objects.requireNonNull(thresholds, "thresholds");
     }
 
     /**
@@ -80,11 +80,6 @@ public final class MetricsService implements AutoCloseable {
      */
     public void addListener(Consumer<Result> listener) {
         listeners.add(Objects.requireNonNull(listener, "listener"));
-    }
-
-    /** The most recent result, when one has arrived. */
-    public Optional<Result> last() {
-        return Optional.ofNullable(last);
     }
 
     /**
@@ -109,7 +104,6 @@ public final class MetricsService implements AutoCloseable {
                 if (generation.get() != mine) {
                     return;
                 }
-                last = result;
                 onEventThread.accept(() -> {
                     onDone.accept(result);
                     for (Consumer<Result> listener : listeners) {

@@ -74,10 +74,6 @@ public record Coverage(
         return total == 0 ? OptionalDouble.empty() : OptionalDouble.of((double) covered / total);
     }
 
-    public long uncovered() {
-        return total - covered;
-    }
-
     public boolean isComplete() {
         return total > 0 && covered == total;
     }

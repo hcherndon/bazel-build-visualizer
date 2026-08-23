@@ -4,6 +4,8 @@ import com.holtherndon.bazelviz.analysis.ConcurrencySweep;
 import com.holtherndon.bazelviz.analysis.Coverage;
 import com.holtherndon.bazelviz.analysis.CriticalPaths;
 import com.holtherndon.bazelviz.analysis.Finding;
+import com.holtherndon.bazelviz.analysis.GroupAggregate;
+import com.holtherndon.bazelviz.analysis.MetricSeries;
 import com.holtherndon.bazelviz.analysis.MetricFormat;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
@@ -66,6 +68,7 @@ public final class FindingsView extends JPanel {
     private final JList<Finding> list = new JList<>(model);
     private final JPanel detail = new JPanel();
     private final JPanel summary = new JPanel(new GridLayout(0, 2, 12, 4));
+    private final JPanel catalog = new JPanel();
     private final JLabel headline = new JLabel(" ");
     private final JButton recompute = new JButton("Recompute");
     private final JLabel empty = PlainText.disableHtml(
@@ -95,23 +98,33 @@ public final class FindingsView extends JPanel {
         detail.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
         summary.setBorder(BorderFactory.createEmptyBorder(4, 12, 12, 12));
+        catalog.setLayout(new BoxLayout(catalog, BoxLayout.Y_AXIS));
+        catalog.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
 
         JPanel header = new JPanel(new BorderLayout());
         header.setBorder(BorderFactory.createEmptyBorder(12, 12, 0, 12));
         header.add(headline, BorderLayout.CENTER);
         header.add(recompute, BorderLayout.EAST);
 
-        JPanel top = new JPanel(new BorderLayout());
-        top.add(header, BorderLayout.NORTH);
-        top.add(summary, BorderLayout.CENTER);
+        JPanel top = new JPanel();
+        top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
+        header.setAlignmentX(LEFT_ALIGNMENT);
+        summary.setAlignmentX(LEFT_ALIGNMENT);
+        catalog.setAlignmentX(LEFT_ALIGNMENT);
+        top.add(header);
+        top.add(summary);
+        top.add(catalog);
 
         JSplitPane split = new JSplitPane(
                 JSplitPane.HORIZONTAL_SPLIT, new JScrollPane(list), new JScrollPane(detail));
         split.setDividerLocation(360);
         split.setResizeWeight(0.35);
 
-        add(top, BorderLayout.NORTH);
-        add(split, BorderLayout.CENTER);
+        JSplitPane page = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT, new JScrollPane(top), split);
+        page.setDividerLocation(300);
+        page.setResizeWeight(0.35);
+        add(page, BorderLayout.CENTER);
 
         recompute.addActionListener(event -> refresh());
         recompute.setEnabled(false);
@@ -188,6 +201,12 @@ public final class FindingsView extends JPanel {
             summary.add(label(row[1], false));
         }
 
+        catalog.removeAll();
+        catalog.add(section("Invocation metrics", invocationRows(result)));
+        catalog.add(Box.createVerticalStrut(10));
+        result.metrics().aggregate(GroupAggregate.Dimension.MNEMONIC)
+                .ifPresent(table -> catalog.add(section(table.describe(), mnemonicRows(table))));
+
         detail.removeAll();
         if (!model.isEmpty()) {
             list.setSelectedIndex(0);
@@ -233,6 +252,168 @@ public final class FindingsView extends JPanel {
         return rows;
     }
 
+    /**
+     * Plan 15.2's invocation metrics, each beside what it could not count.
+     *
+     * <p>These are not on the overview's two-second timer and are not repeated
+     * there: the overview counts rows, this reads the catalog. Every entry that
+     * can be unavailable says so in words rather than as a zero (rule 11).
+     */
+    private static List<String[]> invocationRows(MetricsService.Result result) {
+        var invocation = result.metrics().invocation();
+        var timing = invocation.timing();
+        var work = invocation.work();
+        var bytes = invocation.bytes();
+        var tests = invocation.tests();
+        var ingest = invocation.ingest();
+        List<String[]> rows = new java.util.ArrayList<>();
+
+        rows.add(new String[] {"Wall time",
+                MetricFormat.duration(toOptional(timing.totalWallMicros()))});
+        rows.add(new String[] {"Time to the first event received",
+                MetricFormat.duration(toOptional(timing.timeToFirstEventMicros()))});
+        for (var phase : timing.phases()) {
+            rows.add(new String[] {"Phase: " + phase.name(),
+                    MetricFormat.duration(phase.durationMicros())
+                            + (phase.endIsDerived()
+                                    ? " (end derived: the profile records when a phase began and"
+                                            + " never when it ended)"
+                                    : "")});
+        }
+
+        rows.add(new String[] {"Actions", MetricFormat.count(work.actions())
+                + " — " + work.actionsSucceeded() + " succeeded, " + work.actionsFailed()
+                + " failed, " + work.actionsOtherOutcome() + " neither"});
+        rows.add(new String[] {"Attempts", MetricFormat.count(work.attempts())
+                + " — " + MetricFormat.ratio(work.attemptsPerAction()) + " per action, which is"
+                + " below one because most actions never spawn a subprocess"});
+        rows.add(new String[] {"Cache state", work.cacheHits() + " hit, " + work.cacheMisses()
+                + " missed, " + work.cacheStateUnknown() + " not reported — hit rate "
+                + MetricFormat.percent(work.cacheHitRate()) + " over the ones that reported"});
+        rows.add(new String[] {"Runners", work.runners().isEmpty()
+                ? MetricFormat.UNKNOWN + " — no execution log"
+                : work.runners().stream()
+                        .map(runner -> runner.runner() + " ×" + runner.actions())
+                        .collect(java.util.stream.Collectors.joining(", "))});
+
+        rows.add(new String[] {"Known input bytes",
+                MetricFormat.bytes(toOptional(bytes.knownInputBytes()))
+                        + ", " + bytes.actionsWithoutInputBytes() + " actions reported none"});
+        rows.add(new String[] {"Known output bytes",
+                MetricFormat.bytes(toOptional(bytes.knownOutputBytes()))
+                        + ", " + bytes.artifactsWithoutSize() + " artifacts have no recorded size"
+                        + (bytes.isPartial() ? " — both totals are lower bounds" : "")});
+
+        invocation.concurrency().ifPresent(sweep -> {
+            rows.add(new String[] {"Peak concurrency", MetricFormat.count(sweep.peakActive())
+                    + ", first reached "
+                    + MetricFormat.duration(
+                            sweep.peakFirstSeenMicros() - sweep.windowStartMicros())
+                    + " into the observed span"});
+            rows.add(new String[] {"Average concurrency",
+                    MetricFormat.ratio(sweep.averageActive()) + " across the whole window, "
+                            + MetricFormat.ratio(sweep.averageActiveWhileBusy())
+                            + " while something was running"});
+            rows.add(new String[] {"Parallelism factor",
+                    MetricFormat.ratio(sweep.parallelismFactor())
+                            + " — an aggregate concurrency indicator, not CPU utilization"});
+            rows.add(new String[] {"Time with nothing running",
+                    MetricFormat.duration(sweep.idleMicros()) + " of "
+                            + MetricFormat.duration(sweep.windowMicros())});
+            rows.add(new String[] {"Observed work",
+                    MetricFormat.duration(sweep.totalSpanMicros()) + " across "
+                            + MetricFormat.count(sweep.sweptSpans()) + " spans"
+                            + (sweep.instantaneousSpans() > 0
+                                    ? ", plus " + sweep.instantaneousSpans()
+                                            + " that start and end at the same instant"
+                                    : "")
+                            + (sweep.untimedSpans() > 0
+                                    ? ", with " + sweep.untimedSpans() + " actions untimed"
+                                    : "")});
+        });
+
+        rows.add(new String[] {"Tests", MetricFormat.count(tests.total()) + " — "
+                + tests.failed() + " not passing, " + tests.flaky() + " flaky, "
+                + tests.cached() + " with a cached attempt"});
+        rows.add(new String[] {"Events", MetricFormat.count(ingest.rawEvents())
+                + " — " + ingest.undecodableEvents() + " could not be decoded, "
+                + ingest.notAttemptedEvents() + " were not decoded by choice"});
+        rows.add(new String[] {"Ingestion lag",
+                MetricFormat.duration(toOptional(ingest.meanIngestLagMicros()))
+                        + " on average — a measure of this application, not of Bazel"});
+        rows.add(new String[] {"Correlation", MetricFormat.percent(ingest.correlationRate())
+                + " — " + ingest.attemptsCorrelated() + " spawns matched an action, "
+                + ingest.attemptsUnresolved() + " matched none"});
+        return rows;
+    }
+
+    /** Plan 15.3's distribution for the dimension a build is usually read by. */
+    private static List<String[]> mnemonicRows(GroupAggregate.Table table) {
+        List<String[]> rows = new java.util.ArrayList<>();
+        table.heaviest().ifPresent(group -> rows.add(new String[] {
+            "Most observed work", group.displayKey()}));
+        for (GroupAggregate group : table.groups()) {
+            MetricSeries duration = group.duration();
+            StringBuilder value = new StringBuilder()
+                    .append(MetricFormat.count(group.actions()))
+                    .append(group.actions() == 1 ? " action, " : " actions, ")
+                    .append(duration.exactSum().isPresent() ? "" : "at least ")
+                    .append(MetricFormat.duration(duration.observedSum()))
+                    .append(" (")
+                    .append(MetricFormat.count(duration.observed()))
+                    .append(" timed)");
+            duration.distribution().min().ifPresent(min -> value
+                    .append(", min ").append(MetricFormat.duration(min)));
+            value.append(", median ").append(MetricFormat.bounds(duration.median()));
+            value.append(", p95 ").append(MetricFormat.bounds(duration.quantile(0.95)));
+            duration.distribution().max().ifPresent(max -> value
+                    .append(", max ").append(MetricFormat.duration(max)));
+            duration.distribution().mean().ifPresent(mean -> value
+                    .append(", mean ").append(MetricFormat.duration(Math.round(mean))));
+            if (group.cacheHits() + group.cacheMisses() > 0) {
+                value.append("; cache ").append(MetricFormat.percent(group.cacheHitRate()))
+                        .append(" hit over ").append(group.cacheHits() + group.cacheMisses())
+                        .append(" reporting");
+            }
+            if (group.cacheUnknown() > 0) {
+                // Named, not omitted: an action with no execution-log record is
+                // neither a hit nor a miss, and a rate shown without this count
+                // reads as if it covered the group.
+                value.append("; ").append(group.cacheUnknown())
+                        .append(" reported no cache state");
+            }
+            if (group.declaredNotCacheable() > 0) {
+                value.append("; ").append(group.declaredNotCacheable())
+                        .append(" declared uncacheable by Bazel");
+            }
+            group.inputBytes().observedSum().ifPresent(input -> value
+                    .append("; inputs at least ").append(MetricFormat.bytes(input)));
+            rows.add(new String[] {
+                group.displayKey() + (group.isUnknownKey() ? " (no mnemonic recorded)" : ""),
+                value.toString()});
+        }
+        return rows;
+    }
+
+    private static java.util.OptionalLong toOptional(
+            com.holtherndon.bazelviz.core.measure.Measured<Long> measured) {
+        return measured.value()
+                .map(java.util.OptionalLong::of)
+                .orElseGet(java.util.OptionalLong::empty);
+    }
+
+    /** A titled block of name/value rows. */
+    private static JPanel section(String heading, List<String[]> rows) {
+        JPanel panel = new JPanel(new GridLayout(0, 2, 12, 2));
+        panel.setBorder(BorderFactory.createTitledBorder(heading));
+        panel.setAlignmentX(LEFT_ALIGNMENT);
+        for (String[] row : rows) {
+            panel.add(label(row[0], true));
+            panel.add(label(row[1], false));
+        }
+        return panel;
+    }
+
     private void showDetail(Finding finding) {
         detail.removeAll();
         if (finding == null) {
@@ -243,7 +424,10 @@ public final class FindingsView extends JPanel {
         detail.add(heading(finding.title()));
         detail.add(label("Severity " + finding.severity().displayName()
                 + " · confidence " + finding.confidence().displayName()
-                + " · rule " + finding.ruleId(), false));
+                + " · rule " + finding.ruleId()
+                + (finding.provenByFailureData()
+                        ? " · backed by a structured failure record"
+                        : " · a correlation over one build, not a diagnosis"), false));
         detail.add(Box.createVerticalStrut(10));
 
         detail.add(heading("Why it may matter"));
@@ -302,6 +486,7 @@ public final class FindingsView extends JPanel {
 
     private void showEmpty() {
         headline.setText(" ");
+        catalog.removeAll();
         detail.removeAll();
         detail.add(empty);
         revalidate();
@@ -383,6 +568,13 @@ public final class FindingsView extends JPanel {
                 text.append(label.getText()).append('\n');
             }
         }
+        return text.toString();
+    }
+
+    /** Every string in the invocation-metric and aggregate sections, joined. */
+    public String catalogTextForTest() {
+        StringBuilder text = new StringBuilder();
+        collectText(catalog, text);
         return text.toString();
     }
 

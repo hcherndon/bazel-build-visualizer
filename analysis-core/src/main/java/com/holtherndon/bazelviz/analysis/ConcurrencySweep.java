@@ -114,20 +114,9 @@ public final class ConcurrencySweep {
             untimed++;
         }
 
-        /** Spans that occupy time, and so take part in the sweep. */
-        public int sweptCount() {
-            return size;
-        }
-
-        /** Actions that had a timing at all, including the zero-length ones. */
-        public long timedCount() {
-            return size + instantaneous;
-        }
-
-        /** Actions with no observed timing. */
-        public long untimedCount() {
-            return untimed;
-        }
+        // The counts these spans imply are reported by Result, which is what
+        // a caller reads. Three accessors here saying the same thing from the
+        // accumulator would be three more places for them to disagree.
 
         private void sort() {
             if (!sorted) {

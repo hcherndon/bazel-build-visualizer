@@ -81,33 +81,10 @@ public record SessionMetrics(
         return Optional.ofNullable(aggregates.get(dimension));
     }
 
-    /**
-     * How many actions were running when one action started (plan 15.1).
-     *
-     * <p>Empty when that action has no observed start under this session's
-     * duration source, which is not the same as none having been running.
-     */
-    public OptionalLong startConcurrency(OptionalLong startMicros) {
-        return startMicros.isPresent()
-                ? OptionalLong.of(spans.activeAt(startMicros.getAsLong()))
-                : OptionalLong.empty();
-    }
-
-    /**
-     * How many were running immediately before one action finished.
-     *
-     * <p>One microsecond before its end, because spans are half-open and the
-     * action's own end instant is a moment at which it is no longer running.
-     * Plan 15.1's wording — "number active immediately before completion" — is
-     * what that microsecond is for.
-     */
-    public OptionalLong completionConcurrency(OptionalLong endMicros) {
-        if (endMicros.isEmpty()) {
-            return OptionalLong.empty();
-        }
-        long instant = endMicros.getAsLong();
-        return OptionalLong.of(spans.activeAt(instant == Long.MIN_VALUE ? instant : instant - 1));
-    }
+    // Start and completion concurrency are attached to each candidate action
+    // by MetricQueries while it has the spans in hand; a second pair of
+    // accessors here would be a second definition of "immediately before
+    // completion" for the same number.
 
     /**
      * The typical concurrency this session ran at, for finding thresholds.

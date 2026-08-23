@@ -98,9 +98,12 @@ public final class FindingRules {
                 .toList();
         List<Evidence> evidence = new ArrayList<>();
         for (ActionMetrics action : contributors) {
+            // Plan 16.1 asks a chain finding to show slack. Every action on the
+            // path has slack of zero by construction, and saying so is what
+            // distinguishes "on the chain" from "merely slow".
             evidence.add(Evidence.action(action.actionId(), action.displayLabel(),
                     action.mnemonic() + ", " + MetricFormat.duration(action.durationMicros())
-                            + " on the derived path"));
+                            + ", slack " + MetricFormat.duration(action.slackMicros())));
         }
         if (evidence.isEmpty()) {
             // The path exists but none of its nodes could be resolved to an
@@ -127,7 +130,15 @@ public final class FindingRules {
                                 MetricFormat.count(path.path().size()), "computed here"),
                         new MetricValue("Build wall time",
                                 MetricFormat.duration(wall.getAsLong()),
-                                "build event stream")),
+                                "build event stream"),
+                        // Plan 16.1: "whether graph coverage is complete". The
+                        // chain is only as trustworthy as the graph it walked.
+                        new MetricValue("Action-graph coverage",
+                                graphCoverage(inputs)
+                                        .map(coverage -> MetricFormat.percent(coverage.fraction()))
+                                        .orElse(MetricFormat.UNKNOWN),
+                                graphCoverage(inputs).map(Coverage::describe)
+                                        .orElse("no coverage figure was recorded"))),
                 "at least " + MetricFormat.percent(inputs.thresholds().criticalPathShare())
                         + " of wall time",
                 "A chain this long means the build's shape, rather than the number of jobs, may"
@@ -143,7 +154,7 @@ public final class FindingRules {
                                 : ""),
                 "Open the graph on the longest link and look at what it waits for.",
                 List.of(
-                        Link.to(Link.View.GRAPH, "Draw the dependency chain"),
+                        Link.derivedCriticalPath("Draw the dependency chain"),
                         Link.to(Link.View.TIMELINE, "See where the chain sat on the clock")),
                 false));
     }
@@ -163,9 +174,11 @@ public final class FindingRules {
                         ConcurrencySweep.Window::durationMicros).reversed())
                 .limit(EVIDENCE_LIMIT)
                 .toList();
-        long idleTotal = inputs.lowParallelismWindows().stream()
-                .mapToLong(ConcurrencySweep.Window::durationMicros)
-                .sum();
+        // The sweep's own histogram, not a sum over the reported windows: a
+        // window shorter than the minimum is filtered out of the list and is
+        // still time the build spent below the threshold.
+        int threshold = worst.getFirst().peakActive() + 1;
+        long idleTotal = concurrency.microsBelow(threshold);
         double share = concurrency.windowMicros() > 0
                 ? (double) idleTotal / concurrency.windowMicros()
                 : 0;
@@ -471,6 +484,12 @@ public final class FindingRules {
                         new MetricValue("Direct consumers",
                                 MetricFormat.count(widest.directConsumers().orElse(0)),
                                 "imported action graph"),
+                        new MetricValue("Direct dependencies",
+                                MetricFormat.count(widest.directDependencies()),
+                                "imported action graph"),
+                        new MetricValue("On the derived critical path",
+                                widest.onDerivedCriticalPath() ? "yes" : "no",
+                                "computed here from the imported action graph"),
                         new MetricValue("Its own duration",
                                 MetricFormat.duration(widest.durationMicros()),
                                 "the session's duration source")),
@@ -602,7 +621,15 @@ public final class FindingRules {
                                 MetricFormat.duration(worst.durationMicros()), "execution log"),
                         new MetricValue("Runner",
                                 worst.runner() == null ? MetricFormat.UNKNOWN : worst.runner(),
-                                "execution log, Bazel's own string")),
+                                "execution log, Bazel's own string"),
+                        // Plan 15.1's start concurrency: how loaded the build
+                        // was when this action began waiting.
+                        new MetricValue("Actions running when it started",
+                                MetricFormat.count(worst.startConcurrency()),
+                                "computed here from observed action spans"),
+                        new MetricValue("Actions running as it finished",
+                                MetricFormat.count(worst.completionConcurrency()),
+                                "computed here from observed action spans")),
                 "queue time at or above "
                         + MetricFormat.percent(inputs.thresholds().queueDominatedFraction())
                         + " of the attempt",
@@ -651,7 +678,11 @@ public final class FindingRules {
                         new MetricValue("Fetch time",
                                 MetricFormat.duration(worst.fetchMicros()), "execution log"),
                         new MetricValue("Attempt time",
-                                MetricFormat.duration(worst.durationMicros()), "execution log")),
+                                MetricFormat.duration(worst.durationMicros()), "execution log"),
+                        new MetricValue("Unaccounted",
+                                MetricFormat.duration(worst.unaccountedMicros()),
+                                "the difference between Bazel's total and its components,"
+                                        + " which it measures separately")),
                 "network, upload and fetch together at or above "
                         + MetricFormat.percent(inputs.thresholds().transferDominatedFraction())
                         + " of the attempt",
@@ -694,6 +725,9 @@ public final class FindingRules {
                 evidence,
                 List.of(
                         new MetricValue("Attempts", MetricFormat.count(most.attempts()),
+                                "execution log, one record per spawn"),
+                        new MetricValue("Attempts beyond the first",
+                                MetricFormat.count(most.retries()),
                                 "execution log, one record per spawn"),
                         new MetricValue("Its own duration",
                                 MetricFormat.duration(most.durationMicros()), "execution log")),
@@ -757,6 +791,10 @@ public final class FindingRules {
     }
 
     // --- helpers ----------------------------------------------------------
+
+    private static Optional<Coverage> graphCoverage(FindingInputs inputs) {
+        return inputs.invocation().coverage().find("Action-graph coverage");
+    }
 
     private static Confidence confidenceFrom(MetricSeries series) {
         double coverage = series.coverage().orElse(0);
