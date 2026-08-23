@@ -213,6 +213,25 @@ matched the default secret-name patterns**, which is a fact about this fixture
 and not a general one. The same name-based redaction that Phase 4 applies to
 execution-log environment variables applies here.
 
+### Q12 — `cquery` can express a dependency's configuration and never does
+
+`blaze_query.Rule` has `configured_rule_input` (field 15), whose
+`ConfiguredRuleInput` carries the dependency's label *and* its
+`configuration_checksum`. That is exactly the information a configured-target
+edge would need.
+
+It is populated **zero times on all four versions**, with and without
+`--proto:include_configurations` — which the byte sizes show makes no difference
+at all, the flag already defaulting on. The 22 dependency edges per run all
+arrive as `rule_input`, a plain repeated string of labels.
+
+So a configured-target edge is between labels, in practice. The distinction
+matters for how it is written down: the first draft of this document said
+cquery's proto had no way to say which configuration a dependency resolved to,
+and that was wrong. It has a way and does not use it. If a future Bazel starts
+filling the field, the edge gains a column; until one does, a column would be
+somewhere to put a guess.
+
 ---
 
 ## 4. Requirements this imposes on Phase 5
@@ -233,6 +252,8 @@ execution-log environment variables applies here.
 8. Prefer `configuration_id` over the deprecated inline `configuration` (Q10).
 9. Redact `fragment_options` values by name, as Phase 4 does for the execution
    log's environment (Q11).
+9a. Read `configured_rule_input` when it is present, and do not require it: it
+   is empty on every supported version today (Q12).
 10. Never present the declared graph as the executed build, or the reverse
     (Q7, plan 2.1).
 

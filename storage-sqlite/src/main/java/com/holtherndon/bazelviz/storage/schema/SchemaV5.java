@@ -168,15 +168,18 @@ final class SchemaV5 {
 
             // --- the configured-target graph -------------------------------------
             //
-            // From cquery. The edges come from blaze_query.Target's rule inputs,
-            // which are labels rather than configured targets, so an edge here
-            // is between labels within one configuration and not between
-            // (label, configuration) pairs -- cquery's proto output does not say
-            // which configuration a dependency resolved to.
+            // From cquery. Edges come from blaze_query.Rule.rule_input, which is
+            // a plain list of labels, so an edge here is between labels and not
+            // between (label, configuration) pairs.
             //
-            // Recording that limit in the table's shape rather than in prose:
-            // there is no to_configuration column, because there is nothing to
-            // put in it.
+            // The proto CAN say more: Rule.configured_rule_input carries a
+            // dependency's label together with its configuration_checksum. It
+            // is populated zero times on all four supported versions, with and
+            // without --proto:include_configurations (Q12). So there is no
+            // to_configuration column because Bazel never fills the field, not
+            // because the format cannot express it -- and a column would be
+            // somewhere to put a guess. If a future Bazel starts filling it,
+            // this table gains a column and a migration.
             """
             CREATE TABLE configured_target_nodes (
               id                     INTEGER PRIMARY KEY,

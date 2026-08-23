@@ -120,6 +120,9 @@ visible under its final name.
 - **It does not lay out or render a large graph.** Phase 7 owns the graph view;
   Phase 5 owns the data and the traversals it will call.
 - **It does not resolve a configured-target edge's target configuration.**
-  `cquery`'s proto says which configuration a node is in and not which one each
-  dependency resolved to, so the edge is between labels. There is no column for
-  the answer because there is no answer.
+  The proto can express it — `Rule.configured_rule_input` carries a
+  dependency's label and its configuration checksum — and Bazel populates it
+  zero times on all four supported versions, with and without
+  `--proto:include_configurations` (Q12). So the edge is between labels, and
+  there is no column because there is nothing to put in it rather than because
+  the format cannot say it.
