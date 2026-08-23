@@ -20,7 +20,7 @@ renumbered or re-scoped here.
 | 7 | Graph visualization | **Complete** — all six exit criteria met and proved by test (see below) |
 | 8 | Metrics and findings | **Complete** — all five exit criteria met and proved by test (see below) |
 | 9 | Session export, redaction, and macOS packaging | **Complete** — all five exit criteria met and proved by test (see below) |
-| 10 | Scale hardening and compatibility release gate | Not started |
+| 10 | Scale hardening and compatibility release gate | **Complete** — six of seven exit criteria met and measured, one partial with a stated reason (see below) |
 
 ## Phase 0 checklist (as of 2026-08-21)
 
@@ -1018,3 +1018,84 @@ The packaging was verified by running it: `./gradlew :app:jpackage` produces an
 image whose `Info.plist` declares the `.bviz` association and whose launcher
 runs the CLI. That is not part of `build` — jpackage is slow and platform-bound
 — so it is recorded here rather than gated on.
+
+## Phase 10 checklist (as of 2026-08-23)
+
+| Task | Status |
+|---|---|
+| Run all benchmark tiers | Done — Tier 3 raw capture (50,000,000 events), Tier 3 indexed session (5,000,000 actions), Tier 3 timeline, Tier 2 graph. Figures in `docs/performance.md`. |
+| Profile heap allocation | Done — 0.48 GB resident capturing 50,000,000 events; 0.96 GB with the larger page cache. Objective 9's budget is 4 GB. |
+| Remove per-event/per-edge retained objects | Done — and now enforced: `BoundedMemoryTest` asserts the CSR graph is two primitive arrays and that nothing streaming the build retains a domain object |
+| Tune SQLite and queues | Done — three pragmas, measured before and after at two scales, with the unflattering result published |
+| Verify Bazel 6–9 fixtures | Done — `BazelVersionMatrixTest`, one real instrumented build per version, all four complete with nothing lost |
+| Test incomplete and corrupt sessions | Done — `DamagedSessionTest`, seven cases end to end |
+| Perform privacy review | Done — `docs/security-review.md`, plan 22.1 and 22.2 clause by clause |
+| Perform archive/parser security review | Done — same document, plan 22.3 and 22.4, with the one partial stated |
+| Document known version limitations | Done — `docs/bazel-compatibility.md`, including the action-timing table that differs on every version |
+| Write user guide and troubleshooting guide | Done — `docs/user-guide.md`, and `docs/troubleshooting.md` extended to cover sessions |
+
+## Phase 10 exit criteria (plan section 24)
+
+| Criterion | Status |
+|---|---|
+| Tier 3 raw capture succeeds without data loss | **Met** — 50,000,000 events sent, acknowledged, journaled (11.8 GB across 42 segments) and indexed. `received == journaled` and `journaled == normalized + stream-control`. 0.48 GB resident. |
+| Tier 3 indexed session can be reopened and queried | **Met** — 5,000,000 actions in a 1.5 GB database, closed and reopened from cold: overview in **9.6 ms** against a five-second objective, first page in **0.6 ms** against five hundred milliseconds. |
+| Aggregate timeline and graph remain usable | **Met** — timeline p95 **0.89 ms** at 5,000,000 spans; graph p95 **1.29 ms** at 1,000,000 nodes and 20,000,000 edges. The budget is 33 ms. |
+| Every limit is explicit | **Met** — `docs/limits.md` enumerates every bound, what happens when it is reached and whether it can be moved, and `LimitsDocTest` checks the page against the constants so it cannot drift. |
+| Bazel compatibility matrix is published | **Met** — `docs/bazel-compatibility.md`'s release matrix, produced by a test that prints the row it asserts. All four versions capture completely. |
+| No known routine path blocks the EDT | **Met** — `EdtDisciplineTest` walks every compiled Swing component and asserts that one which can reach a database owns a thread; three paint-isolation tests assert the painted views can reach neither a connection nor an executor. |
+| Release candidate packages launch on supported macOS architectures | **Partial, with a stated reason** — the Apple Silicon package was built and launched: the bundle declares the `.bviz` association, the launcher runs the CLI, and a smoke launch created the application-support directories and exited cleanly. **Intel is unverified**: jpackage does not cross-compile, so it needs an Intel machine. |
+
+### Interpretations worth knowing
+
+**The capture rate falls five-fold with table size, and that is published rather
+than averaged.** 79,359/s at 200,000 events, 43,803/s at three million,
+16,157/s at fifty million. The cause is the SQLite page cache, not index
+maintenance; the pragmas that fix it at three million (+18%) barely help at
+fifty million (+4%), because 128 MB of cache covers none of a six-gigabyte
+b-tree. What this means for a real build is smaller than it sounds: a Tier 3
+build emits its events over minutes, and sixteen thousand a second is a million
+a minute.
+
+**Objective 1 is still not met**, and its gap is now better understood. 79.4k/s
+against a 100k/s target, and the shortfall is gRPC's per-message acknowledgement
+— replacing the whole pipeline with a sink that stores nothing produces the same
+rate. Closing it means coalescing acknowledgements, which cannot be attempted
+without an experiment against all four Bazel versions first: an acknowledgement
+with the wrong sequence number kills the user's Bazel server on 6.5.0 and 9.2.0.
+
+**The Bazel sweep is excluded from `./gradlew build`.** Four servers is four
+downloads and several minutes, and Bazel sizes its server JVM from the machine's
+RAM. The fixture caps each at `-Xmx1g` and the sweep runs one at a time; it is
+still opt-in behind `-Pbbv.bazelSweep=true`. A single-version end-to-end capture
+stays in the default suite.
+
+## Definition of done for v1 (plan section 25)
+
+Walked item by item. Twenty-nine of the plan's thirty-one items are met; the two
+that are not are named.
+
+| Group | Status |
+|---|---|
+| **Invocation** (6 items) | Met. The executable selector was the one gap and was added in this phase. |
+| **Capture** (6 items) | Met. Embedded BES, file fallback, binary and JSON import, raw preservation, interrupted recovery, and disclosure of missing sequences — the last verified on all four Bazel versions. |
+| **Analysis** (6 items) | Met. |
+| **Visualization** (5 items) | **4 of 5.** "Every display limit is visible and configurable" — every limit is visible and stated, and only the graph's node and edge limits are raisable from the UI. There is no settings screen. |
+| **Persistence** (5 items) | Met. |
+| **Performance** (4 items) | Met, with objective 1's burst target as the stated shortfall. |
+| **Quality** (5 items) | **4 of 5.** "Packaging works on Apple Silicon and Intel macOS" — Apple Silicon built and launched; Intel unverified because jpackage does not cross-compile. |
+
+Both shortfalls are the same kind: a thing that exists and is not reachable from
+where the plan wanted it. Neither is a defect in what was built.
+
+## Phase 10 audit
+
+Zero findings from the call-site sweep — the first phase with none, and what a
+hardening phase should look like. The findings came from elsewhere: the
+benchmark's own client could not reach Tier 3 and had been flattering the
+published capture numbers; the Tier 3 slowdown was the page cache and the fix
+helps far less at Tier 3 than at Tier 2; a structural rule fired on correct code
+and had to be made sharper; three documents had drifted; and plan section 25
+named an executable selector that was not there.
+
+`docs/phase10-audit.md` is the full report.
