@@ -1099,3 +1099,38 @@ and had to be made sharper; three documents had drifted; and plan section 25
 named an executable selector that was not there.
 
 `docs/phase10-audit.md` is the full report.
+
+### Verified from clean (Phase 10)
+
+`rm -rf build */build build-logic/build && ./gradlew build --no-build-cache`:
+**BUILD SUCCESSFUL in 2m 54s, 79 tasks all executed, 1,489 tests across 172
+classes, 0 failures, 0 errors, 0 skipped** — up from 1,474 at the end of
+Phase 9.
+
+*0 skipped* remains a fact about this machine, which has all four pinned Bazel
+versions installed. The four-version sweep is **not** in that count: it is
+tagged `bazel-sweep` and excluded from `build`. It was run once for this phase
+and all four versions passed; re-run it with `-Pbbv.bazelSweep=true`.
+
+The measurements behind the exit criteria are not part of `build` either — a
+fifty-million-event capture takes fifty minutes and writes 17 GB. They are run
+deliberately, and every figure in `docs/performance.md` names the command that
+produced it.
+
+---
+
+# v1 is complete
+
+All ten phases are done. Plan section 25's definition of done is met in
+twenty-nine of thirty-one items, with both shortfalls named above and neither a
+defect in what was built.
+
+What ships: a local, single-user macOS application that launches or imports a
+Bazel build, captures it raw-first, normalizes it into a queryable session,
+enriches it from the execution log, the trace profile, `aquery` and `cquery`,
+and shows it as an overview, a timeline, an action table, dependency trees, a
+graph canvas, tests, failures, events, a console and evidence-backed findings —
+at five million actions, without loading the build into memory, and without
+claiming a number it does not have.
+
+Plan section 28's deferred roadmap starts here.
