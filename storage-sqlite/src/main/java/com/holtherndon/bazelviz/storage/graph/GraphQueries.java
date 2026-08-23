@@ -73,6 +73,78 @@ public final class GraphQueries implements AutoCloseable {
         this.indexes = new GraphIndexBuilder(connection, indexDirectory);
     }
 
+    /**
+     * One duration per graph node, indexed by {@code node_index}.
+     *
+     * <p>The array the critical path is weighted by. A node nothing timed gets
+     * {@code unknownDuration} rather than a zero, so the computation can count
+     * how many it had to guess at and report the answer as a lower bound.
+     *
+     * <p>Two sources, and they are different measurements of overlapping work:
+     * the build event stream's action window, and the execution log's spawn
+     * total. Which one was used travels with the answer, because plan 13.4
+     * requires it to.
+     *
+     * @param fromAttempts true to weight by execution-log spawn time, false to
+     *     weight by the action's own start and end
+     */
+    public long[] durationsByNodeIndex(boolean fromAttempts, long unknownDuration)
+            throws SQLException {
+        int nodes = Math.toIntExact(scalar(
+                "SELECT coalesce(max(node_index), -1) + 1 FROM declared_actions"));
+        long[] durations = new long[nodes];
+        java.util.Arrays.fill(durations, unknownDuration);
+        if (nodes == 0) {
+            return durations;
+        }
+        String sql = fromAttempts
+                ? "SELECT d.node_index, min(t.total_micros) FROM declared_actions d"
+                        + " JOIN action_attempts t ON t.action_id = d.action_id"
+                        + " WHERE d.node_index IS NOT NULL AND t.total_micros IS NOT NULL"
+                        + " GROUP BY d.node_index"
+                : "SELECT d.node_index, a.end_micros - a.start_micros FROM declared_actions d"
+                        + " JOIN actions a ON a.id = d.action_id"
+                        + " WHERE d.node_index IS NOT NULL"
+                        + "   AND a.start_micros IS NOT NULL AND a.end_micros IS NOT NULL";
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                int index = rows.getInt(1);
+                if (index >= 0 && index < nodes) {
+                    durations[index] = Math.max(0, rows.getLong(2));
+                }
+            }
+        }
+        return durations;
+    }
+
+    /**
+     * The executed action behind each graph node, where there is one.
+     *
+     * <p>What turns a path of node indices into something another view can
+     * highlight. Nodes with no executed action -- every test's TestRunner in a
+     * `build` invocation -- are absent rather than mapped to zero.
+     */
+    public Map<Integer, Long> actionIdsByNodeIndex() throws SQLException {
+        Map<Integer, Long> byNode = new java.util.HashMap<>();
+        try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT node_index, action_id FROM declared_actions"
+                                + " WHERE node_index IS NOT NULL AND action_id IS NOT NULL");
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                byNode.put(rows.getInt(1), rows.getLong(2));
+            }
+        }
+        return Map.copyOf(byNode);
+    }
+
+    private long scalar(String sql) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rows = statement.executeQuery()) {
+            return rows.next() ? rows.getLong(1) : 0;
+        }
+    }
+
     /** Every graph this session holds, with what may be claimed about it. */
     public List<GraphSource> sources() throws SQLException {
         List<GraphSource> out = new ArrayList<>();

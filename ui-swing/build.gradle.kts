@@ -29,6 +29,11 @@ dependencies {
     // 17.11: render full protobuf text only for the selected event).
     implementation(project(":bep-codec"))
 
+    // The critical path and the layouts. analysis-core knows nothing about
+    // Swing or SQLite; ui-swing is where a graph, its durations and a layout
+    // meet, which is the only place that has all three.
+    implementation(project(":analysis-core"))
+
     implementation(libs.flatlaf)
 
     // Real BEP fixtures, so the Events view is tested against a session an
