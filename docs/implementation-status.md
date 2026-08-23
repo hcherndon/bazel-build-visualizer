@@ -18,7 +18,7 @@ renumbered or re-scoped here.
 | 5 | `aquery`, `cquery`, and graph construction | **Complete** — five of six exit criteria met, one partial with a stated reason (see below) |
 | 6 | Timeline | **Complete** — all five exit criteria met, one task partial with a stated reason (see below) |
 | 7 | Graph visualization | **Complete** — all six exit criteria met and proved by test (see below) |
-| 8 | Metrics and findings | Done (2026-08-23) |
+| 8 | Metrics and findings | **Complete** — all five exit criteria met and proved by test (see below) |
 | 9 | Session export, redaction, and macOS packaging | Not started |
 | 10 | Scale hardening and compatibility release gate | Not started |
 
