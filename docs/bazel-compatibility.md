@@ -224,6 +224,91 @@ the second; `profile_start_ts` on 8.4.1+ holds it exactly.
 Full measurements, including the correlation behaviour and what was not
 measured, are in `docs/exec-log-and-profile.md`.
 
+## Release matrix (Phase 10)
+
+One real instrumented build per version, captured through the embedded BES
+server, on macOS arm64. Produced by `BazelVersionMatrixTest`, which prints the
+row it asserts — so this table is measured rather than remembered. Re-run it
+with:
+
+```
+./gradlew :capture-bes:test -Pbbv.bazelSweep=true --tests '*BazelVersionMatrixTest*'
+```
+
+| Version | Build | Capture | Received | Journaled | Indexed rows | Version recorded |
+|---|---|---|---:|---:|---:|---|
+| 6.5.0 | ok | complete | 64 | 64 | 59 | 6.5.0 |
+| 7.6.1 | ok | complete | 64 | 64 | 59 | 7.6.1 |
+| 8.4.1 | ok | complete | 66 | 66 | 61 | 8.4.1 |
+| 9.2.0 | ok | complete | 66 | 66 | 61 | 9.2.0 |
+
+**Nothing is lost on any version**: `received == journaled` and
+`journaled == normalized + stream-control envelopes` on all four. The five-event
+difference between received and indexed rows on every version is the
+stream-control envelopes, which legitimately produce no `bep_events` row.
+
+8.4.1 and 9.2.0 emit two more events than 6.5.0 and 7.6.1 for the same
+workspace. That is a real difference in what those versions publish, not a
+capture difference, and it is why the tool counts what arrives rather than
+predicting it.
+
+**The sweep is excluded from `./gradlew build`.** It downloads and starts four
+Bazel servers, and Bazel sizes its server JVM from the machine's RAM — a sweep
+that had several alive at once has crashed a laptop. The fixture caps each at
+`-Xmx1g` with `max_idle_secs=15` and the test is parameterized rather than
+parallel, so exactly one is alive at a time. A single-version end-to-end capture
+stays in the default suite.
+
+## Known version limitations
+
+What each version cannot give you, and what the tool does about it. Every entry
+was measured; the full records are in `docs/bazel-ground-truth.md`,
+`docs/bep-content.md` and `docs/exec-log-and-profile.md`.
+
+### Affecting every version before 8.4.1
+
+| Limitation | Versions | Effect |
+|---|---|---|
+| No compact execution log (`--execution_log_compact_file`) | 6.5.0 | The binary execution log is used instead; the tool detects which and says so. |
+| No `--build_event_binary_file_upload_mode` | 6.5.0 | The file-tail fallback cannot be told to wait for uploads; the tool does not inject the flag it cannot use. |
+| No spawn start time in the execution log | 6.5.0 | An attempt has a length and no position, so it **cannot be drawn on a timeline**. `start_unknown_reason` carries the sentence. |
+| Profile timestamps floored to the whole second | 6.5.0, 7.6.1 | Any view placing a profile span against an execution-log timing carries **±1 second** of uncertainty, surfaced by `ProfileAnchor.precisionCaveat()`. |
+| `executionPhaseTimeInMs` absent from `BuildMetrics` | 6.5.0 | The execution-phase duration displays as unavailable. |
+| Per-mnemonic work breakdown omits fully-cached mnemonics | 6.5.0, 7.6.1 | The chart under-reports with no indication in the data, so the view says which versions this applies to. |
+| `FlagInfo` fields 10–16 absent | 6.5.0 (10–16), 7.6.1 (11–16) | Capability probing cannot read defaults or enum values; it verifies by execution instead. |
+| `streamed_proto` rejected by aquery | 6.5.0 | `proto` is used, which all four accept. |
+
+### Affecting 8.4.1 and later
+
+| Limitation | Versions | Effect |
+|---|---|---|
+| `--experimental_announce_profile_path` removed | 8.4.1, 9.2.0 | The profile path is derived from the flag the tool itself injected rather than read from the stream. |
+
+### Action timing, which differs on every version
+
+This is the single largest compatibility problem in the product, and it is why
+`MetricQueries.bestDurationSource()` counts coverage rather than trusting a
+version:
+
+| Version | What the build event stream reports for an action's duration |
+|---|---|
+| 6.5.0 | **No timestamps at all.** |
+| 7.6.1 | **No timestamps at all.** |
+| 8.4.1 | `endTime == startTime` for **every** action, a five-second sleep included. |
+| 9.2.0 | Roughly a third of action events carry no timestamps. |
+
+The tool treats an action whose start equals its end as **untimed**, never as a
+duration of zero, and prefers the execution log's per-spawn timings when they
+cover more of the build. On 6.5.0 and 7.6.1 that means action timing is
+effectively an execution-log feature.
+
+### Bazel's own critical path
+
+`criticalPathTime` appears in `BuildMetrics` only on **9.2.0**. On earlier
+versions the tool sums the profile's critical-path components, which is still
+Bazel's own answer; where neither is available the figure is reported as absent
+rather than replaced by the derived one.
+
 ## What is not covered
 
 Everything above was measured on macOS arm64 only. Linux and Windows are
