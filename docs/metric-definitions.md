@@ -337,3 +337,65 @@ with the counts above.
 - *Unavailable when:* the file is not on this machine — the normal answer for
   an artifact that only ever existed on a remote executor. Counted as absent,
   never written as zero.
+
+## Phase 6 catalog
+
+### Active actions in a bin
+- *Definition:* how many spans overlap a time bin, from the LOD pyramid.
+- *Note:* an estimate at coarse zoom in the sense that the bin is wide, not in
+  the sense that the count is approximate — it is exact for the bin it
+  describes.
+
+### Total overlapping duration in a bin
+- *Definition:* the span-microseconds falling inside the bin, summed.
+- *Note:* not the bin's width times its active count, and not a lane's elapsed
+  time. Two actions overlapping for the whole bin contribute twice its width.
+
+### Cache hits and misses in a bin
+- *Definition:* spans **starting** in the bin that the execution log reported a
+  cache result for, split by result.
+- *Note:* start-attributed, not spread. Spreading would let one long cached
+  action outweigh a hundred short ones in every bin it touched.
+- *Unavailable when:* no execution log. Reported as zero *known*, which the
+  view renders as unknown — never as a miss.
+
+### Local and remote in a bin
+- *Definition:* as above, split by whether the runner was a remote one.
+- *Unavailable when:* no execution log, same distinction.
+
+### Input bytes in a bin
+- *Definition:* the input bytes of spans starting in the bin.
+- *Note:* **a lower bound.** Spans reporting no byte count contribute nothing
+  rather than a guess, so this is "at least" and never "exactly".
+
+### Uniform category of a bin
+- *Definition:* the mnemonic of every span in the bin, when they are all the
+  same.
+- *Note:* deliberately not "the most common". A per-bin histogram is
+  unaffordable at millions of bins, and the two-word vote that fits cannot
+  prove a majority in one streaming pass. A mixed bin reports nothing.
+
+### Lane total duration
+- *Definition:* the sum of the lane's span durations.
+- *Note:* overlapping spans are counted twice, on purpose. It answers "how much
+  work" and not "how long"; the lane's elapsed time is a separate number.
+
+### Visualizer-computed dependency critical path
+- *Definition:* the longest weighted path through the action graph, weighting
+  each action by its measured duration.
+- *Source:* the dependency graph plus whichever duration source was used, which
+  the result states.
+- **Not Bazel's critical path.** Bazel writes its own into the profile and
+  Phase 5 stores it untouched. The two legitimately disagree: Bazel's includes
+  scheduling and machine limits, this one is what the dependencies alone imply.
+  ADR-009 keeps both.
+- *Partial when:* any action has no measured duration. Those count as
+  instantaneous, so the answer is a lower bound and says so.
+- *Undefined when:* the graph has a cycle. A producer-to-consumer action graph
+  cannot have one, so a cycle means the graph is wrong rather than the build,
+  and the actions stuck in it are named.
+
+### Slack
+- *Definition:* how much later an action could have started without delaying
+  the build, from the backward pass.
+- *Note:* zero for every action on the critical path, by construction.

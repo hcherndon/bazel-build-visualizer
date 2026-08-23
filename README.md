@@ -31,6 +31,13 @@
 > different configuration looks exactly like a correct one. What is actually in
 > those protos, across four Bazel versions, is in
 > [docs/aquery-and-cquery.md](docs/aquery-and-cquery.md). See
+> **Phase 6 adds the timeline.** A custom Java2D view that draws aggregate
+> density when a build is too big to show span by span and exact spans when it
+> is not, with lanes grouped by runner, mnemonic, package or cache result, a
+> hover readout of everything a time bin knows, and a range you can drag out to
+> filter the actions table. It follows a running build and stops the moment you
+> scroll somewhere — a live update never moves a viewport a person put where it
+> is. 1M spans index in 0.17 s and draw at 0.9 ms a frame. See
 > [docs/implementation-status.md](docs/implementation-status.md).
 
 A local desktop application for capturing, exploring, and understanding
