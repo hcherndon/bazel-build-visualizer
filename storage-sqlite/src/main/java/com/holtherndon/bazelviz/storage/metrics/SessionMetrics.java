@@ -1,9 +1,13 @@
 package com.holtherndon.bazelviz.storage.metrics;
 
+import com.holtherndon.bazelviz.analysis.ActionMetrics;
 import com.holtherndon.bazelviz.analysis.ConcurrencySweep;
 import com.holtherndon.bazelviz.analysis.CriticalPath;
+import com.holtherndon.bazelviz.analysis.FindingInputs;
+import com.holtherndon.bazelviz.analysis.FindingThresholds;
 import com.holtherndon.bazelviz.analysis.GroupAggregate;
 import com.holtherndon.bazelviz.analysis.InvocationMetrics;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -26,13 +30,20 @@ import java.util.OptionalLong;
  * @param spans retained so per-action start and completion concurrency can be
  *     answered without a second sweep; at Tier 3 this is two longs per timed
  *     action and is the largest thing in this record
+ * @param candidates the extremes worth examining — the slowest, the largest,
+ *     the most queued — and nothing in the middle, because a finding names a
+ *     handful and a rule that needed all five million could not run
+ * @param criticalPathActions the heaviest links of the derived chain, resolved
+ *     to executed actions as far as the graph's mapping allows
  */
 public record SessionMetrics(
         CriticalPath.DurationSource durationSource,
         InvocationMetrics invocation,
         Map<GroupAggregate.Dimension, GroupAggregate.Table> aggregates,
         ConcurrencySweep.Spans spans,
-        ConcurrencySweep.Result concurrency) {
+        ConcurrencySweep.Result concurrency,
+        List<ActionMetrics> candidates,
+        List<ActionMetrics> criticalPathActions) {
 
     public SessionMetrics {
         Objects.requireNonNull(durationSource, "durationSource");
@@ -40,6 +51,29 @@ public record SessionMetrics(
         aggregates = Map.copyOf(aggregates);
         Objects.requireNonNull(spans, "spans");
         Objects.requireNonNull(concurrency, "concurrency");
+        candidates = List.copyOf(candidates);
+        criticalPathActions = List.copyOf(criticalPathActions);
+    }
+
+    /**
+     * Everything the finding rules need, with the low-parallelism windows
+     * computed against this session's own typical concurrency.
+     *
+     * <p>Assembled here rather than by the caller so the threshold the windows
+     * were found with is the one the findings state. A caller that computed
+     * windows itself could pass a different divisor than the rules print.
+     */
+    public FindingInputs findingInputs(FindingThresholds thresholds) {
+        Objects.requireNonNull(thresholds, "thresholds");
+        List<ConcurrencySweep.Window> windows = List.of();
+        OptionalLong typical = typicalConcurrency();
+        if (typical.isPresent()) {
+            int threshold = (int) Math.max(
+                    1, typical.getAsLong() / thresholds.lowParallelismDivisor());
+            windows = spans.windowsBelow(threshold, thresholds.lowParallelismMinimumMicros());
+        }
+        return new FindingInputs(
+                invocation, aggregates, windows, candidates, criticalPathActions, thresholds);
     }
 
     /** One aggregate table, when it was asked for. */

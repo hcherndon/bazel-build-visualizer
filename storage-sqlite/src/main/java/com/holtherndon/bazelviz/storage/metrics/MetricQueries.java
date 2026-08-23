@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.storage.metrics;
 
+import com.holtherndon.bazelviz.analysis.ActionMetrics;
 import com.holtherndon.bazelviz.analysis.ConcurrencySweep;
 import com.holtherndon.bazelviz.analysis.Coverage;
 import com.holtherndon.bazelviz.analysis.CriticalPath;
@@ -77,6 +78,17 @@ public final class MetricQueries implements AutoCloseable {
     /** Groups an aggregation returns before the rest are summarised away. */
     public static final int DEFAULT_GROUP_LIMIT = 40;
 
+    /**
+     * Actions kept per criterion for the findings to examine.
+     *
+     * <p>The findings need the extremes — the slowest, the largest, the most
+     * queued — and nothing in the middle. Keeping the top few per criterion in
+     * a bounded heap during the scan that was happening anyway means the rules
+     * run over a few hundred actions rather than five million, without a second
+     * pass and without retaining the build.
+     */
+    public static final int DEFAULT_CANDIDATE_LIMIT = 25;
+
     private static final String ACTION_ROWS_HEAD =
             "SELECT act.id, m.value, l.value, act.outcome, ";
 
@@ -84,12 +96,21 @@ public final class MetricQueries implements AutoCloseable {
             " MIN(att.runner), MAX(att.runner), COUNT(att.runner), COUNT(att.id),"
                     + " SUM(CASE WHEN att.cache_hit = 1 THEN 1 ELSE 0 END),"
                     + " SUM(CASE WHEN att.cache_hit = 0 THEN 1 ELSE 0 END),"
-                    + " COUNT(att.cache_hit), SUM(att.input_bytes), COUNT(att.input_bytes)"
+                    + " COUNT(att.cache_hit), SUM(att.input_bytes), COUNT(att.input_bytes),"
+                    + " SUM(att.queue_micros), SUM(att.setup_micros),"
+                    + " SUM(att.execution_wall_micros), SUM(att.network_micros),"
+                    + " SUM(att.upload_micros), SUM(att.fetch_micros), SUM(att.input_files),"
+                    // Any attempt carrying the declaration marks the action; these
+                    // are Bazel's own words about the spawn, not a reading of the
+                    // runner name.
+                    + " MAX(CASE WHEN att.cacheable = 0 THEN 1 ELSE 0 END),"
+                    + " MAX(CASE WHEN att.remotable = 0 THEN 1 ELSE 0 END)"
                     + " FROM actions act"
                     + " LEFT JOIN mnemonics m ON m.id = act.mnemonic_id"
                     + " LEFT JOIN labels l ON l.id = act.label_id"
-                    + " LEFT JOIN action_attempts att ON att.action_id = act.id"
-                    + " GROUP BY act.id";
+                    + " LEFT JOIN action_attempts att ON att.action_id = act.id";
+
+    private static final String GROUP_BY_ACTION = " GROUP BY act.id";
 
     /**
      * Wall duration from the build event stream, and only when the pair is
@@ -173,7 +194,8 @@ public final class MetricQueries implements AutoCloseable {
     public record Request(
             CriticalPath.DurationSource durationSource,
             Set<GroupAggregate.Dimension> dimensions,
-            int groupLimit) {
+            int groupLimit,
+            int candidateLimit) {
 
         public Request {
             Objects.requireNonNull(durationSource, "durationSource");
@@ -182,14 +204,19 @@ public final class MetricQueries implements AutoCloseable {
                 throw new IllegalArgumentException("a limit below one returns nothing: "
                         + groupLimit);
             }
+            if (candidateLimit < 1) {
+                throw new IllegalArgumentException("a limit below one returns nothing: "
+                        + candidateLimit);
+            }
         }
 
-        /** Every dimension the schema can group by, at the default limit. */
+        /** Every dimension the schema can group by, at the default limits. */
         public static Request everything(CriticalPath.DurationSource source) {
             return new Request(
                     source,
                     Set.of(GroupAggregate.Dimension.values()),
-                    DEFAULT_GROUP_LIMIT);
+                    DEFAULT_GROUP_LIMIT,
+                    DEFAULT_CANDIDATE_LIMIT);
         }
     }
 
@@ -208,9 +235,14 @@ public final class MetricQueries implements AutoCloseable {
         }
         ConcurrencySweep.Spans spans = new ConcurrencySweep.Spans();
         WorkTally tally = new WorkTally();
+        // Read first, so an action that is only interesting for the size of
+        // what it produced still becomes a candidate during the one scan.
+        Map<Long, OutputTotals> outputTotals = topOutputs(request.candidateLimit());
+        Candidates collector = new Candidates(request.candidateLimit(), outputTotals);
 
         forEachAction(request.durationSource(), row -> {
             tally.add(row);
+            collector.offer(row);
             if (row.startMicros().isPresent() && row.endMicros().isPresent()
                     && row.endMicros().getAsLong() >= row.startMicros().getAsLong()) {
                 spans.add(row.startMicros().getAsLong(), row.endMicros().getAsLong());
@@ -238,7 +270,13 @@ public final class MetricQueries implements AutoCloseable {
 
         ConcurrencySweep.Result sweep = ConcurrencySweep.sweep(spans);
         InvocationMetrics invocation = invocation(request.durationSource(), tally, sweep);
-        return new SessionMetrics(request.durationSource(), invocation, tables, spans, sweep);
+        Optional<CriticalPath.Result> derived = invocation.criticalPaths().derived();
+        List<ActionMetrics> candidates =
+                enrich(collector.finish(outputTotals), derived, spans);
+        List<ActionMetrics> onPath = enrich(
+                criticalPathActions(derived, request.candidateLimit()), derived, spans);
+        return new SessionMetrics(
+                request.durationSource(), invocation, tables, spans, sweep, candidates, onPath);
     }
 
     private static GroupAggregate.Table table(
@@ -267,7 +305,7 @@ public final class MetricQueries implements AutoCloseable {
         try (Statement statement = connection.createStatement()) {
             statement.setFetchSize(4_096);
             try (ResultSet rows = statement.executeQuery(
-                    ACTION_ROWS_HEAD + durationExpression + ACTION_ROWS_TAIL)) {
+                    ACTION_ROWS_HEAD + durationExpression + ACTION_ROWS_TAIL + GROUP_BY_ACTION)) {
                 while (rows.next()) {
                     visitor.row(readRow(rows, source));
                 }
@@ -293,6 +331,15 @@ public final class MetricQueries implements AutoCloseable {
         long cacheKnown = rows.getLong(14);
         OptionalLong inputBytes = number(rows, 15);
         long sizedAttempts = rows.getLong(16);
+        OptionalLong queue = number(rows, 17);
+        OptionalLong setup = number(rows, 18);
+        OptionalLong execution = number(rows, 19);
+        OptionalLong network = number(rows, 20);
+        OptionalLong upload = number(rows, 21);
+        OptionalLong fetch = number(rows, 22);
+        OptionalLong inputFiles = number(rows, 23);
+        boolean notCacheable = rows.getInt(24) == 1;
+        boolean notRemotable = rows.getInt(25) == 1;
 
         // An action whose spawns ran under different runners has no single
         // runner, and neither has one whose spawns did not all report theirs.
@@ -313,7 +360,9 @@ public final class MetricQueries implements AutoCloseable {
         }
         return new ActionRow(
                 id, mnemonic, label, outcome, duration, start, end, runner, attempts,
-                cacheState, sizedAttempts == 0 ? OptionalLong.empty() : inputBytes, source);
+                cacheState, sizedAttempts == 0 ? OptionalLong.empty() : inputBytes,
+                queue, setup, execution, network, upload, fetch, inputFiles,
+                notCacheable, notRemotable, source);
     }
 
     /** Receives one action at a time, in whatever order the database returns them. */
@@ -370,6 +419,15 @@ public final class MetricQueries implements AutoCloseable {
             long attempts,
             CacheState cacheState,
             OptionalLong inputBytes,
+            OptionalLong queueMicros,
+            OptionalLong setupMicros,
+            OptionalLong executionMicros,
+            OptionalLong networkMicros,
+            OptionalLong uploadMicros,
+            OptionalLong fetchMicros,
+            OptionalLong inputFiles,
+            boolean declaredNotCacheable,
+            boolean declaredNotRemotable,
             CriticalPath.DurationSource durationSource) {
 
         /** The key this action falls under for one aggregate dimension. */
@@ -396,6 +454,8 @@ public final class MetricQueries implements AutoCloseable {
         private long cacheHits;
         private long cacheMisses;
         private long cacheUnknown;
+        private long notCacheable;
+        private long notRemotable;
 
         GroupBuilder(GroupAggregate.Dimension dimension, String key,
                 CriticalPath.DurationSource source) {
@@ -416,12 +476,18 @@ public final class MetricQueries implements AutoCloseable {
                 case MISS -> cacheMisses++;
                 case NOT_REPORTED -> cacheUnknown++;
             }
+            if (row.declaredNotCacheable()) {
+                notCacheable++;
+            }
+            if (row.declaredNotRemotable()) {
+                notRemotable++;
+            }
         }
 
         GroupAggregate build() {
             return new GroupAggregate(
                     dimension, key, actions, duration.build(), inputBytes.build(),
-                    cacheHits, cacheMisses, cacheUnknown);
+                    cacheHits, cacheMisses, cacheUnknown, notCacheable, notRemotable);
         }
     }
 
@@ -799,6 +865,265 @@ public final class MetricQueries implements AutoCloseable {
                             + " matched to one, which is the normal result without"
                             + " --build_event_publish_all_actions");
         }
+    }
+
+    /**
+     * The actions worth examining, kept in bounded heaps during the scan.
+     *
+     * <p>One heap per criterion the rules care about. An action can be in
+     * several; the union is what {@link #finish} returns, and it is at most
+     * {@code limit} times the number of criteria however large the build is.
+     */
+    private static final class Candidates {
+
+        private final List<TopN> heaps = new ArrayList<>();
+        private final Map<Long, ActionRow> union = new LinkedHashMap<>();
+
+        Candidates(int limit, Map<Long, OutputTotals> outputs) {
+            heaps.add(new TopN(limit, row -> row.durationMicros().orElse(0)));
+            heaps.add(new TopN(limit, ActionRow::attempts));
+            heaps.add(new TopN(limit, row -> row.inputBytes().orElse(0)));
+            heaps.add(new TopN(limit, row -> row.queueMicros().orElse(0)));
+            heaps.add(new TopN(limit, row -> row.networkMicros().orElse(0)
+                    + row.uploadMicros().orElse(0) + row.fetchMicros().orElse(0)));
+            heaps.add(new TopN(limit, row -> {
+                OutputTotals totals = outputs.get(row.id());
+                return totals == null ? 0 : totals.bytes();
+            }));
+        }
+
+        void offer(ActionRow row) {
+            for (TopN heap : heaps) {
+                heap.offer(row);
+            }
+        }
+
+        List<ActionMetrics> finish(Map<Long, OutputTotals> outputs) {
+            for (TopN heap : heaps) {
+                for (ActionRow row : heap.rows()) {
+                    union.putIfAbsent(row.id(), row);
+                }
+            }
+            List<ActionMetrics> metrics = new ArrayList<>(union.size());
+            for (ActionRow row : union.values()) {
+                metrics.add(toMetrics(row, outputs));
+            }
+            return List.copyOf(metrics);
+        }
+    }
+
+    /** The highest-scoring {@code capacity} rows seen, by one measure. */
+    private static final class TopN {
+
+        private final int capacity;
+        private final java.util.function.ToLongFunction<ActionRow> score;
+        private final java.util.PriorityQueue<ActionRow> heap;
+
+        TopN(int capacity, java.util.function.ToLongFunction<ActionRow> score) {
+            this.capacity = capacity;
+            this.score = score;
+            this.heap = new java.util.PriorityQueue<>(
+                    capacity + 1, Comparator.comparingLong(score)
+                            .thenComparing(Comparator.comparingLong(ActionRow::id).reversed()));
+        }
+
+        void offer(ActionRow row) {
+            // A score of zero is "did not do this at all", and a heap full of
+            // those would push out the actions the rule is looking for.
+            if (score.applyAsLong(row) <= 0) {
+                return;
+            }
+            heap.add(row);
+            if (heap.size() > capacity) {
+                heap.poll();
+            }
+        }
+
+        List<ActionRow> rows() {
+            return List.copyOf(heap);
+        }
+    }
+
+    /** One action as the metric catalog sees it, without its graph properties. */
+    private static ActionMetrics toMetrics(ActionRow row, Map<Long, OutputTotals> outputBytes) {
+        OutputTotals outputs = outputBytes.get(row.id());
+        return new ActionMetrics(
+                row.id(), row.label(), row.mnemonic(), row.runner(), row.outcome(),
+                row.startMicros(), row.endMicros(), row.durationMicros(),
+                row.queueMicros(), row.setupMicros(), row.executionMicros(),
+                row.networkMicros(), row.uploadMicros(), row.fetchMicros(),
+                row.inputBytes(), row.inputFiles(),
+                outputs == null ? OptionalLong.empty() : OptionalLong.of(outputs.bytes()),
+                outputs == null ? OptionalLong.empty() : OptionalLong.of(outputs.files()),
+                row.attempts(),
+                switch (row.cacheState()) {
+                    case HIT -> ActionMetrics.CacheState.HIT;
+                    case MISS -> ActionMetrics.CacheState.MISS;
+                    case NOT_REPORTED -> ActionMetrics.CacheState.NOT_REPORTED;
+                },
+                OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(),
+                /* onDerivedCriticalPath= */ false,
+                OptionalLong.empty(), OptionalLong.empty());
+    }
+
+    /**
+     * The actions that produced the most bytes, from a bounded query.
+     *
+     * <p>Output size needs a join through the attempt's outputs to the
+     * artifacts, which would multiply the rows of the main scan and break every
+     * sum in it. So it is its own query, ordered and limited, and its results
+     * are merged into the candidates during the scan.
+     */
+    private Map<Long, OutputTotals> topOutputs(int limit) throws SQLException {
+        Map<Long, OutputTotals> bytes = new LinkedHashMap<>();
+        String sql = "SELECT att.action_id, SUM(art.size_bytes) AS total, COUNT(*)"
+                + " FROM action_attempts att"
+                + " JOIN attempt_outputs ao ON ao.attempt_id = att.id AND ao.produced = 1"
+                + " JOIN artifacts art ON art.id = ao.artifact_id AND art.is_directory = 0"
+                + " WHERE att.action_id IS NOT NULL AND art.size_bytes IS NOT NULL"
+                + " GROUP BY att.action_id ORDER BY total DESC LIMIT ?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, limit);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    bytes.put(rows.getLong(1),
+                            new OutputTotals(rows.getLong(2), rows.getLong(3)));
+                }
+            }
+        }
+        return bytes;
+    }
+
+    /**
+     * What one action produced, over the outputs whose size was recorded.
+     *
+     * <p>{@code files} counts those same outputs and not every output the
+     * action declared, so it is a floor rather than the output count — which is
+     * why {@link ActionMetrics#outputFiles()} is optional and absent for every
+     * action this bounded query did not reach.
+     */
+    private record OutputTotals(long bytes, long files) {}
+
+    /**
+     * The heaviest actions on the derived critical path, resolved to records.
+     *
+     * <p>The path can be thousands of nodes long, and a finding names a
+     * handful. The weights used to compute the path are already in hand, so the
+     * heaviest nodes are picked from those before anything is looked up — which
+     * bounds both the lookups and the detail query.
+     */
+    private List<ActionMetrics> criticalPathActions(
+            Optional<CriticalPath.Result> derived, int limit) throws SQLException {
+        if (derived.isEmpty() || graph.isEmpty()
+                || derived.orElseThrow().outcome() != CriticalPath.Outcome.COMPUTED) {
+            return List.of();
+        }
+        CriticalPath.Result path = derived.orElseThrow();
+        Map<Integer, Long> actionIds = graph.orElseThrow().actionIdsByNodeIndex();
+        List<Integer> heaviest = path.path().stream()
+                .filter(actionIds::containsKey)
+                .sorted(Comparator.comparingLong((Integer node) ->
+                        path.earliestFinishAt(node) - path.earliestStartAt(node)).reversed())
+                .limit(limit)
+                .toList();
+        if (heaviest.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, Integer> nodeByAction = new LinkedHashMap<>();
+        for (int node : heaviest) {
+            nodeByAction.put(actionIds.get(node), node);
+        }
+        return detail(nodeByAction.keySet());
+    }
+
+    /** Re-reads a bounded set of actions with the full per-action detail. */
+    private List<ActionMetrics> detail(java.util.Collection<Long> ids) throws SQLException {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        StringBuilder placeholders = new StringBuilder();
+        for (int i = 0; i < ids.size(); i++) {
+            placeholders.append(i == 0 ? "?" : ",?");
+        }
+        String sql = ACTION_ROWS_HEAD + ATTEMPT_DURATION + ACTION_ROWS_TAIL
+                + " WHERE act.id IN (" + placeholders + ")" + GROUP_BY_ACTION;
+        List<ActionMetrics> out = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            int index = 1;
+            for (long id : ids) {
+                statement.setLong(index++, id);
+            }
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    out.add(toMetrics(
+                            readRow(rows, CriticalPath.DurationSource.EXECUTION_ATTEMPT),
+                            Map.of()));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Attaches everything that is not in the actions table: the graph's fan-in
+     * and fan-out, the derived schedule's slack, and the concurrency around the
+     * action.
+     *
+     * <p>Bounded to the candidate set, which is why it can afford a lookup per
+     * action. Anything unavailable stays unavailable — a session with no graph
+     * gets actions whose fan-out is unknown, not actions with no consumers.
+     */
+    private List<ActionMetrics> enrich(
+            List<ActionMetrics> actions,
+            Optional<CriticalPath.Result> derived,
+            ConcurrencySweep.Spans spans) throws SQLException {
+        if (actions.isEmpty()) {
+            return actions;
+        }
+        List<ActionMetrics> out = new ArrayList<>(actions.size());
+        for (ActionMetrics action : actions) {
+            OptionalLong consumers = OptionalLong.empty();
+            OptionalLong dependencies = OptionalLong.empty();
+            OptionalLong slack = OptionalLong.empty();
+            boolean onPath = false;
+            if (graph.isPresent()) {
+                GraphQueries queries = graph.orElseThrow();
+                OptionalLong node = queries.nodeForAction(action.actionId());
+                if (node.isPresent()) {
+                    int index = Math.toIntExact(node.getAsLong());
+                    try {
+                        consumers = OptionalLong.of(
+                                queries.degree(EdgeDerivation.DECLARED, index, true));
+                        dependencies = OptionalLong.of(
+                                queries.degree(EdgeDerivation.DECLARED, index, false));
+                    } catch (IOException unreadable) {
+                        consumers = OptionalLong.empty();
+                        dependencies = OptionalLong.empty();
+                    }
+                    if (derived.isPresent()
+                            && derived.orElseThrow().outcome() == CriticalPath.Outcome.COMPUTED
+                            && index < derived.orElseThrow().scheduledNodes()) {
+                        slack = OptionalLong.of(derived.orElseThrow().slackAt(index));
+                        onPath = derived.orElseThrow().isOnPath(index);
+                    }
+                }
+            }
+            out.add(new ActionMetrics(
+                    action.actionId(), action.label(), action.mnemonic(), action.runner(),
+                    action.outcome(), action.startMicros(), action.endMicros(),
+                    action.durationMicros(), action.queueMicros(), action.setupMicros(),
+                    action.executionMicros(), action.networkMicros(), action.uploadMicros(),
+                    action.fetchMicros(), action.inputBytes(), action.inputFiles(),
+                    action.outputBytes(), action.outputFiles(), action.attempts(),
+                    action.cacheState(), dependencies, consumers, slack, onPath,
+                    action.startMicros().isPresent()
+                            ? OptionalLong.of(spans.activeAt(action.startMicros().getAsLong()))
+                            : OptionalLong.empty(),
+                    action.endMicros().isPresent()
+                            ? OptionalLong.of(spans.activeAt(action.endMicros().getAsLong() - 1))
+                            : OptionalLong.empty()));
+        }
+        return List.copyOf(out);
     }
 
     /** The name a duration series goes under, which says what was measured. */

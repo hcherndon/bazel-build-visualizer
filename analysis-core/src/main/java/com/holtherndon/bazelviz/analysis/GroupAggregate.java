@@ -25,6 +25,10 @@ import java.util.OptionalDouble;
  * @param cacheHits actions the execution log reported as served from a cache
  * @param cacheMisses actions it reported as not
  * @param cacheUnknown actions it said nothing about, which is neither
+ * @param declaredNotCacheable actions whose spawns Bazel marked uncacheable —
+ *     its own declaration, read verbatim, not a guess from a runner name
+ * @param declaredNotRemotable actions whose spawns Bazel marked as unable to
+ *     run remotely
  */
 public record GroupAggregate(
         Dimension dimension,
@@ -34,7 +38,9 @@ public record GroupAggregate(
         MetricSeries inputBytes,
         long cacheHits,
         long cacheMisses,
-        long cacheUnknown) {
+        long cacheUnknown,
+        long declaredNotCacheable,
+        long declaredNotRemotable) {
 
     public GroupAggregate {
         Objects.requireNonNull(dimension, "dimension");

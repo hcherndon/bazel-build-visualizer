@@ -332,13 +332,53 @@ final class MetricQueriesTest {
     }
 
     @Test
+    @DisplayName("the candidates are the extremes, carrying the timing breakdown a rule needs")
+    void candidatesAreTheExtremes() throws Exception {
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+
+        // Actions 3 and 4 spawned nothing and score zero on every criterion, so
+        // they are not candidates -- an action that did nothing measurable is
+        // not an extreme of anything.
+        assertThat(metrics.candidates()).extracting(
+                com.holtherndon.bazelviz.analysis.ActionMetrics::actionId)
+                .containsExactlyInAnyOrder(1L, 2L, 5L);
+        com.holtherndon.bazelviz.analysis.ActionMetrics first = metrics.candidates().stream()
+                .filter(action -> action.actionId() == 1)
+                .findFirst()
+                .orElseThrow();
+        assertThat(first.attempts()).isEqualTo(1);
+        assertThat(first.inputBytes()).hasValue(4_096L);
+        assertThat(first.startConcurrency()).isPresent();
+        // No graph was imported, so fan-out is unknown rather than zero.
+        assertThat(first.directConsumers()).isEmpty();
+        assertThat(first.slackMicros()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("the finding inputs carry the windows the thresholds actually found")
+    void findingInputsUseTheSessionsOwnConcurrency() throws Exception {
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+
+        var inputs = metrics.findingInputs(
+                com.holtherndon.bazelviz.analysis.FindingThresholds.defaults());
+
+        assertThat(inputs.invocation()).isSameAs(metrics.invocation());
+        assertThat(inputs.candidates()).isEqualTo(metrics.candidates());
+        // Every rule runs over this fixture without producing a finding it
+        // cannot support, which is the property that matters here.
+        assertThat(com.holtherndon.bazelviz.analysis.FindingRules.run(inputs))
+                .allSatisfy(finding -> assertThat(finding.evidence()).isNotEmpty());
+    }
+
+    @Test
     @DisplayName("a truncated aggregate says how much it left out")
     void truncationIsStated() throws Exception {
         try (MetricQueries queries = new MetricQueries(database.newReadConnection())) {
             SessionMetrics metrics = queries.collect(new MetricQueries.Request(
                     CriticalPath.DurationSource.EXECUTION_ATTEMPT,
                     java.util.Set.of(GroupAggregate.Dimension.TARGET),
-                    1));
+                    1,
+                    MetricQueries.DEFAULT_CANDIDATE_LIMIT));
 
             GroupAggregate.Table table =
                     metrics.aggregate(GroupAggregate.Dimension.TARGET).orElseThrow();
