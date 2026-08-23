@@ -35,9 +35,26 @@ public final class TimelineController {
     private static final Logger log = LoggerFactory.getLogger(TimelineController.class);
 
     private final TimelineView view = new TimelineView();
+    /**
+     * How often a live capture may rebuild the pyramid.
+     *
+     * <p>Capture progress arrives per batch, which on a fast build is many
+     * times a second, and a rebuild streams every span in the session. At Tier
+     * 2 that is 170 ms of work — so rebuilding per tick would spend more time
+     * indexing than capturing and would keep the exit criterion "Tier 2 remains
+     * interactive" from being true in the one situation it matters most.
+     *
+     * <p>Two seconds is the overview panel's interval, for the same reason and
+     * with the same consequence: the timeline is up to two seconds behind a
+     * running build, and every number on it comes from one consistent read.
+     */
+    private static final long LIVE_REBUILD_INTERVAL_MICROS = 2_000_000;
+
     private ExecutorService worker;
     private SessionSource source;
     private long generation;
+    private long lastLiveRebuildMicros;
+    private volatile boolean rebuildInFlight;
 
     public TimelineController() {
         view.onViewportChanged(this::refreshWindow);
@@ -134,9 +151,21 @@ public final class TimelineController {
      */
     public void refreshLive() {
         SessionSource open = source;
-        if (open != null) {
-            openSessionKeepingView(open);
+        if (open == null) {
+            return;
         }
+        long now = System.currentTimeMillis() * 1_000L;
+        if (now - lastLiveRebuildMicros < LIVE_REBUILD_INTERVAL_MICROS) {
+            return;
+        }
+        // One rebuild at a time. Without this a build whose ticks outpace the
+        // rebuild queues them up and the worker never catches up.
+        if (rebuildInFlight) {
+            return;
+        }
+        lastLiveRebuildMicros = now;
+        rebuildInFlight = true;
+        openSessionKeepingView(open);
     }
 
     private void openSessionKeepingView(SessionSource open) {
@@ -152,6 +181,8 @@ public final class TimelineController {
             } catch (RuntimeException | SQLException failure) {
                 log.debug("live timeline refresh failed", failure);
                 return;
+            } finally {
+                rebuildInFlight = false;
             }
             SwingUtilities.invokeLater(() -> {
                 if (wanted == generation && built.model != null) {

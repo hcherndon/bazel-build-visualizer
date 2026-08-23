@@ -769,6 +769,10 @@ public final class MainWindow extends JFrame {
                         }
                         liveSource = opened;
                         overviewPanel.openSession(opened);
+                        // The timeline follows the build too. It is the view
+                        // where "live" is most of the point -- watching a build
+                        // fill in is the reason to have one open while it runs.
+                        timeline.openSession(opened);
                     });
                 } catch (RuntimeException notYet) {
                     // The manifest or the database is still being written. The
@@ -792,6 +796,12 @@ public final class MainWindow extends JFrame {
             setCaptureStatus(captureStatus.withProgress(progress));
             eventStatus.setText("Events: " + EventValueFormat.count(progress.normalized()));
             attachLiveOverview();
+            // Retroactive insertion (plan 14.4): an action that arrives after
+            // it completed is inserted at its own timestamps and its bins
+            // updated. The viewport is not touched -- TimelineViewport.withWall
+            // moves a following view and leaves a navigated one where the user
+            // put it.
+            timeline.refreshLive();
         }
 
         @Override
