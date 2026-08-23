@@ -1,7 +1,11 @@
 package com.holtherndon.bazelviz.ui.overview;
 
 import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
+import com.holtherndon.bazelviz.analysis.CriticalPaths;
+import com.holtherndon.bazelviz.analysis.MetricFormat;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
+import com.holtherndon.bazelviz.ui.metrics.MetricsService;
+import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
@@ -96,6 +100,9 @@ public final class OverviewPanel extends JPanel {
      */
     private volatile java.util.concurrent.ScheduledFuture<?> scheduled;
     private java.util.function.Consumer<OverviewSnapshot> snapshotListener = snapshot -> { };
+    private java.util.function.Consumer<NavEntry> navigate = entry -> { };
+    private final JPanel metricTiles = new JPanel(new GridLayout(0, 4, 12, 12));
+    private final JPanel metricDetail = new JPanel();
 
     public OverviewPanel() {
         this(REFRESH_INTERVAL);
@@ -125,11 +132,20 @@ public final class OverviewPanel extends JPanel {
         header.add(subhead);
 
         tiles.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
+        metricTiles.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
+        metricDetail.setLayout(new BoxLayout(metricDetail, BoxLayout.Y_AXIS));
+        metricDetail.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
         details.setLayout(new BoxLayout(details, BoxLayout.Y_AXIS));
         details.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
 
+        JPanel stacked = new JPanel();
+        stacked.setLayout(new BoxLayout(stacked, BoxLayout.Y_AXIS));
+        stacked.add(tiles);
+        stacked.add(metricTiles);
+        stacked.add(metricDetail);
+
         JPanel body = new JPanel(new BorderLayout());
-        body.add(tiles, BorderLayout.NORTH);
+        body.add(stacked, BorderLayout.NORTH);
         body.add(details, BorderLayout.CENTER);
 
         JScrollPane scroll = new JScrollPane(body);
@@ -151,6 +167,80 @@ public final class OverviewPanel extends JPanel {
      */
     public void onSnapshot(java.util.function.Consumer<OverviewSnapshot> listener) {
         this.snapshotListener = Objects.requireNonNull(listener, "listener");
+    }
+
+    /**
+     * Where a card sends the reader when it is clicked (plan 17.3).
+     *
+     * <p>The panel names a destination; the window decides what showing it
+     * means. That keeps the overview free of any knowledge of the card layout
+     * it lives in.
+     */
+    public void onNavigate(java.util.function.Consumer<NavEntry> listener) {
+        this.navigate = Objects.requireNonNull(listener, "listener");
+    }
+
+    /**
+     * Adds the cards that come from the metric collection (plan 17.3's critical
+     * path, peak concurrency and data completeness).
+     *
+     * <p>Separate from {@link #show} because these come from a different read
+     * on a different schedule: the counts above refresh every two seconds
+     * because they are indexed counts, and this one scans every action. Handing
+     * both to one method would put the expensive read on the cheap timer.
+     */
+    public void showMetrics(MetricsService.Result result) {
+        Objects.requireNonNull(result, "result");
+        CriticalPaths paths = result.metrics().invocation().criticalPaths();
+        metricTiles.removeAll();
+        // Two cards, never one. Plan 24 requires the two critical paths to stay
+        // distinct, and a single "Critical path" card would be the exact
+        // collapse it forbids.
+        metricTiles.add(tile("Bazel's critical path",
+                paths.bazelReportedMicros().value()
+                        .map(EntityFormat::duration).orElse(EntityFormat.UNKNOWN),
+                paths.bazelReportedMicros().isKnown()
+                        ? paths.bazelComponents().size() + " components"
+                        : "not reported by this build",
+                NavEntry.TIMELINE));
+        metricTiles.add(tile("Derived dependency path",
+                paths.derived()
+                        .map(derived -> EntityFormat.duration(derived.makespanMicros()))
+                        .orElse(EntityFormat.UNKNOWN),
+                paths.derived()
+                        .map(derived -> derived.isPartial()
+                                ? "a lower bound, some actions untimed"
+                                : derived.path().size() + " actions")
+                        .orElse("no imported action graph"),
+                NavEntry.GRAPH));
+        metricTiles.add(tile("Peak concurrency",
+                result.metrics().invocation().concurrency()
+                        .map(sweep -> EntityFormat.count(sweep.peakActive()))
+                        .orElse(EntityFormat.UNKNOWN),
+                result.metrics().invocation().concurrency()
+                        .map(sweep -> "average "
+                                + MetricFormat.ratio(sweep.parallelismFactor()))
+                        .orElse("nothing was timed"),
+                NavEntry.TIMELINE));
+        long incomplete = result.metrics().invocation().coverage().incomplete().size();
+        metricTiles.add(tile("Findings",
+                EntityFormat.count(result.findings().size()),
+                incomplete == 0
+                        ? "every source complete"
+                        : incomplete + " coverage gaps to read them against",
+                NavEntry.FINDINGS));
+
+        metricDetail.removeAll();
+        List<String[]> rows = new java.util.ArrayList<>();
+        rows.add(new String[] {"Duration source",
+                result.metrics().durationSource().description()});
+        for (var coverage : result.metrics().invocation().coverage().entries()) {
+            rows.add(new String[] {coverage.name(),
+                    coverage.describe().substring(coverage.name().length() + 2)});
+        }
+        metricDetail.add(section("Data completeness", rows));
+        revalidate();
+        repaint();
     }
 
     /** Opens a session and starts refreshing. Returns immediately. */
@@ -232,14 +322,17 @@ public final class OverviewPanel extends JPanel {
         // build interrupted during analysis has configured targets and no
         // completed ones -- six and zero in one measured interrupt -- so a tile
         // counting completions would show that build as having no targets.
-        tiles.add(tile("Targets", EntityFormat.count(snapshot.targets()), targetsNote(snapshot)));
+        tiles.add(tile("Targets", EntityFormat.count(snapshot.targets()), targetsNote(snapshot),
+                NavEntry.TARGETS));
         // "Executed", because a cache hit publishes no event and is therefore
         // not here. The unqualified word would name a total the source cannot
         // support.
         tiles.add(tile("Actions executed", EntityFormat.count(snapshot.actions()),
-                snapshot.actionsFailed() + " failed"));
+                snapshot.actionsFailed() + " failed", NavEntry.ACTIONS));
         tiles.add(tile("Tests", EntityFormat.count(snapshot.tests()),
-                snapshot.testsFailed() + " not passing"));
+                snapshot.testsFailed() + " not passing", NavEntry.TESTS));
+        // No artifacts view exists in plan 17.1's navigation, so this card has
+        // nowhere to send a reader and does not pretend to.
         tiles.add(tile("Artifacts", EntityFormat.count(snapshot.artifacts()), " "));
 
         details.removeAll();
@@ -258,6 +351,8 @@ public final class OverviewPanel extends JPanel {
         headline.setText(" ");
         subhead.setText(" ");
         tiles.removeAll();
+        metricTiles.removeAll();
+        metricDetail.removeAll();
         details.removeAll();
         JPanel wrapper = new JPanel(new BorderLayout());
         wrapper.add(emptyLabel, BorderLayout.CENTER);
@@ -422,12 +517,38 @@ public final class OverviewPanel extends JPanel {
                 : EntityFormat.duration(value.getAsLong() * 1_000L);
     }
 
-    private static JPanel tile(String name, String value, String note) {
+    private JPanel tile(String name, String value, String note) {
+        return tile(name, value, note, null);
+    }
+
+    /**
+     * One dashboard card.
+     *
+     * <p>Plan 17.3: "every card must navigate to a filtered detailed view".
+     * A card with a destination becomes clickable and says so in its tooltip;
+     * one without stays inert rather than pretending. That is a real
+     * distinction here — a count of artifacts has no view in plan 17.1's
+     * navigation to send a reader to.
+     *
+     * @param destination the card the reader lands on, or null when the number
+     *     has nowhere to go
+     */
+    private JPanel tile(String name, String value, String note, NavEntry destination) {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createEtchedBorder(),
                 BorderFactory.createEmptyBorder(8, 10, 8, 10)));
+        if (destination != null) {
+            panel.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+            panel.setToolTipText(PlainText.tooltip("Open " + destination.title()));
+            panel.addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent event) {
+                    navigate.accept(destination);
+                }
+            });
+        }
         JLabel nameLabel = PlainText.disableHtml(new JLabel(name));
         nameLabel.setEnabled(false);
         JLabel valueLabel = PlainText.disableHtml(new JLabel(value));

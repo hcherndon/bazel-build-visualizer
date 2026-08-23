@@ -179,27 +179,47 @@ public record Finding(
         }
     }
 
-    /** Where to go to look into this. */
-    public record Link(View view, String description, Optional<String> filter,
+    /**
+     * Where to go to look into this.
+     *
+     * <p>{@link Kind} is an enum rather than a free-text filter string. A rule
+     * that wrote {@code "mnemonic = Javac"} would be asking the UI to parse a
+     * sentence it wrote, and the two would drift the first time either side was
+     * edited. This way a view that cannot honour a kind fails to compile rather
+     * than silently ignoring a filter it did not recognise.
+     *
+     * @param value the argument the kind needs — the mnemonic to filter to —
+     *     and empty for the kinds that need none
+     */
+    public record Link(View view, Kind kind, String value, String description,
             OptionalLong focusId) {
 
         public Link {
             Objects.requireNonNull(view, "view");
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(value, "value");
             Objects.requireNonNull(description, "description");
-            Objects.requireNonNull(filter, "filter");
             Objects.requireNonNull(focusId, "focusId");
         }
 
-        public static Link to(View view, String description) {
-            return new Link(view, description, Optional.empty(), OptionalLong.empty());
+        /** What the destination should do beyond opening. */
+        public enum Kind {
+            /** Just open it. */
+            NONE,
+            /** Filter to one mnemonic. */
+            MNEMONIC
         }
 
-        public static Link filtered(View view, String description, String filter) {
-            return new Link(view, description, Optional.of(filter), OptionalLong.empty());
+        public static Link to(View view, String description) {
+            return new Link(view, Kind.NONE, "", description, OptionalLong.empty());
+        }
+
+        public static Link mnemonic(View view, String description, String mnemonic) {
+            return new Link(view, Kind.MNEMONIC, mnemonic, description, OptionalLong.empty());
         }
 
         public static Link focused(View view, String description, long id) {
-            return new Link(view, description, Optional.empty(), OptionalLong.of(id));
+            return new Link(view, Kind.NONE, "", description, OptionalLong.of(id));
         }
 
         /**

@@ -155,8 +155,8 @@ public final class MetricQueries implements AutoCloseable {
      * Reads every metric, the derived critical path included.
      *
      * @param graph the session's graph reader, or null when no graph was
-     *     imported; it is not closed by {@link #close()}, because it was opened
-     *     by somebody else and is shared
+     *     imported. This takes ownership of it: {@link #close()} closes it, so
+     *     the caller must not hand over one that another thread is also using.
      */
     public MetricQueries(Connection connection, GraphQueries graph) {
         this.connection = Objects.requireNonNull(connection, "connection");
@@ -1155,9 +1155,15 @@ public final class MetricQueries implements AutoCloseable {
                 : Measured.unknown(source, Completeness.UNAVAILABLE, whyMissing);
     }
 
-    /** Closes the connection this was given, and not the shared graph reader. */
+    /** Closes the connection and the graph reader this was given. */
     @Override
     public void close() throws SQLException {
-        connection.close();
+        try {
+            if (graph.isPresent()) {
+                graph.orElseThrow().close();
+            }
+        } finally {
+            connection.close();
+        }
     }
 }

@@ -31,6 +31,10 @@ import com.holtherndon.bazelviz.ui.timeline.TimelineController;
 import com.holtherndon.bazelviz.ui.overview.OverviewPanel;
 import com.holtherndon.bazelviz.ui.targets.TargetsView;
 import com.holtherndon.bazelviz.ui.tests.TestsView;
+import com.holtherndon.bazelviz.analysis.Finding;
+import com.holtherndon.bazelviz.storage.entities.ActionSort;
+import com.holtherndon.bazelviz.ui.metrics.FindingsView;
+import com.holtherndon.bazelviz.ui.metrics.MetricsService;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.ImportController;
 import com.holtherndon.bazelviz.ui.session.ImportProgressModel;
@@ -118,6 +122,7 @@ public final class MainWindow extends JFrame {
     private final FailuresView failuresView = new FailuresView();
     private final CoverageView coverageView = new CoverageView();
     private final GraphView graphView = new GraphView();
+    private final FindingsView findingsView = new FindingsView();
     private final TimelineController timeline = new TimelineController();
 
     /**
@@ -151,6 +156,7 @@ public final class MainWindow extends JFrame {
      * source when the capture finishes.
      */
     private SessionSource liveSource;
+    private MetricsService metricsService;
     private final ExecutorService worker;
     private final ExecutorService captureWorker;
     private final ImportController importController;
@@ -236,6 +242,14 @@ public final class MainWindow extends JFrame {
         // row without scrolling the timeline.
         actionsView.onShowOnTimeline(this::revealOnTimeline);
         graphView.onActionSelected(this::followGraphSelection);
+        // A finding points at records; these are the two ways it does so.
+        // Selecting the evidence opens the action; following a link opens the
+        // view the rule named, filtered the way the rule filtered it.
+        findingsView.onActionSelected(this::revealAction);
+        findingsView.onNavigate(this::followFindingLink);
+        // Plan 17.3: every card navigates. The overview names a destination and
+        // the window decides what showing it means.
+        overviewPanel.onNavigate(this::showCard);
         timeline.onSelection(actionId -> actionsView.selectAction(actionId));
         // A range dragged out on the timeline narrows the actions table (plan
         // 14.5). Cleared the same way, so the two never disagree about what is
@@ -531,6 +545,11 @@ public final class MainWindow extends JFrame {
         coverageView.openSession(opened);
         graphView.openSession(opened);
         timeline.openSession(opened);
+        // One metric collection feeds both the findings card and the overview's
+        // cards, so opening a session scans its actions once rather than twice.
+        metricsService = new MetricsService(opened);
+        metricsService.addListener(overviewPanel::showMetrics);
+        findingsView.attach(metricsService);
         closeSource(previous);
     }
 
@@ -545,6 +564,14 @@ public final class MainWindow extends JFrame {
         coverageView.closeSession();
         graphView.closeSession();
         timeline.closeSession();
+        findingsView.detach();
+        MetricsService closing = metricsService;
+        metricsService = null;
+        if (closing != null) {
+            Thread closer = new Thread(closing::close, "bbv-metrics-close");
+            closer.setDaemon(true);
+            closer.start();
+        }
     }
 
     /**
@@ -624,6 +651,44 @@ public final class MainWindow extends JFrame {
      * arriving at the timeline already on the right action is exactly what the
      * user who does switch expects.
      */
+    /**
+     * Opens the view a finding's link names, in the state the link asks for.
+     *
+     * <p>The switch is exhaustive over {@code Link.Kind}, so a new kind of link
+     * added to a rule fails to compile here rather than opening an unfiltered
+     * view that looks like it honoured the request.
+     */
+    private void followFindingLink(Finding.Link link) {
+        NavEntry destination = switch (link.view()) {
+            case ACTIONS -> NavEntry.ACTIONS;
+            case TIMELINE -> NavEntry.TIMELINE;
+            case GRAPH -> NavEntry.GRAPH;
+            case TESTS -> NavEntry.TESTS;
+            case FAILURES -> NavEntry.FAILURES;
+            case COVERAGE, OVERVIEW -> NavEntry.OVERVIEW;
+        };
+        if (link.focusId().isPresent()) {
+            long id = link.focusId().getAsLong();
+            if (destination == NavEntry.GRAPH) {
+                revealInGraph(id);
+                return;
+            }
+            revealAction(id);
+            return;
+        }
+        switch (link.kind()) {
+            case MNEMONIC -> actionsView.applyFilter(link.value(), ActionSort.DURATION, true);
+            case NONE -> { }
+        }
+        showCard(destination);
+    }
+
+    /** Shows one action in the actions table, selected. */
+    private void revealAction(long actionId) {
+        showCard(NavEntry.ACTIONS);
+        actionsView.selectAction(actionId);
+    }
+
     private void followGraphSelection(long actionId) {
         timeline.select(actionId);
     }
@@ -989,6 +1054,7 @@ public final class MainWindow extends JFrame {
             case EVENTS -> eventsView;
             case CONSOLE -> consoleView;
             case CAPTURE -> capturePanel;
+            case FINDINGS -> findingsView;
             default -> placeholderCard(entry);
         };
     }

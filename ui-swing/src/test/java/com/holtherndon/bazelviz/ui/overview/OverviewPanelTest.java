@@ -166,6 +166,12 @@ class OverviewPanelTest {
         }
 
         @Override
+        public com.holtherndon.bazelviz.storage.metrics.MetricQueries openMetricQueries() {
+            throw new UnsupportedOperationException(
+                    "the overview's own read collects no metrics");
+        }
+
+        @Override
         public java.sql.Connection openTimelineConnection() {
             throw new UnsupportedOperationException("the overview draws no timeline");
         }

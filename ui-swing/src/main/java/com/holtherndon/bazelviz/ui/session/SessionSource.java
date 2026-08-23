@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.session;
 
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
+import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
 
 /**
  * An open session: its describable identity plus a factory for the per-thread
@@ -47,6 +48,19 @@ public interface SessionSource extends AutoCloseable {
      * an empty answer rather than paying for indexes that do not exist.
      */
     GraphQueries openGraphQueries();
+
+    /**
+     * Opens a reader over the metric catalog, for the Phase 8 dashboard and
+     * findings.
+     *
+     * <p>A fourth reader for the same reason as the third: it scans every
+     * action once and keeps the resulting spans, which no other view wants to
+     * pay for. It is handed the session's graph reader too, because the derived
+     * critical path needs a graph and the alternative — computing the metrics
+     * without one and stitching the path in afterwards — would produce a
+     * dashboard whose parts came from different reads.
+     */
+    MetricQueries openMetricQueries();
 
     /**
      * Opens a raw read connection for the timeline's own aggregation.

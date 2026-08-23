@@ -431,8 +431,17 @@ public final class ActionsView extends JPanel {
         return captureNote.getText();
     }
 
-    /** Visible for testing: drives the toolbar as a user would. */
-    public void applyForTest(String mnemonic, ActionSort sort, boolean descending) {
+    /**
+     * Sets the toolbar and reloads, exactly as a user clicking it would.
+     *
+     * <p>Public because a finding links here (plan section 16, "links to
+     * relevant views"): a finding about one mnemonic that opened an unfiltered
+     * table would leave the reader to redo the filtering the finding had
+     * already worked out.
+     *
+     * @param mnemonic the mnemonic to show, or null for all of them
+     */
+    public void applyFilter(String mnemonic, ActionSort sort, boolean descending) {
         populating = true;
         try {
             mnemonicChoice.setSelectedItem(mnemonic);
@@ -442,6 +451,11 @@ public final class ActionsView extends JPanel {
             populating = false;
         }
         reload();
+    }
+
+    /** Visible for testing: drives the toolbar as a user would. */
+    public void applyForTest(String mnemonic, ActionSort sort, boolean descending) {
+        applyFilter(mnemonic, sort, descending);
     }
 
     /** Visible for testing: the mnemonic entries the filter offers. */

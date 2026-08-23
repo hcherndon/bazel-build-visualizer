@@ -6,6 +6,7 @@ import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
 import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.format.session.SessionManifest;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
+import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.events.EventDetail;
 import com.holtherndon.bazelviz.storage.events.EventPage;
@@ -193,6 +194,23 @@ public final class SqliteSessionSource implements SessionSource {
                 connection,
                 com.holtherndon.bazelviz.format.session.ManagedSessionLayout.at(root)
                         .indexesDirectory());
+    }
+
+    @Override
+    public MetricQueries openMetricQueries() {
+        if (closed) {
+            throw new SessionDataException("session " + root + " is closed");
+        }
+        Connection connection;
+        try {
+            connection = database.newReadConnection();
+        } catch (SQLException e) {
+            throw new SessionDataException("cannot open a read connection to " + root, e);
+        }
+        // The graph reader is created here and owned by the metric reader,
+        // which closes it: sharing one with the graph views would mean two
+        // threads on one JDBC connection.
+        return new MetricQueries(connection, openGraphQueries());
     }
 
     @Override

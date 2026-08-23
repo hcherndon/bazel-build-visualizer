@@ -257,6 +257,15 @@ public final class FindingRules {
                             + " candidates examined ends inside it"));
         }
 
+        List<Finding.Link> links = new ArrayList<>();
+        links.add(Link.to(Link.View.TIMELINE, "See the tail on the timeline"));
+        if (!stragglers.isEmpty()) {
+            // The action itself, not a re-sorted table: the rule already worked
+            // out which one finished last, and sending the reader back to redo
+            // that would be handing over the question rather than the answer.
+            links.add(Link.focused(Link.View.ACTIONS, "Open the action that finished last",
+                    stragglers.getFirst().actionId()));
+        }
         return List.of(new Finding(
                 "slow-tail",
                 "The last " + MetricFormat.duration(tail.durationMicros()) + " of the build ran "
@@ -278,11 +287,8 @@ public final class FindingRules {
                         + " is worth investigating.",
                 "An action with no observed timing is not counted as running, so a tail can"
                         + " look emptier than it was.",
-                "Sort the actions view by end time and look at what finished last.",
-                List.of(
-                        Link.filtered(Link.View.ACTIONS, "The actions that finished last",
-                                "end desc"),
-                        Link.to(Link.View.TIMELINE, "See the tail on the timeline")),
+                "Look at what was still running while the rest of the machine was idle.",
+                links,
                 false));
     }
 
@@ -324,9 +330,8 @@ public final class FindingRules {
                             + " include whatever Bazel spent deciding to run it. The overhead"
                             + " this finding is about is therefore not in the numbers shown.",
                     "Look at whether these can be batched into fewer, larger actions.",
-                    List.of(Link.filtered(Link.View.ACTIONS,
-                            "The " + group.displayKey() + " actions",
-                            "mnemonic = " + group.displayKey())),
+                    List.of(Link.mnemonic(Link.View.ACTIONS,
+                            "The " + group.displayKey() + " actions", group.displayKey())),
                     false));
         }
         return findings;
@@ -383,9 +388,9 @@ public final class FindingRules {
                             + " A first build of a clean workspace misses everything by design.",
                     "Compare the action keys of two runs of one of these actions to see what"
                             + " changed between them.",
-                    List.of(Link.filtered(Link.View.ACTIONS,
+                    List.of(Link.mnemonic(Link.View.ACTIONS,
                             "The " + group.displayKey() + " actions that missed",
-                            "mnemonic = " + group.displayKey())),
+                            group.displayKey())),
                     false));
         }
         return findings;
@@ -429,9 +434,8 @@ public final class FindingRules {
                             + " runner name. A rule that sets these deliberately — because its"
                             + " output is genuinely not reproducible — is behaving correctly.",
                     "Find which rule sets execution requirements on these actions.",
-                    List.of(Link.filtered(Link.View.ACTIONS,
-                            "The " + group.displayKey() + " actions",
-                            "mnemonic = " + group.displayKey())),
+                    List.of(Link.mnemonic(Link.View.ACTIONS,
+                            "The " + group.displayKey() + " actions", group.displayKey())),
                     false));
         }
         return findings;
