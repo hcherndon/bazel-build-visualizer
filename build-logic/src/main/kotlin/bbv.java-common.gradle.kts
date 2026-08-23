@@ -55,8 +55,24 @@ tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.add("-parameters")
 }
 
+// The four-version Bazel sweep is tagged out of the default build. Bazel sizes
+// its server JVM from the machine's RAM, and a sweep that had several alive at
+// once has crashed a laptop at over 120 GB; the fixture caps each server at
+// -Xmx1g, and the sweep runs one version at a time, but it still downloads and
+// starts four servers and takes minutes. Run it deliberately:
+//
+//   ./gradlew :capture-bes:test -Pbbv.bazelSweep=true --tests '*BazelVersionMatrixTest*'
+//
+// The single-version end-to-end capture stays in the default suite, so the path
+// is exercised on every build.
+val runBazelSweep = providers.gradleProperty("bbv.bazelSweep").map { it.toBoolean() }.orElse(false)
+
 tasks.withType<Test>().configureEach {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        if (!runBazelSweep.get()) {
+            excludeTags("bazel-sweep")
+        }
+    }
     maxHeapSize = "2g"
     jvmArgs(enableNativeAccess)
     testLogging {
