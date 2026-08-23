@@ -1,0 +1,34 @@
+//pkg:gen_slow//pkg:pass_test//pkg:gen_a//pkg:gen_b:genrule:simple_test//pkg:fail_test//pkg:gen_bigBb.txtBexternalBfail_test.sh
+B
+bazel_tools
+Btools
+B	bazel-outBgenruleBgenrule-setup.sh
+B	darwin_arm64-fastbuildB	bin	B	pkgBa.txt
+""Bslow.txtBbig.txt
+
+*jdarwin_arm64-fastbuilddarwin_arm64"@02789e4e34dd93030866c5d827baaf132406f5dde8ab349adee90236dfc793eb*jdarwin_arm64-fastbuilddarwin_arm64"@7f8856bb0405540c89cb61a09c1d0562ac1a95a54b0f8a7e6cabe690edf58098Bpass_test.sh
+"q@4c7ce42df489d0df91b4bda26620bdaaf6590782d9684850256a5f02c5ec81d6"	FileWrite(Jhr@@platforms//host:host˜¬@6e8789fee33c7e83ea39e97ff5840b1d8c2a1caa24f0d72f228bf06ae5f620c0"Genrule(2	/bin/bash2-c2«source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 1; cat bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txt > bazel-out/darwin_arm64-fastbuild/bin/pkg/slow.txtBJhr@@platforms//host:host@6ed8e5a114f7358324c3218bd6ee8881d6d93317563cf92e8adebe4d63fd1c26"Genrule(2	/bin/bash2-c2œsource external/bazel_tools/tools/genrule/genrule-setup.sh; for i in $(seq 1 20000); do echo line$i; done > bazel-out/darwin_arm64-fastbuild/bin/pkg/big.txtBJhr@@platforms//host:hostó@7b5a9f2cc17ef9e19cc7639f6e8d32a57f2d688ba9f71205be21b4d287fca27d"Genrule(2	/bin/bash2-c2ssource external/bazel_tools/tools/genrule/genrule-setup.sh; echo a > bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txtBJhr@@platforms//host:hostq@07ad571fa067a688a4e4870c2668cfa43ac3807e55f6aa0fde25cd9eae275c24"	FileWrite(Jhr@@platforms//host:host˜Ú@93daf84c2194132c100384a9731161514bbed86ccbcde85f991397dba237398e"Genrule(2	/bin/bash2-c2Ùsource external/bazel_tools/tools/genrule/genrule-setup.sh; cat bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txt > bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txt; echo b >> bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txtBJhr@@platforms//host:hostBfail_test.sh.repo_mapping
+x@99e2a0983e45337244f35f99fa836029210731d476f0f3c94a38066bc22dc3c6"RepoMappingManifest(Jhr@@platforms//host:hostB$fail_test.sh.runfiles_manifest
+	z@3b10a79470c6d7b520c7695e58ef04187c76946953fd551c05976160fb104c5a"SourceSymlinkManifest(J	h	r@@platforms//host:host"	Bfail_test.sh.runfilesBMANIFEST
+
+s@a1484be949f6527e690437dde15b9be88fa7419cb6db5bc0b260e21f6169d2d8"SymlinkTree(BJ
+h
+r@@platforms//host:host"
+Binternal	B
+_middlemenB!pkg_Sfail_Utest.sh-runfiles
+q@709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c"	Middleman(BJhr@@platforms//host:hostB
+testBtest-setup.sh
+Bgenerate-xml.sh
+"Btestlogs	B	pkgB	fail_testBtest.log
+Btest.cache_status
+Btest.outputs
+µ@53c19d214034bafd7de9b10460f051be8c6f4f223c3f55b48b53147fc7152b09"
+TestRunner(2-external/bazel_tools/tools/test/test-setup.sh2pkg/fail_test.shBJhr@@platforms//host:hostB pass_test.sh.repo_mapping
+ x@99e2a0983e45337244f35f99fa836029210731d476f0f3c94a38066bc22dc3c6"RepoMappingManifest(Jhr@@platforms//host:hostB$!pass_test.sh.runfiles_manifest
+!z@178ac71c3afdb79b161cced55c9c4b67bad1a09cec46091362a6b40d7cb4e397"SourceSymlinkManifest(Jhr@@platforms//host:host"B#pass_test.sh.runfilesB"MANIFEST#
+"s@e28ba045d999f40ff9bfbaaabad0cc8eb327733190a7cf94690ed679df05c144"SymlinkTree(BJhr@@platforms//host:host"B!$pkg_Spass_Utest.sh-runfiles
+$q@709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c"	Middleman(BJhr@@platforms//host:host"	B&	pass_testB%test.log&
+%B'test.cache_status&
+'B(test.outputs&
+(µ@53c19d214034bafd7de9b10460f051be8c6f4f223c3f55b48b53147fc7152b09"
+TestRunner(2-external/bazel_tools/tools/test/test-setup.sh2pkg/pass_test.shB	Jhr@@platforms//host:host

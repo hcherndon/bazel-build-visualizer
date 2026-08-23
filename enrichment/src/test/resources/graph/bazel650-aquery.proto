@@ -1,0 +1,31 @@
+:simple_test//pkg:fail_test*jdarwin_arm64-fastbuilddarwin_arm64"@9cd96869affcbadf499d664d349aab0a56d17a75de5bc5fa99e4d5d7a601840cB	bazel-outBdarwin_arm64-fastbuildB	binB	pkgBfail_test.sh
+u@fcf0f896033c92330b00dd6fed381c3146a334a42e7d6e7338edcbebde94051f"	FileWrite(Jhr@local_config_platform//:hostB$fail_test.sh.runfiles_manifest
+Å@08941cf0a59dc38d18f4d0d9b464718d6da0ff16856825c96d04403f84a2ee68"SourceSymlinkManifest(Jhr@local_config_platform//:host"Bfail_test.sh.runfilesBMANIFEST
+z@aa6ca1e8573e141bdc8906407dbaf0676f1599620e719558ed3c0fc85daec42f"SymlinkTree(BJhr@local_config_platform//:host"BinternalB
+
+_middlemenB!	pkg_Sfail_Utest.sh-runfiles
+
+	x@709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c"	Middleman(BJhr@local_config_platform//:hostBexternalBbazel_toolsBtoolsB
+testBtest-setup.sh
+Bgenerate-xml.sh
+"BtestlogsB	pkgB	fail_testBtest.log
+Btest.cache_status
+ª@0c572401be6b3f4b976a958f91a407c06131c6fd0fa5eaa70e686ceaebead9af"
+TestRunner(2-external/bazel_tools/tools/test/test-setup.sh2pkg/fail_test.shBJhr@local_config_platform//:host:genrule//pkg:gen_a*jdarwin_arm64-fastbuilddarwin_arm64"@3b270167ad09e1b14e1cecd3ecac79b255a5a5eb6162dc1c3e64c83ef54484daBgenruleBgenrule-setup.sh
+	"	Ba.txt
+
+˙@96759875b014b00a9313446b7431db2e1ec75cc5d033d5d239dc7af81cdb0f30"Genrule(2	/bin/bash2-c2ssource external/bazel_tools/tools/genrule/genrule-setup.sh; echo a > bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txtBJ
+h
+r@local_config_platform//:host//pkg:gen_b"
+	Bb.txt
+·@3f850e6f7724a1008050ad4a5d1f27fb7bf1f8f3347bb5fdef32bdc7e7ffedca"Genrule(2	/bin/bash2-c2Ÿsource external/bazel_tools/tools/genrule/genrule-setup.sh; cat bazel-out/darwin_arm64-fastbuild/bin/pkg/a.txt > bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txt; echo b >> bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txtBJhr@local_config_platform//:host//pkg:gen_bigBbig.txt
+§@7c8e1fcdeea2bbd0ba5dd99fe10153ac2d206f921a63d4709947be148546d846"Genrule(2	/bin/bash2-c2úsource external/bazel_tools/tools/genrule/genrule-setup.sh; for i in $(seq 1 20000); do echo line$i; done > bazel-out/darwin_arm64-fastbuild/bin/pkg/big.txtBJhr@local_config_platform//:host//pkg:gen_slow"	Bslow.txt
+≥@0d3ec79f90767c699a7231b8bab12da4a373dfd956cd1eeb5a072458b689051b"Genrule(2	/bin/bash2-c2´source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 1; cat bazel-out/darwin_arm64-fastbuild/bin/pkg/b.txt > bazel-out/darwin_arm64-fastbuild/bin/pkg/slow.txtBJhr@local_config_platform//:host//pkg:pass_testBpass_test.sh
+u@77ed7c13ff8d130ef1472e561b8feabca2fd72cb74bb885e94a479724ff2d499"	FileWrite(Jhr@local_config_platform//:hostB$pass_test.sh.runfiles_manifest
+Å@3f6fcb0d30546529a6ca864b8e5ee42201e0df7165042edc05693d86cafc7531"SourceSymlinkManifest(Jhr@local_config_platform//:host"B pass_test.sh.runfilesBMANIFEST 
+z@f39eaabac3fb1607a6a76772d41726ecacdd9e731a129f5c8e9e5143b4b0f329"SymlinkTree(BJhr@local_config_platform//:host"B!!pkg_Spass_Utest.sh-runfiles
+
+!x@709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c"	Middleman(BJhr@local_config_platform//:host"	B#	pass_testB"test.log#
+"B$test.cache_status#
+$ª@0c572401be6b3f4b976a958f91a407c06131c6fd0fa5eaa70e686ceaebead9af"
+TestRunner(2-external/bazel_tools/tools/test/test-setup.sh2pkg/pass_test.shB	Jhr@local_config_platform//:host

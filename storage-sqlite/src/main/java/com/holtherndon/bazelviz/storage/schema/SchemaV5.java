@@ -81,10 +81,12 @@ final class SchemaV5 {
             // file it came from. The checksum is what crosses the boundary, and
             // it is the BEP's configuration id.
             //
-            // is_executable is nullable rather than defaulted false, because
-            // Bazel 6.5.0 does not emit the field at all -- verified by finding
-            // the same two FileWrite actions there with no field 19, so that
-            // absence is the version and not proto3 dropping a false (Q9).
+            // is_executable holds 1 or NULL and never 0. Bazel 6.5.0 does not
+            // emit the field at all, but it is a proto3 bool without explicit
+            // presence, so nothing downstream of the parser can tell "this
+            // version never says" from "this action is not executable" (Q9).
+            // Recording only the positive keeps the column honest about a
+            // distinction the encoding threw away.
             //
             // action_key is stored and not used as a join key. Nothing has
             // measured whether it is stable between two runs of the same build,

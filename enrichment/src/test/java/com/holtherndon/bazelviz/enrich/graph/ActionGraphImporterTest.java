@@ -1,0 +1,299 @@
+package com.holtherndon.bazelviz.enrich.graph;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.holtherndon.bazelviz.core.graph.ConfigurationMatch;
+import com.holtherndon.bazelviz.storage.SessionDatabase;
+import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.List;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+/**
+ * Importing an action graph Bazel actually produced.
+ *
+ * <p>The fixtures are {@code aquery --output=proto} output from real Bazel
+ * 6.5.0, 7.6.1, 8.4.1 and 9.2.0. The session around them reproduces what Phase 3
+ * would have written for the same build: the four genrule actions and the two
+ * configurations the build event stream published.
+ */
+final class ActionGraphImporterTest {
+
+    @TempDir
+    Path tempDir;
+
+    private SessionDatabase database;
+    private Connection connection;
+
+    private static final String OUT = "bazel-out/darwin_arm64-fastbuild/bin/pkg/";
+
+    /** The configuration checksums the probe build actually published. */
+    private static final java.util.Map<String, List<String>> CONFIGURATIONS = java.util.Map.of(
+            "bazel650", List.of(
+                    "9cd96869affcbadf499d664d349aab0a56d17a75de5bc5fa99e4d5d7a601840c",
+                    "3b270167ad09e1b14e1cecd3ecac79b255a5a5eb6162dc1c3e64c83ef54484da"),
+            "bazel920", List.of(
+                    "1a589d14ca3886895c1228db75ec6c30d0c253d2c9f4c3070e5f3535de94c607",
+                    "2d8934052f1445fdec9fefac5a616f1fb9d9dea67b8c1b3f6e1572370634272c"));
+
+    @BeforeEach
+    void buildSession() throws Exception {
+        database = SessionDatabase.open(tempDir.resolve("session.db"));
+        MigrationRunner.standard().migrate(database);
+        connection = database.writerConnection();
+        exec("INSERT INTO event_streams (stream_key, state) VALUES ('s', 'CLOSED')");
+        for (String name : List.of("a", "b", "slow", "big")) {
+            exec("INSERT INTO actions (primary_output, outcome) VALUES ('"
+                    + OUT + name + ".txt', 'SUCCEEDED')");
+        }
+    }
+
+    @AfterEach
+    void closeSession() throws Exception {
+        database.close();
+    }
+
+    @ParameterizedTest(name = "Bazel {0}")
+    @ValueSource(strings = {"bazel650", "bazel761", "bazel841", "bazel920"})
+    @DisplayName("every version's graph imports with every artifact path resolved")
+    void everyVersionImports(String fixture) throws Exception {
+        ActionGraphImporter.Result result = importFixture(fixture);
+
+        assertThat(result.succeeded()).isTrue();
+        assertThat(result.declaredActions()).isGreaterThanOrEqualTo(14);
+        assertThat(result.depsets()).isPositive();
+        // Paths are built from a fragment tree whose parents are sometimes
+        // declared after their children (Q4). Any unresolved artifact means
+        // the two-pass resolution did not happen.
+        assertThat(result.unresolvedArtifacts()).isZero();
+        assertThat(scalar("SELECT count(*) FROM declared_actions"
+                + " WHERE primary_output_id IS NULL")).isZero();
+    }
+
+    @Test
+    @DisplayName("a path assembled from the fragment tree is the path Bazel meant")
+    void pathsAreReconstructedCorrectly() throws Exception {
+        importFixture("bazel920");
+
+        // 36 to 40 fragments describe 19 to 25 artifacts, because directory
+        // prefixes are shared. If the chain were walked wrongly the paths would
+        // be plausible and wrong, so this asserts an exact one.
+        assertThat(paths()).contains(OUT + "a.txt", OUT + "big.txt");
+    }
+
+    @Test
+    @DisplayName("declared actions link to the executed ones by primary output")
+    void declaredActionsCorrelate() throws Exception {
+        ActionGraphImporter.Result result = importFixture("bazel920");
+
+        // The session holds the four genrules; the graph holds sixteen actions.
+        assertThat(result.correlatedActions()).isEqualTo(4);
+        assertThat(scalar("SELECT count(*) FROM declared_actions da"
+                + " JOIN actions a ON a.id = da.action_id")).isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("actions that were declared and never ran are kept, unlinked")
+    void declaredButNotExecutedSurvive() throws Exception {
+        ActionGraphImporter.Result result = importFixture("bazel920");
+
+        // aquery declares the TestRunner action of every test; a `build`
+        // invocation runs none of them (Q7). Dropping them would make the graph
+        // disagree with the analysis it came from.
+        long unlinked = result.declaredActions() - result.correlatedActions();
+        assertThat(unlinked).isPositive();
+        assertThat(text("SELECT m.value FROM declared_actions da"
+                + " JOIN mnemonics m ON m.id = da.mnemonic_id"
+                + " WHERE da.action_id IS NULL AND m.value = 'TestRunner' LIMIT 1"))
+                .isEqualTo("TestRunner");
+    }
+
+    @Test
+    @DisplayName("the depset DAG is stored as a DAG, not flattened")
+    void depsetsStayADag() throws Exception {
+        importFixture("bazel920");
+
+        assertThat(scalar("SELECT count(*) FROM graph_depsets")).isPositive();
+        assertThat(scalar("SELECT count(*) FROM graph_depset_artifacts")).isPositive();
+        assertThat(scalar("SELECT count(*) FROM declared_action_inputs")).isPositive();
+        try (Statement s = connection.createStatement();
+                ResultSet rows = s.executeQuery("PRAGMA foreign_key_check")) {
+            assertThat(rows.next()).as("a foreign key violation exists").isFalse();
+        }
+    }
+
+    @Test
+    @DisplayName("a graph whose configurations are the build's is called exact")
+    void matchingConfigurationsAreExact() throws Exception {
+        declareConfigurations(CONFIGURATIONS.get("bazel920"));
+
+        ActionGraphImporter.Result result = importFixture("bazel920");
+
+        assertThat(result.configurationMatch()).isEqualTo(ConfigurationMatch.EXACT);
+        assertThat(result.matchesTheBuild()).isTrue();
+        assertThat(text("SELECT configuration_match FROM graph_sources")).isEqualTo("EXACT");
+    }
+
+    @Test
+    @DisplayName("a graph from another build is imported, and marked, not hidden")
+    void mismatchedConfigurationsAreMarked() throws Exception {
+        declareConfigurations(List.of("a-configuration-this-build-never-used"));
+
+        ActionGraphImporter.Result result = importFixture("bazel920");
+
+        // Plan 12.4: do not silently attach uncertain graph data -- and do not
+        // silently discard it either. The actions are real.
+        assertThat(result.succeeded()).isTrue();
+        assertThat(result.declaredActions()).isPositive();
+        assertThat(result.configurationMatch()).isEqualTo(ConfigurationMatch.MISMATCHED);
+        assertThat(result.matchesTheBuild()).isFalse();
+        assertThat(text("SELECT mismatch_detail FROM graph_sources"))
+                .contains("actions and edges in it are real");
+    }
+
+    @Test
+    @DisplayName("no configurations to compare against reads as unknown, never exact")
+    void noConfigurationsIsUnknown() throws Exception {
+        ActionGraphImporter.Result result = importFixture("bazel920");
+
+        assertThat(result.configurationMatch()).isEqualTo(ConfigurationMatch.UNKNOWN);
+        assertThat(result.matchesTheBuild()).isFalse();
+    }
+
+    @Test
+    @DisplayName("an empty query output is a failure, not an empty graph")
+    void emptyOutputIsAFailure() throws Exception {
+        Path empty = Files.createFile(tempDir.resolve("empty.proto"));
+
+        ActionGraphImporter.Result result =
+                new ActionGraphImporter(connection).importFrom(empty, List.of("aquery"));
+
+        // A query naming a target that does not exist exits non-zero and writes
+        // zero bytes on all four versions (Q8).
+        assertThat(result.succeeded()).isFalse();
+        assertThat(result.error()).hasValueSatisfying(message ->
+                assertThat(message).contains("failed query rather than a build with no actions"));
+    }
+
+    @Test
+    @DisplayName("a failed import leaves the executed actions exactly as they were")
+    void failureLeavesTheSessionUsable() throws Exception {
+        long before = scalar("SELECT count(*) FROM actions");
+        Path garbage = tempDir.resolve("garbage.proto");
+        Files.write(garbage, new byte[] {(byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff});
+
+        ActionGraphImporter.Result result =
+                new ActionGraphImporter(connection).importFrom(garbage, List.of("aquery"));
+
+        assertThat(result.succeeded()).isFalse();
+        assertThat(scalar("SELECT count(*) FROM actions")).isEqualTo(before);
+        assertThat(scalar("SELECT count(*) FROM declared_actions")).isZero();
+        assertThat(text("SELECT state FROM graph_sources")).isEqualTo("FAILED");
+        assertThat(text("SELECT error_excerpt FROM graph_sources")).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("staging tables do not survive the import")
+    void stagingIsTemporary() throws Exception {
+        importFixture("bazel920");
+
+        try (Statement s = connection.createStatement();
+                ResultSet rows = s.executeQuery(
+                        "SELECT count(*) FROM sqlite_temp_master WHERE name LIKE 'stage_%'")) {
+            assertThat(rows.next()).isTrue();
+            assertThat(rows.getLong(1)).isZero();
+        }
+    }
+
+    @Test
+    @DisplayName("is_executable is true or unknown, and never stored false")
+    void isExecutableIsNeverFalse() throws Exception {
+        importFixture("bazel920");
+
+        // proto3 erased the difference between "not executable" and "this
+        // version never says" before the parser saw it (Q9), so a 0 would be a
+        // distinction the data does not carry.
+        assertThat(scalar("SELECT count(*) FROM declared_actions WHERE is_executable = 0"))
+                .isZero();
+        assertThat(scalar("SELECT count(*) FROM declared_actions WHERE is_executable = 1"))
+                .isPositive();
+    }
+
+    @Test
+    @DisplayName("6.5.0 marks nothing executable, which is the version and not the build")
+    void sixFiveMarksNothingExecutable() throws Exception {
+        importFixture("bazel650");
+
+        assertThat(scalar("SELECT count(*) FROM declared_actions WHERE is_executable IS NOT NULL"))
+                .isZero();
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    private ActionGraphImporter.Result importFixture(String name) throws Exception {
+        return new ActionGraphImporter(connection)
+                .importFrom(fixture(name + "-aquery.proto"), List.of("aquery", "//pkg:all"));
+    }
+
+    private void declareConfigurations(List<String> checksums) throws SQLException {
+        for (String checksum : checksums) {
+            exec("INSERT INTO configurations (stream_id, bep_id, declared)"
+                    + " VALUES (1, '" + checksum + "', 1)");
+        }
+    }
+
+    private List<String> paths() throws SQLException {
+        List<String> out = new java.util.ArrayList<>();
+        try (Statement s = connection.createStatement();
+                ResultSet rows = s.executeQuery("SELECT path FROM artifacts")) {
+            while (rows.next()) {
+                out.add(rows.getString(1));
+            }
+        }
+        return out;
+    }
+
+    private Path fixture(String name) throws IOException {
+        Path target = tempDir.resolve(name);
+        try (InputStream in = getClass().getResourceAsStream("/graph/" + name)) {
+            if (in == null) {
+                throw new IOException("missing fixture " + name);
+            }
+            Files.write(target, in.readAllBytes());
+        }
+        return target;
+    }
+
+    private void exec(String sql) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        }
+    }
+
+    private long scalar(String sql) throws SQLException {
+        try (Statement statement = connection.createStatement();
+                ResultSet rows = statement.executeQuery(sql)) {
+            return rows.next() ? rows.getLong(1) : -1L;
+        }
+    }
+
+    private String text(String sql) throws SQLException {
+        try (Statement statement = connection.createStatement();
+                ResultSet rows = statement.executeQuery(sql)) {
+            return rows.next() ? rows.getString(1) : null;
+        }
+    }
+}
