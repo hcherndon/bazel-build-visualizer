@@ -716,3 +716,16 @@ time-range filter with nothing to filter, a comment describing a majority check
 the code did not make, and a live refresh that would have rebuilt the pyramid on
 every progress tick. `docs/phase6-audit.md` is the full report, including the
 check that became a test.
+
+### Verified from clean (Phase 6)
+
+`rm -rf build */build build-logic/build && ./gradlew build --no-build-cache`:
+**BUILD SUCCESSFUL in 2m 51s, 79 tasks all executed, 1,145 tests across 137
+classes, 0 failures, 0 errors, 0 skipped** — up from 1,090 at the end of
+Phase 5. `analysis-core` has its first 13.
+
+*0 skipped* is still a fact about this machine, which has all four pinned Bazel
+versions installed. Phase 6 added no test that needs Bazel at all: the timeline
+is measured with the synthetic generator, which costs no server and is why
+these figures could be taken at Tier 3 without going near the memory ceiling
+that made the suite unrunnable.
