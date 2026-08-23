@@ -35,20 +35,20 @@ Most of them cannot be measured until the subsystem they describe exists.
 The "Measurable from" column names the phase that makes each one real; only
 the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 
-| # | Objective | Measurable from | Measured |
-|---|---|---|---|
-| 1 | Raw capture path sustains 100,000 small synthetic events per second for burst tests without loss | **Phase 2** | **not met — 84,000–88,000/s** end to end, without loss; the shortfall is entirely gRPC's per-message cost, not this application's (see below) |
-| 2 | Normalization sustains at least 25,000 representative events per second | Phase 3 | not yet measurable |
-| 3 | Capture remains correct if normalization temporarily falls behind | **Phase 2** | **met** — every burst above completed with `received == journaled == normalized + stream-control` while backpressure was active |
-| 4 | Live UI updates at least four times per second under ordinary load | Phase 3 | not yet measurable |
-| 5 | Panning and zooming aggregate timeline/graph views targets 30 frames per second | **Phase 0** (spike) | **met** — timeline p95 0.88–0.94 ms, graph p95 0.87–1.28 ms vs 33 ms |
-| 6 | A cached action-table page appears within 100 milliseconds | **Phase 0** (spike) | **met** — table cache max 25.0 µs; SQLite keyset p95 0.65 ms |
-| 7 | An uncached indexed page normally appears within 500 milliseconds | **Phase 0** (spike) | **met** — SQLite OFFSET max 23.0 ms at 2M rows (but see keyset finding) |
-| 8 | Opening an already indexed Tier 3 session shows its overview within five seconds without loading all actions | Phase 3 | not yet measurable |
-| 9 | Application-managed heap remains below 4 GB for Tier 3 under normal aggregate viewing | Phase 6/7 (partial signal in Phase 0 spikes) | partial — see spike retained-bytes figures |
-| 10 | No routine EDT pause exceeds 100 milliseconds | Phase 3 | not yet measurable |
-| 11 | Long queries are cancellable | Phase 3 | not yet measurable |
-| 12 | Session finalization can resume after application restart | **Phase 1** | **met** — an import interrupted at 145,000 of 300,000 events resumes to a state identical to a clean import; see docs/implementation-status.md |
+| # | Objective | Measured |
+|---|---|---|
+| 1 | Raw capture sustains 100,000 small synthetic events/sec for burst tests without loss | **not met — 79,400/s** at 200,000 events, without loss. The shortfall is gRPC's per-message acknowledgement, not this application: replacing the whole pipeline with a sink that stores nothing produces the same rate. |
+| 2 | Normalization sustains at least 25,000 representative events/sec | **met — 114,667 actions/s** at 5,000,000 actions (`runEntityScaleSpike --rows=5000000`) |
+| 3 | Capture remains correct if normalization temporarily falls behind | **met** — every run completes with `received == journaled == normalized + stream-control` while backpressure is active, including the 50,000,000-event Tier 3 capture |
+| 4 | Live UI updates at least four times per second under ordinary load | **partial, by design** — capture progress and console output update several times a second; the overview snapshot is deliberately every 2 s because it re-reads a whole consistent snapshot, and the metric collection runs once per session rather than on a timer |
+| 5 | Panning and zooming aggregate timeline/graph views targets 30 FPS | **met** — timeline p95 0.78–0.94 ms, graph p95 0.87–1.28 ms, against a 33 ms budget |
+| 6 | A cached action-table page appears within 100 ms | **met** — table cache max 25.0 µs; keyset pages 0.75–1.13 ms at 5,000,000 actions, at every depth |
+| 7 | An uncached indexed page normally appears within 500 ms | **met** — 0.6 ms for the first page of a 5,000,000-action session opened from cold |
+| 8 | Opening an already indexed Tier 3 session shows its overview within five seconds without loading all actions | **met — 9.6 ms** from cold, on a 1.5 GB, 5,000,000-action database |
+| 9 | Application-managed heap remains below 4 GB for Tier 3 | **met** — 0.48 GB resident while capturing 50,000,000 events (0.96 GB with the larger page cache); the CSR graph is 176 MB at Tier 2 and extrapolates to ~880 MB at Tier 3 |
+| 10 | No routine EDT pause exceeds 100 ms | **met structurally** — `EdtDisciplineTest` asserts every component that can reach a database owns a thread; three paint-isolation tests assert the painted views can reach neither. Frame p95s above are the empirical half. |
+| 11 | Long queries are cancellable | **met** — `SessionReader.cancelRunningQuery`, `GraphLayoutService.cancel`, and every layout returns a placement of nothing rather than a partial one |
+| 12 | Session finalization can resume after application restart | **met** — an import interrupted at 145,000 of 300,000 events resumes to a state identical to a clean import |
 
 ### What the Phase 0 spikes do and do not prove
 
@@ -787,6 +787,46 @@ nothing.
 `cache_size` is a **ceiling, not an allocation** — a connection that pages a few
 hundred rows costs a few hundred pages, so the 128 MB figure is not multiplied
 by the number of open readers in practice.
+
+**And the pragmas barely help at Tier 3**, which is the result worth publishing
+rather than the flattering one:
+
+| Events | Before | After | Change |
+|---:|---:|---:|---|
+| 3,000,000 | 43,803/s | 51,527/s | **+18%** |
+| 50,000,000 | 16,157/s | 16,853/s | **+4%** |
+
+At three million events a 128 MB cache covers a useful fraction of a 700 MB
+database. At fifty million it is 128 MB against six gigabytes, and the working
+set of a b-tree insert into a table that size does not fit in any cache this
+application would be willing to reserve. The Tier 3 bottleneck is disk-bound
+random I/O, and the honest conclusion is that the pragmas materially help
+mid-size sessions and marginally help the largest ones.
+
+Resident memory rose from 0.48 GB to 0.96 GB with the larger cache, which is
+the cost, and is still a quarter of the plan's 4 GB budget.
+
+### Tier 3 indexed session, reopened and queried
+
+`./gradlew :benchmarks:runEntityScaleSpike --args="--rows=5000000"` — plan
+20.1's Tier 3 action count, 1.5 GB of database.
+
+| Stage | Result |
+|---|---:|
+| Normalize 5,000,000 actions | 43.60 s = **114,667 actions/s** |
+| Load 1,666,667 attempts | 4.10 s |
+| Build every index | 8.57 s |
+| Anchor index, per sort | 441–2,243 ms (text sorts are the slow ones) |
+| Any page, any sort, any depth | **0.75–1.13 ms** |
+| Overview snapshot (warm) | 1.1 ms |
+| **Reopen from cold** | 0 ms |
+| **Overview from cold** | **9.6 ms** (objective: < 5,000 ms) |
+| **First page from cold** | **0.6 ms** (objective: < 500 ms) |
+
+Page ordering is verified, not assumed: walking the pages is compared against
+what one large `ORDER BY` returns, for every sort. A keyset predicate that gets
+NULL handling wrong does not throw — it silently returns fewer rows than the
+count promised, and the rows it drops are exactly the ones with unknown values.
 
 ### What this rate means for a real build
 
