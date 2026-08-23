@@ -60,7 +60,7 @@ public final class Main {
             // Where sessions live is configuration-directory discovery, which the
             // plan assigns to this module; ui-swing is handed the resolved path
             // rather than re-deriving the platform rules for itself.
-            MainWindow window = new MainWindow(dirs.managedSessions());
+            MainWindow window = new MainWindow(dirs.managedSessions(), dirs.catalog());
             DesktopIntegration.install(window);
             window.setVisible(true);
             log.info("Main window shown");

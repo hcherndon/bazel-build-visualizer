@@ -35,7 +35,14 @@ import com.holtherndon.bazelviz.analysis.Finding;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.ui.metrics.FindingsView;
 import com.holtherndon.bazelviz.ui.metrics.MetricsService;
+import com.holtherndon.bazelviz.core.redact.RedactionReport;
 import com.holtherndon.bazelviz.format.portable.BvizLimits;
+import com.holtherndon.bazelviz.storage.catalog.CatalogEntry;
+import com.holtherndon.bazelviz.storage.catalog.SessionCatalog;
+import com.holtherndon.bazelviz.storage.export.TableExport;
+import com.holtherndon.bazelviz.ui.export.ExportController;
+import com.holtherndon.bazelviz.ui.session.CatalogEntries;
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.ArchiveImport;
 import com.holtherndon.bazelviz.ui.session.OpenRequest;
@@ -74,6 +81,7 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSeparator;
 import javax.swing.JSplitPane;
+import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
@@ -159,6 +167,9 @@ public final class MainWindow extends JFrame {
      * source when the capture finishes.
      */
     private SessionSource liveSource;
+    private final Path catalogDirectory;
+    private final ExportController exports;
+    private final JMenu recentMenu = new JMenu("Open Recent");
     private MetricsService metricsService;
     /**
      * The derived chain's node indices, from the last metric collection.
@@ -200,8 +211,19 @@ public final class MainWindow extends JFrame {
      *     actually runs
      */
     public MainWindow(Path sessionsRoot) {
+        this(sessionsRoot, sessionsRoot.resolveSibling("catalog"));
+    }
+
+    /**
+     * @param catalogDirectory where the session library's index lives; the
+     *     application-support {@code catalog/} directory, which is outside any
+     *     session because it is about all of them
+     */
+    public MainWindow(Path sessionsRoot, Path catalogDirectory) {
         super("Bazel Build Visualizer");
         this.sessionsRoot = sessionsRoot;
+        this.catalogDirectory = java.util.Objects.requireNonNull(
+                catalogDirectory, "catalogDirectory");
         this.sessions = new SessionManager(sessionsRoot, APP_VERSION);
         this.worker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "bbv-import");
@@ -221,6 +243,7 @@ public final class MainWindow extends JFrame {
         });
         this.launchController = new LaunchController(
                 captureWorker, SwingUtilities::invokeLater, new CaptureListener());
+        this.exports = new ExportController(worker, SwingUtilities::invokeLater);
 
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setMinimumSize(new Dimension(960, 640));
@@ -346,9 +369,32 @@ public final class MainWindow extends JFrame {
         cancelImportItem.addActionListener(event -> importController.cancel());
         closeSessionItem.addActionListener(event -> closeSession());
 
+        JMenuItem openArchive = new JMenuItem("Open Portable Archive…");
+        openArchive.addActionListener(event -> chooseArchiveToOpen());
+
+        // Rebuilt every time it opens: the library changes while the window is
+        // up, and a menu populated once would go stale the first time an import
+        // finished.
+        recentMenu.addMenuListener(new javax.swing.event.MenuListener() {
+            @Override
+            public void menuSelected(javax.swing.event.MenuEvent event) {
+                refreshRecentMenu();
+            }
+
+            @Override
+            public void menuDeselected(javax.swing.event.MenuEvent event) { }
+
+            @Override
+            public void menuCanceled(javax.swing.event.MenuEvent event) { }
+        });
+
         JMenu file = new JMenu("File");
         file.add(openFile);
         file.add(openSession);
+        file.add(openArchive);
+        file.add(recentMenu);
+        file.addSeparator();
+        file.add(exportMenu());
         file.addSeparator();
         file.add(cancelImportItem);
         file.add(closeSessionItem);
@@ -356,6 +402,210 @@ public final class MainWindow extends JFrame {
         JMenuBar bar = new JMenuBar();
         bar.add(file);
         return bar;
+    }
+
+    /** Everything a session can be turned into, and what each one carries. */
+    private JMenu exportMenu() {
+        JMenu menu = new JMenu("Export");
+
+        JMenuItem redactedArchive = new JMenuItem("Redacted Session Archive…");
+        redactedArchive.addActionListener(event -> exportArchive(true));
+        JMenuItem completeArchive = new JMenuItem("Complete Session Archive…");
+        completeArchive.addActionListener(event -> exportArchive(false));
+        JMenuItem bep = new JMenuItem("Binary BEP File…");
+        bep.addActionListener(event -> exportBep());
+
+        menu.add(redactedArchive);
+        menu.add(completeArchive);
+        menu.addSeparator();
+        menu.add(bep);
+        menu.addSeparator();
+        for (TableExport.Table table : TableExport.Table.values()) {
+            for (TableExport.Format format : TableExport.Format.values()) {
+                JMenuItem item = new JMenuItem(
+                        table.displayName() + " as " + format.displayName() + "…");
+                item.addActionListener(event -> exportTable(table, format));
+                menu.add(item);
+            }
+        }
+        return menu;
+    }
+
+    private java.util.Optional<Path> currentSessionRoot() {
+        SessionSource open = currentSource;
+        if (open == null) {
+            JOptionPane.showMessageDialog(this, "Open a session first.",
+                    "Nothing to export", JOptionPane.INFORMATION_MESSAGE);
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(open.info().root());
+    }
+
+    private java.util.Optional<Path> chooseSaveTarget(String title, String suggestedName) {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle(title);
+        chooser.setSelectedFile(new File(suggestedName));
+        applyLastDirectory(chooser);
+        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return java.util.Optional.empty();
+        }
+        Path chosen = chooser.getSelectedFile().toPath();
+        rememberDirectory(chosen.getParent());
+        return java.util.Optional.of(chosen);
+    }
+
+    private void exportArchive(boolean redacted) {
+        currentSessionRoot().ifPresent(root -> chooseSaveTarget(
+                redacted ? "Export Redacted Session" : "Export Complete Session",
+                root.getFileName() + (redacted ? "-redacted.bviz" : ".bviz"))
+                .ifPresent(target -> {
+                    if (!redacted && !confirmCompleteExport()) {
+                        return;
+                    }
+                    exports.exportArchive(root, target, redacted, APP_VERSION,
+                            this::confirmRedaction,
+                            result -> showExportResult("Export complete", result.describe()),
+                            failure -> showExportFailure(failure));
+                }));
+    }
+
+    private void exportBep() {
+        currentSessionRoot().ifPresent(root -> chooseSaveTarget(
+                "Export Binary BEP", root.getFileName() + ".bep")
+                .ifPresent(target -> exports.exportBep(root, target,
+                        result -> showExportResult("BEP export complete", result.describe()),
+                        this::showExportFailure)));
+    }
+
+    private void exportTable(TableExport.Table table, TableExport.Format format) {
+        currentSessionRoot().ifPresent(root -> chooseSaveTarget(
+                "Export " + table.displayName(), table.fileStem() + format.extension())
+                .ifPresent(target -> exports.exportTable(root, table, format, target, true,
+                        result -> showExportResult("Export complete", result.describe()),
+                        this::showExportFailure)));
+    }
+
+    /**
+     * Shows what redaction did, before the archive is written.
+     *
+     * <p>docs/privacy.md requires this, and the report deliberately does not
+     * promise that everything sensitive was found — it says what the patterns
+     * matched, so the decision to share rests on something a person read.
+     */
+    private boolean confirmRedaction(RedactionReport report) {
+        JTextArea text = new JTextArea(String.join("\n", report.lines()));
+        text.setEditable(false);
+        text.setRows(Math.min(20, report.lines().size() + 2));
+        text.setColumns(72);
+        return JOptionPane.showConfirmDialog(this,
+                new JScrollPane(text), "Redaction report",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE)
+                == JOptionPane.OK_OPTION;
+    }
+
+    /**
+     * A complete export is as sensitive as the machine it was taken on.
+     *
+     * <p>The raw capture holds the original bytes, secrets included, so this is
+     * the one export that must be asked about rather than reported afterwards.
+     */
+    private boolean confirmCompleteExport() {
+        return JOptionPane.showConfirmDialog(this,
+                "A complete archive contains the raw capture: every command line,"
+                        + " every environment value and every absolute path, exactly as"
+                        + " captured.\n\nIt is as sensitive as this machine. Share it only"
+                        + " with somebody who could already read this session.\n\nExport it"
+                        + " anyway?",
+                "Complete export", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE)
+                == JOptionPane.OK_OPTION;
+    }
+
+    private void showExportResult(String title, String message) {
+        log.info("{}: {}", title, message);
+        JTextArea text = new JTextArea(message);
+        text.setEditable(false);
+        text.setLineWrap(true);
+        text.setWrapStyleWord(true);
+        text.setRows(6);
+        text.setColumns(64);
+        JOptionPane.showMessageDialog(
+                this, new JScrollPane(text), title, JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void showExportFailure(Throwable failure) {
+        log.error("export failed", failure);
+        JOptionPane.showMessageDialog(this, String.valueOf(failure.getMessage()),
+                "Export failed", JOptionPane.ERROR_MESSAGE);
+    }
+
+    // ----------------------------------------------------------- the library
+
+    /**
+     * Rebuilds the Open Recent menu from the catalog.
+     *
+     * <p>Reads on the EDT, deliberately: it is one indexed query returning at
+     * most a dozen small rows, and a menu that populated asynchronously would
+     * open empty and fill in under the user's cursor.
+     */
+    private void refreshRecentMenu() {
+        recentMenu.removeAll();
+        try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
+            java.util.List<CatalogEntry> entries = catalog.recent(12);
+            if (entries.isEmpty()) {
+                JMenuItem none = new JMenuItem("No sessions yet");
+                none.setEnabled(false);
+                recentMenu.add(none);
+                return;
+            }
+            for (CatalogEntry entry : entries) {
+                JMenuItem item = new JMenuItem(entry.displayName()
+                        + (entry.missing() ? "  (not found)" : ""));
+                item.setToolTipText(PlainText.tooltip(entry.directory().toString()
+                        + entry.summary().map(text -> " — " + text).orElse("")));
+                // A session whose directory is gone is listed and not offered:
+                // seeing that it existed is the point of keeping the row.
+                item.setEnabled(!entry.missing());
+                item.addActionListener(event -> openPath(entry.directory()));
+                recentMenu.add(item);
+            }
+        } catch (Exception failure) {
+            log.warn("could not read the session catalog", failure);
+            JMenuItem broken = new JMenuItem("The session library could not be read");
+            broken.setEnabled(false);
+            recentMenu.add(broken);
+        }
+    }
+
+    /** Records an opened session in the library, off the event thread. */
+    private void recordInCatalog(Path sessionRoot) {
+        worker.execute(() -> {
+            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
+                java.util.Optional<CatalogEntry> entry =
+                        CatalogEntries.read(sessionRoot, sessions::readManifest);
+                if (entry.isPresent()) {
+                    catalog.record(entry.orElseThrow());
+                    catalog.touch(entry.orElseThrow().sessionUuid(),
+                            System.currentTimeMillis() * 1_000L);
+                }
+            } catch (Exception failure) {
+                // The library is a convenience. A session that opens perfectly
+                // well must not fail because its index could not be updated.
+                log.warn("could not record {} in the session catalog", sessionRoot, failure);
+            }
+        });
+    }
+
+    private void chooseArchiveToOpen() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Open Portable Archive");
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        applyLastDirectory(chooser);
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        Path chosen = chooser.getSelectedFile().toPath();
+        rememberDirectory(chosen.getParent());
+        openPath(chosen);
     }
 
     private void chooseFileToImport() {
@@ -566,6 +816,7 @@ public final class MainWindow extends JFrame {
                     installSession(opened);
                     showSessionInfo(opened.info());
                 });
+                recordInCatalog(root);
             } catch (Exception failure) {
                 log.error("could not open session {}", root, failure);
                 SwingUtilities.invokeLater(() -> showSessionFailure(failure.toString()));
