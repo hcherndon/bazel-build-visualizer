@@ -58,13 +58,17 @@ final class CriticalPathTest {
         CriticalPath.Result result = CriticalPath.compute(
                 diamond(), DIAMOND_WEIGHTS, CriticalPath.DurationSource.BEP_ACTION);
 
-        long[] slack = result.slackMicros();
         // Node 1 could start 70 µs later without delaying anything: it takes 30
         // where the parallel branch takes 100.
-        assertThat(slack[1]).isEqualTo(70);
-        assertThat(slack[0]).isZero();
-        assertThat(slack[2]).isZero();
-        assertThat(slack[3]).isZero();
+        assertThat(result.slackAt(1)).isEqualTo(70);
+        assertThat(result.slackAt(0)).isZero();
+        assertThat(result.slackAt(2)).isZero();
+        assertThat(result.slackAt(3)).isZero();
+        // Slack of zero is exactly what being on the path means.
+        assertThat(result.isOnPath(1)).isFalse();
+        assertThat(result.isOnPath(0)).isTrue();
+        assertThat(result.isOnPath(2)).isTrue();
+        assertThat(result.isOnPath(3)).isTrue();
     }
 
     @Test
@@ -74,8 +78,8 @@ final class CriticalPathTest {
                 diamond(), DIAMOND_WEIGHTS, CriticalPath.DurationSource.BEP_ACTION);
 
         // Node 3 waits for node 2 (finishing at 110), not node 1 (at 40).
-        assertThat(result.earliestStartMicros()[3]).isEqualTo(110);
-        assertThat(result.earliestFinishMicros()[3]).isEqualTo(115);
+        assertThat(result.earliestStartAt(3)).isEqualTo(110);
+        assertThat(result.earliestFinishAt(3)).isEqualTo(115);
     }
 
     @Test
@@ -182,13 +186,20 @@ final class CriticalPathTest {
     }
 
     @Test
-    @DisplayName("the returned arrays cannot be mutated through the result")
+    @DisplayName("the schedule cannot be reached in bulk, so it cannot be rewritten")
     void resultIsDefensive() {
-        CriticalPath.Result result = CriticalPath.compute(
-                diamond(), DIAMOND_WEIGHTS, CriticalPath.DurationSource.BEP_ACTION);
-        result.slackMicros()[1] = 999;
-
-        assertThat(result.slackMicros()[1]).isEqualTo(70);
+        // The Phase 8 replacement for a defensive-copy test. An accessor
+        // returning long[] over five million nodes has to choose between
+        // cloning forty megabytes and handing out the live schedule; there is
+        // no third option, so the accessor does not exist.
+        for (java.lang.reflect.Method method : CriticalPath.Result.class.getMethods()) {
+            if (method.getDeclaringClass() != CriticalPath.Result.class) {
+                continue;
+            }
+            assertThat(method.getReturnType())
+                    .as("%s", method.getName())
+                    .isNotEqualTo(long[].class);
+        }
     }
 
     @Test

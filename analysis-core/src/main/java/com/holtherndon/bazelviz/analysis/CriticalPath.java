@@ -4,7 +4,6 @@ import com.holtherndon.bazelviz.graph.CsrGraph;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
 
 /**
  * The longest weighted path through an action graph: what the build could not
@@ -261,32 +260,51 @@ public final class CriticalPath {
     /**
      * The path and what may be said about it.
      *
-     * @param path node indices from the start of the chain to its end
-     * @param makespanMicros the length of the path, which is what the build
-     *     could not have beaten given its dependencies
-     * @param untimedNodes nodes nothing measured, counted as instantaneous;
-     *     any at all makes the result partial
-     * @param cyclicNodes when {@link Outcome#CYCLIC}, the nodes that could not
-     *     be ordered
+     * <h2>Why this is a class and not a record</h2>
+     *
+     * <p>It holds three arrays with one entry per node, and a Tier 3 session
+     * has five million of them. A record would mandate public accessors
+     * returning those arrays, which leaves two options and no third: hand out
+     * the live array so any caller can rewrite the schedule, or clone forty
+     * megabytes for a caller that wanted the slack of the one action it has
+     * selected. The Phase 7 audit reached the same conclusion about
+     * {@link GraphLayout.Result} for the same reason. Per-node accessors cost
+     * nothing and cannot be misused.
      */
-    public record Result(
-            Outcome outcome,
-            DurationSource durationSource,
-            List<Integer> path,
-            long makespanMicros,
-            long[] earliestStartMicros,
-            long[] earliestFinishMicros,
-            long[] slackMicros,
-            long untimedNodes,
-            long nodeCount,
-            List<Integer> cyclicNodes) {
+    public static final class Result {
 
-        public Result {
-            path = List.copyOf(path);
-            cyclicNodes = List.copyOf(cyclicNodes);
-            earliestStartMicros = earliestStartMicros.clone();
-            earliestFinishMicros = earliestFinishMicros.clone();
-            slackMicros = slackMicros.clone();
+        private final Outcome outcome;
+        private final DurationSource durationSource;
+        private final List<Integer> path;
+        private final long makespanMicros;
+        private final long[] earliestStartMicros;
+        private final long[] earliestFinishMicros;
+        private final long[] slackMicros;
+        private final long untimedNodes;
+        private final long nodeCount;
+        private final List<Integer> cyclicNodes;
+
+        Result(
+                Outcome outcome,
+                DurationSource durationSource,
+                List<Integer> path,
+                long makespanMicros,
+                long[] earliestStartMicros,
+                long[] earliestFinishMicros,
+                long[] slackMicros,
+                long untimedNodes,
+                long nodeCount,
+                List<Integer> cyclicNodes) {
+            this.outcome = outcome;
+            this.durationSource = durationSource;
+            this.path = List.copyOf(path);
+            this.makespanMicros = makespanMicros;
+            this.earliestStartMicros = earliestStartMicros;
+            this.earliestFinishMicros = earliestFinishMicros;
+            this.slackMicros = slackMicros;
+            this.untimedNodes = untimedNodes;
+            this.nodeCount = nodeCount;
+            this.cyclicNodes = List.copyOf(cyclicNodes);
         }
 
         static Result empty(DurationSource source) {
@@ -299,19 +317,81 @@ public final class CriticalPath {
                     new long[0], new long[0], new long[0], 0, 0, stuck);
         }
 
-        @Override
-        public long[] earliestStartMicros() {
-            return earliestStartMicros.clone();
+        /** How the computation ended. */
+        public Outcome outcome() {
+            return outcome;
         }
 
-        @Override
-        public long[] earliestFinishMicros() {
-            return earliestFinishMicros.clone();
+        /** Which measurement the node weights came from. */
+        public DurationSource durationSource() {
+            return durationSource;
         }
 
-        @Override
-        public long[] slackMicros() {
-            return slackMicros.clone();
+        /** Node indices from the start of the chain to its end. */
+        public List<Integer> path() {
+            return path;
+        }
+
+        /**
+         * The length of the path: what the build could not have beaten given
+         * its dependencies.
+         */
+        public long makespanMicros() {
+            return makespanMicros;
+        }
+
+        /** Nodes nothing measured, counted as instantaneous. */
+        public long untimedNodes() {
+            return untimedNodes;
+        }
+
+        /** Nodes in the graph this was computed over. */
+        public long nodeCount() {
+            return nodeCount;
+        }
+
+        /** When {@link Outcome#CYCLIC}, the nodes that could not be ordered. */
+        public List<Integer> cyclicNodes() {
+            return cyclicNodes;
+        }
+
+        /**
+         * The earliest one action could have started, given its dependencies.
+         *
+         * <p>Not when it did start. This is the schedule the graph alone
+         * implies, so the difference between this and the observed start is how
+         * much the machine, and not the build's shape, held the action up.
+         */
+        public long earliestStartAt(int node) {
+            return earliestStartMicros[node];
+        }
+
+        /** The earliest one action could have finished. */
+        public long earliestFinishAt(int node) {
+            return earliestFinishMicros[node];
+        }
+
+        /**
+         * How much later one action could have started without making the
+         * build longer.
+         *
+         * <p>Zero for every action on the critical path, by construction: that
+         * is what puts them on it. Plan 13.4 requires complete timing and a
+         * complete graph for this to mean what it says, so a caller showing it
+         * must show {@link #isPartial()} beside it.
+         */
+        public long slackAt(int node) {
+            return slackMicros[node];
+        }
+
+        /** True when {@code node} lies on the critical path, which is slack of zero. */
+        public boolean isOnPath(int node) {
+            return outcome == Outcome.COMPUTED && slackMicros[node] == 0;
+        }
+
+        /** How many nodes carry a schedule. Zero unless the outcome is computed. */
+        public int scheduledNodes() {
+            return slackMicros.length;
         }
 
         /**
