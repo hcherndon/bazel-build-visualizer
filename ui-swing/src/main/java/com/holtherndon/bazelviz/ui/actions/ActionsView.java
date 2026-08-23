@@ -138,6 +138,9 @@ public final class ActionsView extends JPanel {
     /** Where "show this action on the timeline" goes. */
     private LongConsumer showOnTimelineHandler = actionId -> { };
 
+    /** A time range from the timeline, applied on top of the toolbar's filter. */
+    private java.util.Optional<long[]> rangeFilter = java.util.Optional.empty();
+
     /** Bumped on every reload so a slow one cannot overwrite a newer one. */
     private long reloadGeneration;
 
@@ -277,6 +280,20 @@ public final class ActionsView extends JPanel {
     /** Called with an action id when the user asks to see it in the graph. */
     public void onShowInGraph(LongConsumer handler) {
         this.showInGraphHandler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /**
+     * Restricts the table to actions overlapping a time range, or clears it.
+     *
+     * <p>Plan 14.5's "filter selected time range", arriving from the timeline.
+     * Reloads, because the filter is part of the query the keyset pages walk
+     * and cannot be applied to rows already fetched.
+     */
+    public void filterToRange(java.util.OptionalLong fromMicros, java.util.OptionalLong toMicros) {
+        rangeFilter = fromMicros.isPresent() && toMicros.isPresent()
+                ? java.util.Optional.of(new long[] {fromMicros.getAsLong(), toMicros.getAsLong()})
+                : java.util.Optional.empty();
+        reload();
     }
 
     /** Called with an action id when the user asks to see it on the timeline. */
@@ -541,11 +558,19 @@ public final class ActionsView extends JPanel {
             outcome = Optional.of(ActionOutcome.valueOf(chosenOutcome.toString()));
         }
         String text = textFilter.getText().trim();
-        return new ActionFilter(
+        ActionFilter filter = new ActionFilter(
                 mnemonic,
                 outcome,
                 Optional.empty(),
-                text.isEmpty() ? Optional.empty() : Optional.of(text));
+                text.isEmpty() ? Optional.empty() : Optional.of(text),
+                java.util.OptionalLong.empty(),
+                java.util.OptionalLong.empty());
+        // The timeline's range narrows whatever the toolbar already asked for
+        // rather than replacing it, so a user who filtered to Genrule and then
+        // dragged a range sees Genrules in that range.
+        return rangeFilter
+                .map(range -> filter.inRange(range[0], range[1]))
+                .orElse(filter);
     }
 
     private void populateMnemonics(List<String> mnemonics) {

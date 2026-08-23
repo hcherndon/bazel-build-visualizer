@@ -236,6 +236,15 @@ public final class MainWindow extends JFrame {
         // row without scrolling the timeline.
         actionsView.onShowOnTimeline(this::revealOnTimeline);
         timeline.onSelection(actionId -> actionsView.selectAction(actionId));
+        // A range dragged out on the timeline narrows the actions table (plan
+        // 14.5). Cleared the same way, so the two never disagree about what is
+        // being shown.
+        timeline.onRangeChanged((from, to) -> {
+            actionsView.filterToRange(from, to);
+            if (from.isPresent()) {
+                showCard(NavEntry.ACTIONS);
+            }
+        });
         // The status bar's counts come from the overview's own read, so the two
         // can never disagree about how many actions the session holds.
         overviewPanel.onSnapshot(snapshot -> actionStatus.setText(

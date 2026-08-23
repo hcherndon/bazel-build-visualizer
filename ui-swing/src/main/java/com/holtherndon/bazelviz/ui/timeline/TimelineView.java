@@ -63,6 +63,7 @@ public final class TimelineView extends JPanel {
             new JLabel("No timeline for this session.", SwingConstants.CENTER);
     private final JLabel status = new JLabel(" ");
     private final JLabel coverage = new JLabel(" ");
+    private final JLabel hover = new JLabel(" ");
 
     private final JComboBox<LaneGrouping.By> groupChoice =
             new JComboBox<>(LaneGrouping.By.values());
@@ -81,12 +82,14 @@ public final class TimelineView extends JPanel {
     private TimelineColours.Mode colourMode = TimelineColours.Mode.OUTCOME;
     private LongConsumer selectionHandler = node -> { };
     private Runnable viewportChanged = () -> { };
+    private TimelineController.RangeListener rangeChanged = (from, to) -> { };
 
     public TimelineView() {
         super(new BorderLayout());
         PlainText.disableHtml(empty);
         PlainText.disableHtml(status);
         PlainText.disableHtml(coverage);
+        PlainText.disableHtml(hover);
         empty.setEnabled(false);
         coverage.setFont(coverage.getFont().deriveFont(Font.ITALIC));
 
@@ -123,6 +126,7 @@ public final class TimelineView extends JPanel {
         JPanel footer = new JPanel(new BorderLayout());
         footer.setBorder(BorderFactory.createEmptyBorder(2, 8, 4, 8));
         footer.add(status, BorderLayout.NORTH);
+        footer.add(hover, BorderLayout.CENTER);
         footer.add(coverage, BorderLayout.SOUTH);
 
         JPanel body = new JPanel(new BorderLayout());
@@ -139,6 +143,11 @@ public final class TimelineView extends JPanel {
     /** Called with a node id when the user selects a span. */
     public void onSelection(LongConsumer handler) {
         this.selectionHandler = handler;
+    }
+
+    /** Called when the user drags out a time range, or clears one. */
+    public void onRangeChanged(TimelineController.RangeListener listener) {
+        this.rangeChanged = listener;
     }
 
     /** Called when the visible range or grouping changed and data must be refetched. */
@@ -390,6 +399,8 @@ public final class TimelineView extends JPanel {
                     dragStartX = -1;
                     dragCurrentX = -1;
                     repaintAll();
+                    rangeChanged.rangeChanged(
+                            viewport.rangeFromMicros(), viewport.rangeToMicros());
                 }
 
                 @Override
@@ -406,6 +417,16 @@ public final class TimelineView extends JPanel {
                             return;
                         }
                     }
+                }
+
+                @Override
+                public void mouseMoved(MouseEvent event) {
+                    describeAt(event.getX());
+                }
+
+                @Override
+                public void mouseExited(MouseEvent event) {
+                    hover.setText(" ");
                 }
 
                 @Override
@@ -508,6 +529,66 @@ public final class TimelineView extends JPanel {
             g2.setColor(new Color(0, 0, 0, 30));
             g2.fillRect(Math.min(x0, x1), 0, Math.abs(x1 - x0), getHeight());
         }
+    }
+
+    /**
+     * What the bin under the pointer contains.
+     *
+     * <p>This is where plan 14.3's per-bin aggregates reach a person. They are
+     * computed for every bin at every level and cost real memory — the byte
+     * total alone is eight bytes a bin — so a build that stored them and showed
+     * none would be paying for nothing. Everything the bin knows is here, and
+     * everything it does not know says so rather than reading as a zero.
+     */
+    String describeAt(int x) {
+        if (model == null || viewport == null) {
+            return " ";
+        }
+        TimelineLodIndex index = model.index();
+        long at = (long) viewport.transform().microsAtX(x);
+        if (at < index.wallStartMicros() || at >= index.wallEndMicros()) {
+            hover.setText(" ");
+            return " ";
+        }
+        int level = index.levelForScale(viewport.transform().pixelsPerMicro());
+        int bin = index.binIndexOf(level, at);
+        int starts = index.startCount(level, bin);
+        if (starts == 0) {
+            hover.setText("Nothing started here.");
+            return hover.getText();
+        }
+
+        StringBuilder text = new StringBuilder();
+        text.append(starts).append(starts == 1 ? " action started" : " actions started")
+                .append(" in this ").append(index.binWidthMicros(level) / 1000)
+                .append(" ms bin; ").append(index.activeCount(level, bin)).append(" running");
+        if (index.failureCount(level, bin) > 0) {
+            text.append("; ").append(index.failureCount(level, bin)).append(" failed");
+        }
+        // Only reported where something knows. A bin that said "0 cache hits"
+        // when nothing had been imported would be the loudest wrong claim on
+        // the screen.
+        if (index.cacheKnownCount(level, bin) > 0) {
+            text.append("; ").append(index.cacheHitCount(level, bin)).append(" cached, ")
+                    .append(index.cacheMissCount(level, bin)).append(" executed");
+        }
+        if (index.runnerKnownCount(level, bin) > 0) {
+            text.append("; ").append(index.localCount(level, bin)).append(" local, ")
+                    .append(index.remoteCount(level, bin)).append(" remote");
+        }
+        if (index.byteTotal(level, bin) > 0) {
+            text.append("; at least ").append(index.byteTotal(level, bin) / 1024)
+                    .append(" KiB of inputs");
+        }
+        index.uniformCategory(level, bin).ifPresent(category -> {
+            String name = model.categoryNames().get(category);
+            if (name != null) {
+                text.append("; all ").append(name);
+            }
+        });
+        hover.setText(text.toString());
+        hover.setToolTipText(PlainText.tooltip(hover.getText()));
+        return hover.getText();
     }
 
     /** The status line, for tests. */

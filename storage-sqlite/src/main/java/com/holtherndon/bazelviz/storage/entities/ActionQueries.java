@@ -432,6 +432,15 @@ public final class ActionQueries implements AutoCloseable {
         if (filter.textContains().isPresent()) {
             sql.append(" AND a.primary_output LIKE ? ESCAPE '\\'");
         }
+        if (filter.hasRange()) {
+            // Overlap, not containment: an action that started before the
+            // window and ended inside it was running during it, and it is
+            // usually the one the user dragged a range to find. An action with
+            // no timestamps matches no range -- it is not known to have run
+            // then, and guessing either way would be inventing a fact.
+            sql.append(" AND a.start_micros IS NOT NULL AND a.end_micros IS NOT NULL"
+                    + " AND a.end_micros >= ? AND a.start_micros <= ?");
+        }
     }
 
     private static int bindFilter(PreparedStatement statement, int from, ActionFilter filter)
@@ -448,6 +457,10 @@ public final class ActionQueries implements AutoCloseable {
         }
         if (filter.textContains().isPresent()) {
             statement.setString(index++, contains(filter.textContains().get()));
+        }
+        if (filter.hasRange()) {
+            statement.setLong(index++, filter.fromMicros().getAsLong());
+            statement.setLong(index++, filter.toMicros().getAsLong());
         }
         return index;
     }

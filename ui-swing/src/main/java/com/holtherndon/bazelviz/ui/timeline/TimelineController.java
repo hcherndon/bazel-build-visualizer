@@ -77,17 +77,15 @@ public final class TimelineController {
         view.select(actionId);
     }
 
-    /**
-     * The time range the user dragged out, when there is one.
-     *
-     * <p>Plan 14.5's "filter selected time range": the actions table reads this
-     * and shows only what ran inside it.
-     */
-    public java.util.Optional<long[]> selectedRange() {
-        return view.viewport()
-                .filter(TimelineViewport::hasRange)
-                .map(v -> new long[] {
-                        v.rangeFromMicros().getAsLong(), v.rangeToMicros().getAsLong()});
+    /** Called when the user drags out a time range, or clears one. */
+    public void onRangeChanged(RangeListener listener) {
+        view.onRangeChanged(listener);
+    }
+
+    /** Told when the timeline's selected time range changes. */
+    @FunctionalInterface
+    public interface RangeListener {
+        void rangeChanged(java.util.OptionalLong fromMicros, java.util.OptionalLong toMicros);
     }
 
     /** The component to put in the Timeline card. */

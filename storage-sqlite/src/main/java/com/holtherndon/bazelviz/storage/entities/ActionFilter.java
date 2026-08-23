@@ -24,10 +24,14 @@ public record ActionFilter(
         Optional<String> mnemonic,
         Optional<ActionOutcome> outcome,
         Optional<String> labelContains,
-        Optional<String> textContains) {
+        Optional<String> textContains,
+        java.util.OptionalLong fromMicros,
+        java.util.OptionalLong toMicros) {
 
     public static final ActionFilter NONE =
-            new ActionFilter(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+            new ActionFilter(Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty(), java.util.OptionalLong.empty(),
+                    java.util.OptionalLong.empty());
 
     public ActionFilter {
         Objects.requireNonNull(mnemonic, "mnemonic");
@@ -37,23 +41,56 @@ public record ActionFilter(
     }
 
     public boolean isEmpty() {
-        return mnemonic.isEmpty() && outcome.isEmpty()
+        return fromMicros.isEmpty() && toMicros.isEmpty()
+                && mnemonic.isEmpty() && outcome.isEmpty()
                 && labelContains.isEmpty() && textContains.isEmpty();
     }
 
     public ActionFilter withMnemonic(Optional<String> value) {
-        return new ActionFilter(value, outcome, labelContains, textContains);
+        return new ActionFilter(value, outcome, labelContains, textContains,
+                fromMicros, toMicros);
     }
 
     public ActionFilter withOutcome(Optional<ActionOutcome> value) {
-        return new ActionFilter(mnemonic, value, labelContains, textContains);
+        return new ActionFilter(mnemonic, value, labelContains, textContains,
+                fromMicros, toMicros);
     }
 
     public ActionFilter withLabelContains(Optional<String> value) {
-        return new ActionFilter(mnemonic, outcome, value, textContains);
+        return new ActionFilter(mnemonic, outcome, value, textContains,
+                fromMicros, toMicros);
     }
 
     public ActionFilter withTextContains(Optional<String> value) {
-        return new ActionFilter(mnemonic, outcome, labelContains, value);
+        return new ActionFilter(mnemonic, outcome, labelContains, value,
+                fromMicros, toMicros);
+    }
+
+    /**
+     * The filter restricted to actions overlapping a time range.
+     *
+     * <p>Plan 14.5's "filter selected time range": a range dragged out on the
+     * timeline narrows the actions table to what ran inside it.
+     *
+     * <p>Overlapping, not contained. An action that started before the range
+     * and finished inside it was running during the window the user selected,
+     * and excluding it would hide exactly the long action a user dragging a
+     * range around a slow patch is usually looking for.
+     */
+    public ActionFilter inRange(long fromMicros, long toMicros) {
+        return new ActionFilter(mnemonic, outcome, labelContains, textContains,
+                java.util.OptionalLong.of(Math.min(fromMicros, toMicros)),
+                java.util.OptionalLong.of(Math.max(fromMicros, toMicros)));
+    }
+
+    /** The filter with no time restriction. */
+    public ActionFilter withoutRange() {
+        return new ActionFilter(mnemonic, outcome, labelContains, textContains,
+                java.util.OptionalLong.empty(), java.util.OptionalLong.empty());
+    }
+
+    /** True when a time range is in force. */
+    public boolean hasRange() {
+        return fromMicros.isPresent() && toMicros.isPresent();
     }
 }
