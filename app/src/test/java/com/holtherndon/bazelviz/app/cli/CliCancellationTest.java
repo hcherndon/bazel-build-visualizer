@@ -113,6 +113,20 @@ class CliCancellationTest {
             assertThat(guard.getAsBoolean()).isFalse();
 
             Thread hook = hooks.registered().get(0);
+            hook.start();
+
+            // The flag goes up promptly…
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!guard.getAsBoolean() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(guard.getAsBoolean()).isTrue();
+
+            // Only now start the watcher. Thread.join() on a thread that has
+            // not started yet returns at once, so a watcher started before
+            // hook.start() can win the race and report the hook as returned
+            // before it has run — which under load made the assertion below
+            // fail for a reason that had nothing to do with the guard.
             Thread watcher = new Thread(() -> {
                 try {
                     hook.join();
@@ -122,14 +136,6 @@ class CliCancellationTest {
                 }
             });
             watcher.start();
-            hook.start();
-
-            // The flag goes up promptly…
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while (!guard.getAsBoolean() && System.nanoTime() < deadline) {
-                Thread.onSpinWait();
-            }
-            assertThat(guard.getAsBoolean()).isTrue();
 
             // …but the hook does not return, because returning is what lets the
             // JVM halt, and halting here is exactly the corruption being avoided.

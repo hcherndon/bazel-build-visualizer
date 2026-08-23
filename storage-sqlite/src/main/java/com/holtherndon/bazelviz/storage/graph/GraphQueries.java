@@ -138,6 +138,57 @@ public final class GraphQueries implements AutoCloseable {
         return Map.copyOf(byNode);
     }
 
+    /**
+     * The target label behind each graph node, indexed by {@code node_index}.
+     *
+     * <p>What the cluster view groups by, once the caller has reduced a label to
+     * its package. Nodes whose label the import never learned are left null
+     * rather than filled with a placeholder: plan 11.4 wants unknown to stay
+     * distinguishable from a real name all the way to the drawing, and a
+     * clustering that invented "" here would show a package called nothing.
+     */
+    public String[] labelsByNodeIndex() throws SQLException {
+        return keysByNodeIndex(
+                "SELECT da.node_index, l.value FROM declared_actions da"
+                        + " JOIN labels l ON l.id = da.label_id"
+                        + " WHERE da.node_index IS NOT NULL");
+    }
+
+    /** The mnemonic behind each graph node; the coarsest useful clustering. */
+    public String[] mnemonicsByNodeIndex() throws SQLException {
+        return keysByNodeIndex(
+                "SELECT da.node_index, m.value FROM declared_actions da"
+                        + " JOIN mnemonics m ON m.id = da.mnemonic_id"
+                        + " WHERE da.node_index IS NOT NULL");
+    }
+
+    /**
+     * One string per node index, sized to the whole graph.
+     *
+     * <p>Dense rather than a map because the clustering pass indexes it once per
+     * node, and because its length is then a checkable claim about coverage --
+     * {@code GraphClustering} rejects an array that does not span the graph
+     * instead of treating the shortfall as unknown.
+     */
+    private String[] keysByNodeIndex(String sql) throws SQLException {
+        int nodes = Math.toIntExact(scalar(
+                "SELECT coalesce(max(node_index), -1) + 1 FROM declared_actions"));
+        String[] keys = new String[nodes];
+        if (nodes == 0) {
+            return keys;
+        }
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                int index = rows.getInt(1);
+                if (index >= 0 && index < nodes) {
+                    keys[index] = rows.getString(2);
+                }
+            }
+        }
+        return keys;
+    }
+
     private long scalar(String sql) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(sql);
                 ResultSet rows = statement.executeQuery()) {
@@ -271,12 +322,22 @@ public final class GraphQueries implements AutoCloseable {
                 new ShortestPath(forwardGraph.get(), reverseGraph.get()).find(from, to, budget));
     }
 
-    private Optional<CsrGraph> forwardIndex(EdgeDerivation derivation)
+    /**
+     * The producer-to-consumer index, memory-mapped and cached.
+     *
+     * <p>Public because extraction and layout happen outside this module -- a
+     * CSR graph is a {@code graph-core} value, not a SQLite implementation
+     * detail, so handing one out does not put the UI back in touch with the
+     * database the way rule 19 forbids. Empty when the index was never built,
+     * which is the honest answer for a session with no aquery output.
+     */
+    public Optional<CsrGraph> forwardIndex(EdgeDerivation derivation)
             throws SQLException, IOException {
         return cached(forward, derivation, "FORWARD");
     }
 
-    private Optional<CsrGraph> reverseIndex(EdgeDerivation derivation)
+    /** The consumer-to-producer index; see {@link #forwardIndex}. */
+    public Optional<CsrGraph> reverseIndex(EdgeDerivation derivation)
             throws SQLException, IOException {
         return cached(reverse, derivation, "REVERSE");
     }
