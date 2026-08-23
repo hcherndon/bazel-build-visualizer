@@ -106,6 +106,20 @@ public final class SessionDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Page cache per connection, in kibibytes.
+     *
+     * <p>128 MB. Large enough to hold the working set of a multi-gigabyte
+     * table's insert path, small enough that several open readers plus the
+     * writer stay far inside the application's own budget — plan 20.2 allows
+     * 4 GB for a Tier 3 session and this is at most a few hundred megabytes
+     * across every connection a session opens.
+     */
+    private static final int PAGE_CACHE_KIB = 128 * 1024;
+
+    /** WAL pages between automatic checkpoints; 4,000 pages is about 16 MB. */
+    private static final int WAL_AUTOCHECKPOINT_PAGES = 4_000;
+
     private static String jdbcUrl(Path file) {
         return "jdbc:sqlite:" + file.toAbsolutePath();
     }
@@ -118,6 +132,21 @@ public final class SessionDatabase implements AutoCloseable {
             statement.execute("PRAGMA synchronous=NORMAL");
             statement.execute("PRAGMA busy_timeout=" + BUSY_TIMEOUT_MILLIS);
             statement.execute("PRAGMA foreign_keys=ON");
+            // Page cache, in kibibytes (the negative form). SQLite's default is
+            // about 2 MB, which is fine for a small session and is the reason a
+            // large one slows down: once the b-tree stops fitting, every insert
+            // is a random read of a page that has been evicted. Measured on the
+            // capture path at three million events -- see docs/performance.md.
+            statement.execute("PRAGMA cache_size=-" + PAGE_CACHE_KIB);
+            // Sorts and temporary b-trees stay in memory rather than becoming
+            // files in the system temp directory, which the index build at
+            // finalization is the heaviest user of.
+            statement.execute("PRAGMA temp_store=MEMORY");
+            // The default checkpoint every 1,000 pages (about 4 MB) means a
+            // capture writing gigabytes checkpoints thousands of times, each
+            // one a pass over the WAL. Sixteen megabytes is still bounded and
+            // is a quarter of the checkpoints.
+            statement.execute("PRAGMA wal_autocheckpoint=" + WAL_AUTOCHECKPOINT_PAGES);
         }
     }
 
