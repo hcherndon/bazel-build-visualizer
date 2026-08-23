@@ -60,6 +60,34 @@ public final class ExportController {
         this.onEventThread = Objects.requireNonNull(onEventThread, "onEventThread");
     }
 
+    /**
+     * The two choices plan 22.2 asks to be offered, both off by default.
+     *
+     * @param omitEnvironmentValues plan 22.2's "optional omission of
+     *     environment values while retaining names" — stronger than the pattern
+     *     rules, and the right answer for a build whose environment holds
+     *     something the patterns will not recognise
+     * @param pseudonymiseLabels hides internal project structure at the cost of
+     *     making the export nearly unreadable, so it is never a default
+     */
+    public record RedactionOptions(boolean omitEnvironmentValues, boolean pseudonymiseLabels) {
+
+        public static RedactionOptions defaults() {
+            return new RedactionOptions(false, false);
+        }
+
+        RedactionPolicy applyTo(RedactionPolicy policy) {
+            RedactionPolicy result = policy;
+            if (omitEnvironmentValues) {
+                result = result.omittingEnvironmentValues();
+            }
+            if (pseudonymiseLabels) {
+                result = result.redactingLabels();
+            }
+            return result;
+        }
+    }
+
     /** Shown the report, decides whether the export proceeds. Called on the UI thread. */
     @FunctionalInterface
     public interface Confirmer {
@@ -76,6 +104,7 @@ public final class ExportController {
             Path sessionRoot,
             Path target,
             boolean redacted,
+            RedactionOptions redactionOptions,
             String appVersion,
             Confirmer confirmer,
             Consumer<BvizWriter.Result> onDone,
@@ -88,7 +117,8 @@ public final class ExportController {
                     ManagedSessionLayout layout = ManagedSessionLayout.at(sessionRoot);
                     temporary = sessionRoot.resolve("redacted-export.sqlite");
                     SessionRedaction.Result result = SessionRedaction.copyRedacted(
-                            layout.databaseFile(), temporary, policyFor(layout.databaseFile()));
+                            layout.databaseFile(), temporary,
+                            redactionOptions.applyTo(policyFor(layout.databaseFile())));
                     Path pending = temporary;
                     if (!confirmOnEventThread(confirmer, result.report())) {
                         Files.deleteIfExists(pending);
@@ -98,6 +128,18 @@ public final class ExportController {
                             "redacted export", Map.of("session.sqlite", temporary));
                 } else {
                     options = BvizWriter.Options.complete("complete export");
+                }
+                // Plan 10.4: estimate the space before exporting. The source
+                // size is an exact upper bound on the archive, so a target
+                // filesystem that cannot hold it certainly cannot hold the
+                // export -- and finding that out after twenty minutes of
+                // writing is the failure this avoids.
+                BvizWriter.SpaceEstimate estimate =
+                        BvizWriter.estimate(sessionRoot, target, options);
+                if (!estimate.fits()) {
+                    throw new java.io.IOException(
+                            "not enough room at " + target.getParent() + ": "
+                                    + estimate.describe());
                 }
                 BvizWriter.Result result = BvizWriter.write(
                         sessionRoot, target, options, appVersion, nowMicros());

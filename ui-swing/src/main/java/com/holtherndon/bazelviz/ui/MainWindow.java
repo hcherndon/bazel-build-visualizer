@@ -38,6 +38,7 @@ import com.holtherndon.bazelviz.ui.metrics.MetricsService;
 import com.holtherndon.bazelviz.core.redact.RedactionReport;
 import com.holtherndon.bazelviz.format.portable.BvizLimits;
 import com.holtherndon.bazelviz.storage.catalog.CatalogEntry;
+import com.holtherndon.bazelviz.storage.catalog.RetentionPolicy;
 import com.holtherndon.bazelviz.storage.catalog.SessionCatalog;
 import com.holtherndon.bazelviz.storage.export.TableExport;
 import com.holtherndon.bazelviz.ui.export.ExportController;
@@ -311,6 +312,11 @@ public final class MainWindow extends JFrame {
         capturePanel.setStopAction(launchController::cancel);
         cancelImportItem.setEnabled(false);
         closeSessionItem.setEnabled(false);
+        // Once per launch, on a worker. A sessions root that moved while the
+        // application was closed is the case this exists for, and reconciling
+        // it here means the first time the library is opened it is already
+        // right rather than right after the second look.
+        reconcileLibrary();
     }
 
     /** The directory imported sessions are written into. */
@@ -388,11 +394,15 @@ public final class MainWindow extends JFrame {
             public void menuCanceled(javax.swing.event.MenuEvent event) { }
         });
 
+        JMenuItem cleanUp = new JMenuItem("Clean Up Sessions…");
+        cleanUp.addActionListener(event -> cleanUpSessions());
+
         JMenu file = new JMenu("File");
         file.add(openFile);
         file.add(openSession);
         file.add(openArchive);
         file.add(recentMenu);
+        file.add(cleanUp);
         file.addSeparator();
         file.add(exportMenu());
         file.addSeparator();
@@ -462,7 +472,13 @@ public final class MainWindow extends JFrame {
                     if (!redacted && !confirmCompleteExport()) {
                         return;
                     }
-                    exports.exportArchive(root, target, redacted, APP_VERSION,
+                    ExportController.RedactionOptions options = redacted
+                            ? askRedactionOptions()
+                            : ExportController.RedactionOptions.defaults();
+                    if (options == null) {
+                        return;
+                    }
+                    exports.exportArchive(root, target, redacted, options, APP_VERSION,
                             this::confirmRedaction,
                             result -> showExportResult("Export complete", result.describe()),
                             failure -> showExportFailure(failure));
@@ -483,6 +499,36 @@ public final class MainWindow extends JFrame {
                 .ifPresent(target -> exports.exportTable(root, table, format, target, true,
                         result -> showExportResult("Export complete", result.describe()),
                         this::showExportFailure)));
+    }
+
+    /**
+     * The two extra redaction choices, offered before anything runs.
+     *
+     * <p>Both are off by default and both cost something real — one removes
+     * every environment value including the ordinary ones, the other makes the
+     * export hard to read — so they are decisions a person makes rather than
+     * defaults they discover afterwards.
+     *
+     * @return null when the dialog was cancelled
+     */
+    private ExportController.RedactionOptions askRedactionOptions() {
+        javax.swing.JCheckBox omitEnvironment = new javax.swing.JCheckBox(
+                "Omit every environment value, keeping only the names");
+        javax.swing.JCheckBox hideLabels = new javax.swing.JCheckBox(
+                "Replace target labels with pseudonyms (makes the export hard to read)");
+        int choice = JOptionPane.showConfirmDialog(this,
+                new Object[] {
+                    "Secrets and absolute paths are always redacted.",
+                    "These go further:",
+                    omitEnvironment,
+                    hideLabels,
+                },
+                "Redacted export", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION) {
+            return null;
+        }
+        return new ExportController.RedactionOptions(
+                omitEnvironment.isSelected(), hideLabels.isSelected());
     }
 
     /**
@@ -558,15 +604,33 @@ public final class MainWindow extends JFrame {
                 return;
             }
             for (CatalogEntry entry : entries) {
-                JMenuItem item = new JMenuItem(entry.displayName()
-                        + (entry.missing() ? "  (not found)" : ""));
-                item.setToolTipText(PlainText.tooltip(entry.directory().toString()
+                JMenu submenu = new JMenu((entry.pinned() ? "\u2605 " : "")
+                        + entry.displayName() + (entry.missing() ? "  (not found)" : ""));
+                submenu.setToolTipText(PlainText.tooltip(entry.directory().toString()
                         + entry.summary().map(text -> " — " + text).orElse("")));
+
+                JMenuItem open = new JMenuItem("Open");
                 // A session whose directory is gone is listed and not offered:
                 // seeing that it existed is the point of keeping the row.
-                item.setEnabled(!entry.missing());
-                item.addActionListener(event -> openPath(entry.directory()));
-                recentMenu.add(item);
+                open.setEnabled(!entry.missing());
+                open.addActionListener(event -> openPath(entry.directory()));
+                submenu.add(open);
+
+                // Pinning is the only way a user can say "this one matters",
+                // and it is what retention refuses to override. Without a
+                // control for it the protection exists and nobody can use it.
+                JMenuItem pin = new JMenuItem(entry.pinned() ? "Unpin" : "Pin");
+                pin.addActionListener(event ->
+                        setPinned(entry.sessionUuid(), !entry.pinned()));
+                submenu.add(pin);
+
+                JMenuItem forget = new JMenuItem("Remove from Recent");
+                forget.setToolTipText(PlainText.tooltip(
+                        "Takes it off this list. The session stays on disk."));
+                forget.addActionListener(event -> forgetSession(entry.sessionUuid()));
+                submenu.add(forget);
+
+                recentMenu.add(submenu);
             }
         } catch (Exception failure) {
             log.warn("could not read the session catalog", failure);
@@ -574,6 +638,120 @@ public final class MainWindow extends JFrame {
             broken.setEnabled(false);
             recentMenu.add(broken);
         }
+    }
+
+    /** Reconciles the catalog against the directories that are actually there. */
+    private void reconcileLibrary() {
+        worker.execute(() -> {
+            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
+                SessionCatalog.RescanResult result = catalog.rescan(sessionsRoot,
+                        directory -> CatalogEntries.read(directory, sessions::readManifest));
+                log.info("session library: {}", result.describe());
+            } catch (Exception failure) {
+                log.warn("could not reconcile the session library", failure);
+            }
+        });
+    }
+
+    private void setPinned(String sessionUuid, boolean pinned) {
+        worker.execute(() -> {
+            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
+                catalog.setPinned(sessionUuid, pinned);
+            } catch (Exception failure) {
+                log.warn("could not change the pin on {}", sessionUuid, failure);
+            }
+        });
+    }
+
+    private void forgetSession(String sessionUuid) {
+        worker.execute(() -> {
+            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
+                catalog.forget(sessionUuid);
+            } catch (Exception failure) {
+                log.warn("could not forget {}", sessionUuid, failure);
+            }
+        });
+    }
+
+    /**
+     * Retention, with the plan shown before anything is deleted.
+     *
+     * <p>Deleting a session is not reversible and a session is sometimes the
+     * only record of a failure that has stopped reproducing, so the flow is:
+     * choose a limit, see exactly what that limit selects, and only then
+     * confirm. A sweep that ran and reported afterwards would be the wrong
+     * shape for the thing being swept.
+     */
+    private void cleanUpSessions() {
+        javax.swing.JSpinner keep = new javax.swing.JSpinner(
+                new javax.swing.SpinnerNumberModel(20, 1, 10_000, 1));
+        javax.swing.JCheckBox byAge = new javax.swing.JCheckBox("…and anything older than");
+        javax.swing.JSpinner days = new javax.swing.JSpinner(
+                new javax.swing.SpinnerNumberModel(90, 1, 3_650, 1));
+        javax.swing.JCheckBox bySize = new javax.swing.JCheckBox("…and keep the total under");
+        javax.swing.JSpinner gigabytes = new javax.swing.JSpinner(
+                new javax.swing.SpinnerNumberModel(20, 1, 10_000, 1));
+        int choice = JOptionPane.showConfirmDialog(this,
+                new Object[] {
+                    "Keep the most recently opened sessions and remove the rest.",
+                    "Pinned sessions are never removed.",
+                    keep,
+                    byAge, new Object[] {days, "days"},
+                    bySize, new Object[] {gigabytes, "GB"},
+                },
+                "Clean Up Sessions", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION) {
+            return;
+        }
+        long limit = ((Number) keep.getValue()).longValue();
+        RetentionPolicy policy = RetentionPolicy.keepEverything().withMaxSessions(limit);
+        if (byAge.isSelected()) {
+            policy = policy.withMaxAgeMicros(
+                    ((Number) days.getValue()).longValue() * 86_400L * 1_000_000L);
+        }
+        if (bySize.isSelected()) {
+            policy = policy.withMaxTotalBytes(
+                    ((Number) gigabytes.getValue()).longValue() * 1_024L * 1_024 * 1_024);
+        }
+        RetentionPolicy chosen = policy;
+        worker.execute(() -> {
+            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
+                RetentionPolicy.Plan plan = catalog.plan(
+                        chosen, System.currentTimeMillis() * 1_000L);
+                SwingUtilities.invokeLater(() -> confirmSweep(plan));
+            } catch (Exception failure) {
+                log.error("could not plan a cleanup", failure);
+                SwingUtilities.invokeLater(() -> showExportFailure(failure));
+            }
+        });
+    }
+
+    private void confirmSweep(RetentionPolicy.Plan plan) {
+        JTextArea text = new JTextArea(String.join("\n", plan.lines()));
+        text.setEditable(false);
+        text.setRows(Math.min(20, plan.lines().size() + 1));
+        text.setColumns(72);
+        if (plan.isEmpty()) {
+            JOptionPane.showMessageDialog(this, new JScrollPane(text),
+                    "Nothing to remove", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        if (JOptionPane.showConfirmDialog(this, new JScrollPane(text), "Remove these sessions?",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE)
+                != JOptionPane.OK_OPTION) {
+            return;
+        }
+        worker.execute(() -> {
+            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
+                // The plan, not the policy: what is deleted is what was shown.
+                SessionCatalog.SweepResult result = catalog.apply(plan);
+                SwingUtilities.invokeLater(() ->
+                        showExportResult("Cleanup complete", result.describe()));
+            } catch (Exception failure) {
+                log.error("cleanup failed", failure);
+                SwingUtilities.invokeLater(() -> showExportFailure(failure));
+            }
+        });
     }
 
     /** Records an opened session in the library, off the event thread. */

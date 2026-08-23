@@ -41,9 +41,4 @@ public record BvizLimits(
                 /* maxEntryBytes= */ 32L * 1024 * 1024 * 1024,
                 /* maxCompressionRatio= */ 1_000);
     }
-
-    /** The same limits with a different total, for a user who raised it. */
-    public BvizLimits withMaxExpandedBytes(long bytes) {
-        return new BvizLimits(bytes, maxEntries, maxEntryBytes, maxCompressionRatio);
-    }
 }

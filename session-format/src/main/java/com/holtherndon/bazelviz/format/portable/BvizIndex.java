@@ -76,11 +76,6 @@ public record BvizIndex(
         }
     }
 
-    /** The total decompressed size the archive declares. */
-    public long declaredBytes() {
-        return entries.stream().mapToLong(Entry::bytes).sum();
-    }
-
     /** The entry for one path, or empty. */
     public java.util.Optional<Entry> entry(String path) {
         return entries.stream().filter(entry -> entry.path().equals(path)).findFirst();

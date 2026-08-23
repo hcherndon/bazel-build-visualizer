@@ -88,19 +88,9 @@ public record CatalogEntry(
                 : OptionalLong.empty();
     }
 
-    /** The same entry marked as opened now. */
-    public CatalogEntry openedAt(long micros) {
-        return new CatalogEntry(sessionUuid, displayName, directory, workspace, commandSummary,
-                bazelVersion, state, startedMicros, finishedMicros, actionCount, eventCount,
-                totalBytes, warningCount, OptionalLong.of(micros), pinned, missing, summary);
-    }
-
-    /** The same entry, pinned or not. */
-    public CatalogEntry withPinned(boolean value) {
-        return new CatalogEntry(sessionUuid, displayName, directory, workspace, commandSummary,
-                bazelVersion, state, startedMicros, finishedMicros, actionCount, eventCount,
-                totalBytes, warningCount, lastOpenedMicros, value, missing, summary);
-    }
+    // Pinning and last-opened are changed with SQL rather than by rebuilding
+    // an entry: they belong to the user, and the catalog is the only thing that
+    // may write them.
 
     /** The same entry, present or gone. */
     public CatalogEntry withMissing(boolean value) {

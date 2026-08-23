@@ -93,11 +93,6 @@ public final class Redactor {
         return report;
     }
 
-    /** The policy in force. */
-    public RedactionPolicy policy() {
-        return policy;
-    }
-
     /**
      * Redacts one command-line argument.
      *

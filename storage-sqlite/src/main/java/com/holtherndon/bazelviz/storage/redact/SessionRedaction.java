@@ -252,11 +252,12 @@ public final class SessionRedaction {
     /**
      * Rewrites every sensitive column on an open connection.
      *
-     * <p>Public so a caller that already has a connection — and has already
-     * decided this database is a copy — can redact without going through the
-     * file copy.
+     * <p>Private: the only safe way to reach it is {@link #copyRedacted}, which
+     * has already made the copy. A caller that could redact an arbitrary open
+     * connection could redact the session itself, and ADR-004 says the session
+     * stays exactly as captured.
      */
-    public static RedactionReport redact(Connection connection, Redactor redactor)
+    private static RedactionReport redact(Connection connection, Redactor redactor)
             throws SQLException {
         Objects.requireNonNull(connection, "connection");
         Objects.requireNonNull(redactor, "redactor");

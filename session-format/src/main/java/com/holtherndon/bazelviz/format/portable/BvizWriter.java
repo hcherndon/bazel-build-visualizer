@@ -112,11 +112,6 @@ public final class BvizWriter {
     /** What an export produced. */
     public record Result(Path archive, BvizIndex index, long archiveBytes, long sourceBytes) {
 
-        /** How much smaller the archive is than what went into it. */
-        public double compressionRatio() {
-            return sourceBytes == 0 ? 1 : (double) archiveBytes / sourceBytes;
-        }
-
         public String describe() {
             return "Wrote " + index.entries().size() + " files, "
                     + sourceBytes + " bytes in, " + archiveBytes + " bytes out"

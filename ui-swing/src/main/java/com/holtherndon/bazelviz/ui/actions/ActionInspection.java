@@ -3,6 +3,8 @@ package com.holtherndon.bazelviz.ui.actions;
 import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
+import com.holtherndon.bazelviz.core.redact.RedactionPolicy;
+import com.holtherndon.bazelviz.core.redact.Redactor;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import java.util.List;
@@ -113,9 +115,23 @@ public final class ActionInspection {
      * argument ends and the next begins in a {@code /bin/bash -c} script. The
      * text is never re-quoted into something that looks executable: the command
      * was not run through a shell (plan 22.2).
+     *
+     * <p>Secrets are masked before they reach the screen. docs/privacy.md says
+     * the UI masks sensitive well-known fields by default, and this is the one
+     * place a build's own credentials are shown a line at a time — a
+     * {@code --remote_header} carrying a bearer token is an ordinary argument
+     * and would otherwise be rendered in full. The display policy leaves paths
+     * alone: the person at the keyboard already has the session on their disk,
+     * and a path they cannot paste into a terminal is worse at the job the
+     * inspector exists for.
+     *
+     * <p>A redactor per call rather than per session: the point here is masking
+     * rather than linking, and a table of pseudonyms that outlived the panel
+     * would be a table of secrets held for no reason.
      */
     private static String describeArgv(String json) {
-        List<String> arguments = JsonArgv.parse(json);
+        List<String> arguments = new Redactor(RedactionPolicy.forDisplay())
+                .argv(JsonArgv.parse(json), "actions.command_line");
         if (arguments.isEmpty()) {
             // Not JSON this build understands. Showing it verbatim beats
             // showing nothing and beats guessing at its structure.

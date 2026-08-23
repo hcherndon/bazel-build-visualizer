@@ -37,8 +37,8 @@ public final class SecretPatterns {
 
     private SecretPatterns() {}
 
-    /** The name rules that ship. */
-    public static List<SecretPattern> defaultNamePatterns() {
+    /** The name rules that ship. Reached through {@link #defaults()}. */
+    private static List<SecretPattern> defaultNamePatterns() {
         return List.of(
                 SecretPattern.named("*TOKEN*", "a token"),
                 SecretPattern.named("*SECRET*", "a secret"),
@@ -71,7 +71,7 @@ public final class SecretPatterns {
      * password inside a URL's authority — so the surrounding text survives and
      * an exported command still reads as a command.
      */
-    public static List<SecretPattern> defaultValuePatterns() {
+    private static List<SecretPattern> defaultValuePatterns() {
         return List.of(
                 SecretPattern.valued(
                         "bearer-token",
