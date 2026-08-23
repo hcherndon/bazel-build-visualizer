@@ -73,3 +73,78 @@ troubleshooting (capture failures, session recovery) arrives with Phase 2+.
 - CI failures: the workflow uploads `**/build/reports/tests` as an artifact
   on failure — download it from the run page rather than re-deriving
   locally.
+
+## Sessions and capture (Phase 10)
+
+### "session … has no session.sqlite"
+
+The import stopped before the database was created. The raw capture is still
+there. Re-import the source, or resume the import from the session's own
+checkpoint — the tool offers to resume when you open a session whose state is
+not terminal.
+
+### "session … was indexed by an older build" / "written by a newer build"
+
+The session's schema does not match this build's. Opening is read-only and does
+not migrate, because a view is not a licence to rewrite the file you opened.
+
+For an older session: import its source again. The raw events are preserved, so
+nothing is lost by rebuilding. For a newer one: open it with the build that
+wrote it, or upgrade.
+
+### An archive will not open
+
+`.bviz` archives are validated completely before anything is extracted, and the
+message names what failed: a checksum, an entry that is not part of a session,
+an entry name that escapes the archive, an expansion limit. All of these mean
+the file is not what it claims to be — a truncated download is the common
+innocent cause.
+
+"This session is already in the library" means exactly that; open the copy the
+message names rather than importing a second one.
+
+### The graph says it will not draw
+
+Above 50,000 nodes or 200,000 edges the canvas refuses rather than freezing, and
+offers four things: draw it anyway, narrow the query, group it, or export the
+whole graph. The exact totals are on screen. Nothing has been sampled or
+dropped.
+
+Grouping by mnemonic always works — there are only ever a few dozen — and is the
+right answer when grouping by package is itself too large.
+
+### A view says a source is missing
+
+Enrichments are separate commands and any of them can fail without failing the
+build capture. The Coverage view lists every source, what it covers, and for a
+failed enrichment: the exit status, an error excerpt, whether it can be retried,
+and **which metrics are unavailable as a result**. That last line is the one to
+read — knowing the profile import failed does not tell you that you have
+therefore lost the critical path.
+
+### Numbers that look wrong
+
+Three that are usually right and look wrong:
+
+- **Far fewer attempts than actions.** Most actions run inside the Bazel server
+  and never spawn a subprocess. Four attempts against thirteen actions is
+  normal.
+- **Actions with no duration.** Bazel 6.5.0 and 7.6.1 publish no action
+  timestamps at all, and 8.4.1 publishes an identical start and end for every
+  action — including a five-second sleep. The tool reports those as untimed
+  rather than as zero, and uses the execution log's timings when it has them.
+- **A cache-hit rate over a fraction of the build.** The rate is over the
+  actions that reported a cache state, and the count it was taken over is
+  always beside it. An action with no execution-log record is not a miss.
+
+### Cleanup removed less than expected
+
+Pinned sessions are never removed, and the plan shown before the sweep says how
+many it spared. A session pinned between seeing the plan and confirming it is
+also spared: your decision is newer than the plan.
+
+### The packaged application will not open
+
+An unsigned build is refused by Gatekeeper on a machine other than the one that
+built it. See [packaging.md](packaging.md) for signing and notarization; both
+read credentials from the environment and neither is in this repository.
