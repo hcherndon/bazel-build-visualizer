@@ -35,7 +35,10 @@ import com.holtherndon.bazelviz.analysis.Finding;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.ui.metrics.FindingsView;
 import com.holtherndon.bazelviz.ui.metrics.MetricsService;
+import com.holtherndon.bazelviz.format.portable.BvizLimits;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
+import com.holtherndon.bazelviz.ui.session.ArchiveImport;
+import com.holtherndon.bazelviz.ui.session.OpenRequest;
 import com.holtherndon.bazelviz.ui.session.ImportController;
 import com.holtherndon.bazelviz.ui.session.ImportProgressModel;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
@@ -403,6 +406,58 @@ public final class MainWindow extends JFrame {
     }
 
     // ---------------------------------------------------------------- import
+
+    /**
+     * Opens whatever a path turns out to be.
+     *
+     * <p>The one route for the Open menu, a command-line argument and a file
+     * macOS hands over on a double click. Three routes that each classified for
+     * themselves would be three chances to open a {@code .bviz} as a BEP file
+     * and report a parser error about a Zip header — which tells a user nothing
+     * about what they actually did.
+     */
+    public void openPath(Path path) {
+        OpenRequest request = OpenRequest.classify(path);
+        switch (request.kind()) {
+            case SESSION_DIRECTORY -> openSessionDirectory(path, true);
+            case PORTABLE_ARCHIVE -> importArchive(path);
+            case BEP_FILE -> startImport(path);
+            case UNSUPPORTED -> showSessionFailure(request.describeUnsupported());
+        }
+    }
+
+    /**
+     * Validates a portable archive and brings it into the library.
+     *
+     * <p>On a worker: validation decompresses every entry to check its
+     * checksum, which for a real session is gigabytes and is never something
+     * the EDT does (rule 8).
+     */
+    private void importArchive(Path archive) {
+        showEventsCard();
+        eventsView.showEmpty("Checking " + archive.getFileName() + "…");
+        worker.execute(() -> {
+            try {
+                ArchiveImport.Result result =
+                        ArchiveImport.into(archive, sessionsRoot, BvizLimits.defaults());
+                log.info("imported archive: {}", result.describe());
+                SwingUtilities.invokeLater(() -> {
+                    if (result.redacted()) {
+                        // The user is about to look at a session whose raw
+                        // capture is deliberately absent. Saying so once, here,
+                        // is better than every later view explaining why an
+                        // enrichment cannot be re-run.
+                        JOptionPane.showMessageDialog(this, result.describe(),
+                                "Redacted session", JOptionPane.INFORMATION_MESSAGE);
+                    }
+                    openSessionDirectory(result.sessionRoot(), false);
+                });
+            } catch (Exception failure) {
+                log.error("could not open archive {}", archive, failure);
+                SwingUtilities.invokeLater(() -> showSessionFailure(failure.getMessage()));
+            }
+        });
+    }
 
     private void startImport(Path source) {
         showEventsCard();

@@ -23,7 +23,15 @@ public final class Main {
         // CI machine with no display must reach none of it. Dispatching here
         // rather than later is what makes "never initializes Swing" a property
         // of the control flow instead of a promise.
-        if (args.length > 0) {
+        // A single path is the shape macOS uses on some launches and the shape
+        // a user types when they mean "open this"; anything else is a
+        // subcommand. Checking the file system rather than the argument's
+        // spelling means `bbv session-0193…` opens a session and `bbv import`
+        // stays a subcommand even if somebody creates a file called import.
+        java.nio.file.Path openAtStartup = null;
+        if (args.length == 1 && java.nio.file.Files.exists(java.nio.file.Path.of(args[0]))) {
+            openAtStartup = java.nio.file.Path.of(args[0]);
+        } else if (args.length > 0) {
             System.exit(CliMain.run(args, System.out, System.err, AppInfo.VERSION));
         }
 
@@ -41,6 +49,7 @@ public final class Main {
         log.info("Logging is console-only in Phase 0; file logging will land in {}", dirs.logs());
 
         boolean dark = "dark".equalsIgnoreCase(System.getProperty("bbv.theme"));
+        java.nio.file.Path opening = openAtStartup;
 
         SwingUtilities.invokeLater(() -> {
             if (dark) {
@@ -55,6 +64,10 @@ public final class Main {
             DesktopIntegration.install(window);
             window.setVisible(true);
             log.info("Main window shown");
+            if (opening != null) {
+                // The same route the Open menu and the desktop handler take.
+                window.openPath(opening);
+            }
             if (smoke) {
                 Timer timer = new Timer(2000, e -> {
                     log.info("Smoke mode: exiting");

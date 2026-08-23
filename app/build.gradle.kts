@@ -86,3 +86,155 @@ tasks.named<JavaExec>("run") {
         providers.systemProperty(key).orNull?.let { systemProperty(key, it) }
     }
 }
+
+// ---------------------------------------------------------------- packaging
+//
+// Plan 24, Phase 9: macOS file associations, an app menu, packages for both
+// architectures, and signing hooks that do not embed credentials.
+//
+// jpackage runs against the `installDist` layout rather than a fat jar: the
+// application plugin already produces exactly the directory jpackage's
+// `--input` wants, and a shadow jar would flatten module metadata for no gain
+// in a desktop app that is never on anybody else's classpath.
+
+val packagingDir = layout.projectDirectory.dir("src/main/packaging")
+val jpackageOut = layout.buildDirectory.dir("jpackage")
+
+/**
+ * The signing identity, from the environment only.
+ *
+ * Plan 24: "add signing/notarization hooks without embedding credentials".
+ * Read through the provider API so the configuration cache tracks it, and never
+ * from gradle.properties -- that file is committed, and a Developer ID in it
+ * would be a credential in the repository.
+ */
+val macSigningIdentity = providers.environmentVariable("BBV_MAC_SIGNING_IDENTITY")
+val macNotaryProfile = providers.environmentVariable("BBV_MAC_NOTARY_PROFILE")
+
+val jpackageType = providers.gradleProperty("bbv.packageType").orElse("app-image")
+
+tasks.register<Exec>("jpackage") {
+    group = "distribution"
+    description = "Builds a macOS application image or installer with jpackage."
+    dependsOn(tasks.named("installDist"))
+
+    val installDir = layout.buildDirectory.dir("install/bbv/lib")
+    val outputDir = jpackageOut
+    // macOS refuses a CFBundleVersion whose first component is zero, and this
+    // project is 0.1.0. CFBundleVersion is a build-ordering number rather than
+    // the product's identity -- the version a user sees is AppInfo.VERSION, in
+    // the About dialog -- so a placeholder here is a platform requirement and
+    // not a claim about the release. It is announced when it happens, and
+    // -Pbbv.packageVersion overrides it.
+    val projectVersion = project.version.toString().removeSuffix("-SNAPSHOT")
+    val requestedVersion = providers.gradleProperty("bbv.packageVersion")
+    val version = requestedVersion.orNull
+        ?: if (projectVersion.startsWith("0.")) "1.0.0" else projectVersion
+    // Captured at configuration time: reading project.version inside doFirst is
+    // what the configuration cache forbids, and the message it gives is about
+    // Task.project rather than about the string being built.
+    val mainJar = "app-${project.version}.jar"
+    // The project's value, captured outside the task: `extra` inside a task
+    // block is the task's own extension, not the project's.
+    val nativeAccess = nativeAccessArg
+    val association = packagingDir.file("bviz.properties")
+    val identity = macSigningIdentity
+    val type = jpackageType
+
+    inputs.dir(installDir)
+    inputs.file(association)
+    outputs.dir(outputDir)
+
+    doFirst {
+        if (version != projectVersion) {
+            logger.lifecycle(
+                "jpackage: macOS will not accept an app-version starting with zero, so this" +
+                    " package is stamped $version while the application reports $projectVersion." +
+                    " Pass -Pbbv.packageVersion to choose another."
+            )
+        }
+        val out = outputDir.get().asFile
+        out.deleteRecursively()
+        out.mkdirs()
+
+        val command = mutableListOf(
+            "jpackage",
+            "--type", type.get(),
+            "--name", "Bazel Build Visualizer",
+            "--app-version", version,
+            "--vendor", "holtherndon",
+            "--input", installDir.get().asFile.absolutePath,
+            "--main-jar", mainJar,
+            "--main-class", "com.holtherndon.bazelviz.app.Main",
+            "--dest", out.absolutePath,
+            "--java-options", nativeAccess,
+            "--java-options", "-Dapple.laf.useScreenMenuBar=true",
+            "--java-options", "-Dapple.awt.application.appearance=system",
+            "--file-associations", association.asFile.absolutePath,
+        )
+        if (System.getProperty("os.name").contains("Mac")) {
+            command += listOf("--mac-package-identifier", "com.holtherndon.bazelviz")
+            // Signing is opt-in through the environment. An unsigned build is a
+            // perfectly good local build; it is only distribution that needs a
+            // Developer ID, and that is where the identity lives.
+            if (identity.isPresent) {
+                command += listOf("--mac-sign", "--mac-signing-key-user-name", identity.get())
+                logger.lifecycle("jpackage: signing with the identity in BBV_MAC_SIGNING_IDENTITY")
+            } else {
+                logger.lifecycle(
+                    "jpackage: BBV_MAC_SIGNING_IDENTITY is not set, so the package is unsigned." +
+                        " Gatekeeper will refuse it on another machine."
+                )
+            }
+        }
+        commandLine(command)
+    }
+}
+
+tasks.register("notarize") {
+    group = "distribution"
+    description = "Submits the built package to Apple's notary service."
+    dependsOn(tasks.named("jpackage"))
+
+    val outputDir = jpackageOut
+    val profile = macNotaryProfile
+
+    doLast {
+        if (!profile.isPresent) {
+            throw GradleException(
+                "BBV_MAC_NOTARY_PROFILE is not set. Store credentials once with\n" +
+                    "  xcrun notarytool store-credentials <profile> --apple-id … --team-id …\n" +
+                    "and export the profile name. This build never reads an Apple ID, a\n" +
+                    "password or an app-specific password, and never writes one anywhere."
+            )
+        }
+        val artifacts = outputDir.get().asFile.walkTopDown()
+            .filter { it.extension == "dmg" || it.extension == "pkg" }
+            .toList()
+        if (artifacts.isEmpty()) {
+            throw GradleException(
+                "no .dmg or .pkg under ${outputDir.get().asFile}. Run with" +
+                    " -Pbbv.packageType=dmg; an app-image cannot be notarized on its own."
+            )
+        }
+        // ProcessBuilder rather than a Gradle exec service: this task
+        // discovers its arguments at execution time, and a plain process is
+        // both configuration-cache-safe and the same shape as the command a
+        // person would type from the documentation.
+        fun run(vararg command: String) {
+            val process = ProcessBuilder(*command).inheritIO().start()
+            val status = process.waitFor()
+            if (status != 0) {
+                throw GradleException("${command.first()} exited with $status")
+            }
+        }
+        artifacts.forEach { artifact ->
+            logger.lifecycle("Notarizing ${artifact.name}")
+            run(
+                "xcrun", "notarytool", "submit", artifact.absolutePath,
+                "--keychain-profile", profile.get(), "--wait",
+            )
+            run("xcrun", "stapler", "staple", artifact.absolutePath)
+        }
+    }
+}
