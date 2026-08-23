@@ -565,6 +565,34 @@ nothing at all, and the run that did it passed every threshold.
 Attempts load at 422,000 rows/s (333,334 in 0.79 s), which is not a bottleneck
 next to the 128,000 actions/s of normalization.
 
+## Phase 6: the timeline index after plan 14.3's fields
+
+Phase 0 measured the LOD pyramid with four aggregates a bin. Phase 6 added the
+rest of what plan 14.3 asks for — cache hits, known-cache count, remote count,
+known-runner count, byte total, and the two words of a category vote — which
+raises the peak build cost of a level-0 bin from 32 bytes to 54.
+
+| | Phase 0 | Phase 6 |
+|---|---|---|
+| Tier 2 build (1M spans) | 0.099 s | **0.170 s** |
+| Tier 2 frame p95 | 0.94 ms | **0.91 ms** |
+| Tier 3 build (5M spans) | — | **1.124 s** |
+| Tier 3 frame p95 | — | **0.78 ms** |
+| `MAX_FINEST_BINS` | 6,391,320 | **3,728,270** |
+
+Building costs 72% more and drawing costs the same, which is the shape to
+expect: the new fields are written once per span per level and read once per
+bin per frame, and there are far fewer bins on screen than spans in the build.
+
+**Both tiers keep full millisecond resolution**, measured rather than assumed:
+Tier 3's 2,343.8 s wall builds 2,343,750 level-0 bins against the new cap of
+3,728,270. The smaller cap is paid by builds beyond roughly an hour, which drop
+to 4 ms bins — losing time resolution, not data.
+
+Frame budget: 33 ms at 30 FPS (plan 20.2). p95 is 0.91 ms at Tier 2 and 0.78 ms
+at Tier 3, which is not a typo — Tier 3's longer wall puts more spans behind
+each pixel, so a frame reads fewer bins.
+
 ## Build performance
 
 `gradle.properties` enables parallel execution, the build cache, and the

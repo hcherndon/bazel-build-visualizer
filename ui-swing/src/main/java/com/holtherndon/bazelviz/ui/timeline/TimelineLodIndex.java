@@ -31,12 +31,25 @@ public final class TimelineLodIndex {
     static final int MAX_TOP_LEVEL_BINS = 2048;
 
     /**
-     * Peak build cost of one level-0 bin: {@code starts} (int) + {@code overlap}
-     * (long) + the three difference arrays (int each) = 24 bytes, plus the
-     * resolved {@code active} and {@code failure} arrays (int each) that
-     * coexist with them = 32 bytes.
+     * Peak build cost of one level-0 bin.
+     *
+     * <p>Phase 0 counted 32: {@code starts} (int) + {@code overlap} (long) +
+     * the three difference arrays (int each) = 24, plus the resolved
+     * {@code active} and {@code failure} arrays (int each) that coexist with
+     * them.
+     *
+     * <p>Phase 6 adds what plan 14.3 asks a bin to carry and Phase 0 did not:
+     * cache hits (int), remote count (int), bytes (long), and the two words of
+     * the majority-category vote (short + int). That is 22 more, for 54.
+     *
+     * <p>The consequence is fewer level-0 bins for the same memory:
+     * {@link #MAX_FINEST_BINS} falls from 6,391,320 to 3,728,270. Measured
+     * rather than predicted — Tier 3's 2,343.8 s wall builds 2,343,750 level-0
+     * bins, so both benchmark tiers keep the full millisecond. The trade is
+     * paid by builds beyond roughly an hour, which lose time resolution rather
+     * than data.
      */
-    private static final int BYTES_PER_FINEST_BIN = 32;
+    private static final int BYTES_PER_FINEST_BIN = 54;
 
     /**
      * Every coarser level has a quarter of its predecessor's bins, so the whole
@@ -70,12 +83,20 @@ public final class TimelineLodIndex {
     private final long[][] overlapMicros;
     private final int[][] activeCounts;
     private final int[][] failureCounts;
+    private final int[][] cacheHitCounts;
+    private final int[][] cacheKnownCounts;
+    private final int[][] remoteCounts;
+    private final int[][] runnerKnownCounts;
+    private final long[][] byteTotals;
+    private final short[][] majorityCategories;
     private final long[] maxOverlapMicros;
     private final int[] maxActiveCounts;
 
     private TimelineLodIndex(long wallStartMicros, long wallEndMicros, long totalSpanCount,
             long[] binWidthMicros, int[] binCounts, int[][] startCounts, long[][] overlapMicros,
-            int[][] activeCounts, int[][] failureCounts, long[] maxOverlapMicros,
+            int[][] activeCounts, int[][] failureCounts, int[][] cacheHitCounts,
+            int[][] cacheKnownCounts, int[][] remoteCounts, int[][] runnerKnownCounts,
+            long[][] byteTotals, short[][] majorityCategories, long[] maxOverlapMicros,
             int[] maxActiveCounts) {
         this.wallStartMicros = wallStartMicros;
         this.wallEndMicros = wallEndMicros;
@@ -86,6 +107,12 @@ public final class TimelineLodIndex {
         this.overlapMicros = overlapMicros;
         this.activeCounts = activeCounts;
         this.failureCounts = failureCounts;
+        this.cacheHitCounts = cacheHitCounts;
+        this.cacheKnownCounts = cacheKnownCounts;
+        this.remoteCounts = remoteCounts;
+        this.runnerKnownCounts = runnerKnownCounts;
+        this.byteTotals = byteTotals;
+        this.majorityCategories = majorityCategories;
         this.maxOverlapMicros = maxOverlapMicros;
         this.maxActiveCounts = maxActiveCounts;
     }
@@ -121,6 +148,17 @@ public final class TimelineLodIndex {
         int[][] activeDiff = new int[levelCount][];
         int[][] failDiff = new int[levelCount][];
         int[][] coverDiff = new int[levelCount][];
+        // Start-attributed, like `starts`: a span counts once, in the bin its
+        // start falls in. Spreading a cache hit across every bin it overlaps
+        // would make one long cached action outweigh a hundred short ones.
+        int[][] cacheHit = new int[levelCount][];
+        int[][] cacheKnown = new int[levelCount][];
+        int[][] remote = new int[levelCount][];
+        int[][] runnerKnown = new int[levelCount][];
+        long[][] bytes = new long[levelCount][];
+        // Boyer-Moore majority vote, one candidate and one counter per bin.
+        short[][] majority = new short[levelCount][];
+        int[][] majorityVotes = new int[levelCount][];
         long w = finest;
         for (int l = 0; l < levelCount; l++) {
             widths[l] = w;
@@ -130,11 +168,20 @@ public final class TimelineLodIndex {
             activeDiff[l] = new int[counts[l] + 1];
             failDiff[l] = new int[counts[l] + 1];
             coverDiff[l] = new int[counts[l] + 1];
+            cacheHit[l] = new int[counts[l]];
+            cacheKnown[l] = new int[counts[l]];
+            remote[l] = new int[counts[l]];
+            runnerKnown[l] = new int[counts[l]];
+            bytes[l] = new long[counts[l]];
+            majority[l] = new short[counts[l]];
+            java.util.Arrays.fill(majority[l], (short) -1);
+            majorityVotes[l] = new int[counts[l]];
             w *= LEVEL_GROWTH;
         }
 
         long[] fed = new long[1];
-        source.forEachSpan((s, e, categoryIndex, failed) -> {
+        source.forEachSpan((s, e, categoryIndex, flags, spanBytes) -> {
+            boolean failed = (flags & SpanSource.FLAG_FAILED) != 0;
             fed[0]++;
             long cs = Math.max(s, wallStartMicros);
             long ce = Math.min(e, wallEndMicros);
@@ -148,6 +195,32 @@ public final class TimelineLodIndex {
                 starts[l][b0]++;
                 activeDiff[l][b0]++;
                 activeDiff[l][b1 + 1]--;
+                if ((flags & SpanSource.FLAG_CACHE_KNOWN) != 0) {
+                    cacheKnown[l][b0]++;
+                    if ((flags & SpanSource.FLAG_CACHE_HIT) != 0) {
+                        cacheHit[l][b0]++;
+                    }
+                }
+                if ((flags & SpanSource.FLAG_RUNNER_KNOWN) != 0) {
+                    runnerKnown[l][b0]++;
+                    if ((flags & SpanSource.FLAG_REMOTE) != 0) {
+                        remote[l][b0]++;
+                    }
+                }
+                if (spanBytes > 0) {
+                    bytes[l][b0] += spanBytes;
+                }
+                // One candidate, one counter: the candidate survives only if it
+                // outnumbers everything else combined.
+                short candidate = (short) categoryIndex;
+                if (majorityVotes[l][b0] == 0) {
+                    majority[l][b0] = candidate;
+                    majorityVotes[l][b0] = 1;
+                } else if (majority[l][b0] == candidate) {
+                    majorityVotes[l][b0]++;
+                } else {
+                    majorityVotes[l][b0]--;
+                }
                 if (failed) {
                     failDiff[l][b0]++;
                     failDiff[l][b1 + 1]--;
@@ -192,11 +265,19 @@ public final class TimelineLodIndex {
                 if (runActive > maxActive[l]) {
                     maxActive[l] = runActive;
                 }
+                // The vote's counter equals the span count only when nothing
+                // ever opposed the candidate -- that is, when the bin holds one
+                // category. Anything less is a survivor the build cannot
+                // verify, so it is discarded rather than reported.
+                if (majorityVotes[l][b] != starts[l][b]) {
+                    majority[l][b] = -1;
+                }
             }
         }
 
         return new TimelineLodIndex(wallStartMicros, wallEndMicros, fed[0], widths, counts,
-                starts, overlap, active, failure, maxOverlap, maxActive);
+                starts, overlap, active, failure, cacheHit, cacheKnown, remote, runnerKnown,
+                bytes, majority, maxOverlap, maxActive);
     }
 
     public long wallStartMicros() {
@@ -268,6 +349,82 @@ public final class TimelineLodIndex {
     }
 
     /** Largest {@link #overlapMicros} on the level; normalization base for painting. */
+    /**
+     * Spans starting in this bin that something reported a cache result for.
+     *
+     * <p>Zero means nobody said, not that nothing was cached. A session with no
+     * execution log has zero here for every bin, and a timeline colouring by
+     * cache result must render that as unknown rather than as a miss.
+     */
+    public int cacheKnownCount(int level, int bin) {
+        return cacheKnownCounts[level][bin];
+    }
+
+    /** Spans starting in this bin that were cache hits. */
+    public int cacheHitCount(int level, int bin) {
+        return cacheHitCounts[level][bin];
+    }
+
+    /**
+     * Cache misses in this bin: known results minus hits.
+     *
+     * <p>Derived rather than stored, so it cannot disagree with the two numbers
+     * it comes from.
+     */
+    public int cacheMissCount(int level, int bin) {
+        return cacheKnownCounts[level][bin] - cacheHitCounts[level][bin];
+    }
+
+    /** Spans starting in this bin that something reported a runner for. */
+    public int runnerKnownCount(int level, int bin) {
+        return runnerKnownCounts[level][bin];
+    }
+
+    /** Spans starting in this bin that ran off this machine. */
+    public int remoteCount(int level, int bin) {
+        return remoteCounts[level][bin];
+    }
+
+    /** Spans starting in this bin that ran on it: known runners minus remote. */
+    public int localCount(int level, int bin) {
+        return runnerKnownCounts[level][bin] - remoteCounts[level][bin];
+    }
+
+    /**
+     * Bytes attributable to the spans starting in this bin.
+     *
+     * <p>A lower bound wherever a span reported none: spans with no byte count
+     * contribute nothing rather than a guess, so this is "at least this many"
+     * and never "this many" (plan rule 13).
+     */
+    public long byteTotal(int level, int bin) {
+        return byteTotals[level][bin];
+    }
+
+    /**
+     * The category of every span in this bin, when they are all the same.
+     *
+     * <p>Empty when the bin mixes categories, and empty when it is empty.
+     *
+     * <p>This is a weaker claim than plan 14.3's "top mnemonics or category
+     * summary" and it is the strongest one the build can make honestly. A
+     * Boyer-Moore vote costs two words per bin and survives with a candidate
+     * that is a true majority only if one exists; proving which case happened
+     * needs a second pass over the bin's members, which the single streaming
+     * pass does not have. What the vote <em>can</em> establish for free is the
+     * special case where its counter never dropped — every span was the same
+     * category — and that is what this reports.
+     *
+     * <p>It is not a consolation prize. Real builds spend long stretches doing
+     * one kind of work, so a bin that is all {@code Javac} is common and saying
+     * so is worth more than a ranking that might be wrong.
+     */
+    public java.util.OptionalInt uniformCategory(int level, int bin) {
+        short category = majorityCategories[level][bin];
+        return category < 0
+                ? java.util.OptionalInt.empty() : java.util.OptionalInt.of(category);
+    }
+
     public long maxOverlapMicros(int level) {
         return maxOverlapMicros[level];
     }

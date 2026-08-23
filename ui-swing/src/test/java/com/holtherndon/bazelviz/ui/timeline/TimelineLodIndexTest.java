@@ -19,7 +19,8 @@ class TimelineLodIndexTest {
             @Override
             public void forEachSpan(SpanConsumer consumer) {
                 for (Span s : spans) {
-                    consumer.accept(s.start, s.end, 0, s.failed);
+                    consumer.accept(s.start, s.end, 0,
+                            s.failed ? SpanSource.FLAG_FAILED : 0, SpanSource.BYTES_UNKNOWN);
                 }
             }
         };

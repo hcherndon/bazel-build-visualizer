@@ -93,8 +93,14 @@ public final class TimelineSpike {
                 long n = generator.actionCount();
                 for (long i = 0; i < n; i++) {
                     SyntheticAction a = generator.actionAt(i);
+                    // The generator knows nothing about caching, runners or
+                    // bytes, so those flags stay off and the byte count is
+                    // BYTES_UNKNOWN -- which is what a session with no
+                    // execution log looks like, and therefore the right thing
+                    // for the spike to measure.
                     consumer.accept(a.startMicros(), a.endMicros(), a.mnemonicIndex(),
-                            a.status() == 1);
+                            a.status() == 1 ? SpanSource.FLAG_FAILED : 0,
+                            SpanSource.BYTES_UNKNOWN);
                 }
             }
         };
