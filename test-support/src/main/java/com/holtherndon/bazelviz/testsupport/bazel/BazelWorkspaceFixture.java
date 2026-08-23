@@ -182,6 +182,32 @@ public final class BazelWorkspaceFixture {
                 """.formatted(name, body);
     }
 
+    /**
+     * The rc every fixture workspace carries.
+     *
+     * <h2>Why a Bazel server's heap is the test suite's problem</h2>
+     *
+     * <p>Bazel sizes its server JVM from the machine's RAM, so on a large
+     * developer machine one server reserves many gigabytes before it has done
+     * anything. The suite runs several versions of Bazel — each version needs
+     * its own server — and Gradle runs modules in parallel, so those servers
+     * exist at the same time as each other and as the test JVMs. Measured: a
+     * development machine taken past 120 GB of resident memory, repeatedly, to
+     * the point of crashing.
+     *
+     * <p>These fixtures build four genrules. A gigabyte is more than enough,
+     * and capping it costs the suite nothing it was using.
+     *
+     * <p>{@code max_idle_secs} matters as much as the cap: without it a server
+     * lingers for hours after the test that started it, so the peak is every
+     * server the suite ever started rather than the ones it is using.
+     */
+    private static final String FIXTURE_RC = """
+            # See BazelWorkspaceFixture.FIXTURE_RC for why these exist.
+            startup --host_jvm_args=-Xmx1g
+            startup --max_idle_secs=15
+            """;
+
     private static BazelWorkspaceFixture create(Path directory) throws IOException {
         Files.createDirectories(directory);
         write(directory.resolve("WORKSPACE"), "");
@@ -193,7 +219,7 @@ public final class BazelWorkspaceFixture {
         // make a run hermetic: a workspace rc does not suppress the user's
         // ~/.bazelrc or the system one, and the comment here used to claim it
         // did. Use hermeticStartupOptions() for that.
-        write(directory.resolve(".bazelrc"), "");
+        write(directory.resolve(".bazelrc"), FIXTURE_RC);
         return new BazelWorkspaceFixture(directory);
     }
 

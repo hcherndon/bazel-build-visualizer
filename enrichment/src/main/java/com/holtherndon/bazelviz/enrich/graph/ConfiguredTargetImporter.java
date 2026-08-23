@@ -230,11 +230,27 @@ public final class ConfiguredTargetImporter {
         statement.addBatch();
     }
 
+    /**
+     * The configurations this build actually ran under.
+     *
+     * <p>Not every configuration the event stream mentioned. Bazel publishes a
+     * {@code none} configuration — a placeholder with no mnemonic, for targets
+     * that have no configuration at all (finding C3) — and no query can report
+     * it, because it is not a configuration analysis produced. Comparing
+     * against it made {@code EXACT} unreachable: the first version of this
+     * check selected every declared configuration and returned {@code PARTIAL}
+     * for a query that had in fact analysed exactly the right build.
+     *
+     * <p>So the set is the configurations at least one configured target was
+     * built in. See {@code ActionGraphImporter} for the measurement.
+     */
     private List<String> sessionConfigurations() throws SQLException {
         List<String> ids = new ArrayList<>();
         try (Statement statement = connection.createStatement();
                 ResultSet rows = statement.executeQuery(
-                        "SELECT bep_id FROM configurations WHERE declared = 1")) {
+                        "SELECT DISTINCT c.bep_id FROM configurations c"
+                                + " JOIN configured_targets ct ON ct.configuration_id = c.id"
+                                + " WHERE c.declared = 1")) {
             while (rows.next()) {
                 ids.add(rows.getString(1));
             }

@@ -6,6 +6,11 @@ dependencies {
     api(project(":core-model"))
     api(project(":session-format"))
     api(project(":storage-sqlite"))
+
+    // The auxiliary query runner plans a query with bazel-runner's planner and
+    // launches it with its subprocess helper. Nothing in bazel-runner depends
+    // on enrichment, so this direction is the only one there is.
+    api(project(":bazel-runner"))
     implementation(project(":proto"))
 
     // Pure-Java zstd. The compact execution log is a zstd frame (finding S4),

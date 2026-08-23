@@ -46,6 +46,10 @@ import com.holtherndon.bazelviz.enrich.execlog.EnvironmentRedactor;
 import com.holtherndon.bazelviz.enrich.execlog.ExecutionLogImporter;
 import com.holtherndon.bazelviz.enrich.profile.ProfileImporter;
 import com.holtherndon.bazelviz.runner.plan.AddedFlag;
+import com.holtherndon.bazelviz.enrich.graph.ActionGraphImporter;
+import com.holtherndon.bazelviz.enrich.graph.AuxiliaryQueryRunner;
+import com.holtherndon.bazelviz.enrich.graph.ConfiguredTargetImporter;
+import com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner;
 import java.io.IOException;
 import java.util.Map;
 import java.nio.file.Files;
@@ -114,6 +118,12 @@ public final class CaptureCoordinator implements AutoCloseable {
     private final AtomicReference<CancellationMode> pendingCancel = new AtomicReference<>();
 
     private BesServer server;
+    /** Where a captured action graph is written. */
+    private static final String AQUERY_FILE = "aquery.proto";
+
+    /** Where a captured configured-target graph is written. */
+    private static final String CQUERY_FILE = "cquery.proto";
+
     private Preflight preflight;
     private boolean closed;
 
@@ -385,6 +395,7 @@ public final class CaptureCoordinator implements AutoCloseable {
             // primary output. Before the database closes, because that is the
             // connection the imports write through.
             enrichQuietly(database, executedPlan, layout, warnings);
+            queryGraphsQuietly(database, layout, warnings);
             closeQuietly(entities, "entity writer", warnings);
             closeQuietly(events, "event writer", warnings);
             closeQuietly(streams, "stream registry", warnings);
@@ -706,6 +717,76 @@ public final class CaptureCoordinator implements AutoCloseable {
             warnings.add("the trace profile could not be imported: "
                     + result.error().orElse("unknown reason"));
         }
+    }
+
+
+    /**
+     * Runs the auxiliary queries and imports their graphs.
+     *
+     * <p>After the build, never during (plan 8.6): a query is an analysis pass
+     * in the same Bazel server, so running it alongside would slow the build
+     * and change the timings this application exists to report.
+     *
+     * <p>Quietly, for the same reason the Phase 4 enrichment is: plan 24
+     * requires a failed auxiliary query to leave the rest of the session
+     * usable, and these write only to tables schema v5 added. A query that will
+     * not run costs the user the dependency graph and nothing else.
+     */
+    private void queryGraphsQuietly(
+            SessionDatabase database, ManagedSessionLayout layout, List<String> warnings) {
+        if (database == null || preflight == null) {
+            return;
+        }
+        BazelCommand original = preflight.plan().original();
+        AuxiliaryQueryPlanner planner =
+                new AuxiliaryQueryPlanner(preflight.capabilities());
+        AuxiliaryQueryRunner runner = new AuxiliaryQueryRunner();
+
+        runGraphQuery(database, warnings, runner,
+                planner.aquery(original, layout.rawDirectory().resolve(AQUERY_FILE)),
+                (connection, file, argv) ->
+                        new ActionGraphImporter(connection).importFrom(file, argv).succeeded());
+        runGraphQuery(database, warnings, runner,
+                planner.cquery(original, layout.rawDirectory().resolve(CQUERY_FILE)),
+                (connection, file, argv) ->
+                        new ConfiguredTargetImporter(connection).importFrom(file, argv)
+                                .succeeded());
+    }
+
+    private void runGraphQuery(
+            SessionDatabase database,
+            List<String> warnings,
+            AuxiliaryQueryRunner runner,
+            AuxiliaryQueryPlanner.Plan plan,
+            GraphImport importer) {
+        // Plan 8.6 step 10: say when the graph may not match because options
+        // could not be reproduced. Said before the query runs, because that is
+        // when it is a prediction rather than an excuse.
+        plan.mismatchWarning().ifPresent(warnings::add);
+
+        AuxiliaryQueryRunner.Result result = runner.run(plan);
+        if (!result.succeeded()) {
+            warnings.add("The " + plan.command().command() + " that would have described this"
+                    + " build's dependency graph did not run: "
+                    + result.error().orElse("unknown reason"));
+            return;
+        }
+        try {
+            if (!importer.run(database.writerConnection(), result.output(), plan.argv())) {
+                warnings.add("The " + plan.command().command()
+                        + " output could not be imported.");
+            }
+        } catch (SQLException | RuntimeException failure) {
+            log.warn("importing {}", result.output(), failure);
+            warnings.add("The " + plan.command().command() + " output could not be imported: "
+                    + failure);
+        }
+    }
+
+    @FunctionalInterface
+    private interface GraphImport {
+        boolean run(java.sql.Connection connection, Path file, List<String> argv)
+                throws SQLException;
     }
 
     private SessionState finalizeSession(

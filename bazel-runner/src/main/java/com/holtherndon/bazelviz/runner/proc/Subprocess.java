@@ -99,6 +99,54 @@ public final class Subprocess {
         return new Result(process.exitValue(), out.awaitText(), err.awaitText(), false);
     }
 
+    /**
+     * Runs {@code argv} with its standard output written straight to a file.
+     *
+     * <p>For a subprocess whose output is binary. {@link #run} decodes stdout
+     * as UTF-8, which is right for {@code bazel help} and destructive for
+     * {@code aquery --output=proto}: every byte sequence that is not valid
+     * UTF-8 becomes a replacement character, and the damage is not
+     * recoverable. Redirecting to a file moves the bytes without the JVM
+     * looking at them.
+     *
+     * <p>stderr is still captured as text, because that is a message for a
+     * person.
+     *
+     * @param outputFile overwritten; its parent must exist
+     * @return the exit code and stderr; {@link Result#stdout()} is always empty
+     *     because the output went to the file
+     */
+    public static Result runRedirectingStdout(
+            List<String> argv,
+            Path workingDirectory,
+            Map<String, String> environment,
+            Duration timeout,
+            Path outputFile)
+            throws IOException, InterruptedException {
+        Objects.requireNonNull(argv, "argv");
+        Objects.requireNonNull(outputFile, "outputFile");
+        if (argv.isEmpty()) {
+            throw new IllegalArgumentException("argv must not be empty");
+        }
+        ProcessBuilder builder = new ProcessBuilder(argv);
+        if (workingDirectory != null) {
+            builder.directory(workingDirectory.toFile());
+        }
+        builder.environment().putAll(environment);
+        builder.redirectOutput(ProcessBuilder.Redirect.to(outputFile.toFile()));
+        Process process = builder.start();
+
+        StreamDrain err = StreamDrain.start(process.getErrorStream(), "subprocess-stderr");
+
+        boolean exited = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        if (!exited) {
+            process.destroyForcibly();
+            process.waitFor(5, TimeUnit.SECONDS);
+            return new Result(-1, "", err.awaitText(), true);
+        }
+        return new Result(process.exitValue(), "", err.awaitText(), false);
+    }
+
     /** Reads one stream to completion on its own thread. */
     private static final class StreamDrain {
 
