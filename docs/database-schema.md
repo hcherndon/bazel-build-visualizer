@@ -137,6 +137,37 @@ second, published under a key named for the finish.
 a count over `action_attempts`. A stored copy is one more number that can
 disagree with its rows.
 
+### Schema v5 — the dependency graph (Phase 5)
+
+Ten tables. `graph_sources` is the one to read first: it says which query
+produced a graph, whether it succeeded, and — the load-bearing part — whether
+its configurations were the build's.
+
+| Table | Holds |
+|---|---|
+| `graph_sources` | one row per query, with its configuration match and failure reason |
+| `declared_actions` | what `aquery` said analysis produced, linked to executions where they exist |
+| `declared_action_inputs` / `_outputs` | an action's input sets and its outputs |
+| `graph_depsets` + two edge tables | the declared input DAG, unflattened |
+| `configured_target_nodes` / `_edges` | what `cquery` said, edges between labels |
+| `action_edges` | derived producer-to-consumer, keyed by derivation |
+| `graph_indexes` | the registry for the CSR files beside the database |
+
+Four shapes worth knowing:
+
+**`declared_actions.action_id` is nullable and usually set.** Declared and
+executed are different populations and neither contains the other.
+
+**`action_edges` is keyed `(producer, consumer, derivation)`.** The same pair
+can be both `DECLARED` and `OBSERVED`, and the two must never be summed.
+
+**`declared_actions.node_index` is not the row id.** Row ids grow across
+re-imports; a CSR is two arrays indexed from zero with no room for gaps.
+
+**`is_executable` holds 1 or NULL and never 0.** Bazel 6.5.0 emits the field
+for no action, but it is a proto3 bool without presence, so nothing downstream
+of the parser can tell "this version never says" from "not executable".
+
 ## Sensitive-field inventory
 
 `docs/privacy.md` commits to tagging every column that can carry

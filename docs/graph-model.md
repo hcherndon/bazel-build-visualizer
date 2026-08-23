@@ -48,3 +48,39 @@ journal (ADR-004); there is no in-place migration.
 The temporal index (`temporal.idx`) is a sibling flat format — time-sorted
 span records for timeline queries — and will be specified here alongside
 **Phase 6**, which is where the timeline and its LOD index are built.
+
+## What Phase 5 built (2026-08-22)
+
+Two of the six graph kinds now have data behind them.
+
+**`DECLARED_ACTIONS`**, from `aquery --output=proto`. Nodes are
+`declared_actions` rows; edges are derived producer-to-consumer pairs with
+`derivation = DECLARED`. Complete with respect to what analysis knew, and an
+over-estimate of what execution needed.
+
+**`CONFIGURED_TARGETS`**, from `cquery --output=proto`. Nodes are
+`configured_target_nodes`; edges point at labels rather than at configured
+targets, because Bazel does not fill the field that would say which
+configuration a dependency resolved to.
+
+**`OBSERVED_EXECUTION`** gains edges too, with `derivation = OBSERVED`, derived
+from what the execution log says spawns actually read. Its endpoints are still
+`declared_actions` rows, so an execution the graph does not declare contributes
+no edge — recorded as coverage rather than papered over with a synthetic node.
+
+The three remaining kinds — `BEP_EVENTS`, `TARGETS`, `TEMPORAL` — are unchanged
+from Phase 3.
+
+### What may be claimed
+
+A graph may be described as *this build's* only when `ConfigurationMatch` is
+`EXACT`, which means the query reported exactly the configurations at least one
+configured target was built in. Every other state is shown, labelled, and
+warned about.
+
+### Traversals
+
+Forward and reverse BFS, depth- and node-budgeted; bidirectional shortest path,
+also budgeted. Running out of budget is reported as its own outcome and never
+as "there is no path" — plan 13.3 forbids a transitive closure, so a search has
+to be able to give up, and giving up is not an answer.

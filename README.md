@@ -21,6 +21,16 @@
 > blank. What those two sources actually contain — and the four places the
 > supported Bazel versions disagree about them — is in
 > [docs/exec-log-and-profile.md](docs/exec-log-and-profile.md). See
+> **Phase 5 adds the dependency graph.** `aquery` and `cquery` are planned from
+> the build's own command line, run after it finishes, and imported: the
+> declared action graph, the configured-target graph, producer-to-consumer
+> edges and persisted forward and reverse CSR indexes. The Graph card shows
+> what an action depends on, what depends on it, and whether two actions are
+> connected — with a source selector that says whether the graph was confirmed
+> to be this build's, because a dependency tree from a query that analysed a
+> different configuration looks exactly like a correct one. What is actually in
+> those protos, across four Bazel versions, is in
+> [docs/aquery-and-cquery.md](docs/aquery-and-cquery.md). See
 > [docs/implementation-status.md](docs/implementation-status.md).
 
 A local desktop application for capturing, exploring, and understanding
@@ -150,6 +160,8 @@ Build conventions live in `build-logic/` (see
   [bazel-compatibility](docs/bazel-compatibility.md) ·
   [exec-log-and-profile](docs/exec-log-and-profile.md) ·
   [phase4-contracts](docs/phase4-contracts.md) ·
+  [aquery-and-cquery](docs/aquery-and-cquery.md) ·
+  [phase5-contracts](docs/phase5-contracts.md) ·
   [instrumentation-planner](docs/instrumentation-planner.md) ·
   [privacy](docs/privacy.md) ·
   [troubleshooting](docs/troubleshooting.md)
