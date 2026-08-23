@@ -198,6 +198,41 @@ final class SessionRedactionTest {
     }
 
     @Test
+    @DisplayName("every column named in either list still exists in the schema")
+    void theInventoryHasNoStaleEntries() throws Exception {
+        // The other direction, and it is not symmetric. Schema v3 renamed two
+        // columns with ALTER TABLE RENAME COLUMN, which a check that reads only
+        // CREATE TABLE statements cannot see -- so a list built by reading the
+        // DDL can name a column that no longer exists and go on passing.
+        Set<String> existing = new LinkedHashSet<>();
+        try (SessionDatabase database = open("stale.sqlite");
+                Statement tables = database.writerConnection().createStatement();
+                ResultSet tableRows = tables.executeQuery(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                                + " AND name NOT LIKE 'sqlite_%'")) {
+            List<String> names = new ArrayList<>();
+            while (tableRows.next()) {
+                names.add(tableRows.getString(1));
+            }
+            for (String table : names) {
+                try (Statement columns = database.writerConnection().createStatement();
+                        ResultSet columnRows = columns.executeQuery(
+                                "SELECT name FROM pragma_table_info('" + table + "')")) {
+                    while (columnRows.next()) {
+                        existing.add(table + "." + columnRows.getString(1));
+                    }
+                }
+            }
+        }
+
+        Set<String> named = new TreeSet<>(SessionRedaction.deliberatelyNotSensitive());
+        SessionRedaction.sensitiveColumns().forEach(column -> named.add(column.field()));
+        named.removeAll(existing);
+        assertThat(named).as("columns named in the inventory that the schema does not have")
+                .isEmpty();
+    }
+
+    @Test
     @DisplayName("no column is in both lists")
     void theListsDoNotOverlap() {
         Set<String> sensitive = new LinkedHashSet<>();

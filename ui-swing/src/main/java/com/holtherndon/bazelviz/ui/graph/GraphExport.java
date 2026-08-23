@@ -252,12 +252,15 @@ public final class GraphExport {
         return '"' + text.replace("\\", "\\\\").replace("\"", "\\\"") + '"';
     }
 
+    /**
+     * RFC 4180 quoting, from the one place it is written.
+     *
+     * <p>It was four lines here and four lines in the table export, which is
+     * exactly the size at which duplication looks harmless and stops being
+     * checked.
+     */
     private static String csv(String value) {
-        if (value.indexOf(',') < 0 && value.indexOf('"') < 0
-                && value.indexOf('\n') < 0 && value.indexOf('\r') < 0) {
-            return value;
-        }
-        return '"' + value.replace("\"", "\"\"") + '"';
+        return com.holtherndon.bazelviz.core.text.Csv.field(value);
     }
 
     private static Path withExtension(Path target, Format format) {

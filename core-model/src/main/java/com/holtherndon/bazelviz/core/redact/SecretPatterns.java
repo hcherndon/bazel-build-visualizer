@@ -75,7 +75,10 @@ public final class SecretPatterns {
         return List.of(
                 SecretPattern.valued(
                         "bearer-token",
-                        "\\bBearer\\s+([A-Za-z0-9._~+/=-]{12,})",
+                        // Eight, not twelve. Over-matching costs a redacted
+                        // word in a failure message; under-matching costs a
+                        // credential, and the two are not comparable.
+                        "\\bBearer\\s+([A-Za-z0-9._~+/=-]{8,})",
                         "a bearer token"),
                 SecretPattern.valued(
                         "url-credentials",
