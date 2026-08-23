@@ -235,6 +235,7 @@ public final class MainWindow extends JFrame {
         // its span where it is, and a span picked on the timeline reveals its
         // row without scrolling the timeline.
         actionsView.onShowOnTimeline(this::revealOnTimeline);
+        graphView.onActionSelected(this::followGraphSelection);
         timeline.onSelection(actionId -> actionsView.selectAction(actionId));
         // A range dragged out on the timeline narrows the actions table (plan
         // 14.5). Cleared the same way, so the two never disagree about what is
@@ -612,6 +613,18 @@ public final class MainWindow extends JFrame {
     /** Switches to the timeline and highlights an action, leaving the view where it is. */
     private void revealOnTimeline(long actionId) {
         showCard(NavEntry.TIMELINE);
+        timeline.select(actionId);
+    }
+
+    /**
+     * Points the timeline at whatever is picked on the graph canvas.
+     *
+     * <p>Quietly: the selection moves, the card does not. A view that jumped
+     * away every time a user clicked a node would make the graph unusable, but
+     * arriving at the timeline already on the right action is exactly what the
+     * user who does switch expects.
+     */
+    private void followGraphSelection(long actionId) {
         timeline.select(actionId);
     }
 

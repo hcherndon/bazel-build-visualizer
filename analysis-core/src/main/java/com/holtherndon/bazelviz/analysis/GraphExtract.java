@@ -3,9 +3,7 @@ package com.holtherndon.bazelviz.analysis;
 import com.holtherndon.bazelviz.graph.Bfs;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
 
 /**
  * A bounded piece of a graph, and the truth about what it left out.
@@ -240,22 +238,5 @@ public final class GraphExtract {
             return text.toString();
         }
 
-        /** The extraction's own bounds, for a layout to place things in. */
-        public Optional<int[]> nodeRange() {
-            if (nodes.isEmpty()) {
-                return Optional.empty();
-            }
-            int[] sorted = nodes.stream().mapToInt(Integer::intValue).sorted().toArray();
-            return Optional.of(new int[] {sorted[0], sorted[sorted.length - 1]});
-        }
-
-        /** Node ids as a primitive array, for the layout stage. */
-        public int[] nodeArray() {
-            int[] array = new int[nodes.size()];
-            for (int i = 0; i < array.length; i++) {
-                array[i] = nodes.get(i);
-            }
-            return Arrays.copyOf(array, array.length);
-        }
     }
 }

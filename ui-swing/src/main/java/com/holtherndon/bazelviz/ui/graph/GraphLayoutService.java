@@ -127,6 +127,114 @@ public final class GraphLayoutService implements AutoCloseable {
         });
     }
 
+    /**
+     * Works out how big a drawing would be, without laying it out.
+     *
+     * <p>Reads the index's counts, which is why it is cheap: the answer to
+     * "will this fit" should arrive while the user is still choosing, not after
+     * a traversal has run and been refused.
+     */
+    public void estimate(
+            Request request, Consumer<LimitEstimate> onDone, Consumer<Throwable> onError) {
+        worker.execute(() -> {
+            try {
+                Optional<CsrGraph> forward = queries.forwardIndex(request.derivation());
+                LimitEstimate estimate = forward
+                        .map(graph -> LimitEstimate.of(
+                                request.mode(), graph.nodeCount(), graph.edgeCount(),
+                                request.nodeLimit(), request.edgeLimit()))
+                        .orElseGet(() -> LimitEstimate.of(
+                                request.mode(), 0, 0,
+                                request.nodeLimit(), request.edgeLimit()));
+                SwingUtilities.invokeLater(() -> onDone.accept(estimate));
+            } catch (RuntimeException | java.io.IOException | java.sql.SQLException failure) {
+                log.warn("could not size the graph for {}", request, failure);
+                SwingUtilities.invokeLater(() -> onError.accept(failure));
+            }
+        });
+    }
+
+    /** Work to run against the session's graph, off the event thread. */
+    public interface GraphWork<T> {
+        T runOn(CsrGraph forward) throws Exception;
+    }
+
+    /**
+     * Runs work against the session's forward index on the layout thread.
+     *
+     * <p>The escape hatch for the things that need the whole graph rather than
+     * a drawing of it — chiefly the complete export, which streams five million
+     * edges to a file and must not do so on the event thread. Keeping it here
+     * keeps every route to the graph on one thread.
+     */
+    public <T> void onGraph(
+            EdgeDerivation derivation, GraphWork<T> work,
+            Consumer<T> onDone, Consumer<Throwable> onError) {
+        worker.execute(() -> {
+            try {
+                Optional<CsrGraph> forward = queries.forwardIndex(derivation);
+                if (forward.isEmpty()) {
+                    throw new IllegalStateException(
+                            "this session has no " + derivation.displayName() + " graph");
+                }
+                T result = work.runOn(forward.get());
+                SwingUtilities.invokeLater(() -> onDone.accept(result));
+            } catch (Exception failure) {
+                log.warn("graph work failed", failure);
+                SwingUtilities.invokeLater(() -> onError.accept(failure));
+            }
+        });
+    }
+
+    /**
+     * Draws a path that has already been found.
+     *
+     * <p>A path's nodes come from a search the caller ran, so it cannot be
+     * recomputed from a {@link Request} alone — which is why {@link #submit}
+     * refuses the two path modes and points here.
+     *
+     * <p>Deliberately not cached. A path is tens of nodes, laying one out is
+     * microseconds, and the cache key would have to include the node list,
+     * which is the kind of key that grows without bound as a user tries
+     * different pairs.
+     */
+    public void submitPath(
+            Request request,
+            java.util.List<Integer> nodes,
+            Consumer<Rendered> onDone,
+            Consumer<Throwable> onError) {
+        inFlight.set(true);
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        inFlight = cancelled;
+
+        worker.execute(() -> {
+            try {
+                Optional<CsrGraph> forward = queries.forwardIndex(request.derivation());
+                if (forward.isEmpty()) {
+                    Rendered nothing = Rendered.unavailable(request);
+                    SwingUtilities.invokeLater(() -> onDone.accept(nothing));
+                    return;
+                }
+                GraphExtract.Result extract =
+                        GraphExtract.path(forward.get(), nodes, request.mode());
+                GraphLayout.Result layout =
+                        GraphLayout.run(request.layout(), extract, cancelled);
+                if (cancelled.get()) {
+                    return;
+                }
+                Rendered rendered =
+                        new Rendered(request, extract, layout, null, extract.describe());
+                SwingUtilities.invokeLater(() -> onDone.accept(rendered));
+            } catch (RuntimeException | java.io.IOException | java.sql.SQLException failure) {
+                if (cancelled.get()) {
+                    return;
+                }
+                log.warn("path layout failed for {}", request, failure);
+                SwingUtilities.invokeLater(() -> onError.accept(failure));
+            }
+        });
+    }
+
     /** Stops the running request without submitting another. */
     public void cancel() {
         inFlight.set(true);
@@ -163,7 +271,8 @@ public final class GraphLayoutService implements AutoCloseable {
             // A path's nodes come from a search the caller already ran, so it
             // cannot be recomputed from the request alone.
             case PATH, CRITICAL_PATH -> throw new IllegalArgumentException(
-                    request.mode() + " must be submitted with its nodes, via submitPath");
+                    request.mode() + " must be submitted with its nodes, via "
+                            + "submitPath(Request, List, ...)");
             case CLUSTERS -> throw new IllegalStateException("handled above");
         };
         GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
@@ -250,6 +359,15 @@ public final class GraphLayoutService implements AutoCloseable {
                     derivation, GraphExtract.Mode.WHOLE, 0, Integer.MAX_VALUE,
                     nodeLimit, edgeLimit, GraphLayout.Kind.LAYERED,
                     GraphClustering.By.PACKAGE, GraphClustering.DEFAULT_CLUSTER_LIMIT);
+        }
+
+        /** A path that a search has already found. */
+        public static Request forPath(EdgeDerivation derivation, GraphExtract.Mode mode) {
+            return new Request(
+                    derivation, mode, 0, Integer.MAX_VALUE,
+                    GraphExtract.DEFAULT_NODE_LIMIT, GraphExtract.DEFAULT_EDGE_LIMIT,
+                    GraphLayout.Kind.LINEAR, GraphClustering.By.PACKAGE,
+                    GraphClustering.DEFAULT_CLUSTER_LIMIT);
         }
 
         /** The far-zoom view: one box per group. */

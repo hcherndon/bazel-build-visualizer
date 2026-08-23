@@ -147,6 +147,11 @@ public final class GraphModel {
         return rendered.isCluster();
     }
 
+    /** The grouping behind a cluster view, or null when this is a node view. */
+    public GraphClustering.Result clustering() {
+        return rendered.clustering();
+    }
+
     /** The sentence shown beside the drawing; plan 13.6 requires it always. */
     public String description() {
         return rendered.description();

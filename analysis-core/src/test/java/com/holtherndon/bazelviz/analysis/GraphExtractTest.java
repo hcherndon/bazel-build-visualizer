@@ -149,7 +149,6 @@ final class GraphExtractTest {
 
         assertThat(none.nodes()).isEmpty();
         assertThat(none.edges()).isEmpty();
-        assertThat(none.nodeRange()).isEmpty();
     }
 
     @Test

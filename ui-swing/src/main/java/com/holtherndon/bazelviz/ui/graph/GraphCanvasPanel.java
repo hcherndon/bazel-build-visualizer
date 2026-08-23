@@ -52,12 +52,34 @@ public final class GraphCanvasPanel extends JPanel {
     private final JLabel omission = new JLabel(" ");
     private final JLabel selected = new JLabel(" ");
 
+    /**
+     * The bar plan 13.6 requires above the limit.
+     *
+     * <p>"Offer raise limit, export, and refine filter", and never claim the
+     * omitted nodes do not exist. It is hidden when there is nothing to say —
+     * a standing notice trains a user to stop reading the place the real
+     * warning appears.
+     */
+    private final JPanel overLimit = new JPanel();
+
+    private final JLabel overLimitText = new JLabel(" ");
+    private final JButton raiseLimit = new JButton("Draw it anyway");
+    private final JButton showClusters = new JButton("Group instead");
+    private final JButton exportComplete = new JButton("Export all of it…");
+    private final JButton refine = new JButton("Narrow it");
+
     private GraphLayoutService service;
     private String[] labelsByNodeIndex;
     private long[] durationsByNodeIndex;
     private int rootNode = -1;
     private int nodeLimit = GraphExtract.DEFAULT_NODE_LIMIT;
     private int edgeLimit = GraphExtract.DEFAULT_EDGE_LIMIT;
+    private LimitEstimate estimate;
+    private java.util.Map<Integer, Long> actionIdByNodeIndex = java.util.Map.of();
+    private java.util.function.LongConsumer actionListener = actionId -> {};
+    private java.util.function.IntConsumer nodeListener = nodeIndex -> {};
+    private java.util.function.Consumer<GraphExport.Result> exportListener = result -> {};
+    private java.util.function.Consumer<Throwable> exportFailureListener = failure -> {};
 
     public GraphCanvasPanel() {
         super(new BorderLayout());
@@ -66,9 +88,14 @@ public final class GraphCanvasPanel extends JPanel {
         PlainText.disableHtml(selected);
         omission.setFont(omission.getFont().deriveFont(Font.ITALIC));
 
+        // PATH and CRITICAL_PATH are in the list so a found path can be shown
+        // as the current mode, but they cannot be reached by picking them: a
+        // path needs two endpoints that only a search supplies, and a mode a
+        // user could select but never satisfy would be a dead control.
         mode.setModel(new DefaultComboBoxModel<>(new GraphExtract.Mode[] {
             GraphExtract.Mode.NEIGHBOURHOOD, GraphExtract.Mode.DEPENDENCIES,
             GraphExtract.Mode.DEPENDENTS, GraphExtract.Mode.WHOLE, GraphExtract.Mode.CLUSTERS,
+            GraphExtract.Mode.PATH, GraphExtract.Mode.CRITICAL_PATH,
         }));
         mode.setRenderer(new Renderer<>(value -> ((GraphExtract.Mode) value).displayName()));
         layout.setRenderer(new Renderer<>(value -> ((GraphLayout.Kind) value).displayName()));
@@ -97,7 +124,30 @@ public final class GraphCanvasPanel extends JPanel {
         JButton fit = new JButton("Fit");
         fit.addActionListener(event -> canvas.fitToView());
         controls.add(fit);
+        // Plan 17.7 lists "export visible graph" among the canvas's ordinary
+        // actions, not only among the things offered when a graph is too big.
+        JButton export = new JButton("Export…");
+        export.addActionListener(event -> exportChosen());
+        controls.add(export);
         controls.add(Box.createHorizontalGlue());
+
+        overLimit.setLayout(new BoxLayout(overLimit, BoxLayout.X_AXIS));
+        overLimit.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+        PlainText.disableHtml(overLimitText);
+        overLimitText.setFont(overLimitText.getFont().deriveFont(Font.BOLD));
+        raiseLimit.addActionListener(event -> drawItAnyway());
+        showClusters.addActionListener(
+                event -> mode.setSelectedItem(GraphExtract.Mode.CLUSTERS));
+        exportComplete.addActionListener(event -> exportCompleteChosen());
+        refine.addActionListener(event -> narrow());
+        overLimit.add(overLimitText);
+        overLimit.add(Box.createHorizontalStrut(8));
+        overLimit.add(raiseLimit);
+        overLimit.add(refine);
+        overLimit.add(showClusters);
+        overLimit.add(exportComplete);
+        overLimit.add(Box.createHorizontalGlue());
+        overLimit.setVisible(false);
 
         JPanel status = new JPanel();
         status.setLayout(new BoxLayout(status, BoxLayout.Y_AXIS));
@@ -106,7 +156,11 @@ public final class GraphCanvasPanel extends JPanel {
         status.add(omission);
         status.add(selected);
 
-        add(controls, BorderLayout.NORTH);
+        JPanel top = new JPanel(new BorderLayout());
+        top.add(controls, BorderLayout.NORTH);
+        top.add(overLimit, BorderLayout.SOUTH);
+
+        add(top, BorderLayout.NORTH);
         add(canvas, BorderLayout.CENTER);
         add(status, BorderLayout.SOUTH);
 
@@ -143,10 +197,15 @@ public final class GraphCanvasPanel extends JPanel {
      *     ever needs a name it does not already have
      */
     public void attach(
-            GraphLayoutService service, String[] labelsByNodeIndex, long[] durationsByNodeIndex) {
+            GraphLayoutService service,
+            String[] labelsByNodeIndex,
+            long[] durationsByNodeIndex,
+            java.util.Map<Integer, Long> actionIdByNodeIndex) {
         this.service = service;
         this.labelsByNodeIndex = labelsByNodeIndex;
         this.durationsByNodeIndex = durationsByNodeIndex;
+        this.actionIdByNodeIndex = actionIdByNodeIndex == null
+                ? java.util.Map.of() : actionIdByNodeIndex;
         showNothing("Pick an action to draw its neighbourhood, or switch to the whole build.");
     }
 
@@ -155,9 +214,27 @@ public final class GraphCanvasPanel extends JPanel {
         this.service = null;
         this.labelsByNodeIndex = null;
         this.durationsByNodeIndex = null;
+        this.actionIdByNodeIndex = java.util.Map.of();
         this.rootNode = -1;
         canvas.setModel(GraphModel.empty());
         showNothing("No dependency graph is open.");
+    }
+
+    /**
+     * Draws a path a search has already found.
+     *
+     * <p>Plan 13.5's "path between two actions", which the trees can state in
+     * words but only the canvas can show the shape of.
+     */
+    public void showPath(java.util.List<Integer> nodes, GraphExtract.Mode pathMode) {
+        if (service == null || nodes.isEmpty()) {
+            return;
+        }
+        mode.setSelectedItem(pathMode);
+        setText(description, "Drawing…");
+        service.submitPath(
+                GraphLayoutService.Request.forPath(EdgeDerivation.DECLARED, pathMode),
+                nodes, this::rendered, this::failed);
     }
 
     /** Draws the neighbourhood of one graph node. */
@@ -211,6 +288,11 @@ public final class GraphCanvasPanel extends JPanel {
         if (chosen == null) {
             return;
         }
+        if (chosen == GraphExtract.Mode.PATH || chosen == GraphExtract.Mode.CRITICAL_PATH) {
+            // Reached only by showPath, which has already drawn one. Redrawing
+            // from the controls would need endpoints the controls do not hold.
+            return;
+        }
         boolean rooted = chosen == GraphExtract.Mode.NEIGHBOURHOOD
                 || chosen == GraphExtract.Mode.DEPENDENCIES
                 || chosen == GraphExtract.Mode.DEPENDENTS;
@@ -231,6 +313,7 @@ public final class GraphCanvasPanel extends JPanel {
                 GraphClustering.DEFAULT_CLUSTER_LIMIT);
 
         description.setText("Drawing…");
+        service.estimate(request, found -> this.estimate = found, failure -> { });
         service.submit(request, this::rendered, this::failed);
     }
 
@@ -239,12 +322,240 @@ public final class GraphCanvasPanel extends JPanel {
         setText(description, result.description());
         updateOmission();
         setText(selected, legend());
+        // Plan 13.6's three offers, shown only when there is something to
+        // offer them about.
+        setOverLimit(result.refused() || result.extract().hitLimit(), result);
+    }
+
+    private void setOverLimit(boolean over, GraphLayoutService.Rendered result) {
+        overLimit.setVisible(over);
+        if (!over) {
+            return;
+        }
+        setText(overLimitText, result.refused()
+                ? "Too big to draw in detail."
+                : "Stopped early; there is more than this.");
+        // "Draw it anyway" only means something when the exact size is known,
+        // which is the whole-graph case. For a traversal that stopped at its
+        // budget, doubling the budget is the honest offer.
+        raiseLimit.setToolTipText(PlainText.tooltip(result.refused()
+                ? "Raise the limit to " + result.extract().totalNodes()
+                        + " actions and draw all of it."
+                : "Double the search budget and look further."));
+    }
+
+    /**
+     * Plan 13.6's "refine filter", made an action rather than a hint.
+     *
+     * <p>For a rooted view the narrower question is a shallower one, so this
+     * steps the depth down. For the whole build the narrower question is a
+     * neighbourhood, so it becomes one — when there is an action to centre it
+     * on, and otherwise it says what it needs instead of quietly doing nothing.
+     */
+    private void narrow() {
+        GraphExtract.Mode chosen = (GraphExtract.Mode) mode.getSelectedItem();
+        boolean rooted = chosen == GraphExtract.Mode.NEIGHBOURHOOD
+                || chosen == GraphExtract.Mode.DEPENDENCIES
+                || chosen == GraphExtract.Mode.DEPENDENTS;
+        if (rooted) {
+            int depthNow = (Integer) depth.getValue();
+            if (depthNow > 1) {
+                depth.setValue(depthNow - 1);
+            } else {
+                setText(description,
+                        "This is already the narrowest view: one step from the chosen action.");
+            }
+            return;
+        }
+        if (rootNode < 0) {
+            setText(description,
+                    "Pick an action first — narrowing means drawing the graph around one.");
+            return;
+        }
+        mode.setSelectedItem(GraphExtract.Mode.NEIGHBOURHOOD);
+    }
+
+    /** Plan 13.6's "raise limit", which must be a decision rather than a default. */
+    private void drawItAnyway() {
+        GraphModel model = canvas.model();
+        long wantedNodes = Math.max(model.extract().totalNodes(), nodeLimit * 2L);
+        long wantedEdges = Math.max(model.extract().totalEdges(), edgeLimit * 2L);
+        raiseLimits(
+                (int) Math.min(Integer.MAX_VALUE, wantedNodes),
+                (int) Math.min(Integer.MAX_VALUE, wantedEdges));
+    }
+
+    /**
+     * Called with the executed action behind a selected node, when there is one.
+     *
+     * <p>The return leg of {@code GraphView.showAction}: a user who found an
+     * action in the table can draw its neighbourhood, and a user who found one
+     * in the drawing can open its detail. Nodes with no executed action — every
+     * test's TestRunner in a {@code build} invocation — simply do not fire it,
+     * rather than firing a zero that would open the wrong row.
+     */
+    public void onActionSelected(java.util.function.LongConsumer listener) {
+        this.actionListener = listener == null ? actionId -> {} : listener;
+    }
+
+    /**
+     * Called with the graph node index of a single selection.
+     *
+     * <p>So the trees beside the canvas can follow it. Two halves of one view
+     * showing two different nodes is the kind of disagreement a user reads as a
+     * bug in the data rather than in the window.
+     */
+    public void onNodeSelected(java.util.function.IntConsumer listener) {
+        this.nodeListener = listener == null ? nodeIndex -> {} : listener;
+    }
+
+    /** The executed action behind a drawn node, when the session ran one. */
+    java.util.OptionalLong actionIdAt(int position) {
+        if (canvas.model().isCluster() || position < 0
+                || position >= canvas.model().size()) {
+            return java.util.OptionalLong.empty();
+        }
+        Long actionId = actionIdByNodeIndex.get(canvas.model().nodeAt(position));
+        return actionId == null
+                ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(actionId);
+    }
+
+    /** Called with the outcome of an export, so a container can report it. */
+    public void onExport(
+            java.util.function.Consumer<GraphExport.Result> done,
+            java.util.function.Consumer<Throwable> failed) {
+        this.exportListener = done == null ? result -> {} : done;
+        this.exportFailureListener = failed == null ? failure -> {} : failed;
+    }
+
+    /**
+     * Writes what is on screen.
+     *
+     * <p>On a background thread: a visible graph is bounded, but the file
+     * system is not, and a slow disk must not freeze the window.
+     */
+    public void exportVisible(java.nio.file.Path target, GraphExport.Format format) {
+        GraphModel model = canvas.model();
+        if (service == null) {
+            return;
+        }
+        service.onGraph(
+                EdgeDerivation.DECLARED,
+                graph -> GraphExport.visible(model, target, format),
+                this::exported,
+                this::exportFailed);
+    }
+
+    /**
+     * Writes every node and edge the session holds, drawn or not.
+     *
+     * <p>Plan 13.6 lists export among the three things offered above the limit,
+     * and this is the one that makes the limit acceptable: the drawing is
+     * bounded, the data is not.
+     */
+    public void exportComplete(java.nio.file.Path target, GraphExport.Format format) {
+        if (service == null) {
+            return;
+        }
+        String[] labels = labelsByNodeIndex;
+        long[] durations = durationsByNodeIndex;
+        service.onGraph(
+                EdgeDerivation.DECLARED,
+                graph -> GraphExport.whole(graph, labels, durations, target, format),
+                this::exported,
+                this::exportFailed);
+    }
+
+    private void exported(GraphExport.Result result) {
+        setText(selected, result.describe());
+        exportListener.accept(result);
+    }
+
+    private void exportFailed(Throwable failure) {
+        setText(selected, "The export failed: " + failure.getMessage());
+        exportFailureListener.accept(failure);
+    }
+
+    private void exportCompleteChosen() {
+        chooseAndExport("Export the complete graph", true);
+    }
+
+    /**
+     * Asks which graph, then where.
+     *
+     * <p>Two exports rather than one because they answer different questions,
+     * and a user who exported "the graph" and got only what happened to be on
+     * screen would be badly surprised.
+     */
+    private void exportChosen() {
+        Object[] choices = {"Visible graph", "Complete graph"};
+        int chosen = javax.swing.JOptionPane.showOptionDialog(
+                this,
+                "Export what is drawn, or everything the session holds?",
+                "Export graph",
+                javax.swing.JOptionPane.DEFAULT_OPTION,
+                javax.swing.JOptionPane.QUESTION_MESSAGE,
+                null, choices, choices[0]);
+        if (chosen < 0) {
+            return;
+        }
+        chooseAndExport(
+                chosen == 0 ? "Export the visible graph" : "Export the complete graph",
+                chosen == 1);
+    }
+
+    private void chooseAndExport(String title, boolean complete) {
+        javax.swing.JFileChooser chooser = new javax.swing.JFileChooser();
+        chooser.setDialogTitle(title);
+        chooser.setSelectedFile(new java.io.File("build-graph.dot"));
+        if (chooser.showSaveDialog(this) != javax.swing.JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        java.io.File chosen = chooser.getSelectedFile();
+        GraphExport.Format format = chosen.getName().endsWith(".csv")
+                ? GraphExport.Format.CSV : GraphExport.Format.DOT;
+        if (complete) {
+            exportComplete(chosen.toPath(), format);
+        } else {
+            exportVisible(chosen.toPath(), format);
+        }
+    }
+
+    /** The estimate for the current settings, once one has been fetched. */
+    java.util.Optional<LimitEstimate> estimate() {
+        return java.util.Optional.ofNullable(estimate);
+    }
+
+    /** Whether the over-limit bar is showing; plan 13.6's three offers. */
+    boolean isOverLimitShown() {
+        return overLimit.isVisible();
+    }
+
+    String overLimitText() {
+        return overLimitText.getText();
+    }
+
+    void narrowForTesting() {
+        narrow();
+    }
+
+    int depthForTesting() {
+        return (Integer) depth.getValue();
+    }
+
+    void setDepthForTesting(int value) {
+        depth.setValue(value);
+    }
+
+    void setModeForTesting(GraphExtract.Mode value) {
+        mode.setSelectedItem(value);
     }
 
     private void failed(Throwable failure) {
         canvas.setModel(GraphModel.empty());
         setText(description, "The graph could not be drawn: " + failure.getMessage());
         setText(omission, " ");
+        overLimit.setVisible(false);
     }
 
     private void updateOmission() {
@@ -258,6 +569,10 @@ public final class GraphCanvasPanel extends JPanel {
         }
         if (positions.length == 1) {
             GraphModel model = canvas.model();
+            actionIdAt(positions[0]).ifPresent(actionListener::accept);
+            if (!model.isCluster()) {
+                nodeListener.accept(canvas.selectedNodes()[0]);
+            }
             String text = model.displayLabelAt(positions[0]);
             setText(selected, model.durationAt(positions[0])
                     .stream()
@@ -278,7 +593,13 @@ public final class GraphCanvasPanel extends JPanel {
             return " ";
         }
         if (model.isCluster()) {
-            return "Boxes are groups; the number in each is how many actions it holds.";
+            GraphClustering.Result clustering = model.clustering();
+            // The summed counts rather than the graph's totals: these are what
+            // the boxes on screen add up to, so a user can check the drawing
+            // against the build rather than take it on trust.
+            return clustering.clusters().size() + " groups holding "
+                    + clustering.clusteredNodes() + " actions and "
+                    + clustering.clusteredEdges() + " dependencies between them.";
         }
         int untimed = model.untimedCount();
         String scale = model.slowestDuration()
@@ -296,6 +617,7 @@ public final class GraphCanvasPanel extends JPanel {
 
     private void showNothing(String why) {
         canvas.setModel(GraphModel.empty());
+        overLimit.setVisible(false);
         setText(description, why);
         setText(omission, " ");
         setText(selected, " ");

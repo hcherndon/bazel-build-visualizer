@@ -146,6 +146,9 @@ public final class GraphView extends JPanel {
 
         dependencies.addTreeWillExpandListener(new LazyExpander(true));
         dependents.addTreeWillExpandListener(new LazyExpander(false));
+        // Picking a node on the canvas moves the trees to it. Two halves of one
+        // view showing two different actions reads as a bug in the data.
+        canvasPanel.onNodeSelected(this::rootTreesAt);
     }
 
     /** Opens this session's graph, off the EDT. */
@@ -163,6 +166,7 @@ public final class GraphView extends JPanel {
             List<GraphQueries.GraphSource> sources;
             String[] labels;
             long[] durations;
+            java.util.Map<Integer, Long> actionIds;
             try {
                 opened = source.openGraphQueries();
                 sources = opened.sources();
@@ -171,6 +175,7 @@ public final class GraphView extends JPanel {
                 // whole session, not two per frame.
                 labels = opened.labelsByNodeIndex();
                 durations = opened.durationsByNodeIndex(false, GraphModel.UNKNOWN_DURATION);
+                actionIds = opened.actionIdsByNodeIndex();
             } catch (RuntimeException | java.sql.SQLException failure) {
                 log.debug("no graph for this session", failure);
                 return;
@@ -184,7 +189,7 @@ public final class GraphView extends JPanel {
                 }
                 queries = opened;
                 layouts = service;
-                canvasPanel.attach(service, labels, durations);
+                canvasPanel.attach(service, labels, durations, actionIds);
                 installSources(sources);
             });
         });
@@ -293,6 +298,27 @@ public final class GraphView extends JPanel {
         canvasPanel.showNode(node.nodeIndex());
     }
 
+    /**
+     * Moves the trees without redrawing the canvas.
+     *
+     * <p>Separate from {@link #showNode} on purpose: the canvas is what asked,
+     * so telling it to redraw would clear the very selection that arrived here.
+     */
+    private void rootTreesAt(int nodeIndex) {
+        onWorker(work -> {
+            Optional<GraphQueries.GraphNode> found = work.node(nodeIndex);
+            found.ifPresent(node -> SwingUtilities.invokeLater(() -> {
+                setRoot(dependencies, node, true);
+                setRoot(dependents, node, false);
+            }));
+        });
+    }
+
+    /** Called with the executed action behind a node picked on the canvas. */
+    public void onActionSelected(java.util.function.LongConsumer listener) {
+        canvasPanel.onActionSelected(listener);
+    }
+
     /** The canvas half of the view, for tests. */
     GraphCanvasPanel canvasPanel() {
         return canvasPanel;
@@ -337,6 +363,17 @@ public final class GraphView extends JPanel {
                 // one of them is a fact about the build.
                 text = result.map(ShortestPath.Result::describe)
                         .orElse("There is no index to search.");
+                // A found path is drawn as well as described: the words say
+                // how long it is, the drawing says what is on it.
+                result.flatMap(ShortestPath.Result::found).ifPresent(nodes -> {
+                    List<Integer> onPath = new java.util.ArrayList<>(nodes.length);
+                    for (int node : nodes) {
+                        onPath.add(node);
+                    }
+                    SwingUtilities.invokeLater(() -> canvasPanel.showPath(
+                            onPath,
+                            com.holtherndon.bazelviz.analysis.GraphExtract.Mode.PATH));
+                });
             }
             SwingUtilities.invokeLater(() -> {
                 pathResult.setText(text);
