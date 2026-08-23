@@ -195,6 +195,17 @@ public final class MainWindow extends JFrame {
     private final JComboBox<CapturePreset> presetChoice = new JComboBox<>();
     private final JTextField commandField = new JTextField();
     private final JTextField workspaceField = new JTextField();
+    /**
+     * Which Bazel to run (plan 17.1's executable selector).
+     *
+     * <p>A field rather than the literal {@code "bazel"} this used to pass,
+     * because a great many people run {@code bazelisk}, a wrapper, or a pinned
+     * binary at a path — and a tool that can only launch whatever is first on
+     * {@code PATH} cannot capture the build they actually run. The resolver
+     * handles a bare name by searching {@code PATH} and an absolute path by
+     * using it, so both spellings work here.
+     */
+    private final JTextField bazelField = new JTextField();
     private final JButton runButton = new JButton("Run");
     private final CapturePanel capturePanel = new CapturePanel();
     private final ConsoleView consoleView = new ConsoleView();
@@ -1270,9 +1281,13 @@ public final class MainWindow extends JFrame {
             return;
         }
 
+        String executable = bazelField.getText().strip();
+        if (executable.isEmpty()) {
+            executable = "bazel";
+        }
         CapturePreset preset = (CapturePreset) presetChoice.getSelectedItem();
         CaptureRequest request = CaptureRequest.of(
-                        sessionsRoot, APP_VERSION, "bazel", workingDirectory,
+                        sessionsRoot, APP_VERSION, executable, workingDirectory,
                         com.holtherndon.bazelviz.runner.command.CommandLineParser.tokenize(typed))
                 .withPreset(preset == null ? CapturePreset.defaultPreset() : preset);
 
@@ -1281,6 +1296,22 @@ public final class MainWindow extends JFrame {
                 CaptureStatusModel.Phase.PREPARING, "Resolving Bazel and probing capabilities…"));
         showCard(NavEntry.CAPTURE);
         launchController.preflight(request);
+    }
+
+    private void chooseBazelExecutable() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        chooser.setDialogTitle("Bazel executable");
+        String current = bazelField.getText().strip();
+        if (current.contains(File.separator)) {
+            File asFile = new File(current);
+            if (asFile.getParentFile() != null && asFile.getParentFile().isDirectory()) {
+                chooser.setCurrentDirectory(asFile.getParentFile());
+            }
+        }
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            bazelField.setText(chooser.getSelectedFile().getAbsolutePath());
+        }
     }
 
     private void chooseWorkingDirectory() {
@@ -1510,6 +1541,16 @@ public final class MainWindow extends JFrame {
         workspaceField.setToolTipText("Where the build runs. Relative targets resolve against it.");
         workspaceField.setText(System.getProperty("user.dir", ""));
 
+        bazelField.setColumns(10);
+        bazelField.setToolTipText(PlainText.tooltip(
+                "Which Bazel to run: a name to find on PATH, or a path to a binary."));
+        bazelField.setText("bazel");
+        bazelField.addActionListener(event -> startLaunch());
+
+        JButton chooseBazel = new JButton("…");
+        chooseBazel.setToolTipText("Choose the Bazel executable");
+        chooseBazel.addActionListener(event -> chooseBazelExecutable());
+
         JButton chooseWorkspace = new JButton("…");
         chooseWorkspace.setToolTipText("Choose the working directory");
         chooseWorkspace.addActionListener(event -> chooseWorkingDirectory());
@@ -1519,6 +1560,8 @@ public final class MainWindow extends JFrame {
 
         JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         left.add(presetChoice);
+        left.add(bazelField);
+        left.add(chooseBazel);
         left.add(workspaceField);
         left.add(chooseWorkspace);
 

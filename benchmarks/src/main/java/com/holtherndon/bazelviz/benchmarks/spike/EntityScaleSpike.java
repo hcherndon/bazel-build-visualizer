@@ -132,10 +132,61 @@ public final class EntityScaleSpike {
             System.out.printf(Locale.ROOT, "  db size:   %,d bytes%n", Files.size(dbFile));
         }
 
+        // Plan 24's Phase 10 exit criterion: "a Tier 3 indexed session can be
+        // reopened and queried". Everything above ran against a database this
+        // process had just written, with its pages warm and its connection
+        // open. Reopening from cold is the question the criterion asks, and it
+        // is a different one: the objective is that the overview appears within
+        // five seconds without loading all actions.
+        pass &= reopenAndQuery(dbFile);
+
         System.out.println(pass ? "EntityScaleSpike: PASS" : "EntityScaleSpike: FAIL");
         if (!pass) {
             System.exit(1);
         }
+    }
+
+    /**
+     * Closes everything, opens the file again, and asks it the two questions a
+     * user asks first.
+     *
+     * <p>Objective 8 (plan 20.2): "opening an already indexed Tier 3 session
+     * shows its overview within five seconds without loading all actions". The
+     * second half is the part worth checking structurally — the overview is a
+     * handful of aggregate queries over indexed columns, so its cost must not
+     * scale with the number of actions, and the first page must be a seek
+     * rather than a scan.
+     */
+    private static boolean reopenAndQuery(Path dbFile) throws Exception {
+        System.out.println("  -- reopened from cold --");
+        boolean pass = true;
+        long openNanos = System.nanoTime();
+        try (SessionDatabase reopened = SessionDatabase.open(dbFile)) {
+            long openMillis = (System.nanoTime() - openNanos) / 1_000_000L;
+            System.out.printf(Locale.ROOT, "  open:      %,d ms%n", openMillis);
+
+            try (Connection read = reopened.newReadConnection()) {
+                long nanos = time(() -> new OverviewQueries(read).snapshot());
+                double millis = nanos / 1e6;
+                boolean ok = millis < 5_000.0;
+                pass &= ok;
+                System.out.printf(Locale.ROOT,
+                        "  overview (cold) %8.1f ms  target < 5000 ms  %s%n",
+                        millis, ok ? "PASS" : "FAIL");
+            }
+            try (Connection read = reopened.newReadConnection()) {
+                ActionQueries queries = new ActionQueries(read);
+                long nanos = time(() ->
+                        queries.firstPage(ActionFilter.NONE, ActionSort.ARRIVAL, false, PAGE_SIZE));
+                double millis = nanos / 1e6;
+                boolean ok = millis < 500.0;
+                pass &= ok;
+                System.out.printf(Locale.ROOT,
+                        "  first page (cold) %6.1f ms  target < 500 ms  %s%n",
+                        millis, ok ? "PASS" : "FAIL");
+            }
+        }
+        return pass;
     }
 
     /**
