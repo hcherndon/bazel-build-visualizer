@@ -695,6 +695,45 @@ budget. The aggregations retain a fixed-size sketch per group rather than the
 durations, which is the whole reason a per-target aggregation over a build with
 100,000 targets is possible at all.
 
+## Phase 9: what the exports cost
+
+`ExportScaleTest`, 500,000 actions in a 76 MB session database, every path
+carrying the workspace prefix and every hundredth row a bearer token — so the
+redaction has real work to do rather than measuring an empty pass.
+
+| Operation | At 500,000 actions |
+|---|---|
+| CSV table export, redacted | **1,037 ms** (40 MB out) |
+| JSON table export, redacted | **1,725 ms** (149 MB out) |
+| Redacted copy of the database | **1,519 ms** (63 MB out) |
+
+505,001 redactions over **5,000 distinct values**. That ratio is the design
+working: one workspace prefix mapped half a million times and five thousand
+distinct tokens, which is what tells a reader whether one credential is leaking
+everywhere or many different ones are.
+
+### Memory, which is the exit criterion
+
+Plan 24's Phase 9 criterion is that "export does not require loading the entire
+session into memory". `Phase9ExitCriteriaTest` writes a 200,000-row CSV — tens
+of megabytes — and asserts the heap grows by less than half the file's size.
+Nothing in the export path builds a list, a value tree or a string of the whole
+result; the JSON is assembled by hand for that reason, since a document model
+*is* the export in memory.
+
+The bound is deliberately generous rather than tight, because a redactor
+legitimately retains one entry per distinct secret. What it rules out is
+retaining the rows.
+
+### The archive is I/O-bound and read twice
+
+Writing a `.bviz` costs one pass to compress and hash, and a second to verify
+every checksum before the temporary file is renamed. That doubling is plan
+10.4's "verify checksums before declaring success" and is the price of an export
+that cannot silently be truncated. Files that do not compress are detected by a
+128 KB sample and written without compression, so a multi-gigabyte zstd
+execution log costs its own size in I/O and no CPU.
+
 ## Build performance
 
 `gradle.properties` enables parallel execution, the build cache, and the

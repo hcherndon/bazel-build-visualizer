@@ -19,7 +19,7 @@ renumbered or re-scoped here.
 | 6 | Timeline | **Complete** — all five exit criteria met, one task partial with a stated reason (see below) |
 | 7 | Graph visualization | **Complete** — all six exit criteria met and proved by test (see below) |
 | 8 | Metrics and findings | **Complete** — all five exit criteria met and proved by test (see below) |
-| 9 | Session export, redaction, and macOS packaging | Not started |
+| 9 | Session export, redaction, and macOS packaging | **Complete** — all five exit criteria met and proved by test (see below) |
 | 10 | Scale hardening and compatibility release gate | Not started |
 
 ## Phase 0 checklist (as of 2026-08-21)
@@ -926,3 +926,95 @@ only on what four measured versions were already recorded as reporting, so
 rule 18 does not apply. Both scale measurements use synthetic data — which is
 why the formulas could be measured at the plan's full five-million Tier 3
 ceiling without going near the memory that made the suite unrunnable earlier.
+
+## Phase 9 checklist (as of 2026-08-23)
+
+| Task | Status |
+|---|---|
+| Implement portable `.bviz` | Done — Zip64 out through a temporary file, checksums verified before the rename; a reader that validates end to end before extraction writes a byte |
+| Implement binary BEP export | Done — `BepStreamExport`, from the raw journal, preserving Bazel's own bytes for a live capture and saying so when it cannot |
+| Implement CSV/JSON graph and table exports | Done — five tables in two formats, streamed row by row; the graph's DOT and CSV export landed in Phase 7 and now shares the RFC 4180 quoting |
+| Implement redacted export | Done — pseudonyms rather than a mask, paths mapped rather than deleted, and the report shown before anything is written |
+| Add recent-session library | Done — plan 10.6's catalog, a two-table index that a rescan rebuilds from the directories |
+| Add retention and cleanup | Done — a plan is shown, the sweep takes the plan rather than the policy, and a pinned session is never a candidate |
+| Add macOS file associations | Done — `.bviz` only, declared through jpackage and verified in the built `Info.plist` |
+| Add macOS app menu and open-file handlers | Done — About, Open File and Quit; Preferences deliberately not installed until there is a settings screen |
+| Build Apple Silicon and Intel packages | Partial with a stated reason — jpackage does not cross-compile, so this is one task run on two machines; `docs/packaging.md` says so rather than a build naming one package after both |
+| Add signing/notarization hooks without embedding credentials | Done — both read the environment, and `notarize` refuses without a keychain profile name rather than prompting for an Apple ID it should never see |
+
+## Phase 9 exit criteria (plan section 24)
+
+Every criterion has a test in `Phase9ExitCriteriaTest`, against real archives, a
+real catalog and a real database.
+
+| Criterion | Status |
+|---|---|
+| Sessions survive application restart and relocation | Met — restart is the catalog file; relocation matches by session UUID, which is the one thing a move does not change, and the user's pin survives it. The application rescans once per launch, which the audit found it was not doing. |
+| Portable archives validate before opening | Met — `validate` decompresses every entry and discards the bytes; `extract` runs the same checks again while writing. A zip-slip entry is refused with nothing on disk, and the test asserts the escaped file is not there. |
+| File associations open the app | Met structurally and verified by hand — the descriptor declares the extension the writer uses, the built `Info.plist` carries it as a `CFBundleDocumentTypes` entry and an exported UTI, the classifier routes it, and `MainWindow.openPath` is the public route the desktop handler calls. Finder actually doing it needs an installed bundle. |
+| Export does not require loading the entire session into memory | Met and measured — a 200,000-row CSV of tens of megabytes grows the heap by less than half the file's size. Nothing in the export path builds a list, a value tree or a string of the whole result. |
+| Redaction tests pass | Met — `RedactorTest`, `SessionRedactionTest` and the exit test's own end-to-end check that a token and an account name do not reach an exported file. |
+
+### Interpretations worth knowing
+
+**A redacted archive cannot carry the raw capture, and the reader refuses one
+that claims to.** The raw journal is the original bytes, secrets included, so
+exporting it beside a redacted database would undo the redaction completely. An
+archive is either redacted or complete; opening a redacted one says what that
+costs — its enrichments cannot be re-run and its database cannot be rebuilt.
+
+**Zip-slip is closed by allow-list first, path arithmetic second.** A session
+archive holds a known set of files in a known shape, so anything else is refused
+before any resolution happens. That is also how "never load native code from a
+session archive" is really implemented: a `.dylib` is not rejected by refusing
+to load it, it is rejected by never reaching disk.
+
+**Entry names must be letters, digits, dot, dash and underscore.** Every file a
+session contains is named that way, so the restriction costs nothing and closes
+what path checks do not — a control character that rewrites a terminal, a
+right-to-left override, a Unicode form that normalises differently on macOS than
+the form that was checked.
+
+**The redaction inventory is a test, not a document.** 35 columns rewritten, 83
+named as deliberately left alone, and every `TEXT` column in the schema must be
+in one list or the other. `strings.value` is the one that matters most: it is
+the interned dictionary and holds whatever the stream put in it, so redacting
+the obviously-sensitive columns while leaving it alone would leak the same data
+through the side door.
+
+**One deviation from plan 10.4, stated.** "Store already compressed large files
+without recompressing" is implemented as `NO_COMPRESSION` rather than a
+literally `STORED` entry, because a stored entry needs its size and CRC before
+the first byte is written and that means reading every large file twice. The
+rule's purpose — no compression CPU on incompressible data — is met in one pass.
+
+## Phase 9 audit
+
+Fifty-eight members with no production caller; five of them were features wired
+to nothing, including `rescan`, without which the relocation exit criterion was
+true of the code and false of the application. Four capabilities the plan names
+were reachable only from a test. The column check found a bug in the audit
+method itself: schema v3 renamed two columns with `ALTER TABLE RENAME COLUMN`,
+which every previous phase's `CREATE TABLE`-only grep could not see. And
+`docs/privacy.md` claimed the UI masked sensitive fields when nothing did.
+
+`docs/phase9-audit.md` is the full report.
+
+### Verified from clean (Phase 9)
+
+`rm -rf build */build build-logic/build && ./gradlew build --no-build-cache`:
+**BUILD SUCCESSFUL in 2m 57s, 79 tasks all executed, 1,474 tests across 168
+classes, 0 failures, 0 errors, 0 skipped** — up from 1,369 at the end of
+Phase 8.
+
+Phase 9 added no test that needs Bazel. Nothing in archiving, redaction,
+cataloguing or packaging depends on Bazel's behaviour, so rule 18 does not
+apply — with one exception that runs on every build: the BEP export's tests
+build real BES envelopes and real `BuildEvent` messages from the synthetic
+stream and compare the exported bytes to what went in, which is the property
+that matters and needs no Bazel server to check.
+
+The packaging was verified by running it: `./gradlew :app:jpackage` produces an
+image whose `Info.plist` declares the `.bviz` association and whose launcher
+runs the CLI. That is not part of `build` — jpackage is slow and platform-bound
+— so it is recorded here rather than gated on.
