@@ -734,6 +734,77 @@ that cannot silently be truncated. Files that do not compress are detected by a
 128 KB sample and written without compression, so a multi-gigabyte zstd
 execution log costs its own size in I/O and no CPU.
 
+## Phase 10: the release gate
+
+### Tier 3 raw capture, end to end
+
+`./gradlew :benchmarks:runBesThroughputSpike --args="--events=50000000 --payload=64"`,
+on an Apple M4 Pro with 48 GB and an SSD. Plan 20.1's Tier 3 event count,
+through the real embedded BES server over a real loopback socket, the real
+journal and the real SQLite writer.
+
+| | |
+|---|---:|
+| Events sent | 50,000,000 |
+| Events acknowledged | 50,000,000 |
+| Frames journaled | 50,000,000 (11.8 GB across 42 segments) |
+| Rows indexed | 50,000,000 |
+| Capture complete | yes |
+| **Peak JVM resident memory** | **0.48 GB** |
+
+**Nothing was lost.** `received == journaled` and
+`journaled == normalized + stream-control envelopes`, which is the exit
+criterion. And half a gigabyte of resident memory while streaming fifty
+million events is the bounded-memory design working: the ceiling in plan
+20.2 is 4 GB.
+
+### The rate falls with table size, and why
+
+| Events in one capture | Acknowledged rate |
+|---:|---:|
+| 200,000 | 79,359/s |
+| 3,000,000 | 43,803/s |
+| 50,000,000 | 16,157/s |
+
+That is a five-fold degradation and it is worth naming rather than averaging
+away. It is **not** index maintenance — `EventWriter` already builds indexes
+after the load, which the Phase 0 spike measured as the cheaper direction. It is
+the page cache: SQLite's default is about 2 MB, so once a multi-gigabyte b-tree
+stops fitting, every insert is a random read of an evicted page.
+
+Three pragmas were added and measured at three million events, which is far
+enough past the small case to show the effect and short enough to run twice:
+
+| | Before | After |
+|---|---:|---:|
+| 3,000,000 events | 43,803/s | **51,527/s** (+18%) |
+| 200,000 events | 79,359/s | 77,5xx/s (three runs: 75.9k, 77.6k, 77.5k) |
+
+The small case is unchanged within noise, which is what the change predicts: at
+200,000 events the table fits in the default cache and a larger one buys
+nothing.
+
+`cache_size` is a **ceiling, not an allocation** — a connection that pages a few
+hundred rows costs a few hundred pages, so the 128 MB figure is not multiplied
+by the number of open readers in practice.
+
+### What this rate means for a real build
+
+Objective 1 is a burst target for synthetic events and this still misses it. It
+is worth repeating why that gap is not the same as a capture falling behind: a
+Tier 3 build of five million actions emits its events over minutes, and the
+largest *real* stream measured in Phase 2 was 38 events. Sixteen thousand events
+a second is roughly a million a minute.
+
+The benchmark itself had a defect that had to be fixed before Tier 3 could be
+measured at all: its client called `onNext` fifty million times without flow
+control, and gRPC buffered everything the transport could not yet write. The
+first Tier 3 run died with an `OutOfMemoryError` inside `DelayedStream` — in the
+*client*, before the server had done anything. The client now waits on
+`isReady()`. That also means the previously published 83.8–86.1k/s figures were
+flattered by a client running ahead of the transport; the honest number for the
+same configuration is 79.4k/s.
+
 ## Build performance
 
 `gradle.properties` enables parallel execution, the build cache, and the
