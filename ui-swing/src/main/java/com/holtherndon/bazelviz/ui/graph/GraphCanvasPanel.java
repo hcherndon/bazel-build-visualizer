@@ -75,11 +75,19 @@ public final class GraphCanvasPanel extends JPanel {
     private int nodeLimit = GraphExtract.DEFAULT_NODE_LIMIT;
     private int edgeLimit = GraphExtract.DEFAULT_EDGE_LIMIT;
     private LimitEstimate estimate;
+
+    /**
+     * True when the cluster view on screen was chosen by the application, not
+     * by the user.
+     *
+     * <p>It changes what the bar says — "grouped instead" is a different
+     * statement from "grouped, as you asked" — and it stops a second automatic
+     * switch when the grouping itself does not fit.
+     */
+    private boolean aggregatedAutomatically;
     private java.util.Map<Integer, Long> actionIdByNodeIndex = java.util.Map.of();
     private java.util.function.LongConsumer actionListener = actionId -> {};
     private java.util.function.IntConsumer nodeListener = nodeIndex -> {};
-    private java.util.function.Consumer<GraphExport.Result> exportListener = result -> {};
-    private java.util.function.Consumer<Throwable> exportFailureListener = failure -> {};
 
     public GraphCanvasPanel() {
         super(new BorderLayout());
@@ -170,8 +178,14 @@ public final class GraphCanvasPanel extends JPanel {
         showNothing("Open a session with a dependency graph to draw it.");
     }
 
-    /** The canvas, for tests and for a container that wants to drive it. */
-    public GraphCanvas canvas() {
+    /**
+     * The canvas itself.
+     *
+     * <p>Package-private: nothing outside {@code ui.graph} should reach past
+     * the panel to the component it manages, and the audit that counts callers
+     * is what noticed it was public for no reason.
+     */
+    GraphCanvas canvas() {
         return canvas;
     }
 
@@ -216,6 +230,7 @@ public final class GraphCanvasPanel extends JPanel {
         this.durationsByNodeIndex = null;
         this.actionIdByNodeIndex = java.util.Map.of();
         this.rootNode = -1;
+        this.aggregatedAutomatically = false;
         canvas.setModel(GraphModel.empty());
         showNothing("No dependency graph is open.");
     }
@@ -270,6 +285,9 @@ public final class GraphCanvasPanel extends JPanel {
 
     private void modeChanged() {
         GraphExtract.Mode chosen = (GraphExtract.Mode) mode.getSelectedItem();
+        if (chosen != GraphExtract.Mode.CLUSTERS) {
+            aggregatedAutomatically = false;
+        }
         boolean rooted = chosen == GraphExtract.Mode.NEIGHBOURHOOD
                 || chosen == GraphExtract.Mode.DEPENDENCIES
                 || chosen == GraphExtract.Mode.DEPENDENTS;
@@ -301,16 +319,18 @@ public final class GraphCanvasPanel extends JPanel {
             return;
         }
 
-        GraphLayoutService.Request request = new GraphLayoutService.Request(
-                EdgeDerivation.DECLARED,
-                chosen,
-                Math.max(0, rootNode),
-                (Integer) depth.getValue(),
-                nodeLimit,
-                edgeLimit,
-                (GraphLayout.Kind) layout.getSelectedItem(),
-                (GraphClustering.By) groupBy.getSelectedItem(),
-                GraphClustering.DEFAULT_CLUSTER_LIMIT);
+        GraphLayoutService.Request request = switch (chosen) {
+            case CLUSTERS -> GraphLayoutService.Request.clustered(
+                    EdgeDerivation.DECLARED, (GraphClustering.By) groupBy.getSelectedItem());
+            case WHOLE -> GraphLayoutService.Request.whole(
+                    EdgeDerivation.DECLARED, nodeLimit, edgeLimit);
+            default -> GraphLayoutService.Request.around(
+                    EdgeDerivation.DECLARED, chosen,
+                    Math.max(0, rootNode), (Integer) depth.getValue());
+        };
+        request = request
+                .withLayout((GraphLayout.Kind) layout.getSelectedItem())
+                .withLimits(nodeLimit, edgeLimit);
 
         description.setText("Drawing…");
         service.estimate(request, found -> this.estimate = found, failure -> { });
@@ -318,13 +338,28 @@ public final class GraphCanvasPanel extends JPanel {
     }
 
     private void rendered(GraphLayoutService.Rendered result) {
+        // Plan 13.6: above the limit, switch to cluster mode. Switch, not
+        // offer -- a user who asked for the whole build and got a blank canvas
+        // with an explanation has been told no; one who gets the same build
+        // grouped by package has been answered.
+        if (result.refused()
+                && result.request() != null
+                && result.request().mode() == GraphExtract.Mode.WHOLE) {
+            aggregatedAutomatically = true;
+            setText(description, result.description());
+            mode.setSelectedItem(GraphExtract.Mode.CLUSTERS);
+            return;
+        }
+
         canvas.setModel(GraphModel.of(result, labelsByNodeIndex, durationsByNodeIndex));
-        setText(description, result.description());
+        setText(description, aggregatedAutomatically
+                ? "Too big to draw action by action, so it is grouped. "
+                        + result.description()
+                : result.description());
         updateOmission();
         setText(selected, legend());
-        // Plan 13.6's three offers, shown only when there is something to
-        // offer them about.
-        setOverLimit(result.refused() || result.extract().hitLimit(), result);
+        setOverLimit(result.refused() || result.extract().hitLimit()
+                || aggregatedAutomatically, result);
     }
 
     private void setOverLimit(boolean over, GraphLayoutService.Rendered result) {
@@ -332,9 +367,13 @@ public final class GraphCanvasPanel extends JPanel {
         if (!over) {
             return;
         }
-        setText(overLimitText, result.refused()
-                ? "Too big to draw in detail."
-                : "Stopped early; there is more than this.");
+        if (aggregatedAutomatically) {
+            setText(overLimitText, "Grouped because the whole build is too big to draw.");
+        } else {
+            setText(overLimitText, result.refused()
+                    ? "Too big to draw in detail."
+                    : "Stopped early; there is more than this.");
+        }
         // "Draw it anyway" only means something when the exact size is known,
         // which is the whole-graph case. For a traversal that stopped at its
         // budget, doubling the budget is the honest offer.
@@ -380,6 +419,17 @@ public final class GraphCanvasPanel extends JPanel {
         GraphModel model = canvas.model();
         long wantedNodes = Math.max(model.extract().totalNodes(), nodeLimit * 2L);
         long wantedEdges = Math.max(model.extract().totalEdges(), edgeLimit * 2L);
+        if (aggregatedAutomatically) {
+            // Back to the view they asked for in the first place. Leaving them
+            // in the grouped one after they pressed "draw it anyway" would be
+            // ignoring the press. The mode change refreshes, so raiseLimits
+            // must set the ceiling without also drawing at the old mode.
+            this.nodeLimit = (int) Math.min(Integer.MAX_VALUE, wantedNodes);
+            this.edgeLimit = (int) Math.min(Integer.MAX_VALUE, wantedEdges);
+            aggregatedAutomatically = false;
+            mode.setSelectedItem(GraphExtract.Mode.WHOLE);
+            return;
+        }
         raiseLimits(
                 (int) Math.min(Integer.MAX_VALUE, wantedNodes),
                 (int) Math.min(Integer.MAX_VALUE, wantedEdges));
@@ -418,14 +468,6 @@ public final class GraphCanvasPanel extends JPanel {
         Long actionId = actionIdByNodeIndex.get(canvas.model().nodeAt(position));
         return actionId == null
                 ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(actionId);
-    }
-
-    /** Called with the outcome of an export, so a container can report it. */
-    public void onExport(
-            java.util.function.Consumer<GraphExport.Result> done,
-            java.util.function.Consumer<Throwable> failed) {
-        this.exportListener = done == null ? result -> {} : done;
-        this.exportFailureListener = failed == null ? failure -> {} : failed;
     }
 
     /**
@@ -468,12 +510,10 @@ public final class GraphCanvasPanel extends JPanel {
 
     private void exported(GraphExport.Result result) {
         setText(selected, result.describe());
-        exportListener.accept(result);
     }
 
     private void exportFailed(Throwable failure) {
         setText(selected, "The export failed: " + failure.getMessage());
-        exportFailureListener.accept(failure);
     }
 
     private void exportCompleteChosen() {
@@ -529,6 +569,19 @@ public final class GraphCanvasPanel extends JPanel {
     /** Whether the over-limit bar is showing; plan 13.6's three offers. */
     boolean isOverLimitShown() {
         return overLimit.isVisible();
+    }
+
+    /** Whether the cluster view on screen was chosen by the application. */
+    boolean isAutomaticallyGrouped() {
+        return aggregatedAutomatically;
+    }
+
+    GraphExtract.Mode modeForTesting() {
+        return (GraphExtract.Mode) mode.getSelectedItem();
+    }
+
+    void drawItAnywayForTesting() {
+        drawItAnyway();
     }
 
     String overLimitText() {
@@ -597,9 +650,18 @@ public final class GraphCanvasPanel extends JPanel {
             // The summed counts rather than the graph's totals: these are what
             // the boxes on screen add up to, so a user can check the drawing
             // against the build rather than take it on trust.
-            return clustering.clusters().size() + " groups holding "
+            String text = clustering.clusters().size() + " groups holding "
                     + clustering.clusteredNodes() + " actions and "
                     + clustering.clusteredEdges() + " dependencies between them.";
+            long unnamed = clustering.clusters().stream()
+                    .filter(GraphClustering.Cluster::isUnknown)
+                    .mapToLong(GraphClustering.Cluster::nodeCount)
+                    .sum();
+            // Plan 11.4: a group of actions nobody named has to be visible as
+            // that, not folded into the count as though it were a package.
+            return unnamed == 0
+                    ? text
+                    : text + "  " + unnamed + " of them have no recorded name.";
         }
         int untimed = model.untimedCount();
         String scale = model.slowestDuration()

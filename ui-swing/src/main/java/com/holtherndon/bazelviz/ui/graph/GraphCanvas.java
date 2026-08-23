@@ -91,6 +91,17 @@ public final class GraphCanvas extends JComponent {
 
     private int hover = -1;
     private boolean panning;
+
+    /**
+     * True when a model arrived before the component had a size.
+     *
+     * <p>{@link #setModel} fits the new graph to the window, and on the first
+     * session opened the window has not been laid out yet — so the fit is
+     * computed against a width of one pixel and the graph appears at an absurd
+     * zoom. The fit is retried on the first paint that has real bounds, which
+     * is always before anything reaches the screen.
+     */
+    private boolean fitPending;
     private Point dragOrigin;
     private Point marqueeStart;
     private Rectangle marquee;
@@ -137,9 +148,16 @@ public final class GraphCanvas extends JComponent {
 
     /** Frames the whole drawing; plan 17.7's "fit". */
     public void fitToView() {
+        if (getWidth() <= 0 || getHeight() <= 0) {
+            // Nothing to fit into yet. Remember to, rather than fitting to one
+            // pixel and calling it done.
+            fitPending = true;
+            return;
+        }
+        fitPending = false;
         model.layout().bounds().ifPresentOrElse(
-                bounds -> setTransform(GraphTransform.fit(
-                        bounds, Math.max(1, getWidth()), Math.max(1, getHeight()), FIT_MARGIN)),
+                bounds -> setTransform(
+                        GraphTransform.fit(bounds, getWidth(), getHeight(), FIT_MARGIN)),
                 () -> setTransform(GraphTransform.identity()));
     }
 
@@ -215,6 +233,11 @@ public final class GraphCanvas extends JComponent {
 
     @Override
     protected void paintComponent(Graphics graphics) {
+        if (fitPending && getWidth() > 0 && getHeight() > 0) {
+            // The deferred fit from setModel. Cheap, and it must happen before
+            // the first pixel rather than after the user has seen the wrong one.
+            fitToView();
+        }
         Graphics2D g = (Graphics2D) graphics.create();
         try {
             g.setColor(getBackground());

@@ -96,7 +96,6 @@ final class GraphCanvasTest {
 
         GraphModel model = GraphModel.of(rendered(3), labels, allTimed(3));
 
-        assertThat(model.labelAt(1)).isNull();
         assertThat(model.displayLabelAt(1)).isEqualTo("(name not recorded)");
         assertThat(model.displayLabelAt(0)).isEqualTo("//pkg:known");
     }
@@ -207,6 +206,34 @@ final class GraphCanvasTest {
         for (int i = 0; i < model.size(); i++) {
             assertThat(transform.screenX(model.layout().xAt(i))).isBetween(-1.0, 801.0);
             assertThat(transform.screenY(model.layout().yAt(i))).isBetween(-1.0, 601.0);
+        }
+    }
+
+    @Test
+    @DisplayName("a model set before the window has a size is fitted once it does")
+    void fitIsDeferredUntilThereIsSomethingToFitInto() {
+        GraphCanvas canvas = new GraphCanvas();
+        // No size yet: exactly the state on the first session opened, before
+        // the window has been laid out.
+        canvas.setModel(modelOf(30, allTimed(30)));
+        GraphTransform beforeLayout = canvas.transform();
+
+        canvas.setSize(800, 600);
+        BufferedImage image = new BufferedImage(800, 600, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = image.createGraphics();
+        try {
+            canvas.paint(g);
+        } finally {
+            g.dispose();
+        }
+
+        // Fitting to a one-pixel window would have produced an absurd zoom and
+        // the user would have seen it.
+        assertThat(canvas.transform()).isNotEqualTo(beforeLayout);
+        GraphModel model = canvas.model();
+        for (int i = 0; i < model.size(); i++) {
+            assertThat(canvas.transform().screenX(model.layout().xAt(i)))
+                    .isBetween(-1.0, 801.0);
         }
     }
 

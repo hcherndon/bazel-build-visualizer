@@ -21,7 +21,7 @@ capture/storage/analysis classpath and vice versa.
 | `storage-sqlite` | Explicit-SQL persistence (ADR-006): per-session database and app catalog database (ADR-005), schema DDL and migrations, paged query APIs that return primitive arrays. |
 | `enrichment` | Post-build enrichers that add data the BEP stream lacks (execution log correlation, timing profile merge, external metadata), each re-runnable against the journal. |
 | `graph-core` | Memory-mapped CSR graph index format (ADR-006): builders that stream edges into on-disk CSR files, and read-side traversal primitives over mapped buffers. |
-| `analysis-core` | Algorithms over the indexes: critical path, parallelism profiles, cache-effectiveness rollups, diffing. Consumes `graph-core` and `storage-sqlite` read APIs; owns no storage. |
+| `analysis-core` | Algorithms over the indexes: critical path, graph extraction, clustering, layout. Depends on `core-model` and `graph-core` only — **not** on `storage-sqlite`, which is what keeps it testable without a database and callable from either side. A caller supplies the arrays; this module supplies the answers. |
 | `ui-swing` | All Swing code: window shell, FlatLaf theming, and the custom-painted heavy views (virtualized table, timeline, graph canvas). Talks to services only through background executors (see threading model). |
 | `app` | Entry point and composition root: wires modules together, owns `main`, logging config, and (later) jpackage packaging. |
 | `test-support` | Test and benchmark fixtures, notably the deterministic synthetic data generators (`SyntheticActionGenerator`, `SyntheticEdges`, `SyntheticScale`) with O(1) random access so Tier 3 scale never requires materialized fixtures. |

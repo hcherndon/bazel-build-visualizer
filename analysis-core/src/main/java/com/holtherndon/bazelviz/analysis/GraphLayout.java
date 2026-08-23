@@ -356,18 +356,29 @@ public final class GraphLayout {
      * nodes would otherwise be fifty thousand objects, and the canvas reads
      * these inside its paint loop.
      *
-     * @param nodes graph-wide node indices, positionally aligned with {@code x}
-     *     and {@code y}
-     * @param cancelled true when the layout stopped early, in which case it
-     *     placed nothing at all
+     * <p>A class rather than a record, which it was until the Phase 7 audit.
+     * A record with array components gets an {@code equals} that compares those
+     * arrays by reference — so two identical layouts compare unequal, which is
+     * exactly the claim the determinism test exists to make — and mandates
+     * public accessors that hand the arrays out. Copying them defensively on
+     * every call is fifty thousand doubles for a caller who wanted one, and not
+     * copying them lets a caller move a node. Neither is right, so neither is
+     * offered: {@link #xAt} and {@link #yAt} are the only way in.
      */
-    public record Result(
-            Kind kind, List<Integer> nodes, double[] x, double[] y, boolean cancelled) {
+    public static final class Result {
 
-        public Result {
-            nodes = List.copyOf(nodes);
-            x = x.clone();
-            y = y.clone();
+        private final Kind kind;
+        private final List<Integer> nodes;
+        private final double[] x;
+        private final double[] y;
+        private final boolean cancelled;
+
+        Result(Kind kind, List<Integer> nodes, double[] x, double[] y, boolean cancelled) {
+            this.kind = kind;
+            this.nodes = List.copyOf(nodes);
+            this.x = x;
+            this.y = y;
+            this.cancelled = cancelled;
         }
 
         /** A placement of nothing — for a graph that could not be read at all. */
@@ -379,17 +390,20 @@ public final class GraphLayout {
             return new Result(kind, List.of(), new double[0], new double[0], true);
         }
 
-        @Override
-        public double[] x() {
-            return x.clone();
+        public Kind kind() {
+            return kind;
         }
 
-        @Override
-        public double[] y() {
-            return y.clone();
+        /** Graph-wide node indices, positionally aligned with the coordinates. */
+        public List<Integer> nodes() {
+            return nodes;
         }
 
-        /** One node's coordinate, without copying the arrays. */
+        /** True when the layout stopped early, in which case it placed nothing. */
+        public boolean cancelled() {
+            return cancelled;
+        }
+
         public double xAt(int i) {
             return x[i];
         }

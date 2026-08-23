@@ -293,16 +293,14 @@ final class GraphCanvasPanelTest {
         awaitCondition(panel::isOverLimitShown, "the over-limit bar to appear");
 
         Path target = tempDir.resolve("exported.csv");
-        java.util.concurrent.atomic.AtomicReference<GraphExport.Result> written =
-                new java.util.concurrent.atomic.AtomicReference<>();
-        panel.onExport(written::set, failure -> { });
         panel.exportComplete(target, GraphExport.Format.CSV);
-        awaitCondition(() -> written.get() != null, "the export to finish");
+        awaitCondition(
+                () -> panel.legendText().startsWith("Wrote"), "the export to finish");
 
         // Two could be drawn; six exist. That difference is the whole point of
         // offering export beside the limit.
-        assertThat(written.get().nodes()).isEqualTo(6);
-        assertThat(java.nio.file.Files.readString(written.get().files().get(0)))
+        assertThat(panel.legendText()).contains("Wrote 6 actions");
+        assertThat(java.nio.file.Files.readString(tempDir.resolve("exported-nodes.csv")))
                 .contains("//a:target5");
     }
 
@@ -313,14 +311,13 @@ final class GraphCanvasPanelTest {
         awaitDrawn();
 
         Path target = tempDir.resolve("visible.dot");
-        java.util.concurrent.atomic.AtomicReference<GraphExport.Result> written =
-                new java.util.concurrent.atomic.AtomicReference<>();
-        panel.onExport(written::set, failure -> { });
         panel.exportVisible(target, GraphExport.Format.DOT);
-        awaitCondition(() -> written.get() != null, "the export to finish");
+        awaitCondition(
+                () -> panel.legendText().startsWith("Wrote"), "the export to finish");
 
-        assertThat(written.get().nodes()).isEqualTo(panel.canvas().model().size());
-        assertThat(java.nio.file.Files.readString(written.get().primary()))
+        assertThat(panel.legendText())
+                .contains("Wrote " + panel.canvas().model().size() + " actions");
+        assertThat(java.nio.file.Files.readString(target))
                 .contains("Visible graph")
                 .contains("from a graph of 6");
     }

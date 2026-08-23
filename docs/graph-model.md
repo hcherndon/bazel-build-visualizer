@@ -84,3 +84,55 @@ Forward and reverse BFS, depth- and node-budgeted; bidirectional shortest path,
 also budgeted. Running out of budget is reported as its own outcome and never
 as "there is no path" — plan 13.3 forbids a transitive closure, so a search has
 to be able to give up, and giving up is not an answer.
+
+## What Phase 7 added (2026-08-22)
+
+Phase 5 built the graph; Phase 7 draws bounded pieces of it. No new graph kinds,
+no schema change — two lookups and three layers on top.
+
+### Two lookups over the same node index
+
+`GraphQueries.durationsByNodeIndex` weights nodes by time, from either the build
+event stream's action window or the execution log's spawn total, with the source
+travelling alongside because plan 13.4 requires it. `actionIdsByNodeIndex` maps
+a node back to the action that ran, where one did. Together they are the join
+Phase 6 deferred: `declared_actions.node_index` on one side, `actions.id` on the
+other.
+
+Nodes with no executed action — every test's `TestRunner` in a `build`
+invocation — are absent from the map rather than mapped to zero.
+
+### Extraction is always bounded, and always says so
+
+`GraphExtract` returns a subgraph plus the totals it came from. Plan 13.3
+forbids a transitive closure, so every traversal takes a node budget; hitting it
+is reported as its own fact and never as having finished. `whole()` refuses a
+graph that will not fit rather than truncating it, because a "whole graph"
+silently showing the first fifty thousand nodes would be the most misleading
+view in the application.
+
+### Clustering is an aggregation, not a sample
+
+`GraphClustering` groups by package, target or mnemonic. Every node lands in
+exactly one group and every edge is counted, inside a group or between two, so
+the group counts sum to the graph's node count and the edge weights sum to its
+edge count. Both sums are exposed and both are asserted, because an aggregation
+whose parts do not add up to the whole is the kind of wrong that looks right.
+
+A node whose name the import never learned gets a group that says so, and no
+such group appears when there is nothing unknown.
+
+### Layout is linear, deterministic and cancellable
+
+Layered by longest path (Kahn's algorithm, so every dependency arrow points
+forward), radial by graph distance, linear for paths, grid for cluster
+summaries. No force-directed layout at any size. The same subgraph laid out
+twice lands in the same place; a cancelled layout places nothing rather than
+half a graph, which would look like an answer.
+
+### Drawing limits are rendering decisions, never data ones
+
+The default ceiling is plan 13.6's 50,000 nodes and 200,000 edges. Above it the
+view groups itself and offers to raise the limit, narrow the query, or export.
+The export is streamed straight from the CSR index and has no ceiling at all —
+which is what makes the drawing limit acceptable.

@@ -344,12 +344,13 @@ public final class GraphLayoutService implements AutoCloseable {
             GraphClustering.By clusterBy,
             int clusterLimit) {
 
-        /** A neighbourhood around one action, at the default limits. */
-        public static Request around(EdgeDerivation derivation, int node, int depth) {
+        /** One of the three views rooted at an action, at the default limits. */
+        public static Request around(
+                EdgeDerivation derivation, GraphExtract.Mode mode, int node, int depth) {
             return new Request(
-                    derivation, GraphExtract.Mode.NEIGHBOURHOOD, node, depth,
+                    derivation, mode, node, depth,
                     GraphExtract.DEFAULT_NODE_LIMIT, GraphExtract.DEFAULT_EDGE_LIMIT,
-                    GraphLayout.Kind.RADIAL, GraphClustering.By.PACKAGE,
+                    GraphLayout.defaultFor(mode), GraphClustering.By.PACKAGE,
                     GraphClustering.DEFAULT_CLUSTER_LIMIT);
         }
 

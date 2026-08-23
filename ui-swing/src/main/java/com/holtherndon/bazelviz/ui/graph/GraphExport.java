@@ -88,8 +88,8 @@ public final class GraphExport {
         /** The sentence the view shows after an export. */
         public String describe() {
             String where = files.size() == 1
-                    ? files.get(0).getFileName().toString()
-                    : files.size() + " files beside " + files.get(0).getFileName();
+                    ? primary().getFileName().toString()
+                    : files.size() + " files beside " + primary().getFileName();
             return "Wrote " + nodes + (nodes == 1 ? " action and " : " actions and ")
                     + edges + (edges == 1 ? " dependency to " : " dependencies to ") + where + ".";
         }

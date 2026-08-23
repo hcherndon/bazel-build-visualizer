@@ -166,11 +166,6 @@ public final class GraphModel {
         return rendered.layout().nodes().get(position);
     }
 
-    /** The label of a drawn node, or null when the session never learned one. */
-    public String labelAt(int position) {
-        return labels[position];
-    }
-
     /** What a label reads as when there is none; plan 11.4 in one place. */
     public String displayLabelAt(int position) {
         String label = labels[position];

@@ -50,7 +50,7 @@ final class GraphExportTest {
         }
         return GraphModel.of(
                 new GraphLayoutService.Rendered(
-                        GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, 10),
+                        GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 10),
                         extract, GraphLayout.layered(extract, RUNNING), null,
                         extract.describe()),
                 labels, durations);

@@ -593,6 +593,47 @@ Frame budget: 33 ms at 30 FPS (plan 20.2). p95 is 0.91 ms at Tier 2 and 0.78 ms
 at Tier 3, which is not a typo — Tier 3's longer wall puts more spans behind
 each pixel, so a frame reads fewer bins.
 
+## Phase 7: the graph canvas at the plan's own limits
+
+Plan 13.6 sets the default detailed-layout ceiling at 50,000 nodes and 200,000
+edges, and the sixth Phase 7 exit criterion is that panning and selection stay
+responsive there. Both numbers were in the code before either was measured;
+`GraphCanvasScaleTest` measures them, on a synthetic wide DAG of 500 layers of
+100 nodes with a fan-out of four.
+
+| Operation | At 50,000 nodes / 200,000 edges |
+|---|---|
+| Extract, layout, index and label | **14 ms** |
+| Fitted frame (far band, 1600×1000) | **35 ms** |
+| Near-zoom frame (every visible edge and label) | **4 ms** |
+| 20,000 hit tests | **2 ms** |
+
+Two of those numbers are the result of a fix rather than a first attempt.
+
+**The fitted frame was 366 ms.** Two causes, both in the edge loop: `setColor`
+was called once per edge, which at two hundred thousand edges costs more than
+the lines do; and every edge was drawn at far zoom, where two hundred thousand
+hairlines resolve to a grey smear. Batching the colour into one bulk pass and
+one highlight pass, and applying plan 13.6's far-band rule above a 30,000-edge
+budget, gives the 35 ms above. The budget is reported on screen rather than
+applied silently.
+
+**The near-zoom frame is nine times cheaper than the fitted one**, which is the
+right way round and worth stating: culling means the detailed view reads only
+the cells the viewport touches, while the fitted view reads everything. Zooming
+in makes the canvas faster, not slower.
+
+**Layout is 14 ms because it is linear.** The first layered implementation
+assigned layers by relaxing every edge until nothing changed — O(V·E) in the
+worst case, which at this size is a hang rather than a layout. Kahn's algorithm
+over a locally-built adjacency index replaced it, and the radial layout's
+per-node rescan of the edge list got the same treatment.
+
+Frame budget: 33 ms at 30 FPS (plan 20.2). The fitted frame is at that budget
+and every other frame is far inside it; while a drag is in progress the canvas
+drops labels and, above 20,000 edges, edges too, which is what plan 17.7's
+"disable expensive detail while actively panning" is for.
+
 ## Build performance
 
 `gradle.properties` enables parallel execution, the build cache, and the

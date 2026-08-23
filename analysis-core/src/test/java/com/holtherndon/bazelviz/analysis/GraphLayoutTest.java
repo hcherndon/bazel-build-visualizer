@@ -62,9 +62,8 @@ final class GraphLayoutTest {
         GraphLayout.Result layout =
                 GraphLayout.layered(GraphExtract.whole(chain, 100, 100), RUNNING);
 
-        double[] xs = layout.x();
-        for (int i = 1; i < xs.length; i++) {
-            assertThat(xs[i]).isGreaterThan(xs[i - 1]);
+        for (int i = 1; i < layout.size(); i++) {
+            assertThat(layout.xAt(i)).isGreaterThan(layout.xAt(i - 1));
         }
     }
 
@@ -76,8 +75,11 @@ final class GraphLayoutTest {
 
         // Plan 13.7: deterministic stable positioning. No seeds, no clock, no
         // iteration-order dependence.
-        assertThat(second.x()).containsExactly(first.x());
-        assertThat(second.y()).containsExactly(first.y());
+        assertThat(second.size()).isEqualTo(first.size());
+        for (int i = 0; i < first.size(); i++) {
+            assertThat(second.xAt(i)).as("x[%d]", i).isEqualTo(first.xAt(i));
+            assertThat(second.yAt(i)).as("y[%d]", i).isEqualTo(first.yAt(i));
+        }
     }
 
     @Test
@@ -114,7 +116,9 @@ final class GraphLayoutTest {
         // A critical path drawn in node-id order would be a scatter of dots.
         assertThat(layout.xAt(0)).isLessThan(layout.xAt(1));
         assertThat(layout.xAt(1)).isLessThan(layout.xAt(2));
-        assertThat(layout.y()).containsOnly(0.0);
+        for (int i = 0; i < layout.size(); i++) {
+            assertThat(layout.yAt(i)).isZero();
+        }
     }
 
     @Test
@@ -195,11 +199,18 @@ final class GraphLayoutTest {
     }
 
     @Test
-    @DisplayName("the coordinate arrays cannot be mutated through the result")
-    void resultIsDefensive() {
-        GraphLayout.Result layout = GraphLayout.layered(diamond(), RUNNING);
-        layout.x()[0] = 9_999;
-
-        assertThat(layout.xAt(0)).isNotEqualTo(9_999);
+    @DisplayName("the coordinates cannot be reached in bulk, so they cannot be moved")
+    void coordinatesAreNotHandedOut() {
+        // The audit's reason for making Result a class: a public double[]
+        // accessor either copies fifty thousand doubles for a caller who wanted
+        // one, or lets that caller move a node.
+        for (java.lang.reflect.Method method : GraphLayout.Result.class.getMethods()) {
+            if (method.getDeclaringClass() != GraphLayout.Result.class) {
+                continue;
+            }
+            assertThat(method.getReturnType())
+                    .as("%s", method.getName())
+                    .isNotEqualTo(double[].class);
+        }
     }
 }

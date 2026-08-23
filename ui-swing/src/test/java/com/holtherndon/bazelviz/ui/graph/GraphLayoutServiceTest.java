@@ -117,7 +117,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("a neighbourhood comes back extracted, laid out and described")
     void neighbourhoodIsRendered() throws Exception {
         GraphLayoutService.Rendered rendered =
-                await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 2, 1));
+                await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 2, 1));
 
         assertThat(rendered.extract().nodes()).contains(1, 2, 3);
         assertThat(rendered.layout().kind()).isEqualTo(GraphLayout.Kind.RADIAL);
@@ -133,7 +133,7 @@ final class GraphLayoutServiceTest {
         CountDownLatch done = new CountDownLatch(1);
 
         service.submit(
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, 2),
+                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2),
                 rendered -> {
                     // Rule 8 is about not blocking the EDT, but a callback that
                     // touched Swing from the worker would be the same class of
@@ -151,7 +151,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("the same request twice is computed once")
     void repeatedRequestsAreCached() throws Exception {
         GraphLayoutService.Request request =
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, 2);
+                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2);
 
         GraphLayoutService.Rendered first = await(request);
         GraphLayoutService.Rendered second = await(request);
@@ -166,7 +166,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("changing only the layout is a different cache entry")
     void settingsArePartOfTheKey() throws Exception {
         GraphLayoutService.Request radial =
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, 2);
+                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2);
 
         GraphLayoutService.Rendered ringed = await(radial);
         GraphLayoutService.Rendered layered = await(radial.withLayout(GraphLayout.Kind.LAYERED));
@@ -183,7 +183,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("the cache does not grow without bound")
     void cacheIsBounded() throws Exception {
         for (int depth = 1; depth <= GraphLayoutService.CACHE_ENTRIES + 5; depth++) {
-            await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, depth));
+            await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, depth));
         }
 
         assertThat(service.cachedCount()).isEqualTo(GraphLayoutService.CACHE_ENTRIES);
@@ -192,7 +192,7 @@ final class GraphLayoutServiceTest {
     @Test
     @DisplayName("invalidating drops everything, for when the indexes are rebuilt")
     void invalidateClears() throws Exception {
-        await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, 2));
+        await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2));
         service.invalidate();
 
         assertThat(service.cachedCount()).isZero();
@@ -260,7 +260,7 @@ final class GraphLayoutServiceTest {
                             new GraphQueries(empty.writerConnection(), tempDir.resolve("none"));
                     GraphLayoutService bare = new GraphLayoutService(none)) {
                 GraphLayoutService.Rendered rendered = await(
-                        bare, GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, 1));
+                        bare, GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 1));
 
                 // Rule 11: an absent graph is not an empty graph, and the
                 // difference has to reach the user.
@@ -277,11 +277,11 @@ final class GraphLayoutServiceTest {
         CountDownLatch second = new CountDownLatch(1);
 
         service.submit(
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, 1),
+                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 1),
                 rendered -> callbacks.add("first"),
                 error -> callbacks.add("first-error"));
         service.submit(
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, 0, 2),
+                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2),
                 rendered -> {
                     callbacks.add("second");
                     second.countDown();

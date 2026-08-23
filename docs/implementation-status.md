@@ -14,10 +14,10 @@ renumbered or re-scoped here.
 | 1 | Session, journal, and offline BEP import | **Complete** — all five exit criteria verified end to end (see below) |
 | 2 | Bazel launcher and embedded BES | **Complete** — all six exit criteria verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0, audited, and remediated (see below) |
 | 3 | Core target, action, test, and artifact normalization | **Complete** — all five exit criteria met and verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0 (see below) |
-| 4 | Execution-log and profile enrichment | Not started |
-| 5 | `aquery`, `cquery`, and graph construction | Not started |
-| 6 | Timeline | Not started |
-| 7 | Graph visualization | Not started |
+| 4 | Execution-log and profile enrichment | **Complete** — all five exit criteria met, audited and remediated (see below) |
+| 5 | `aquery`, `cquery`, and graph construction | **Complete** — five of six exit criteria met, one partial with a stated reason (see below) |
+| 6 | Timeline | **Complete** — all five exit criteria met, one task partial with a stated reason (see below) |
+| 7 | Graph visualization | **Complete** — all six exit criteria met and proved by test (see below) |
 | 8 | Metrics and findings | Not started |
 | 9 | Session export, redaction, and macOS packaging | Not started |
 | 10 | Scale hardening and compatibility release gate | Not started |
@@ -729,3 +729,93 @@ versions installed. Phase 6 added no test that needs Bazel at all: the timeline
 is measured with the synthetic generator, which costs no server and is why
 these figures could be taken at Tier 3 without going near the memory ceiling
 that made the suite unrunnable.
+
+## Phase 7 checklist (as of 2026-08-22)
+
+| Task | Status |
+|---|---|
+| Implement graph extraction API | Done — `GraphExtract`: dependencies, reverse dependencies, neighbourhood, path and whole-graph, each bounded and each carrying the totals it drew from |
+| Implement clustering | Done — `GraphClustering` by package, target or mnemonic; every node in exactly one group and every edge counted, with `clusteredNodes`/`clusteredEdges` exposed so the arithmetic is checkable |
+| Implement layered, radial and critical-path layouts | Done — plus grid for cluster summaries. All four are O(V+E), deterministic, and cancellable |
+| Implement spatial index | Done — `GraphSpatialIndex`, a uniform grid (plan 13.6's "or equivalent"); 20,000 hit tests over 50,000 nodes in 2 ms |
+| Implement custom Java2D graph canvas | Done — `GraphCanvas`, painting from a prepared model with no route to a database or to a layout function |
+| Add semantic zoom | Done — plan 13.6's far, medium and near bands, with label thresholds and an edge budget at far zoom that reports itself |
+| Add limit estimation and warnings | Done — `LimitEstimate` before a drawing is attempted, and a bar offering all three of plan 13.6's actions plus grouping |
+| Cache layouts | Done — keyed by the whole request record, so query *and* settings both count; bounded LRU |
+| Add export of visible and complete filtered graphs | Done — `GraphExport`, DOT and CSV, streamed and written through a temporary file, each carrying its own provenance |
+
+## Phase 7 exit criteria (plan section 24)
+
+Every criterion has a test in `Phase7ExitCriteriaTest`, run against a real
+session database rather than a stub, because five of the six are statements
+about what a user sees.
+
+| Criterion | Status |
+|---|---|
+| Small subgraphs render in full detail | Met — a five-node neighbourhood draws every node, every edge between them, and a label on each; the fit lands in the near band and no warning is shown. |
+| Large graphs automatically aggregate | Met — a whole-build request that will not fit switches itself to cluster mode rather than returning a blank canvas with an explanation. The grouping accounts for every action and every dependency, which the test asserts by summing the boxes. |
+| Exact totals remain visible | Met — every rendering carries a sentence naming the graph's totals whether or not anything was omitted, because a view of five actions from a build of sixty is otherwise indistinguishable from a build with five actions. |
+| Raising limits is explicit | Met — nothing raises itself. The limit stays where it was until "Draw it anyway" is pressed, and pressing it returns to the view that was asked for rather than leaving the user in the grouped one. |
+| Layout is cancellable | Met — all four layouts, given an already-raised flag over a 100,000-node graph, return a placement of nothing rather than a partial one. A superseded request is cancelled and the last one submitted is what appears. |
+| Panning and selection remain responsive | Met — measured at the plan's own limits. 50,000 nodes and 200,000 edges: extract, layout, index and label in 14 ms; a fitted frame in 35 ms; a near-zoom frame, where every visible edge and label is drawn, in 4 ms; 20,000 hit tests in 2 ms. |
+
+### Interpretations worth knowing
+
+**Phase 6's critical-path overlay is now unblocked but still not drawn on the
+timeline.** Phase 7 supplies both halves of the join it was waiting for —
+`GraphQueries.durationsByNodeIndex` weights the path and `actionIdsByNodeIndex`
+maps a node back to an executed action — and the graph canvas draws paths. The
+timeline overlay itself belongs with Phase 8's metrics work, where the derived
+and Bazel-reported critical paths have to be kept distinct anyway.
+
+**The far zoom band stops drawing individual edges above 30,000 of them.** Plan
+13.6's far band asks for aggregate edge thickness rather than individual edges,
+and there is a measured reason: 200,000 hairlines took 366 ms a frame and
+resolved to a grey smear. The omission is transient, reverses on zoom, and is
+named on screen by `hiddenDetail()` — a blank area that looked edgeless would be
+a claim about the build, and a false one.
+
+**A uniform grid, not a quadtree.** Plan 13.6 says "quadtree or equivalent". The
+layouts place points on or near a lattice, so a quadtree's recursive subdivision
+buys nothing over a grid that is two counting passes and three int arrays.
+
+**Path modes cannot be selected, only arrived at.** `PATH` and `CRITICAL_PATH`
+appear in the mode list so a found path can be shown as the current mode, but
+picking one does nothing: a path needs two endpoints that only a search
+supplies, and a mode a user could select but never satisfy would be a dead
+control.
+
+**Clustering refuses rather than truncating, twice over.** A graph with more
+groups than the cluster limit returns nothing with the exact count, exactly as
+`GraphExtract.whole` does for nodes. The answer to "too many packages" is to
+group by mnemonic, which is always a small set, and the message says so.
+
+## Phase 7 audit
+
+Sixteen findings, all fixed. Eleven from counting call sites — including three
+promises the code had made and not kept: a method whose error message pointed at
+a `submitPath` that did not exist, a path extraction that nothing could reach so
+no path could ever be drawn, and the node-to-action join committed as closing
+Phase 6's gap while wired to nothing. Two from measuring: a fitted frame at the
+plan's own limits took 366 ms, and the first layered layout was O(V·E) in the
+worst case. One from writing the exit-criteria test, which found that every
+graph's first view was fitted to a one-pixel window. And two in the docs: the
+summary table above claimed Phases 4, 5 and 6 were "Not started" while the same
+file documented their completion, and `docs/architecture.md` described an
+`analysis-core` dependency on `storage-sqlite` that has never existed.
+
+`docs/phase7-audit.md` is the full report.
+
+### Verified from clean (Phase 7)
+
+`rm -rf build */build build-logic/build && ./gradlew build --no-build-cache`:
+**BUILD SUCCESSFUL in 2m 47s, 79 tasks all executed, 1,281 tests across 150
+classes, 0 failures, 0 errors, 0 skipped** — up from 1,145 at the end of
+Phase 6.
+
+*0 skipped* is still a fact about this machine, which has all four pinned Bazel
+versions installed. Phase 7, like Phase 6, added no test that needs Bazel:
+nothing in graph drawing depends on Bazel's behaviour, so rule 18 does not
+apply. The scale figures come from the synthetic generator, which costs no
+server — the reason they could be taken at the plan's full 50,000-node limit
+without going near the memory ceiling that made the suite unrunnable earlier.
