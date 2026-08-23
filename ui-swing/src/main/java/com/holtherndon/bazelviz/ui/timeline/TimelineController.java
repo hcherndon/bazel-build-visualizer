@@ -43,6 +43,36 @@ public final class TimelineController {
         view.onViewportChanged(this::refreshWindow);
     }
 
+    /** Called with an action id when the user picks a span on the timeline. */
+    public void onSelection(java.util.function.LongConsumer handler) {
+        view.onSelection(handler);
+    }
+
+    /**
+     * Selects an action from elsewhere, without moving the view.
+     *
+     * <p>Plan 17.8's selection synchronisation, and the half that is easy to
+     * get wrong: a table selection must highlight the span and must not scroll
+     * the timeline to it. Someone comparing a row against the shape of the
+     * build did not ask to be moved.
+     */
+    public void select(long actionId) {
+        view.select(actionId);
+    }
+
+    /**
+     * The time range the user dragged out, when there is one.
+     *
+     * <p>Plan 14.5's "filter selected time range": the actions table reads this
+     * and shows only what ran inside it.
+     */
+    public java.util.Optional<long[]> selectedRange() {
+        return view.viewport()
+                .filter(TimelineViewport::hasRange)
+                .map(v -> new long[] {
+                        v.rangeFromMicros().getAsLong(), v.rangeToMicros().getAsLong()});
+    }
+
     /** The component to put in the Timeline card. */
     public TimelineView view() {
         return view;

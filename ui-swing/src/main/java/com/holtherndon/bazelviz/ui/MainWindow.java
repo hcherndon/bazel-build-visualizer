@@ -230,6 +230,12 @@ public final class MainWindow extends JFrame {
         // from. One handler, so the behaviour is the same from all five.
         actionsView.onShowSourceEvent(this::revealEvent);
         actionsView.onShowInGraph(this::revealInGraph);
+        // Selection synchronisation, both ways (plan 17.8). Neither direction
+        // moves the other's viewport: a row selected in the table highlights
+        // its span where it is, and a span picked on the timeline reveals its
+        // row without scrolling the timeline.
+        actionsView.onShowOnTimeline(this::revealOnTimeline);
+        timeline.onSelection(actionId -> actionsView.selectAction(actionId));
         // The status bar's counts come from the overview's own read, so the two
         // can never disagree about how many actions the session holds.
         overviewPanel.onSnapshot(snapshot -> actionStatus.setText(
@@ -594,6 +600,12 @@ public final class MainWindow extends JFrame {
      * <p>An action the graph does not declare says so there rather than showing
      * an empty tree, because an empty tree reads as "nothing depends on it".
      */
+    /** Switches to the timeline and highlights an action, leaving the view where it is. */
+    private void revealOnTimeline(long actionId) {
+        showCard(NavEntry.TIMELINE);
+        timeline.select(actionId);
+    }
+
     private void revealInGraph(long actionId) {
         showCard(NavEntry.GRAPH);
         graphView.showAction(actionId);

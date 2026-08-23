@@ -106,6 +106,7 @@ public final class ActionsView extends JPanel {
     private final JComboBox<ActionSort> sortChoice = new JComboBox<>(ActionSort.values());
     private final JCheckBox descendingBox = new JCheckBox("Descending");
     private final javax.swing.JButton graphButton = new javax.swing.JButton("Dependencies");
+    private final javax.swing.JButton timelineButton = new javax.swing.JButton("On timeline");
 
     private ExecutorService pageExecutor;
     private ExecutorService detailExecutor;
@@ -133,6 +134,9 @@ public final class ActionsView extends JPanel {
      * reading a row here asks what it depended on, and the graph card answers.
      */
     private LongConsumer showInGraphHandler = actionId -> { };
+
+    /** Where "show this action on the timeline" goes. */
+    private LongConsumer showOnTimelineHandler = actionId -> { };
 
     /** Bumped on every reload so a slow one cannot overwrite a newer one. */
     private long reloadGeneration;
@@ -255,6 +259,17 @@ public final class ActionsView extends JPanel {
         graphButton.setToolTipText(PlainText.tooltip(
                 "Show this action's dependencies in the graph"));
         bar.add(graphButton);
+        timelineButton.setEnabled(false);
+        timelineButton.setToolTipText(PlainText.tooltip(
+                "Show this action on the timeline"));
+        timelineButton.addActionListener(event -> {
+            int row = table.getSelectedRow();
+            ActionRow selected = row < 0 || tableModel == null ? null : tableModel.rowAt(row);
+            if (selected != null) {
+                showOnTimelineHandler.accept(selected.id());
+            }
+        });
+        bar.add(timelineButton);
         return bar;
     }
 
@@ -262,6 +277,33 @@ public final class ActionsView extends JPanel {
     /** Called with an action id when the user asks to see it in the graph. */
     public void onShowInGraph(LongConsumer handler) {
         this.showInGraphHandler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /** Called with an action id when the user asks to see it on the timeline. */
+    public void onShowOnTimeline(LongConsumer handler) {
+        this.showOnTimelineHandler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /**
+     * Selects the row for an action chosen elsewhere, if it is on a loaded page.
+     *
+     * <p>Does not fetch, and does not scroll to a row that is not loaded. The
+     * table is keyset-paged over a million rows and a selection arriving from
+     * the timeline is a highlight, not a navigation request -- hunting for the
+     * page holding one id would be a scan.
+     */
+    public void selectAction(long actionId) {
+        if (tableModel == null) {
+            return;
+        }
+        for (int row = 0; row < table.getRowCount(); row++) {
+            ActionRow candidate = tableModel.rowAt(row);
+            if (candidate != null && candidate.id() == actionId) {
+                table.setRowSelectionInterval(row, row);
+                table.scrollRectToVisible(table.getCellRect(row, 0, true));
+                return;
+            }
+        }
     }
 
     public void onShowSourceEvent(LongConsumer handler) {
@@ -539,6 +581,7 @@ public final class ActionsView extends JPanel {
         // waiting on a query.
         inspector.show(ActionInspection.of(row));
         graphButton.setEnabled(true);
+        timelineButton.setEnabled(true);
         loadAttempts(row);
     }
 
