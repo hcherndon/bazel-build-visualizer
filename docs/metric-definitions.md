@@ -400,6 +400,28 @@ with the counts above.
   the build, from the backward pass.
 - *Note:* zero for every action on the critical path, by construction.
 
+### In-flight targets (timeline live band)
+- *Definition:* targets a running capture has seen configured
+  (`TargetConfigured`) with no completion (`TargetCompleted`) or abort yet,
+  drawn as spans growing from their configuration to the current wall clock.
+- *Units:* targets; span positions in microseconds.
+- *Source:* `targets.outcome = 'CONFIGURED'` with no completed/failed/aborted
+  `configured_targets` row, positioned by `bep_events.receive_micros` of the
+  target's configuration event.
+- *Formula:* span start = receive time of the `TargetConfigured` event; span
+  end = now, until completion removes the target from the band.
+- *Completeness:* only while the capture is live; the band does not exist for
+  a finished or imported session. A configured target whose event has no
+  receive timestamp is counted in the band's label and drawn nowhere — absent,
+  never zero-length.
+- *Caveats:* **target-level, not action-level, and labelled as such.** BEP has
+  no action-start event (`ActionExecuted` fires once, at completion), so
+  "running actions" is not a fact the stream can supply and this band never
+  claims it. Positions are **BEP receive times** — when the viewer received
+  the event, not when Bazel did the work — which is the only live signal
+  target events carry; they are comparable to the wall clock the band grows
+  toward, but not a measurement of analysis or execution time.
+
 ## Phase 8 catalog
 
 Plan 15's metrics catalog, plan 16's findings, and the two questions every entry
