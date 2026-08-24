@@ -8,10 +8,13 @@ import com.holtherndon.bazelviz.analysis.GroupAggregate;
 import com.holtherndon.bazelviz.analysis.MetricSeries;
 import com.holtherndon.bazelviz.analysis.MetricFormat;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Font;
-import java.awt.GridLayout;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -66,13 +69,37 @@ public final class FindingsView extends JPanel {
 
     private final DefaultListModel<Finding> model = new DefaultListModel<>();
     private final JList<Finding> list = new JList<>(model);
-    private final JPanel detail = new JPanel();
-    private final JPanel summary = new JPanel(new GridLayout(0, 2, 12, 4));
+    // ScrollableViewport, not a plain JPanel: a plain JPanel hands its own
+    // preferred width straight to the enclosing JScrollPane, and the summary
+    // and catalog grids it holds can each be wider than the window on their
+    // own. See ScrollableViewport's javadoc — this is the same fix that keeps
+    // the Overview tab from growing wider than the window. Exposed to tests
+    // via topForTest().
+    private final ScrollableViewport top = new ScrollableViewport();
+    // ScrollableViewport for the same reason: a finding's evidence and link
+    // buttons carry build-reported text of whatever length the build gave
+    // them. Exposed to tests via detailForTest().
+    private final ScrollableViewport detail = new ScrollableViewport();
+    // GridBagLayout, not GridLayout(0, 2, ...): a fixed two-column grid sizes
+    // every row in a column to that column's widest cell, so one long value —
+    // and these rows carry full sentences, not just numbers — sets the width
+    // of every other row regardless of how narrow the window is. See
+    // OverviewPanel.section, which this mirrors.
+    private final JPanel summary = new JPanel(new GridBagLayout());
     private final JPanel catalog = new JPanel();
     private final JLabel headline = new JLabel(" ");
     private final JButton recompute = new JButton("Recompute");
     private final JLabel empty = PlainText.disableHtml(
             new JLabel("No session is open.", SwingConstants.CENTER));
+
+    // Fields, not constructor locals: a scroll pane whose wheel moves 1 pixel
+    // per notch (the JScrollBar default) reads as "extremely slow" scrolling
+    // over content this tall, and exposing the unit increment lets a test
+    // catch a future edit that drops the setUnitIncrement(16) call below
+    // without having to reconstruct the whole scroll-pane tree to check it.
+    private final JScrollPane topScroll = new JScrollPane(top);
+    private final JScrollPane listScroll = new JScrollPane(list);
+    private final JScrollPane detailScroll = new JScrollPane(detail);
 
     private MetricsService service;
     private LongConsumer onActionSelected = actionId -> { };
@@ -106,7 +133,6 @@ public final class FindingsView extends JPanel {
         header.add(headline, BorderLayout.CENTER);
         header.add(recompute, BorderLayout.EAST);
 
-        JPanel top = new JPanel();
         top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
         header.setAlignmentX(LEFT_ALIGNMENT);
         summary.setAlignmentX(LEFT_ALIGNMENT);
@@ -115,13 +141,17 @@ public final class FindingsView extends JPanel {
         top.add(summary);
         top.add(catalog);
 
+        topScroll.getVerticalScrollBar().setUnitIncrement(16);
+        listScroll.getVerticalScrollBar().setUnitIncrement(16);
+        detailScroll.getVerticalScrollBar().setUnitIncrement(16);
+
         JSplitPane split = new JSplitPane(
-                JSplitPane.HORIZONTAL_SPLIT, new JScrollPane(list), new JScrollPane(detail));
+                JSplitPane.HORIZONTAL_SPLIT, listScroll, detailScroll);
         split.setDividerLocation(360);
         split.setResizeWeight(0.35);
 
         JSplitPane page = new JSplitPane(
-                JSplitPane.VERTICAL_SPLIT, new JScrollPane(top), split);
+                JSplitPane.VERTICAL_SPLIT, topScroll, split);
         page.setDividerLocation(300);
         page.setResizeWeight(0.35);
         add(page, BorderLayout.CENTER);
@@ -196,10 +226,7 @@ public final class FindingsView extends JPanel {
                         ? " finding" : " findings"));
 
         summary.removeAll();
-        for (String[] row : summaryRows(result)) {
-            summary.add(label(row[0], true));
-            summary.add(label(row[1], false));
-        }
+        addRows(summary, summaryRows(result));
 
         catalog.removeAll();
         catalog.add(section("Invocation metrics", invocationRows(result)));
@@ -404,14 +431,40 @@ public final class FindingsView extends JPanel {
 
     /** A titled block of name/value rows. */
     private static JPanel section(String heading, List<String[]> rows) {
-        JPanel panel = new JPanel(new GridLayout(0, 2, 12, 2));
+        JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(BorderFactory.createTitledBorder(heading));
         panel.setAlignmentX(LEFT_ALIGNMENT);
-        for (String[] row : rows) {
-            panel.add(label(row[0], true));
-            panel.add(label(row[1], false));
-        }
+        addRows(panel, rows);
         return panel;
+    }
+
+    /**
+     * Lays {@code rows} into {@code panel} as a two-column name/value grid,
+     * one row per pair.
+     *
+     * <p>GridBagLayout, not GridLayout: each row is sized to its own content
+     * rather than every row being forced to the width of the single widest
+     * cell in the whole grid — see OverviewPanel.section, which this mirrors.
+     * The name column takes only what its own label needs; the value column
+     * gets the rest, via {@code weightx}.
+     */
+    private static void addRows(JPanel panel, List<String[]> rows) {
+        GridBagConstraints name = new GridBagConstraints();
+        name.gridx = 0;
+        name.anchor = GridBagConstraints.NORTHWEST;
+        name.insets = new Insets(1, 4, 1, 12);
+        GridBagConstraints value = new GridBagConstraints();
+        value.gridx = 1;
+        value.weightx = 1;
+        value.anchor = GridBagConstraints.NORTHWEST;
+        value.fill = GridBagConstraints.HORIZONTAL;
+        value.insets = new Insets(1, 0, 1, 4);
+        for (int row = 0; row < rows.size(); row++) {
+            name.gridy = row;
+            value.gridy = row;
+            panel.add(label(rows.get(row)[0], true), name);
+            panel.add(label(rows.get(row)[1], false), value);
+        }
     }
 
     private void showDetail(Finding finding) {
@@ -421,7 +474,12 @@ public final class FindingsView extends JPanel {
             repaint();
             return;
         }
-        detail.add(heading(finding.title()));
+        // wrapped, not heading(): a finding's title is a full sentence built
+        // from this build's own numbers (plan 15.5's "Something is slow" is
+        // the short case; FindingRules also produces sentences like "The
+        // dependency chain accounts for 45.2% of the build's wall time"), and
+        // an unwrapped JLabel simply does not paint what does not fit.
+        detail.add(wrapped(finding.title(), true));
         detail.add(label("Severity " + finding.severity().displayName()
                 + " · confidence " + finding.confidence().displayName()
                 + " · rule " + finding.ruleId()
@@ -441,7 +499,7 @@ public final class FindingsView extends JPanel {
         if (!finding.metrics().isEmpty()) {
             detail.add(heading("Metrics"));
             for (Finding.MetricValue metric : finding.metrics()) {
-                detail.add(label(metric.name() + ": " + metric.value(), true));
+                detail.add(wrapped(metric.name() + ": " + metric.value(), true));
                 detail.add(wrapped("Source — " + metric.source()));
             }
             detail.add(Box.createVerticalStrut(8));
@@ -454,6 +512,8 @@ public final class FindingsView extends JPanel {
                 JButton open = new JButton(evidence.label() + " — " + evidence.detail());
                 open.setHorizontalAlignment(SwingConstants.LEFT);
                 open.setAlignmentX(LEFT_ALIGNMENT);
+                open.setToolTipText(
+                        PlainText.tooltip(evidence.label() + " — " + evidence.detail()));
                 open.addActionListener(event -> onActionSelected.accept(actionId));
                 detail.add(open);
             } else {
@@ -476,6 +536,7 @@ public final class FindingsView extends JPanel {
                 JButton go = new JButton(link.description());
                 go.setHorizontalAlignment(SwingConstants.LEFT);
                 go.setAlignmentX(LEFT_ALIGNMENT);
+                go.setToolTipText(PlainText.tooltip(link.description()));
                 go.addActionListener(event -> onNavigate.accept(link));
                 detail.add(go);
             }
@@ -516,6 +577,16 @@ public final class FindingsView extends JPanel {
      * {@link PlainText} exists to keep out of an HTML renderer.
      */
     private static Component wrapped(String text) {
+        return wrapped(text, false);
+    }
+
+    /**
+     * As {@link #wrapped(String)}, in a bold font: for a finding's title and
+     * its metric names, both of which carry build-reported text long enough
+     * that an unwrapped {@link JLabel} would simply not paint the overflow —
+     * the silent truncation rule 12 forbids.
+     */
+    private static Component wrapped(String text, boolean bold) {
         javax.swing.JTextArea area = new javax.swing.JTextArea(text);
         area.setLineWrap(true);
         area.setWrapStyleWord(true);
@@ -524,6 +595,9 @@ public final class FindingsView extends JPanel {
         area.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
         area.setAlignmentX(LEFT_ALIGNMENT);
         area.setFocusable(false);
+        if (bold) {
+            area.setFont(area.getFont().deriveFont(Font.BOLD));
+        }
         return area;
     }
 
@@ -558,6 +632,40 @@ public final class FindingsView extends JPanel {
     /** The header line. */
     public String headlineForTest() {
         return headline.getText();
+    }
+
+    /**
+     * Visible for testing: the top scroll pane's view (header, summary and
+     * catalog), to confirm it tracks the viewport's width instead of
+     * overflowing it — the same property the Overview tab's own
+     * {@code contentForTest()} confirms.
+     */
+    public ScrollableViewport topForTest() {
+        return top;
+    }
+
+    /**
+     * Visible for testing: the detail scroll pane's view, to confirm it
+     * tracks the viewport's width instead of overflowing it even when a
+     * finding's evidence or link text is long.
+     */
+    public ScrollableViewport detailForTest() {
+        return detail;
+    }
+
+    /** Visible for testing: the scroll pane above the summary and catalog. */
+    public JScrollPane topScrollForTest() {
+        return topScroll;
+    }
+
+    /** Visible for testing: the list's scroll pane. */
+    public JScrollPane listScrollForTest() {
+        return listScroll;
+    }
+
+    /** Visible for testing: the detail pane's scroll pane. */
+    public JScrollPane detailScrollForTest() {
+        return detailScroll;
     }
 
     /** Every label in the summary grid, joined. */

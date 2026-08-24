@@ -14,6 +14,7 @@ import com.holtherndon.bazelviz.core.source.Completeness;
 import com.holtherndon.bazelviz.core.source.DataSource;
 import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.storage.metrics.SessionMetrics;
+import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,6 +23,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import javax.swing.JScrollPane;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -79,6 +81,38 @@ final class FindingsViewTest {
                 "Measured over one build on one machine.",
                 "Open the action and look at its inputs.",
                 List.of(Finding.Link.to(Finding.Link.View.TIMELINE, "See it on the timeline")),
+                false);
+    }
+
+    /**
+     * A finding whose evidence and link carry the kind of long, build-reported
+     * text that made the findings pane grow wider than the window: a deeply
+     * nested target label as the evidence button's text, and a full sentence
+     * as the link's.
+     */
+    private static Finding longFinding() {
+        String longLabel = "//some/really/deeply/nested/bazel/package/path/with/many/segments"
+                + "/that/a/real/monorepo/would/have:a_target_name_that_is_quite_long_on_its_own";
+        return new Finding(
+                "test-rule",
+                "The dependency chain accounts for a large share of the build's wall time,"
+                        + " which is a full sentence long enough to overflow a narrow detail pane",
+                Finding.Severity.HIGH, Finding.Confidence.MEDIUM,
+                List.of(Finding.Evidence.action(11, longLabel,
+                        "took much longer than every other action of this mnemonic, by a wide"
+                                + " margin worth reading in full rather than cut off")),
+                List.of(new Finding.MetricValue(
+                        "A rather long metric name describing exactly what was measured",
+                        "a similarly long formatted value with several clauses in it",
+                        "execution log")),
+                "above 1 s",
+                "This may be worth investigating.",
+                "Measured over one build on one machine.",
+                "Open the action and look at its inputs.",
+                List.of(Finding.Link.to(Finding.Link.View.TIMELINE,
+                        "This link description is also a full sentence naming exactly where"
+                                + " to look next, long enough on its own to force a button wider"
+                                + " than a narrow window")),
                 false);
     }
 
@@ -209,6 +243,122 @@ final class FindingsViewTest {
 
         assertThat(followed).hasSize(1);
         assertThat(followed.getFirst().view()).isEqualTo(Finding.Link.View.TIMELINE);
+    }
+
+    @Test
+    @DisplayName("the evidence and link buttons carry their full text as a tooltip, so a"
+            + " narrow window's ellipsis-clipped label is still readable on hover")
+    void evidenceAndLinkButtonsHaveATooltip() {
+        FindingsView view = new FindingsView();
+
+        view.show(new MetricsService.Result(
+                metrics(bothPaths(), List.of()), List.of(finding("Something is slow")),
+                FindingThresholds.defaults()));
+        view.selectForTest(0);
+
+        javax.swing.AbstractButton evidence = findButton(view, "//pkg:lib — took 4.2 s");
+        assertThat(evidence).as("the evidence button").isNotNull();
+        assertThat(evidence.getToolTipText()).isEqualTo("//pkg:lib — took 4.2 s");
+
+        javax.swing.AbstractButton link = findButton(view, "See it on the timeline");
+        assertThat(link).as("the link button").isNotNull();
+        assertThat(link.getToolTipText()).isEqualTo("See it on the timeline");
+    }
+
+    @Test
+    @DisplayName("the summary and catalog grids track the viewport's width instead of"
+            + " overflowing it")
+    void topContentTracksViewportWidth() {
+        FindingsView view = new FindingsView();
+        List<Coverage> coverage = List.of(
+                Coverage.of("Timing coverage", 4, 13, DataSource.EXECUTION_LOG,
+                        "most actions never spawn a subprocess"),
+                Coverage.unavailable("Action-graph coverage", 13, DataSource.AQUERY,
+                        "no aquery output was imported"));
+
+        view.show(new MetricsService.Result(
+                metrics(bothPaths(), coverage), List.of(finding("Something is slow")),
+                FindingThresholds.defaults()));
+
+        ScrollableViewport top = view.topForTest();
+        // The scroll pane only narrows its view when the view says to. Without
+        // this, the summary and catalog grids keep their own preferred width
+        // and the scroll pane grows a horizontal scrollbar instead of
+        // shrinking the content -- which is the bug: the tab reads as wider
+        // than the app, not merely scrollable within it.
+        assertThat(top.getScrollableTracksViewportWidth())
+                .as("a JScrollPane must be told to size this view to its own width, or it hands"
+                        + " the view its preferred width unconditionally")
+                .isTrue();
+
+        // Rows like "Difference between them" carry a full sentence, not just
+        // a number, and under the old GridLayout(0, 2, ...) every row in a
+        // column was forced to the width of that column's single widest
+        // cell. Embed the real scroll pane at a width narrower than that
+        // sentence and confirm no horizontal scrollbar appears: the content
+        // must stay within the app's bounds regardless of what any one row
+        // says.
+        JScrollPane scroll = view.topScrollForTest();
+        scroll.setSize(320, 400);
+        scroll.doLayout();
+        scroll.validate();
+        assertThat(scroll.getHorizontalScrollBar().isVisible())
+                .as("the findings pane must not grow a horizontal scrollbar, however long a"
+                        + " single row's value is")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("the detail pane tracks the viewport's width even when a finding's evidence"
+            + " or link text is long")
+    void detailContentTracksViewportWidth() {
+        FindingsView view = new FindingsView();
+
+        view.show(new MetricsService.Result(
+                metrics(bothPaths(), List.of()), List.of(longFinding()),
+                FindingThresholds.defaults()));
+        view.selectForTest(0);
+
+        ScrollableViewport detail = view.detailForTest();
+        assertThat(detail.getScrollableTracksViewportWidth())
+                .as("a JScrollPane must be told to size this view to its own width, or it hands"
+                        + " the view its preferred width unconditionally")
+                .isTrue();
+
+        // The evidence and link rows are JButtons, and a JButton's text
+        // cannot wrap -- so the property under test is not that the button
+        // itself gets narrower, but that a button demanding far more width
+        // than it is given still does not grow the scroll pane a horizontal
+        // scrollbar. 320px is comfortably narrower than the long evidence
+        // and link text used here.
+        JScrollPane scroll = view.detailScrollForTest();
+        scroll.setSize(320, 400);
+        scroll.doLayout();
+        scroll.validate();
+        assertThat(scroll.getHorizontalScrollBar().isVisible())
+                .as("the detail pane must not grow a horizontal scrollbar, however long an"
+                        + " evidence or link button's text is")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("every scroll pane uses a fast wheel increment, not the 1-pixel-per-notch"
+            + " default")
+    void scrollingIsNotExtremelySlow() {
+        FindingsView view = new FindingsView();
+
+        // The default JScrollBar unit increment is a single pixel per notch,
+        // which over content this tall reads as "scrolling is extremely
+        // slow" -- the second half of this bug, alongside the overflow.
+        assertThat(view.topScrollForTest().getVerticalScrollBar().getUnitIncrement())
+                .as("top scroll pane")
+                .isEqualTo(16);
+        assertThat(view.listScrollForTest().getVerticalScrollBar().getUnitIncrement())
+                .as("list scroll pane")
+                .isEqualTo(16);
+        assertThat(view.detailScrollForTest().getVerticalScrollBar().getUnitIncrement())
+                .as("detail scroll pane")
+                .isEqualTo(16);
     }
 
     @Test
