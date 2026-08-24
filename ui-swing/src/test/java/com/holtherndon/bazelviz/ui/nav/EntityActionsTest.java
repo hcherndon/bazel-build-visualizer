@@ -46,10 +46,32 @@ final class EntityActionsTest {
         List<EntityActions.Offer> offers = actions.offersFor(
                 List.of(new EntityRef.TargetLabel("//a:b")), Set.of());
 
+        // The two graph destinations take a label as well as an action: a
+        // label is a node in the configured-target graph and owns nodes in
+        // the action graph, and both handler arms look it up exactly.
         assertThat(offers).extracting(EntityActions.Offer::command).containsExactly(
                 EntityActions.Command.OPEN_TARGET,
+                EntityActions.Command.OPEN_IN_TREE,
+                EntityActions.Command.OPEN_IN_GRAPH,
                 EntityActions.Command.SHOW_ACTIONS_FOR_LABEL,
                 EntityActions.Command.SHOW_EVENTS_FOR_LABEL);
+        // Still not everything: the action-only commands stay absent for a
+        // ref that names no action.
+        assertThat(offers).extracting(EntityActions.Offer::command)
+                .doesNotContain(
+                        EntityActions.Command.REVEAL_ACTION,
+                        EntityActions.Command.SHOW_ON_TIMELINE,
+                        EntityActions.Command.SHOW_SOURCE_EVENT);
+    }
+
+    @Test
+    @DisplayName("wiring is askable, for a fixed toolbar that must explain an absent command")
+    void wiringIsAskable() {
+        EntityActions actions = new EntityActions(
+                EnumSet.of(EntityActions.Command.OPEN_TARGET), new Recorder());
+
+        assertThat(actions.isWired(EntityActions.Command.OPEN_TARGET)).isTrue();
+        assertThat(actions.isWired(EntityActions.Command.SHOW_EVENTS_FOR_LABEL)).isFalse();
     }
 
     @Test
@@ -114,7 +136,7 @@ final class EntityActionsTest {
         EntityRef.TargetLabel label = new EntityRef.TargetLabel("//pkg:name");
         JPopupMenu menu = actions.popupFor(List.of(label), Set.of());
 
-        assertThat(menu.getComponentCount()).isEqualTo(3);
+        assertThat(menu.getComponentCount()).isEqualTo(5);
         ((JMenuItem) menu.getComponent(0)).doClick();
 
         assertThat(recorder.commands).containsExactly(EntityActions.Command.OPEN_TARGET);

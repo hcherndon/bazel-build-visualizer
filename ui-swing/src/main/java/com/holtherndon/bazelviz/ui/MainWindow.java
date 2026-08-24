@@ -365,6 +365,10 @@ public final class MainWindow extends JFrame {
         // menu and inspector, all dispatch into this::navigate.
         actionsView.installEntityActions(entityActions);
         eventsView.installEntityActions(entityActions);
+        // The Targets card adopts through a header toolbar rather than a row
+        // menu: its selection is a tree node, and the toolbar can say why an
+        // action is unavailable, which a menu that simply omits it cannot.
+        targetsView.installEntityActions(entityActions);
         // The timeline's inline inspector adopts the same vocabulary: a
         // clicked span's details offer the same jumps a table row does, and
         // they land in the same navigate() switch.
@@ -1299,8 +1303,9 @@ public final class MainWindow extends JFrame {
      * <p>Exhaustive over {@link EntityActions.Command}, so a command added to
      * the vocabulary fails to compile here rather than silently going
      * nowhere. The ref casts are safe by construction:
-     * {@code Command.appliesTo} only ever pairs a command with the ref kind
-     * its arm expects.
+     * {@code Command.appliesTo} only ever pairs a command with a ref kind its
+     * arm expects — the two graph arms accept both kinds it allows them,
+     * a target label or an action id, and take the branch that matches.
      */
     private void navigate(EntityActions.Command command, EntityRef ref) {
         switch (command) {
@@ -1314,10 +1319,24 @@ public final class MainWindow extends JFrame {
             }
             case REVEAL_ACTION -> revealAction(((EntityRef.ActionId) ref).id());
             // The Graph/Tree split, completed: the canvas card draws the
-            // action's neighbourhood, the tree card roots its trees at it —
-            // one arm each, exactly as the split's plan said.
-            case OPEN_IN_GRAPH -> revealInGraph(((EntityRef.ActionId) ref).id());
-            case OPEN_IN_TREE -> revealInTree(((EntityRef.ActionId) ref).id());
+            // neighbourhood, the tree card roots its trees — one arm each,
+            // exactly as the split's plan said. Each takes either identity,
+            // because the Targets card sends a label where the Actions card
+            // sends an action id, and both are nodes the graphs can find.
+            case OPEN_IN_GRAPH -> {
+                if (ref instanceof EntityRef.TargetLabel target) {
+                    revealLabelInGraph(target.label());
+                } else {
+                    revealInGraph(((EntityRef.ActionId) ref).id());
+                }
+            }
+            case OPEN_IN_TREE -> {
+                if (ref instanceof EntityRef.TargetLabel target) {
+                    revealLabelInTree(target.label());
+                } else {
+                    revealInTree(((EntityRef.ActionId) ref).id());
+                }
+            }
             case SHOW_ON_TIMELINE -> revealOnTimeline(((EntityRef.ActionId) ref).id());
             case SHOW_SOURCE_EVENT -> revealEvent(((EntityRef.EventId) ref).id());
             // Not in the wired set, so nothing can offer it and nothing can
@@ -1347,6 +1366,24 @@ public final class MainWindow extends JFrame {
     private void revealInTree(long actionId) {
         showCard(NavEntry.TREE);
         treeView.showAction(actionId);
+    }
+
+    /**
+     * Draws a target's neighbourhood on the Graph card's canvas.
+     *
+     * <p>By exact label ({@code GraphQueries.nodeForLabel}), not the Find
+     * field's substring: a jump to {@code //app:server} that drew
+     * {@code //app:server_lib} would be indistinguishable from a correct one.
+     */
+    private void revealLabelInGraph(String label) {
+        showCard(NavEntry.GRAPH);
+        graphExplorerView.showLabel(label);
+    }
+
+    /** Roots the Tree card's dependency trees at a target, by exact label. */
+    private void revealLabelInTree(String label) {
+        showCard(NavEntry.TREE);
+        treeView.showLabel(label);
     }
 
     private void revealEvent(long eventId) {

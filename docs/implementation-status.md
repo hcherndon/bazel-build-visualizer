@@ -1614,3 +1614,55 @@ it is a different tab and was not reported.
   selector and honest absences), weight cases in `GraphCanvasPanelTest`, a
   size-join case in `GraphQueriesTest`, and the renamed
   `TreeViewSourceTest`; `NavEntryTest` pins the twelve entries.
+
+- **The Targets card navigates, and a target now resolves to a graph node
+  exactly** (2026-08-24). `TargetsView` grows a header toolbar over the shared
+  `EntityActions` facility for the selected target: Open in tree, Open in
+  graph, Show actions for this target, Show events for this target, Show
+  source event. A toolbar rather than the row menu the table cards use,
+  because the Targets tree's selection is often a package and a fixed strip of
+  buttons can say *why* a jump is unavailable where a menu can only leave the
+  item out. Every button is either live or disabled with the reason in its
+  tooltip — nothing selected ("Select a target in the tree first — a package
+  row is not a target"), a row with no `bep_event_id`, a command the window
+  does not wire, or no facility installed at all. Each button sits in a
+  wrapper panel carrying the same tooltip, because a disabled Swing component
+  receives no mouse events and would otherwise be a dead control whose
+  explanation cannot be read. `EntityActions.isWired` is the new (and only
+  new) facility method the toolbar needs: menus stay honest by omission,
+  a permanent toolbar by explanation. The card's *inspector* still reaches
+  the Events card through the older `onShowSourceEvent` setter — a target's
+  `Inspection` carries no refs yet, so that half of the adoption is not done.
+  **Show events ships disabled, and the gap is this:** there is still no
+  events-by-label read path. `bep_event_ids.display` is stored and
+  `EventIdDisplay.labelOfDisplay` inverts that grammar, so a `display LIKE`
+  filter is *conceivable* — but it is substring-on-a-rendered-sentence, not a
+  label match, and the Events card's paging is keyset-anchored over a
+  contiguous id range (`EventRowIndex`), so a filtered table needs a filtered
+  count and a filtered anchor index before it can show a row. Rather than
+  ship approximate semantics behind an exact-sounding button, the button is
+  present, off, and names the missing path. `SHOW_EVENTS_FOR_LABEL` therefore
+  stays out of `MainWindow.wiredCommands()` — still the one deliberately
+  unwired command.
+  **Exact label lookup:** `GraphQueries.nodeForLabel(GraphKind, String)`
+  matches `labels.value` by equality (the column is UNIQUE, so it is indexed
+  as well as exact) and answers in the asked-for graph's own numbering —
+  the sorted label universe for the configured-target graph, the lowest
+  `node_index` the label owns for the action graph, so repeated jumps land in
+  the same place. `TreeView.showLabel` and `GraphExplorerView.showLabel` are
+  the entry points, trying the label graph first (a target *is* a node there)
+  and the action graph second, selecting the matching source before showing
+  the node so the index means what it meant when it was looked up, and saying
+  so when neither graph carries the label. `EntityActions.Command.appliesTo`
+  widens `OPEN_IN_TREE` / `OPEN_IN_GRAPH` to target labels — the widening its
+  own comment anticipated — and `MainWindow.navigate`'s two graph arms take
+  either identity. This closes the substring hole those jumps would otherwise
+  have inherited from the Find fields: `//app:server` no longer risks landing
+  on `//app:server_lib`. New tests: `TargetsViewWiringTest` (toolbar order,
+  every disabled state and its reason, arming on selection, and each button
+  dispatching its own command with the selected target's own ref),
+  `nodeForLabel` cases in `GraphQueriesTest` (exact match, a label that is a
+  proper prefix of another, absence, stability across a label's several
+  actions, and the two graphs' different numbering for one label), a wiring
+  case in `EntityActionsTest`, and a target-label case in
+  `MainWindowNavWiringTest`.

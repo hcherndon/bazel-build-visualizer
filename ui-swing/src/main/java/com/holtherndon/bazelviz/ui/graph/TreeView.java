@@ -330,6 +330,84 @@ public final class TreeView extends JPanel {
         });
     }
 
+    /**
+     * Roots the trees at the graph node for a target label, exactly.
+     *
+     * <p>Where {@code OPEN_IN_TREE} lands when the entity is a target rather
+     * than an action. The label graph is tried first — a target label
+     * <em>is</em> a node there — and the action graph second, where the node
+     * is the lowest-numbered action the label owns.
+     *
+     * <p>Exact, unlike the Find field beside it: a substring jump to
+     * {@code //app:server} can land on {@code //app:server_lib}, and a tree
+     * rooted at the wrong node is a confident wrong answer about what the
+     * target depends on. A label neither graph carries says so rather than
+     * showing an empty tree.
+     */
+    public void showLabel(String label) {
+        java.util.Objects.requireNonNull(label, "label");
+        List<GraphKind> candidates = labelLookupOrder();
+        if (candidates.isEmpty()) {
+            pathResult.setText("No dependency graph is loaded, so " + label
+                    + " cannot be shown here.");
+            return;
+        }
+        onWorker(work -> {
+            for (GraphKind kind : candidates) {
+                java.util.OptionalInt index = work.nodeForLabel(kind, label);
+                if (index.isEmpty()) {
+                    continue;
+                }
+                Optional<GraphQueries.GraphNode> found = work.node(kind, index.getAsInt());
+                if (found.isEmpty()) {
+                    continue;
+                }
+                GraphQueries.GraphNode node = found.orElseThrow();
+                SwingUtilities.invokeLater(() -> {
+                    // Selecting the source first is what makes the node index
+                    // mean what it meant when it was looked up; a session that
+                    // closed underneath the lookup says so instead.
+                    if (!selectSource(kind)) {
+                        pathResult.setText("The " + kind.displayName()
+                                + " is no longer loaded, so " + label
+                                + " cannot be shown.");
+                        return;
+                    }
+                    pathResult.setText(" ");
+                    showNode(node);
+                });
+                return;
+            }
+            SwingUtilities.invokeLater(() -> {
+                clearTrees();
+                pathResult.setText("No node in this session's graphs is named "
+                        + label + ".");
+            });
+        });
+    }
+
+    /**
+     * The graphs the selector could switch to, label graph first.
+     *
+     * <p>A target label is a node in its own right in the configured-target
+     * graph, and only the owner of some actions in the action graph, so the
+     * first is the better answer to "show me this target" when the session
+     * has one.
+     */
+    private List<GraphKind> labelLookupOrder() {
+        List<GraphKind> kinds = new java.util.ArrayList<>();
+        for (GraphKind kind
+                : List.of(GraphKind.CONFIGURED_TARGETS, GraphKind.DECLARED_ACTIONS)) {
+            for (int i = 0; i < sourceChoice.getItemCount(); i++) {
+                if (sourceChoice.getItemAt(i).graphKind().filter(kind::equals).isPresent()) {
+                    kinds.add(kind);
+                    break;
+                }
+            }
+        }
+        return kinds;
+    }
+
     /** Roots both trees at {@code node} and loads its immediate neighbours. */
     void showNode(GraphQueries.GraphNode node) {
         setRoot(dependencies, node, true);

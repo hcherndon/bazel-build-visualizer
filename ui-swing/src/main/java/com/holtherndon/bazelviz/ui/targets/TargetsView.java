@@ -5,19 +5,26 @@ import com.holtherndon.bazelviz.storage.entities.TargetRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
+import java.awt.FlowLayout;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.function.LongConsumer;
 import javax.swing.BorderFactory;
+import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -51,6 +58,16 @@ import org.slf4j.LoggerFactory;
  * surfacing: a build interrupted during analysis consists entirely of targets
  * that were configured and never built, and a tree that showed only completions
  * would report such a build as empty.
+ *
+ * <h2>The header toolbar</h2>
+ *
+ * <p>The selected target's cross-view jumps, through the shared
+ * {@link EntityActions} facility. A toolbar rather than the row menu the table
+ * cards use, because a fixed strip of buttons can carry the <em>reason</em> a
+ * jump is unavailable — nothing selected, no source event on this row, no read
+ * path behind the command — where a menu can only leave the item out. Every
+ * button is either live or disabled with that reason in its tooltip; none is
+ * ever a control that clicks into silence.
  */
 public final class TargetsView extends JPanel {
 
@@ -73,11 +90,21 @@ public final class TargetsView extends JPanel {
     private final InspectorPanel inspector = new InspectorPanel();
     private final JLabel statusLabel = new JLabel(" ");
 
+    /** The header toolbar's buttons, in the order they are shown. */
+    private final List<ToolbarAction> toolbarActions = new ArrayList<>();
+
     private ExecutorService executor;
     private EntityReader reader;
     private SessionSource source;
     private LongConsumer showEventHandler = eventId -> { };
     private long selectionGeneration;
+
+    /**
+     * The shared cross-view navigation actions, once {@link
+     * #installEntityActions} has run. Null until then, and the toolbar says
+     * so rather than offering buttons with nothing behind them.
+     */
+    private EntityActions entityActions;
 
     /**
      * The target a {@link #revealLabel} is waiting to select, once its
@@ -131,6 +158,7 @@ public final class TargetsView extends JPanel {
         status.add(statusLabel, BorderLayout.WEST);
 
         JPanel session = new JPanel(new BorderLayout());
+        session.add(buildToolbar(), BorderLayout.NORTH);
         session.add(split, BorderLayout.CENTER);
         session.add(status, BorderLayout.SOUTH);
 
@@ -138,6 +166,91 @@ public final class TargetsView extends JPanel {
         deck.add(session, CARD_TREE);
         add(deck, BorderLayout.CENTER);
         showEmpty("No session is open.");
+    }
+
+    /**
+     * The header toolbar: what can be done with the selected target
+     * elsewhere in the application.
+     *
+     * <p>Built once, before anything is selected, which is exactly why each
+     * button has to be able to explain itself: the strip is on screen from
+     * the moment a session opens, and for most of that time some of it has
+     * nothing to act on.
+     */
+    private JPanel buildToolbar() {
+        JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        toolbarActions.add(new ToolbarAction(
+                EntityActions.Command.OPEN_IN_TREE,
+                row -> Optional.of(new EntityRef.TargetLabel(row.label())),
+                "Root the Tree card's dependency trees at this target,"
+                        + " by exact label",
+                "This row carries no label to look up.",
+                "The Tree card is not reachable from here in this build."));
+        toolbarActions.add(new ToolbarAction(
+                EntityActions.Command.OPEN_IN_GRAPH,
+                row -> Optional.of(new EntityRef.TargetLabel(row.label())),
+                "Draw this target's neighbourhood on the Graph card,"
+                        + " by exact label",
+                "This row carries no label to look up.",
+                "The Graph card is not reachable from here in this build."));
+        toolbarActions.add(new ToolbarAction(
+                EntityActions.Command.SHOW_ACTIONS_FOR_LABEL,
+                row -> Optional.of(new EntityRef.TargetLabel(row.label())),
+                "Narrow the Actions card to this target's label",
+                "This row carries no label to filter by.",
+                "The Actions card cannot be filtered by label in this build."));
+        toolbarActions.add(new ToolbarAction(
+                EntityActions.Command.SHOW_EVENTS_FOR_LABEL,
+                row -> Optional.of(new EntityRef.TargetLabel(row.label())),
+                "Show this target's events in the Events card",
+                "This row carries no label to filter by.",
+                // Rule 11's shape applied to a control: the button is here,
+                // visibly off, naming the missing read path -- rather than
+                // silently absent, or present and doing nothing.
+                "No events-by-label read path exists yet: the Events card"
+                        + " parses a label out of each row as it renders it,"
+                        + " so no query can select events by label."));
+        toolbarActions.add(new ToolbarAction(
+                EntityActions.Command.SHOW_SOURCE_EVENT,
+                row -> row.bepEventId().isPresent()
+                        ? Optional.of(new EntityRef.EventId(row.bepEventId().getAsLong()))
+                        : Optional.empty(),
+                "Open the event this target row was normalized from",
+                "This target row records no source event, so there is"
+                        + " nothing to open.",
+                "The Events card is not reachable from here in this build."));
+        for (ToolbarAction action : toolbarActions) {
+            bar.add(action.wrapper);
+        }
+        updateToolbar();
+        return bar;
+    }
+
+    /**
+     * Adopts the shared cross-view navigation actions. Call once, at wiring
+     * time; until then the toolbar's buttons are disabled and say so.
+     */
+    public void installEntityActions(EntityActions actions) {
+        this.entityActions = Objects.requireNonNull(actions, "actions");
+        updateToolbar();
+    }
+
+    /** EDT: re-states every toolbar button against the current selection. */
+    private void updateToolbar() {
+        TargetRow selected = selectedRow();
+        for (ToolbarAction action : toolbarActions) {
+            action.update(selected);
+        }
+    }
+
+    /** The selected target row, or null when the selection is not one. */
+    private TargetRow selectedRow() {
+        TreePath path = tree.getSelectionPath();
+        if (path == null) {
+            return null;
+        }
+        Object selected = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+        return selected instanceof TargetNode targetNode ? targetNode.row : null;
     }
 
     public void onShowSourceEvent(LongConsumer handler) {
@@ -187,6 +300,9 @@ public final class TargetsView extends JPanel {
         root.removeAllChildren();
         treeModel.reload();
         inspector.show(Inspection.NONE);
+        // Whatever was selected is gone with the tree, and the toolbar must
+        // not keep offering jumps for a target that is no longer on screen.
+        updateToolbar();
         ExecutorService stopping = executor;
         EntityReader closing = reader;
         source = null;
@@ -337,12 +453,8 @@ public final class TargetsView extends JPanel {
 
     /** Visible for testing: the selected target row's label, or null. */
     String selectedLabelForTest() {
-        TreePath path = tree.getSelectionPath();
-        if (path == null) {
-            return null;
-        }
-        Object selected = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
-        return selected instanceof TargetNode targetNode ? targetNode.row.label() : null;
+        TargetRow row = selectedRow();
+        return row == null ? null : row.label();
     }
 
     /** Visible for testing. */
@@ -427,13 +539,12 @@ public final class TargetsView extends JPanel {
     }
 
     private void selectionChanged() {
-        TreePath path = tree.getSelectionPath();
-        if (path == null) {
-            inspector.show(Inspection.NONE);
-            return;
-        }
-        Object selected = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
-        if (!(selected instanceof TargetNode targetNode)) {
+        // Before any query: the toolbar states what the new selection can and
+        // cannot do from what is already in hand, so it never lags a slow
+        // inspection read.
+        updateToolbar();
+        TargetRow row = selectedRow();
+        if (row == null) {
             inspector.show(Inspection.NONE);
             return;
         }
@@ -446,11 +557,10 @@ public final class TargetsView extends JPanel {
         running.execute(() -> {
             try {
                 Inspection inspection = TargetInspection.of(
-                        targetNode.row,
-                        current.targetTags(targetNode.row.id()),
-                        targetNode.row.configuredTargetId().isPresent()
-                                ? current.outputGroups(
-                                        targetNode.row.configuredTargetId().getAsLong())
+                        row,
+                        current.targetTags(row.id()),
+                        row.configuredTargetId().isPresent()
+                                ? current.outputGroups(row.configuredTargetId().getAsLong())
                                 : List.of());
                 SwingUtilities.invokeLater(() -> {
                     if (generation == selectionGeneration) {
@@ -458,9 +568,101 @@ public final class TargetsView extends JPanel {
                     }
                 });
             } catch (RuntimeException failure) {
-                log.warn("could not describe target {}", targetNode.row.label(), failure);
+                log.warn("could not describe target {}", row.label(), failure);
             }
         });
+    }
+
+    /**
+     * One header-toolbar button: a command, the way its ref is built from the
+     * selected row, and what to say when it cannot be pressed.
+     *
+     * <p>The button sits inside a wrapper panel carrying the same tooltip.
+     * A disabled Swing component receives no mouse events and therefore never
+     * shows its own tooltip — so a disabled button alone would be exactly the
+     * unexplained dead control this toolbar exists to avoid. The wrapper gets
+     * the events the button cannot and shows the reason.
+     */
+    private final class ToolbarAction {
+
+        private final JPanel wrapper = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        private final JButton button;
+        private final EntityActions.Command command;
+        private final Function<TargetRow, Optional<EntityRef>> refOf;
+        private final String enabledTip;
+        private final String noRefReason;
+        private final String unwiredReason;
+
+        ToolbarAction(
+                EntityActions.Command command,
+                Function<TargetRow, Optional<EntityRef>> refOf,
+                String enabledTip,
+                String noRefReason,
+                String unwiredReason) {
+            this.command = command;
+            this.refOf = refOf;
+            this.enabledTip = enabledTip;
+            this.noRefReason = noRefReason;
+            this.unwiredReason = unwiredReason;
+            this.button = new JButton(command.title());
+            PlainText.disableHtml(button);
+            button.addActionListener(event -> activate());
+            wrapper.setOpaque(false);
+            wrapper.add(button);
+        }
+
+        /** EDT: enables or disables against {@code selected}, with the reason. */
+        void update(TargetRow selected) {
+            Optional<String> unavailable = unavailableReason(selected);
+            button.setEnabled(unavailable.isEmpty());
+            String tip = PlainText.tooltip(unavailable.orElse(enabledTip));
+            button.setToolTipText(tip);
+            wrapper.setToolTipText(tip);
+        }
+
+        /** Why this cannot be pressed right now, or empty when it can. */
+        private Optional<String> unavailableReason(TargetRow selected) {
+            if (entityActions == null) {
+                return Optional.of("Cross-view navigation is not wired into"
+                        + " this window.");
+            }
+            if (!entityActions.isWired(command)) {
+                return Optional.of(unwiredReason);
+            }
+            if (selected == null) {
+                return Optional.of("Select a target in the tree first —"
+                        + " a package row is not a target.");
+            }
+            return refOf.apply(selected).isEmpty()
+                    ? Optional.of(noRefReason) : Optional.empty();
+        }
+
+        private void activate() {
+            TargetRow selected = selectedRow();
+            EntityActions actions = entityActions;
+            if (selected == null || actions == null || !actions.isWired(command)) {
+                // Unreachable while update() has the last word on enablement,
+                // and still checked: dispatching an unwired command throws by
+                // design, and a stale click must not be how that is found out.
+                return;
+            }
+            refOf.apply(selected).ifPresent(ref -> actions.navigate(command, ref));
+        }
+    }
+
+    /** Visible for testing: the toolbar's button for one command. */
+    JButton toolbarButtonForTest(EntityActions.Command command) {
+        for (ToolbarAction action : toolbarActions) {
+            if (action.command == command) {
+                return action.button;
+            }
+        }
+        throw new IllegalArgumentException("no toolbar button for " + command);
+    }
+
+    /** Visible for testing: the commands the toolbar offers, in order. */
+    List<EntityActions.Command> toolbarCommandsForTest() {
+        return toolbarActions.stream().map(action -> action.command).toList();
     }
 
     /** A package row in the tree. */
