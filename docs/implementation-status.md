@@ -1851,3 +1851,53 @@ it is a different tab and was not reported.
   (`GraphCanvasPanelTest`), and find dropdown exact landing, no-match
   honesty, truncation, browse listing/landing/filtering
   (`GraphExplorerViewTest`).
+
+- **The timeline's lanes are sized by their content and the plot scrolls**
+  (2026-08-24). Lane height used to be `canvas.getHeight() / lanes` with a
+  three-pixel floor, and `boundsOfSpan` divided that again by the lane's
+  stacking depth (up to `SpanStacking.MAX_SUB_ROWS`, 6). On any real session
+  that produced one- and two-pixel sub-rows — marks too thin to see and too
+  thin to click, and thinner the more concurrency the build actually had,
+  which is exactly backwards. The in-flight band above them already drew
+  fixed-height rows, so one plot used two rules. Now there is one:
+  `TimelineView.SUB_ROW_HEIGHT` (18, in docs/limits.md, checked by
+  `LimitsDocTest`) is the height of every lane sub-row *and* every band row,
+  a lane is `SpanStacking.depthOf(key)` of those tall — **depth-scaled**, so
+  only lanes with real overlap grow and a quiet lane pays nothing for a busy
+  neighbour's concurrency — and the row layout (`relayoutLanes`, rebuilt
+  whenever the lanes or the stacking change) is a function of the data alone,
+  never of the window. `MAX_SUB_ROWS` is unchanged at 6 and the overflow
+  count is still stated exactly; what changed is that the budget now buys
+  height rather than rationing it.
+  The total height goes to a `JScrollPane`: the canvas is the view and
+  reports it as its preferred size, `laneLabels` is the pane's
+  `rowHeaderView` so labels and rows scroll in lockstep by construction
+  rather than by arithmetic, and the time axis stays outside the pane,
+  pinned — behind a strut of the label column's width, which also fixes the
+  axis having been offset by that width all along. Vertically the policy is
+  as-needed with a 16-pixel unit; horizontally there is **no** scrolling
+  ever: the canvas is `Scrollable` with `getScrollableTracksViewportWidth()`
+  true and the policy `HORIZONTAL_SCROLLBAR_NEVER`, because horizontal
+  position belongs to the pan/zoom transform and two mechanisms for one axis
+  would fight. When the lanes do not fill the window the canvas tracks the
+  viewport's height instead, so the aggregate density plot keeps the full
+  height it drew in before. The wheel over the plot still means zoom and only
+  zoom — the event is consumed in the canvas handler *and* the pane's own
+  wheel scrolling is off, because a gesture that zoomed and scrolled at once
+  would be unusable. Scroll state is the viewport's, not the
+  `TimelineViewport` record's (which stays immutable and time-only): the
+  position is read before and reapplied after every model swap — the
+  `EventsView` live-refresh pattern — clamped to what the new plot is
+  actually tall enough to show, so a live rebuild neither returns a reading
+  user to the top nor parks them past the end; and the reveal paths
+  (`MainWindow.revealOnTimeline`, the inline inspector's own click) scroll
+  the selected span's lane into view, vertically only. New tests in
+  `TimelineVerticalSpaceTest`: a depth-1 lane against a depth-6 one, every
+  one of the six sub-rows separately hittable, preferred height reported as
+  band-plus-lanes with the row header agreeing, position preserved across a
+  live rebuild and clamped when a regroup shortens the plot, reveal
+  scrolling the lane fully into view, and wheel-zooms-without-scrolling. The
+  existing coordinate-driven timeline tests
+  (`TimelineSpanPlacementTest`, `TimelineViewTest`, `TimelineLiveBandTest`,
+  `TimelineInspectorTest`) pass unchanged: their clicks were already inside
+  the first sub-row, which is now taller rather than shorter.

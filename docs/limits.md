@@ -16,7 +16,10 @@ the code without failing the build.
 ## Display limits
 
 These bound what is drawn. All of them report themselves on screen when
-reached, and the first two can be raised from the graph toolbar.
+reached, and the first two can be raised from the graph toolbar. One row —
+the timeline's sub-row height — is a fixed size rather than a ceiling, and is
+listed because it is the unit the sub-row budget above it is counted in: it
+is never reached and never negotiated.
 
 | Limit | Constant | Default | When reached |
 |---|---|---:|---|
@@ -30,6 +33,7 @@ reached, and the first two can be raised from the graph toolbar.
 | Fit label reservation | `com.holtherndon.bazelviz.ui.graph.GraphCanvas.MAX_LABEL_FIT_FRACTION` | 0.5 | Fit reserves room for the label text visible at the resulting zoom, up to this fraction of the window width. Past the cap — a dense graph of long names — the reservation stops growing and the canvas states that some labels run past the right edge, rather than zooming the nodes to nothing or pretending the text fits. |
 | Timeline spans in one viewport | `com.holtherndon.bazelviz.ui.timeline.SpanWindow.MAX_SPANS` | 20000 | The window reports that it is capped and the aggregate bins remain exact; zooming in returns individual spans. Also bounds how many in-flight targets the live band fetches per rebuild; the band's label states "drawing the earliest N of M" when it bites. |
 | Timeline sub-rows per lane | `com.holtherndon.bazelviz.ui.timeline.SpanStacking.MAX_SUB_ROWS` | 6 | Overlapping spans in one lane stack top-to-bottom by start time into at most this many sub-rows. Beyond it, further overlapping spans draw into the last sub-row — never dropped — and the status line states the exact overflow count with a suggestion to zoom in. |
+| Timeline sub-row height (pixels) | `com.holtherndon.bazelviz.ui.timeline.TimelineView.SUB_ROW_HEIGHT` | 18 | Not reached — it is fixed, which is the point. Every lane sub-row and every in-flight band row is exactly this tall, so a lane is its stacking depth times this and the plot's total height is what the timeline's vertical scrollbar absorbs. Height was previously divided out of the window (`canvas height / lanes`, then again by the lane's depth), which produced one- and two-pixel sub-rows on any real session: unreadable and unclickable exactly where the build had the most concurrency to show. |
 | Console lines retained | `com.holtherndon.bazelviz.ui.capture.ConsoleModel.DEFAULT_MAX_LINES` | 20000 | The oldest lines are dropped from the *view*; the full text is on disk in `raw/stdout.log`, which the panel says. |
 | Raw payload rendered as text | `com.holtherndon.bazelviz.ui.events.RawPayloadRenderer.MAX_TEXT_CHARS` | 200000 | The renderer states the truncation and the full byte length. |
 | Raw payload rendered as hex | `com.holtherndon.bazelviz.ui.events.RawPayloadRenderer.MAX_HEX_BYTES` | 65536 | As above. |

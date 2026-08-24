@@ -15,14 +15,17 @@ import java.util.Map;
  *
  * <h2>The budget, and what happens past it</h2>
  *
- * <p>A lane gets at most {@link #MAX_SUB_ROWS} sub-rows — a lane row is
- * {@code LANE_HEIGHT} pixels tall and a sub-row thinner than a couple of
- * pixels stops being a mark. A span that arrives when every sub-row is still
- * occupied is drawn in the last sub-row anyway, overlapping whatever is
- * there, and counted in {@link #overflowCount()}: the view states the exact
- * number, because a lane whose bottom row is secretly a pile would let a
- * density read as a single span. Nothing is dropped — this is the same
- * honesty rule as {@link SpanWindow#MAX_SPANS}, applied vertically.
+ * <p>A lane gets at most {@link #MAX_SUB_ROWS} sub-rows. The view draws each
+ * of them at a fixed {@code TimelineView.SUB_ROW_HEIGHT} and lets the lane
+ * grow — depth is height — so the budget is not about pixels running out;
+ * it is about how much vertical space one lane may claim from the others
+ * before the plot stops being readable as a whole. A span that arrives when
+ * every sub-row is still occupied is drawn in the last sub-row anyway,
+ * overlapping whatever is there, and counted in {@link #overflowCount()}: the
+ * view states the exact number, because a lane whose bottom row is secretly a
+ * pile would let a density read as a single span. Nothing is dropped — this
+ * is the same honesty rule as {@link SpanWindow#MAX_SPANS}, applied
+ * vertically.
  *
  * <p>Pure computation over one {@link SpanWindow}; no Swing, no SQL, built
  * once per window on the EDT (at most {@link SpanWindow#MAX_SPANS} spans, a
