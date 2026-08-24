@@ -112,6 +112,20 @@ public final class GraphCanvasPanel extends JPanel {
     private GraphLayoutService service;
     private GraphKind shownGraph = GraphKind.DECLARED_ACTIONS;
     private String[] actionLabels;
+
+    /**
+     * Per-action display names — "Mnemonic — output basename" — for the two
+     * action graphs, or null when the caller supplied none.
+     *
+     * <p>Separate from {@link #actionLabels} because the two answer different
+     * questions: the target label is what an action belongs to (what the
+     * complete export's {@code label} column must keep meaning), the display
+     * name is what distinguishes one of the target's actions from another on
+     * the canvas — where every action under one label reading as the same
+     * string was the exact complaint.
+     */
+    private String[] actionDisplayLabels;
+
     private long[] actionDurations;
     private String[] labelGraphLabels;
     private long[] labelGraphDurations;
@@ -197,6 +211,14 @@ public final class GraphCanvasPanel extends JPanel {
         JButton fit = new JButton("Fit");
         fit.addActionListener(event -> canvas.fitToView());
         controls.add(fit);
+        // The drag overlay's explicit way back. A new layout resets dragged
+        // positions on its own; this is for undoing a rearrangement of the
+        // drawing that is otherwise staying.
+        JButton resetPositions = new JButton("Reset positions");
+        resetPositions.setToolTipText(PlainText.tooltip(
+                "Put every dragged node back where the layout placed it."));
+        resetPositions.addActionListener(event -> canvas.resetDragOffsets());
+        controls.add(resetPositions);
         // Plan 17.7 lists "export visible graph" among the canvas's ordinary
         // actions, not only among the things offered when a graph is too big.
         JButton export = new JButton("Export…");
@@ -292,6 +314,19 @@ public final class GraphCanvasPanel extends JPanel {
     }
 
     /**
+     * Hands over the per-action display names for the action graphs.
+     *
+     * <p>Composed once, off the event thread, by
+     * {@code GraphQueries.displayLabelsByNodeIndex()}: "Mnemonic — output
+     * basename", degrading honestly where pieces are absent. The canvas draws
+     * these; the complete export keeps the target labels from
+     * {@link #attach}, whose {@code label} column would otherwise lie.
+     */
+    public void attachActionDisplayLabels(String[] displayLabelsByNodeIndex) {
+        this.actionDisplayLabels = displayLabelsByNodeIndex;
+    }
+
+    /**
      * Hands over the configured-target label graph's per-node names.
      *
      * <p>Nothing times a label — a target's actions are timed, the label is
@@ -354,6 +389,19 @@ public final class GraphCanvasPanel extends JPanel {
         return shownGraph == GraphKind.CONFIGURED_TARGETS ? labelGraphLabels : actionLabels;
     }
 
+    /**
+     * What the canvas names nodes with: target labels for the label graph —
+     * a label <em>is</em> the node there — and the per-action display names
+     * for the action graphs, falling back to target labels when no display
+     * array was attached rather than showing nothing.
+     */
+    private String[] currentDisplayLabels() {
+        if (shownGraph == GraphKind.CONFIGURED_TARGETS) {
+            return labelGraphLabels;
+        }
+        return actionDisplayLabels != null ? actionDisplayLabels : actionLabels;
+    }
+
     private long[] currentDurations() {
         return shownGraph == GraphKind.CONFIGURED_TARGETS
                 ? labelGraphDurations : actionDurations;
@@ -363,6 +411,7 @@ public final class GraphCanvasPanel extends JPanel {
     public void detach() {
         this.service = null;
         this.actionLabels = null;
+        this.actionDisplayLabels = null;
         this.actionDurations = null;
         this.labelGraphLabels = null;
         this.labelGraphDurations = null;
@@ -495,6 +544,11 @@ public final class GraphCanvasPanel extends JPanel {
                                 + canvas.model().displayLabelAt(position));
                 focus.addActionListener(action -> focusOnPosition(position));
                 menu.add(focus);
+                javax.swing.JMenuItem resetPositions =
+                        new javax.swing.JMenuItem("Reset positions");
+                resetPositions.setEnabled(canvas.hasDragOffsets());
+                resetPositions.addActionListener(action -> canvas.resetDragOffsets());
+                menu.add(resetPositions);
                 menu.show(canvas, event.getX(), event.getY());
             }
         });
@@ -636,7 +690,7 @@ public final class GraphCanvasPanel extends JPanel {
         }
 
         long wanted = ++weightGeneration;
-        GraphModel model = GraphModel.of(result, currentLabels(), currentDurations());
+        GraphModel model = GraphModel.of(result, currentDisplayLabels(), currentDurations());
         canvas.setModel(model);
         setText(description, aggregatedAutomatically
                 ? "Too big to draw " + noun() + " by " + noun() + ", so it is grouped. "

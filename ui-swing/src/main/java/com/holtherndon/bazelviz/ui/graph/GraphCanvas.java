@@ -33,8 +33,13 @@ import javax.swing.JComponent;
  *       the one place the canvas draws less than it knows, and it is transient
  *       and self-correcting rather than a claim about the graph.
  *   <li><em>Draw labels only above scale thresholds</em> — {@link Detail}, and
- *       even in the near band a label is skipped when it would not fit between
- *       its node and the next.
+ *       within a band a label is skipped when it would paint over one already
+ *       painted: screen-space collision with a deterministic priority
+ *       (selected, then hovered, then higher weight, then lower node index),
+ *       so the labels that survive are the same ones every frame. The skip is
+ *       a rendering-density decision like the bands themselves — the count is
+ *       {@link #declutteredLabelCount()}, and the first selected label always
+ *       paints because nothing outranks it.
  *   <li><em>Use spatial hit testing</em> — {@link GraphSpatialIndex}, so a
  *       click costs the cells near the pointer rather than the whole graph.
  *   <li><em>Never perform layout on the EDT</em> — the canvas cannot: it is
@@ -54,8 +59,40 @@ public final class GraphCanvas extends JComponent {
     /** How close a click must land, in pixels, to select a node. */
     private static final int HIT_RADIUS_PIXELS = 12;
 
+    /**
+     * Pixels a press-on-node must move before it becomes a node drag.
+     *
+     * <p>Without it, the one-pixel jitter inside an ordinary click-select
+     * writes a permanent sub-pixel offset: {@code hasDragOffsets()} flips
+     * true, "Reset positions" arms, and hit testing takes the filtered path —
+     * all for a move nobody made on purpose.
+     */
+    private static final int NODE_DRAG_THRESHOLD_PIXELS = 3;
+
     /** Margin left around a fitted graph. */
     private static final double FIT_MARGIN = 40;
+
+    /**
+     * The most of the viewport width Fit will reserve for label text.
+     *
+     * <p>Fit accounts for the labels visible at the resulting zoom, but a
+     * dense graph of long names could reserve everything and zoom the nodes
+     * to nothing. Past this fraction the reservation is capped and
+     * {@link #hiddenDetail()} says so, rather than either lying about the
+     * text fitting or vanishing the graph.
+     */
+    static final double MAX_LABEL_FIT_FRACTION = 0.5;
+
+    /** Arrowhead wing length in pixels; drawn only in the near band. */
+    private static final double ARROW_LENGTH_PIXELS = 6;
+
+    /**
+     * Edges shorter than this on screen get no arrowhead.
+     *
+     * <p>An arrow longer than its edge points at nothing legible; the edge is
+     * still drawn, and zooming in restores the head.
+     */
+    private static final double MIN_ARROW_EDGE_PIXELS = 14;
 
     /**
      * Edges drawn while a drag is in progress.
@@ -117,6 +154,45 @@ public final class GraphCanvas extends JComponent {
     private Point dragOrigin;
     private Point marqueeStart;
     private Rectangle marquee;
+
+    /**
+     * The view-layer drag overlay: world-space displacement per layout
+     * position, for nodes the user has dragged.
+     *
+     * <p>The one mutable statement about positions this class is allowed:
+     * {@code GraphLayout.Result}, the spatial index and the cached
+     * {@code Rendered} are shared with the layout cache and are never
+     * written. Offsets survive {@link #restyle} — a weight change shares
+     * positions by design — and are cleared by {@link #setModel}, which is
+     * where every new layout arrives, and by {@link #resetDragOffsets}.
+     */
+    private final java.util.Map<Integer, double[]> dragOffsets = new java.util.HashMap<>();
+
+    /** The layout position armed for dragging by a press, or -1. */
+    private int nodeDrag = -1;
+
+    private Point nodeDragPoint;
+
+    /** True once an armed press has moved past the threshold. */
+    private boolean nodeDragging;
+
+    /** Labels skipped for overlap in the last paint; the declutter's count. */
+    private int declutteredLabels;
+
+    /** The positions whose labels the last paint drew, in paint order. */
+    private final java.util.List<Integer> paintedLabels = new java.util.ArrayList<>();
+
+    /** Arrowheads the last paint drew; zero outside the near band. */
+    private int arrowsInLastPaint;
+
+    /** True this frame when edges get direction arrowheads. */
+    private boolean arrowsThisFrame;
+
+    /** The node radius in pixels this frame, for pulling arrow tips back. */
+    private double arrowRadiusPixels;
+
+    /** The cap sentence from the last fit, or empty; cleared by user pan/zoom. */
+    private String fitLabelNote = "";
     private Consumer<int[]> selectionListener = positions -> {};
     private Runnable viewChangedListener = () -> {};
     private java.util.function.IntConsumer focusListener = position -> {};
@@ -137,6 +213,12 @@ public final class GraphCanvas extends JComponent {
         this.model = model == null ? GraphModel.empty() : model;
         selection.clear();
         hover = -1;
+        // A new layout means new positions; offsets against the old ones
+        // would displace unrelated nodes. Every new query, focus, source,
+        // layout kind and refresh arrives here, so this is the reset point.
+        dragOffsets.clear();
+        nodeDrag = -1;
+        nodeDragging = false;
         fitToView();
         repaint();
     }
@@ -187,7 +269,19 @@ public final class GraphCanvas extends JComponent {
         this.focusListener = listener == null ? position -> {} : listener;
     }
 
-    /** Frames the whole drawing; plan 17.7's "fit". */
+    /**
+     * Frames the whole drawing; plan 17.7's "fit".
+     *
+     * <p>Label-aware: the fit reserves room for the label text visible at the
+     * resulting zoom — all labels in the near band, the selection's in the
+     * medium band, none in the far band — so "Fit" shows the nodes <em>and</em>
+     * what they are called. Text does not scale with the world, so the
+     * reservation is taken out of the viewport before the scale is chosen,
+     * clamped so it can never drop the view into a coarser band, and capped
+     * at {@link #MAX_LABEL_FIT_FRACTION} of the window; a cap that bites is
+     * reported through {@link #hiddenDetail()} rather than either zooming a
+     * dense graph to nothing or pretending the text fits.
+     */
     public void fitToView() {
         if (getWidth() <= 0 || getHeight() <= 0) {
             // Nothing to fit into yet. Remember to, rather than fitting to one
@@ -196,10 +290,119 @@ public final class GraphCanvas extends JComponent {
             return;
         }
         fitPending = false;
-        model.layout().bounds().ifPresentOrElse(
-                bounds -> setTransform(
-                        GraphTransform.fit(bounds, getWidth(), getHeight(), FIT_MARGIN)),
-                () -> setTransform(GraphTransform.identity()));
+        fitLabelNote = "";
+        java.util.Optional<double[]> bounds = fitBounds();
+        if (bounds.isEmpty()) {
+            setTransform(GraphTransform.identity());
+            return;
+        }
+        setTransform(labelAwareFit(bounds.get()));
+    }
+
+    /** The layout's bounds, stretched to cover any dragged nodes. */
+    private java.util.Optional<double[]> fitBounds() {
+        java.util.Optional<double[]> bounds = model.layout().bounds();
+        if (bounds.isEmpty() || dragOffsets.isEmpty()) {
+            return bounds;
+        }
+        double[] box = bounds.get().clone();
+        GraphLayout.Result layout = model.layout();
+        for (java.util.Map.Entry<Integer, double[]> dragged : dragOffsets.entrySet()) {
+            int position = dragged.getKey();
+            if (position >= layout.size()) {
+                continue;
+            }
+            double x = layout.xAt(position) + dragged.getValue()[0];
+            double y = layout.yAt(position) + dragged.getValue()[1];
+            box[0] = Math.min(box[0], x);
+            box[1] = Math.min(box[1], y);
+            box[2] = Math.max(box[2], x);
+            box[3] = Math.max(box[3], y);
+        }
+        return java.util.Optional.of(box);
+    }
+
+    private GraphTransform labelAwareFit(double[] bounds) {
+        java.awt.FontMetrics metrics = getFontMetrics(labelFont());
+        GraphTransform plain =
+                GraphTransform.fit(bounds, getWidth(), getHeight(), FIT_MARGIN);
+        Detail band = Detail.forScale(plain.scale());
+        int widest = widestVisibleLabel(metrics, band);
+        if (widest <= 0) {
+            // The zoom Fit lands at paints no labels — the far band, or the
+            // medium band with nothing selected — so there is nothing to
+            // reserve for and nothing to report.
+            return plain;
+        }
+        double nodeRadius = Math.max(2.5, NODE_RADIUS * plain.scale());
+        double wanted = widest + nodeRadius + 4;
+        double usableWidth = getWidth() - 2 * FIT_MARGIN;
+        // Two caps, both honest. The fraction cap stops a dense graph of long
+        // names zooming to nothing; the band cap stops the reservation
+        // pushing the zoom into a coarser band where the labels it reserved
+        // for would not paint at all — a Fit that traded the text for room
+        // for the text would be absurd.
+        double cap = Math.max(1, usableWidth * MAX_LABEL_FIT_FRACTION);
+        double worldWidth = Math.max(1e-6, bounds[2] - bounds[0]);
+        double bandCap = usableWidth - band.floorScale() * worldWidth;
+        double reserve = Math.min(wanted, Math.min(cap, Math.max(0, bandCap)));
+        boolean capped = reserve < wanted;
+        GraphTransform reserved = GraphTransform.fit(
+                bounds, getWidth(), getHeight(), FIT_MARGIN, reserve, metrics.getHeight());
+        if (Detail.forScale(reserved.scale()) != band) {
+            // The vertical reservation squeezed the scale below the band
+            // floor after all — only possible hard against the boundary. The
+            // plain fit paints strictly more text, so keep it and admit the
+            // labels were not made room for.
+            fitLabelNote = "Fit could not reserve room for the labels at this"
+                    + " window size, so some text may run past the edges.";
+            return plain;
+        }
+        fitLabelNote = capped
+                ? "The longest visible label is wider than the space Fit"
+                        + " reserves for text (capped at half the window),"
+                        + " so some labels run past the right edge."
+                : "";
+        return reserved;
+    }
+
+    /**
+     * The font labels paint in.
+     *
+     * <p>A component that has never been added to a container has no font of
+     * its own, and a fit can run before the first paint — so this falls back
+     * to the toolkit default the paint's {@code Graphics} would use anyway.
+     */
+    java.awt.Font labelFont() {
+        java.awt.Font font = getFont();
+        return font != null
+                ? font
+                : new java.awt.Font(java.awt.Font.DIALOG, java.awt.Font.PLAIN, 12);
+    }
+
+    /**
+     * The widest label the given band would paint, in pixels; 0 when none.
+     *
+     * <p>Near paints every node's label that wins its space; medium paints the
+     * selection's only; far paints none. Measuring the widest candidate is an
+     * over-estimate of what the declutter will keep — which errs on the side
+     * of showing text, and the cap bounds the cost of erring.
+     */
+    private int widestVisibleLabel(java.awt.FontMetrics metrics, Detail detail) {
+        if (detail == Detail.FAR) {
+            return 0;
+        }
+        int widest = 0;
+        if (detail == Detail.MEDIUM) {
+            for (int position : selection) {
+                widest = Math.max(widest, metrics.stringWidth(model.displayLabelAt(position)));
+            }
+            return widest;
+        }
+        for (int position = 0; position < model.size(); position++) {
+            widest = Math.max(widest, metrics.stringWidth(model.displayLabelAt(position)));
+        }
+        return widest;
     }
 
     private void setTransform(GraphTransform next) {
@@ -246,6 +449,9 @@ public final class GraphCanvas extends JComponent {
      * wheel events.
      */
     void zoomForTesting(double factor) {
+        // A zoom is a zoom: the fit's cap note describes the fitted view, so
+        // it clears here exactly as it does for a wheel zoom.
+        fitLabelNote = "";
         setTransform(transform.zoomedAround(getWidth() / 2.0, getHeight() / 2.0, factor));
     }
 
@@ -269,6 +475,22 @@ public final class GraphCanvas extends JComponent {
                 return FAR;
             }
             return scale < 0.6 ? MEDIUM : NEAR;
+        }
+
+        /**
+         * The smallest scale still inside this band.
+         *
+         * <p>The label-aware fit clamps its reservation here, so making room
+         * for text can never drop the view into a coarser band where that
+         * text would not paint. The far band's floor is the zoom floor
+         * itself.
+         */
+        double floorScale() {
+            return switch (this) {
+                case FAR -> GraphTransform.MIN_SCALE;
+                case MEDIUM -> 0.15;
+                case NEAR -> 0.6;
+            };
         }
     }
 
@@ -299,6 +521,15 @@ public final class GraphCanvas extends JComponent {
                             : RenderingHints.VALUE_RENDER_QUALITY);
 
             double[] world = transform.visibleWorld(getWidth(), getHeight());
+            // Arrowheads only where an edge is individually distinguishable:
+            // the near band, and not mid-drag, where detail is suspended
+            // anyway. At medium zoom nodes sit pixels apart and a head per
+            // edge is a smear; at far zoom edges are aggregate weight.
+            arrowsThisFrame = detail == Detail.NEAR && !panning;
+            arrowRadiusPixels = Math.max(2.5, NODE_RADIUS * transform.scale());
+            arrowsInLastPaint = 0;
+            declutteredLabels = 0;
+            paintedLabels.clear();
             paintEdges(g, world, detail);
             paintNodes(g, world, detail);
             if (detail != Detail.FAR && !panning) {
@@ -363,21 +594,92 @@ public final class GraphCanvas extends JComponent {
 
     private void drawEdge(
             Graphics2D g, GraphLayout.Result layout, double[] world, int from, int to) {
-        double x1 = layout.xAt(from);
-        double y1 = layout.yAt(from);
-        double x2 = layout.xAt(to);
-        double y2 = layout.yAt(to);
+        double x1 = nodeX(layout, from);
+        double y1 = nodeY(layout, from);
+        double x2 = nodeX(layout, to);
+        double y2 = nodeY(layout, to);
         // Cheap reject: an edge whose bounding box misses the viewport cannot
         // cross it.
         if (Math.max(x1, x2) < world[0] || Math.min(x1, x2) > world[2]
                 || Math.max(y1, y2) < world[1] || Math.min(y1, y2) > world[3]) {
             return;
         }
+        double sx1 = transform.screenX(x1);
+        double sy1 = transform.screenY(y1);
+        double sx2 = transform.screenX(x2);
+        double sy2 = transform.screenY(y2);
         g.drawLine(
-                (int) Math.round(transform.screenX(x1)),
-                (int) Math.round(transform.screenY(y1)),
-                (int) Math.round(transform.screenX(x2)),
-                (int) Math.round(transform.screenY(y2)));
+                (int) Math.round(sx1), (int) Math.round(sy1),
+                (int) Math.round(sx2), (int) Math.round(sy2));
+        if (arrowsThisFrame) {
+            drawArrowhead(g, sx1, sy1, sx2, sy2);
+        }
+    }
+
+    /**
+     * The direction arrowhead: producer to consumer, which is how edges are
+     * stored — {@code from} is the target, {@code to} is its rdep — so the
+     * head sits at the consumer end, pulled back to the node's rim.
+     */
+    private void drawArrowhead(Graphics2D g, double sx1, double sy1, double sx2, double sy2) {
+        double[] tip = arrowTip(sx1, sy1, sx2, sy2, arrowRadiusPixels + 1);
+        if (tip == null) {
+            return;
+        }
+        double ux = tip[2];
+        double uy = tip[3];
+        double backX = tip[0] - ux * ARROW_LENGTH_PIXELS;
+        double backY = tip[1] - uy * ARROW_LENGTH_PIXELS;
+        // Half the head's length again as its half-width reads as an arrow at
+        // any stroke this canvas uses.
+        double wing = ARROW_LENGTH_PIXELS / 2;
+        int tipX = (int) Math.round(tip[0]);
+        int tipY = (int) Math.round(tip[1]);
+        g.drawLine(tipX, tipY,
+                (int) Math.round(backX - uy * wing), (int) Math.round(backY + ux * wing));
+        g.drawLine(tipX, tipY,
+                (int) Math.round(backX + uy * wing), (int) Math.round(backY - ux * wing));
+        arrowsInLastPaint++;
+    }
+
+    /**
+     * Where an edge's arrowhead tip sits, in screen pixels.
+     *
+     * <p>Pure geometry, extracted so the direction — the tip belongs at the
+     * {@code (x2, y2)} consumer end, pulled back by {@code pullback} so it is
+     * not buried under the node — is testable without reading pixels.
+     *
+     * @return {@code {tipX, tipY, unitX, unitY}}, or null when the edge is too
+     *     short on screen for a head to be legible
+     */
+    static double[] arrowTip(double x1, double y1, double x2, double y2, double pullback) {
+        double dx = x2 - x1;
+        double dy = y2 - y1;
+        double length = Math.hypot(dx, dy);
+        if (length < MIN_ARROW_EDGE_PIXELS || length < pullback + ARROW_LENGTH_PIXELS) {
+            return null;
+        }
+        double ux = dx / length;
+        double uy = dy / length;
+        return new double[] {x2 - ux * pullback, y2 - uy * pullback, ux, uy};
+    }
+
+    /** A node's world x, drag overlay included. */
+    private double nodeX(GraphLayout.Result layout, int position) {
+        if (dragOffsets.isEmpty()) {
+            return layout.xAt(position);
+        }
+        double[] offset = dragOffsets.get(position);
+        return offset == null ? layout.xAt(position) : layout.xAt(position) + offset[0];
+    }
+
+    /** A node's world y, drag overlay included. */
+    private double nodeY(GraphLayout.Result layout, int position) {
+        if (dragOffsets.isEmpty()) {
+            return layout.yAt(position);
+        }
+        double[] offset = dragOffsets.get(position);
+        return offset == null ? layout.yAt(position) : layout.yAt(position) + offset[1];
     }
 
     private boolean edgesAreHidden(Detail detail) {
@@ -394,71 +696,248 @@ public final class GraphCanvas extends JComponent {
      * changed; only this frame is simpler, and zooming in restores it.
      */
     public java.util.Optional<String> hiddenDetail() {
-        if (!edgesAreHidden(detail())) {
-            return java.util.Optional.empty();
+        StringBuilder text = new StringBuilder();
+        if (edgesAreHidden(detail())) {
+            int count = model.edgePositions()[0].length;
+            text.append(count)
+                    .append(" dependencies are not drawn at this zoom. Zoom in to see them.");
         }
-        int count = model.edgePositions()[0].length;
-        return java.util.Optional.of(
-                count + " dependencies are not drawn at this zoom. Zoom in to see them.");
+        if (!fitLabelNote.isEmpty()) {
+            if (text.length() > 0) {
+                text.append("  ");
+            }
+            text.append(fitLabelNote);
+        }
+        return text.length() == 0
+                ? java.util.Optional.empty() : java.util.Optional.of(text.toString());
     }
 
     private void paintNodes(Graphics2D g, double[] world, Detail detail) {
         double base = Math.max(detail == Detail.FAR ? 1.5 : 2.5, NODE_RADIUS * transform.scale());
+        GraphLayout.Result layout = model.layout();
+        // The index answers with layout positions; a dragged node may have
+        // left the rectangle its indexed position is in, or entered a view
+        // its indexed position is outside, so dragged nodes are painted
+        // separately and unconditionally. There are at most a handful.
         model.index().forEachInRect(
                 world[0] - NODE_RADIUS, world[1] - NODE_RADIUS,
                 world[2] + NODE_RADIUS, world[3] + NODE_RADIUS,
                 position -> {
-                    // The weight's node encoding: a per-node multiplier over
-                    // the zoom-derived base, so weights change relative size
-                    // and zoom still changes absolute size.
-                    double radius = base * model.radiusScaleAt(position);
-                    int diameter = (int) Math.round(radius * 2);
-                    int cx = (int) Math.round(transform.screenX(model.layout().xAt(position)));
-                    int cy = (int) Math.round(transform.screenY(model.layout().yAt(position)));
-                    g.setColor(model.colourAt(position));
-                    g.fillOval(
-                            cx - (int) Math.round(radius), cy - (int) Math.round(radius),
-                            diameter, diameter);
-                    if (selection.contains(position) || position == hover) {
-                        g.setColor(position == hover && !selection.contains(position)
-                                ? GraphColours.HOVER : GraphColours.SELECTION);
-                        g.setStroke(OUTLINE);
-                        g.drawOval(
-                                cx - (int) Math.round(radius) - 2,
-                                cy - (int) Math.round(radius) - 2,
-                                diameter + 4, diameter + 4);
+                    if (!dragOffsets.isEmpty() && dragOffsets.containsKey(position)) {
+                        return;
                     }
+                    paintNode(g, layout, position, base);
                 });
+        for (int position : dragOffsets.keySet()) {
+            if (position < model.size()) {
+                paintNode(g, layout, position, base);
+            }
+        }
     }
 
+    private void paintNode(Graphics2D g, GraphLayout.Result layout, int position, double base) {
+        // The weight's node encoding: a per-node multiplier over the
+        // zoom-derived base, so weights change relative size and zoom still
+        // changes absolute size.
+        double radius = base * model.radiusScaleAt(position);
+        int diameter = (int) Math.round(radius * 2);
+        int cx = (int) Math.round(transform.screenX(nodeX(layout, position)));
+        int cy = (int) Math.round(transform.screenY(nodeY(layout, position)));
+        g.setColor(model.colourAt(position));
+        g.fillOval(
+                cx - (int) Math.round(radius), cy - (int) Math.round(radius),
+                diameter, diameter);
+        if (selection.contains(position) || position == hover) {
+            g.setColor(position == hover && !selection.contains(position)
+                    ? GraphColours.HOVER : GraphColours.SELECTION);
+            g.setStroke(OUTLINE);
+            g.drawOval(
+                    cx - (int) Math.round(radius) - 2,
+                    cy - (int) Math.round(radius) - 2,
+                    diameter + 4, diameter + 4);
+        }
+    }
+
+    /**
+     * Labels, decluttered: text never paints over text.
+     *
+     * <p>Candidates are gathered, ordered by a deterministic priority —
+     * selected first, then hovered, then higher weight, then lower node index
+     * — and painted only where no already-painted label's box overlaps. The
+     * same frame therefore always keeps the same labels, and the first
+     * selected label always paints because nothing outranks it. What was
+     * skipped is counted in {@link #declutteredLabelCount()}: a
+     * rendering-density decision like the zoom bands, never a claim that the
+     * skipped nodes are nameless.
+     */
     private void paintLabels(Graphics2D g, double[] world, Detail detail) {
         g.setColor(GraphColours.LABEL);
-        int lineHeight = g.getFontMetrics().getHeight();
+        java.awt.FontMetrics metrics = g.getFontMetrics();
+        int lineHeight = metrics.getHeight();
         double radius = Math.max(2.5, NODE_RADIUS * transform.scale());
+        GraphLayout.Result layout = model.layout();
+
+        java.util.List<Integer> candidates = new java.util.ArrayList<>();
         model.index().forEachInRect(
                 world[0], world[1], world[2], world[3],
                 position -> {
-                    // In the medium band, only what the user has pointed at or
-                    // picked out: labelling everything at that scale is an
-                    // unreadable wall, which is what the threshold is for.
-                    if (detail == Detail.MEDIUM
-                            && !selection.contains(position) && position != hover) {
+                    if (!dragOffsets.isEmpty() && dragOffsets.containsKey(position)) {
                         return;
                     }
-                    String label = model.displayLabelAt(position);
-                    int x = (int) Math.round(
-                            transform.screenX(model.layout().xAt(position)) + radius + 4);
-                    int y = (int) Math.round(
-                            transform.screenY(model.layout().yAt(position)) + lineHeight / 4.0);
-                    g.drawString(label, x, y);
+                    if (labelWanted(position, detail)) {
+                        candidates.add(position);
+                    }
                 });
+        for (int position : dragOffsets.keySet()) {
+            if (position < model.size() && labelWanted(position, detail)
+                    && nodeX(layout, position) >= world[0] && nodeX(layout, position) <= world[2]
+                    && nodeY(layout, position) >= world[1]
+                    && nodeY(layout, position) <= world[3]) {
+                candidates.add(position);
+            }
+        }
+        candidates.sort(this::labelPriority);
+
+        java.util.List<Rectangle> placed = new java.util.ArrayList<>();
+        for (int position : candidates) {
+            String label = model.displayLabelAt(position);
+            int x = (int) Math.round(
+                    transform.screenX(nodeX(layout, position)) + radius + 4);
+            int y = (int) Math.round(
+                    transform.screenY(nodeY(layout, position)) + lineHeight / 4.0);
+            Rectangle box = new Rectangle(
+                    x, y - metrics.getAscent(), metrics.stringWidth(label), lineHeight);
+            boolean overlaps = false;
+            for (Rectangle other : placed) {
+                if (other.intersects(box)) {
+                    overlaps = true;
+                    break;
+                }
+            }
+            if (overlaps) {
+                declutteredLabels++;
+                continue;
+            }
+            placed.add(box);
+            paintedLabels.add(position);
+            g.drawString(label, x, y);
+        }
+    }
+
+    /** Whether this band labels this node at all, before any collision. */
+    private boolean labelWanted(int position, Detail detail) {
+        // In the medium band, only what the user has pointed at or picked
+        // out: labelling everything at that scale is an unreadable wall,
+        // which is what the threshold is for.
+        return detail != Detail.MEDIUM
+                || selection.contains(position) || position == hover;
+    }
+
+    /**
+     * The declutter's order: selected, then hovered, then heavier, then lower
+     * node index — with the layout position as a final tiebreak so the order
+     * is total and the frame deterministic.
+     */
+    private int labelPriority(int a, int b) {
+        boolean selectedA = selection.contains(a);
+        boolean selectedB = selection.contains(b);
+        if (selectedA != selectedB) {
+            return selectedA ? -1 : 1;
+        }
+        if ((a == hover) != (b == hover)) {
+            return a == hover ? -1 : 1;
+        }
+        long weightA = model.weightAt(a).orElse(-1);
+        long weightB = model.weightAt(b).orElse(-1);
+        if (weightA != weightB) {
+            return Long.compare(weightB, weightA);
+        }
+        int byNode = Integer.compare(model.nodeAt(a), model.nodeAt(b));
+        return byNode != 0 ? byNode : Integer.compare(a, b);
+    }
+
+    /** Labels the last paint skipped to avoid painting text over text. */
+    public int declutteredLabelCount() {
+        return declutteredLabels;
+    }
+
+    /** The positions whose labels the last paint drew, in paint order. */
+    java.util.List<Integer> paintedLabelPositionsForTesting() {
+        return java.util.List.copyOf(paintedLabels);
+    }
+
+    /** Arrowheads the last paint drew; zero outside the near band. */
+    int arrowsDrawnForTesting() {
+        return arrowsInLastPaint;
     }
 
     /** Hit test at a screen point; empty when nothing is close enough. */
     public OptionalInt positionAt(int screenX, int screenY) {
         double radius = HIT_RADIUS_PIXELS / transform.scale();
-        return model.index().nearest(
-                transform.worldX(screenX), transform.worldY(screenY), radius);
+        double worldX = transform.worldX(screenX);
+        double worldY = transform.worldY(screenY);
+        if (dragOffsets.isEmpty()) {
+            return model.index().nearest(worldX, worldY, radius);
+        }
+        // Dragged nodes are where the user put them, not where the index has
+        // them: the index — shared, never mutated — answers for everything
+        // else, and the overlay's handful are tested at their displaced
+        // coordinates.
+        OptionalInt indexed = model.index().nearest(
+                worldX, worldY, radius, position -> !dragOffsets.containsKey(position));
+        int best = indexed.orElse(-1);
+        double bestDistance = Double.MAX_VALUE;
+        if (best >= 0) {
+            double dx = model.layout().xAt(best) - worldX;
+            double dy = model.layout().yAt(best) - worldY;
+            bestDistance = dx * dx + dy * dy;
+        }
+        GraphLayout.Result layout = model.layout();
+        for (int position : dragOffsets.keySet()) {
+            if (position >= model.size()) {
+                continue;
+            }
+            double dx = nodeX(layout, position) - worldX;
+            double dy = nodeY(layout, position) - worldY;
+            double distance = dx * dx + dy * dy;
+            if (distance > radius * radius) {
+                continue;
+            }
+            if (distance < bestDistance
+                    || (distance == bestDistance && position < best)) {
+                bestDistance = distance;
+                best = position;
+            }
+        }
+        return best < 0 ? OptionalInt.empty() : OptionalInt.of(best);
+    }
+
+    /**
+     * Forgets every dragged position; the "Reset positions" action.
+     *
+     * <p>Explicit, where {@link #setModel} is implicit: a new layout resets
+     * the overlay because the offsets describe positions that no longer
+     * exist, and this resets it because the user asked.
+     */
+    public void resetDragOffsets() {
+        if (dragOffsets.isEmpty()) {
+            return;
+        }
+        dragOffsets.clear();
+        nodeDrag = -1;
+        nodeDragging = false;
+        repaint();
+    }
+
+    /** True when any node has been dragged off its laid-out position. */
+    public boolean hasDragOffsets() {
+        return !dragOffsets.isEmpty();
+    }
+
+    /** A node's world-space drag displacement, or null when it has none. */
+    double[] dragOffsetForTesting(int position) {
+        double[] offset = dragOffsets.get(position);
+        return offset == null ? null : offset.clone();
     }
 
     private final class Mouse extends MouseAdapter {
@@ -481,6 +960,12 @@ public final class GraphCanvas extends JComponent {
                     selection.remove(hit.getAsInt());
                 }
                 selectionListener.accept(selectedPositions());
+                // The branch point between panning and node dragging: a press
+                // on a node arms a node drag, a press on empty canvas (below)
+                // arms a pan. The drag moves a view-layer overlay only; the
+                // layout, the index and the cached rendering never move.
+                nodeDrag = hit.getAsInt();
+                nodeDragPoint = event.getPoint();
                 repaint();
                 return;
             }
@@ -500,10 +985,33 @@ public final class GraphCanvas extends JComponent {
                 repaint();
                 return;
             }
+            if (nodeDrag >= 0 && nodeDragPoint != null) {
+                if (!nodeDragging) {
+                    if (event.getPoint().distance(nodeDragPoint)
+                            < NODE_DRAG_THRESHOLD_PIXELS) {
+                        // The jitter inside an ordinary click. Writing an
+                        // offset here would arm "Reset positions" for a move
+                        // nobody made on purpose.
+                        return;
+                    }
+                    // The anchor is still the press point, so the first real
+                    // drag event applies the whole distance moved — the
+                    // threshold delays the decision, it does not eat pixels.
+                    nodeDragging = true;
+                }
+                double[] offset = dragOffsets.computeIfAbsent(
+                        nodeDrag, position -> new double[2]);
+                offset[0] += (event.getX() - nodeDragPoint.x) / transform.scale();
+                offset[1] += (event.getY() - nodeDragPoint.y) / transform.scale();
+                nodeDragPoint = event.getPoint();
+                repaint();
+                return;
+            }
             if (dragOrigin == null) {
                 return;
             }
             panning = true;
+            fitLabelNote = "";
             setTransform(transform.pannedByPixels(
                     event.getX() - dragOrigin.x, event.getY() - dragOrigin.y));
             dragOrigin = event.getPoint();
@@ -512,19 +1020,36 @@ public final class GraphCanvas extends JComponent {
         @Override
         public void mouseReleased(MouseEvent event) {
             if (marquee != null) {
+                double left = transform.worldX(marquee.x);
+                double top = transform.worldY(marquee.y);
+                double right = transform.worldX(marquee.x + marquee.width);
+                double bottom = transform.worldY(marquee.y + marquee.height);
                 selection.clear();
-                for (int position : model.index().within(
-                        transform.worldX(marquee.x),
-                        transform.worldY(marquee.y),
-                        transform.worldX(marquee.x + marquee.width),
-                        transform.worldY(marquee.y + marquee.height))) {
-                    selection.add(position);
+                for (int position : model.index().within(left, top, right, bottom)) {
+                    // The index holds laid-out positions; a dragged node is
+                    // selected by where it is now, below, not where it was.
+                    if (dragOffsets.isEmpty() || !dragOffsets.containsKey(position)) {
+                        selection.add(position);
+                    }
+                }
+                GraphLayout.Result layout = model.layout();
+                for (int position : dragOffsets.keySet()) {
+                    if (position < model.size()
+                            && nodeX(layout, position) >= left
+                            && nodeX(layout, position) <= right
+                            && nodeY(layout, position) >= top
+                            && nodeY(layout, position) <= bottom) {
+                        selection.add(position);
+                    }
                 }
                 selectionListener.accept(selectedPositions());
             }
             marquee = null;
             marqueeStart = null;
             dragOrigin = null;
+            nodeDrag = -1;
+            nodeDragPoint = null;
+            nodeDragging = false;
             if (panning) {
                 panning = false;
                 // The detail suppressed during the drag comes back here.
@@ -560,6 +1085,7 @@ public final class GraphCanvas extends JComponent {
             // Zoom around the pointer, not the centre: a user scrolling over a
             // node means "closer to that one".
             double factor = Math.pow(1.1, -event.getPreciseWheelRotation());
+            fitLabelNote = "";
             setTransform(transform.zoomedAround(event.getX(), event.getY(), factor));
         }
     }

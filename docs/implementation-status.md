@@ -1782,3 +1782,72 @@ it is a different tab and was not reported.
   asserts the paused state holds across the swap it already exercised. A
   default-checked assertion was added to `EventsViewWiringTest`'s real-session
   wiring test.
+
+- **The Graph card's canvas grew up: distinct action labels, decluttered
+  text, label-aware Fit, node dragging, direction arrows, and a real Find**
+  (2026-08-24). Six polish features, all in `ui/graph` plus one storage read.
+  **Distinct labels:** `GraphQueries.displayLabelsByNodeIndex()` composes
+  "Mnemonic — output basename" per action-graph node (mnemonic through
+  `declared_actions.mnemonic_id`, basename from the `primary_output_id`
+  artifact's path), because naming every action by its owning target's label
+  made all of a target's actions read as the same string. Absent pieces
+  degrade honestly — mnemonic alone, then target label, then basename, then
+  null so the canvas keeps saying "(name not recorded)" — and the grammar is
+  one public static, `composeDisplayLabel`, which the Find dropdown and
+  Browse tree reuse for the parenthesised distinct half of their rows: a
+  dropdown row reads `//pkg:t1  (Javac — t1.o)`, a Browse leaf the same with
+  the package stripped (the package is its group). The panel takes the array
+  via `attachActionDisplayLabels`, separate from the target labels, which the
+  complete export keeps for its `label` column; the label graph keeps target
+  labels, a label being the node there. **Declutter:** within a zoom band the
+  canvas never paints text over text — candidates are ordered by a
+  deterministic priority (selected, hovered, higher weight, lower node index)
+  and a label that would overlap an already-painted one is skipped and
+  counted (`declutteredLabelCount()`); a selected label always paints because
+  nothing outranks it. **Label-aware Fit:** `GraphTransform.fit` gains a
+  screen-space reservation overload, and `fitToView` reserves the widest
+  label visible at the resulting band — capped at
+  `GraphCanvas.MAX_LABEL_FIT_FRACTION` of the window and clamped so the
+  reservation can never drop the view into a coarser band where the labels it
+  reserved for would stop painting; both caps surface through
+  `hiddenDetail()`. **Dragging:** a press on a node arms a node drag (a press
+  on empty canvas still pans — the same branch point that used to pan on any
+  miss); offsets live in a canvas-only world-space overlay, never in the
+  shared `GraphLayout.Result`, `GraphSpatialIndex` or cached `Rendered`. Hit
+  testing filters the index (`GraphSpatialIndex.nearest` gains an
+  `IntPredicate` overload) and tests dragged nodes at their displaced
+  coordinates; marquee selection does the same; edges follow. Offsets survive
+  `restyle()` (a weight change shares positions by design), reset on any
+  `setModel` (every new query, focus, source, layout kind and refresh arrives
+  there), and "Reset positions" — a toolbar button beside Fit and a context
+  menu item beside "Focus here" — clears them explicitly. **Arrows:** edges
+  are stored producer→consumer, and at the near band each drawn edge gets an
+  arrowhead at its consumer end, pulled back to the node's rim; coarser bands
+  and mid-drag frames draw none, so `GraphCanvasScaleTest`'s 200 ms budget
+  holds unchanged. **Find:** the Graph card's Find field is now an
+  as-you-type dropdown of up to `FIND_LIMIT` matches, queried on the card's
+  worker (never the EDT), each entry landing on its exact `node_index`
+  instead of the old silent first-substring-match; one row past the limit is
+  fetched so "only the first 12" is a fact, not a guess. The search matches
+  every part a search row shows — label, mnemonic and primary-output path in
+  the action graphs, label and rule class in the label graph — so typing
+  "Javac" over a graph drawn full of "Javac — …" cannot be answered with a
+  false "nothing matches". The visible export's node CSV is headed
+  `id,name,duration_micros` because it carries these drawn names; the
+  complete export keeps `id,label,…` over real target labels, and
+  `GraphExportTest` pins which file carries which. A Browse… toggle
+  opens `GraphNodeBrowser` — the schema browser's filter-tree pattern rebuilt
+  for graph nodes, package-grouped, at most `BROWSE_LIMIT` entries with the
+  graph's total named at the root and the truncation stated in the summary.
+  New named limits documented in `docs/limits.md` (`FIND_LIMIT` 12,
+  `BROWSE_LIMIT` 500, `MAX_LABEL_FIT_FRACTION` 0.5) and the semantics in
+  `docs/graph-model.md`. New tests: display-label composition and degradation
+  (`GraphQueriesTest`), declutter determinism, selection outranking, medium
+  band scope, fit-with-labels bounds and the stated cap, drag
+  survive-restyle/reset-on-relayout/reset action, pan-on-empty-press, arrow
+  gating and tip geometry (`GraphCanvasTest`), reservation fit maths
+  (`GraphTransformTest`), filtered nearest (`GraphSpatialIndexTest`), display
+  labels reaching the model and the target-label fallback
+  (`GraphCanvasPanelTest`), and find dropdown exact landing, no-match
+  honesty, truncation, browse listing/landing/filtering
+  (`GraphExplorerViewTest`).

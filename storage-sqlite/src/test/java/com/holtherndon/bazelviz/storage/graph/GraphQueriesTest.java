@@ -85,6 +85,43 @@ final class GraphQueriesTest {
     }
 
     @Test
+    @DisplayName("the drawn name is findable: mnemonic and output basename match too")
+    void searchFindsByMnemonicAndOutput() throws Exception {
+        // The canvas draws "Javac — t2.out"; a search that could not match
+        // either half would claim a graph full of Javac nodes has none.
+        exec("INSERT INTO artifacts (id, path) VALUES (31, 'bazel-out/bin/chain/t2.out')");
+        exec("UPDATE declared_actions SET primary_output_id = 31 WHERE id = 3");
+
+        List<GraphQueries.GraphNode> byMnemonic = queries.search("%Javac%", 10);
+        assertThat(byMnemonic).hasSize(5);
+
+        List<GraphQueries.GraphNode> byOutput = queries.search("%t2.out%", 10);
+        assertThat(byOutput).hasSize(1);
+        assertThat(byOutput.getFirst().nodeIndex()).isEqualTo(2);
+
+        // The limit binds the widened search exactly as it bound the old one.
+        assertThat(queries.search("%Javac%", 2)).hasSize(2);
+        // And a pattern matching none of the three parts is still an absence.
+        assertThat(queries.search("%NoSuchThing%", 10)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("the label-graph search matches rule classes as well as labels")
+    void labelGraphSearchFindsByRuleClass() throws Exception {
+        exec("INSERT INTO configured_target_nodes (source_id, label_id, rule_class)"
+                + " VALUES (2, 4, 'java_library')");
+        GraphQueries reopened = new GraphQueries(connection, tempDir.resolve("indexes"));
+
+        List<GraphQueries.GraphNode> byRule =
+                reopened.search(GraphKind.CONFIGURED_TARGETS, "%java_library%", 10);
+
+        // The search rows show the rule class beside the label, so a rule
+        // class a user can read must be one they can type back.
+        assertThat(byRule).hasSize(1);
+        assertThat(byRule.getFirst().label()).contains("//chain:t3");
+    }
+
+    @Test
     @DisplayName("a node's detail names its label, mnemonic and executed action")
     void nodeDetailIsComplete() throws Exception {
         GraphQueries.GraphNode node = queries.node(2).orElseThrow();
@@ -246,6 +283,52 @@ final class GraphQueriesTest {
         // different facts, and the join must keep them apart.
         assertThat(sizes[1]).isEqualTo(-1);
         assertThat(sizes[2]).isEqualTo(-1);
+    }
+
+    @Test
+    @DisplayName("display labels name each action distinctly: mnemonic and output basename")
+    void displayLabelsAreDistinctPerAction() throws Exception {
+        // The complaint this exists for: every action under one target showed
+        // the target's label, so "all the labels are the same". t0 gets an
+        // output; t1 keeps its mnemonic only; a node with neither mnemonic
+        // nor label falls back to its basename; a node with nothing stays
+        // null so the canvas can say "(name not recorded)".
+        exec("INSERT INTO artifacts (id, path, size_bytes)"
+                + " VALUES (21, 'bazel-out/k8-fastbuild/bin/chain/t0.o', 100)");
+        exec("UPDATE declared_actions SET primary_output_id = 21 WHERE id = 1");
+        exec("INSERT INTO artifacts (id, path) VALUES (22, 'bin/only.out')");
+        exec("INSERT INTO declared_actions"
+                + " (id, source_id, graph_id, node_index, primary_output_id)"
+                + " VALUES (10, 1, 9, 5, 22)");
+        exec("INSERT INTO declared_actions (id, source_id, graph_id, node_index)"
+                + " VALUES (11, 1, 10, 6)");
+
+        String[] names = queries.displayLabelsByNodeIndex();
+
+        assertThat(names).hasSize(7);
+        assertThat(names[0]).isEqualTo("Javac — t0.o");
+        assertThat(names[1]).isEqualTo("Javac");
+        assertThat(names[5]).isEqualTo("only.out");
+        assertThat(names[6]).isNull();
+        // Two actions of one target no longer collapse to one string.
+        assertThat(names[0]).isNotEqualTo(names[1]);
+    }
+
+    @Test
+    @DisplayName("the display-label grammar degrades honestly and never invents a blank")
+    void composeDisplayLabelDegradesHonestly() {
+        assertThat(GraphQueries.composeDisplayLabel("Javac", "bin/a/b.o", "//a:b"))
+                .isEqualTo("Javac — b.o");
+        assertThat(GraphQueries.composeDisplayLabel("Javac", null, "//a:b"))
+                .isEqualTo("Javac");
+        assertThat(GraphQueries.composeDisplayLabel(null, null, "//a:b"))
+                .isEqualTo("//a:b");
+        assertThat(GraphQueries.composeDisplayLabel(null, "bin/a/b.o", null))
+                .isEqualTo("b.o");
+        // A pathological path with nothing after the slash is not a name.
+        assertThat(GraphQueries.composeDisplayLabel(null, "bin/a/", null)).isNull();
+        assertThat(GraphQueries.composeDisplayLabel(null, null, null)).isNull();
+        assertThat(GraphQueries.composeDisplayLabel("", "", "")).isNull();
     }
 
     @Test

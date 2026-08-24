@@ -179,6 +179,21 @@ public final class GraphSpatialIndex {
      * corner by selecting that node.
      */
     public OptionalInt nearest(double worldX, double worldY, double radius) {
+        return nearest(worldX, worldY, radius, position -> true);
+    }
+
+    /**
+     * {@link #nearest(double, double, double)} over an accepted subset.
+     *
+     * <p>For the canvas's drag overlay: a dragged node's indexed position is
+     * where the layout put it, not where the user moved it, so hit testing
+     * excludes dragged positions here and tests them separately at their
+     * displaced coordinates. The index itself is never mutated — it is shared
+     * with the layout cache — which is why this is a filter and not an update.
+     */
+    public OptionalInt nearest(
+            double worldX, double worldY, double radius,
+            java.util.function.IntPredicate accept) {
         if (points.length == 0 || radius <= 0) {
             return OptionalInt.empty();
         }
@@ -194,6 +209,9 @@ public final class GraphSpatialIndex {
                 int cell = row * columns + column;
                 for (int p = offsets[cell]; p < offsets[cell + 1]; p++) {
                     int position = points[p];
+                    if (!accept.test(position)) {
+                        continue;
+                    }
                     double dx = x[position] - worldX;
                     double dy = y[position] - worldY;
                     double distance = dx * dx + dy * dy;
