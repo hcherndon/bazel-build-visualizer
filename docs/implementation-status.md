@@ -1666,3 +1666,33 @@ it is a different tab and was not reported.
   actions, and the two graphs' different numbering for one label), a wiring
   case in `EntityActionsTest`, and a target-label case in
   `MainWindowNavWiringTest`.
+
+- **The Actions tab's label-filter chip, once shown, could not be removed**
+  (2026-08-24). `ActionsView.filterToLabel` and `clearLabelFilter` toggled
+  `labelChip.setVisible(...)` without the `revalidate()`/`repaint()` pairing
+  every other dynamic-visibility site in the module already carries
+  (`InspectorPanel`, `EventInspectorPanel`, `TimelineView`, `QueryTab`).
+  `JComponent.setVisible(true)` revalidates the chip *itself* as a side
+  effect, but that is not the fix: the chip's own toolbar — laid out while
+  the chip was invisible — was never told to redo its `FlowLayout`, so
+  nothing made room for the chip and it inherited stale, usually zero,
+  bounds. No pixels, no click target, no way to clear a filter arriving from
+  another view's "show actions for this target". Fixed by holding the
+  toolbar as a field and pairing both `setVisible` calls with
+  `toolbar.revalidate()`/`toolbar.repaint()`. **Why the existing test missed
+  it:** `labelFilterNarrowsVisiblyAndClears` never realized the component
+  tree and cleared the filter through the package-private
+  `clearLabelFilterForTest()` rather than a click — `isVisible()` was
+  already true under the bug, so nothing it checked could tell a chip with
+  real bounds from one sitting at (0,0,0,0). Strengthened rather than
+  patched: the test now calls `addNotify()` + `setSize` + `validate()` to
+  realize a genuinely displayable (if unshown — headless forbids any real
+  `Window`, `new JFrame()` throws `HeadlessException` even without
+  `setVisible(true)`) component tree, installs a recording `RepaintManager`
+  to confirm the *toolbar itself* — not merely the chip, which revalidates
+  on its own per `JComponent.setVisible(true)`'s own side effect — is asked
+  to re-lay-out on both the show and the hide, asserts the chip's bounds are
+  genuinely non-zero once that request is honored, and clears the filter
+  with a real `labelChip.doClick()` rather than the bypass method (now
+  removed). Confirmed to fail on each half of the reverted fix before
+  landing it.
