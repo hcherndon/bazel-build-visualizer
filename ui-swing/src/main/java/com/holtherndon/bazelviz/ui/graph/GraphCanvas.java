@@ -107,6 +107,7 @@ public final class GraphCanvas extends JComponent {
     private Rectangle marquee;
     private Consumer<int[]> selectionListener = positions -> {};
     private Runnable viewChangedListener = () -> {};
+    private java.util.function.IntConsumer focusListener = position -> {};
 
     public GraphCanvas() {
         setOpaque(true);
@@ -144,6 +145,19 @@ public final class GraphCanvas extends JComponent {
     /** Called whenever the pan or zoom changes, so a status bar can follow. */
     public void onViewChanged(Runnable listener) {
         this.viewChangedListener = listener == null ? () -> {} : listener;
+    }
+
+    /**
+     * Called with a layout position the user asked to refocus on.
+     *
+     * <p>Fired by a double-click. The canvas cannot refocus itself — it holds
+     * no service and cannot query — so it reports the wish and the panel
+     * redraws the graph around that node. A listener, like the other two,
+     * because {@code GraphPaintIsolationTest} forbids this class anything
+     * stronger.
+     */
+    public void onFocusRequested(java.util.function.IntConsumer listener) {
+        this.focusListener = listener == null ? position -> {} : listener;
     }
 
     /** Frames the whole drawing; plan 17.7's "fit". */
@@ -475,6 +489,18 @@ public final class GraphCanvas extends JComponent {
                 repaint();
             }
             setCursor(Cursor.getDefaultCursor());
+        }
+
+        @Override
+        public void mouseClicked(MouseEvent event) {
+            // Double-click asks to refocus on the node under the pointer; the
+            // press that preceded it already selected the node, so the two
+            // gestures compose rather than compete.
+            if (event.getClickCount() != 2 || event.isShiftDown()) {
+                return;
+            }
+            positionAt(event.getX(), event.getY())
+                    .ifPresent(position -> focusListener.accept(position));
         }
 
         @Override

@@ -3,7 +3,7 @@ package com.holtherndon.bazelviz.ui.graph;
 import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
-import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Font;
@@ -42,12 +42,43 @@ public final class GraphCanvasPanel extends JPanel {
     /** Depths a neighbourhood may be expanded to. Plan 13.3 forbids "all". */
     private static final int MAX_DEPTH = 12;
 
+    /**
+     * The floor of the user-settable node limit.
+     *
+     * <p>One, not zero: a limit of zero draws nothing and would read as "the
+     * graph is empty", which is a claim about the build rather than about the
+     * setting. Any positive budget is a real, if strange, request.
+     */
+    static final int MIN_NODE_LIMIT = 1;
+
+    /**
+     * The ceiling of the user-settable node limit.
+     *
+     * <p>The largest planned graph is the Tier 3 fixture's five million
+     * nodes (plan 19.4), so no honest request needs more — and the spinner
+     * needs some ceiling, because Integer.MAX_VALUE in a spinner reads as
+     * "no limit", which is exactly the claim plan 13.6 forbids.
+     */
+    static final int MAX_NODE_LIMIT = 5_000_000;
+
     private final GraphCanvas canvas = new GraphCanvas();
     private final JComboBox<GraphExtract.Mode> mode = new JComboBox<>();
     private final JComboBox<GraphLayout.Kind> layout = new JComboBox<>(GraphLayout.Kind.values());
     private final JComboBox<GraphClustering.By> groupBy =
             new JComboBox<>(GraphClustering.By.values());
     private final JSpinner depth = new JSpinner(new SpinnerNumberModel(2, 1, MAX_DEPTH, 1));
+
+    /**
+     * The node limit, as a control rather than a consequence.
+     *
+     * <p>Plan 13.6's "raise limit" existed only as the over-limit bar's
+     * doubling button, so the one way to choose a budget was to be refused at
+     * the old one first. The spinner makes the limit a setting: type a number,
+     * the next drawing honours it, and the over-limit machinery still says
+     * exactly what did not fit.
+     */
+    private final JSpinner nodeLimitControl = new JSpinner(new SpinnerNumberModel(
+            GraphExtract.DEFAULT_NODE_LIMIT, MIN_NODE_LIMIT, MAX_NODE_LIMIT, 1_000));
     private final JLabel description = new JLabel(" ");
     private final JLabel omission = new JLabel(" ");
     private final JLabel selected = new JLabel(" ");
@@ -69,9 +100,15 @@ public final class GraphCanvasPanel extends JPanel {
     private final JButton refine = new JButton("Narrow it");
 
     private GraphLayoutService service;
-    private String[] labelsByNodeIndex;
-    private long[] durationsByNodeIndex;
+    private GraphKind shownGraph = GraphKind.DECLARED_ACTIONS;
+    private String[] actionLabels;
+    private long[] actionDurations;
+    private String[] labelGraphLabels;
+    private long[] labelGraphDurations;
     private int rootNode = -1;
+
+    /** True while {@link #raiseLimits} writes the spinner, so it does not echo. */
+    private boolean syncingLimitControl;
     private int nodeLimit = GraphExtract.DEFAULT_NODE_LIMIT;
     private int edgeLimit = GraphExtract.DEFAULT_EDGE_LIMIT;
     private LimitEstimate estimate;
@@ -113,6 +150,7 @@ public final class GraphCanvasPanel extends JPanel {
         layout.addActionListener(event -> refresh());
         groupBy.addActionListener(event -> refresh());
         depth.addChangeListener(event -> refresh());
+        nodeLimitControl.addChangeListener(event -> nodeLimitTyped());
 
         JPanel controls = new JPanel();
         controls.setLayout(new BoxLayout(controls, BoxLayout.X_AXIS));
@@ -122,6 +160,9 @@ public final class GraphCanvasPanel extends JPanel {
         controls.add(Box.createHorizontalStrut(8));
         controls.add(new JLabel("Depth:"));
         controls.add(depth);
+        controls.add(Box.createHorizontalStrut(8));
+        controls.add(new JLabel("Node limit:"));
+        controls.add(nodeLimitControl);
         controls.add(Box.createHorizontalStrut(8));
         controls.add(new JLabel("Layout:"));
         controls.add(layout);
@@ -174,6 +215,8 @@ public final class GraphCanvasPanel extends JPanel {
 
         canvas.onSelectionChanged(this::selectionChanged);
         canvas.onViewChanged(this::updateOmission);
+        canvas.onFocusRequested(this::focusOnPosition);
+        installFocusMenu();
         modeChanged();
         showNothing("Open a session with a dependency graph to draw it.");
     }
@@ -216,18 +259,90 @@ public final class GraphCanvasPanel extends JPanel {
             long[] durationsByNodeIndex,
             java.util.Map<Integer, Long> actionIdByNodeIndex) {
         this.service = service;
-        this.labelsByNodeIndex = labelsByNodeIndex;
-        this.durationsByNodeIndex = durationsByNodeIndex;
+        this.shownGraph = GraphKind.DECLARED_ACTIONS;
+        this.actionLabels = labelsByNodeIndex;
+        this.actionDurations = durationsByNodeIndex;
         this.actionIdByNodeIndex = actionIdByNodeIndex == null
                 ? java.util.Map.of() : actionIdByNodeIndex;
-        showNothing("Pick an action to draw its neighbourhood, or switch to the whole build.");
+        showNothing(pickPrompt());
+    }
+
+    /**
+     * Hands over the configured-target label graph's per-node names.
+     *
+     * <p>Nothing times a label — a target's actions are timed, the label is
+     * not — so its duration array is all unknown, and the legend says so
+     * rather than colouring targets as uniformly fast.
+     */
+    public void attachLabelGraph(String[] labelsByNodeIndex) {
+        this.labelGraphLabels = labelsByNodeIndex;
+        long[] unknown = new long[labelsByNodeIndex == null ? 0 : labelsByNodeIndex.length];
+        java.util.Arrays.fill(unknown, GraphModel.UNKNOWN_DURATION);
+        this.labelGraphDurations = unknown;
+    }
+
+    /**
+     * Switches which graph the canvas draws.
+     *
+     * <p>Node indexes do not translate between graphs — index 7 is an action
+     * in one numbering and a label in the other — so the root is dropped
+     * rather than reinterpreted, and the prompt asks for a new one.
+     */
+    public void setShownGraph(GraphKind graph) {
+        if (graph == null || graph == shownGraph) {
+            return;
+        }
+        this.shownGraph = graph;
+        this.rootNode = -1;
+        this.aggregatedAutomatically = false;
+        GraphExtract.Mode chosen = (GraphExtract.Mode) mode.getSelectedItem();
+        boolean rooted = chosen == GraphExtract.Mode.NEIGHBOURHOOD
+                || chosen == GraphExtract.Mode.DEPENDENCIES
+                || chosen == GraphExtract.Mode.DEPENDENTS;
+        if (rooted || chosen == GraphExtract.Mode.PATH
+                || chosen == GraphExtract.Mode.CRITICAL_PATH) {
+            if (!rooted) {
+                mode.setSelectedItem(GraphExtract.Mode.NEIGHBOURHOOD);
+            }
+            showNothing(pickPrompt());
+            return;
+        }
+        refresh();
+    }
+
+    /** The graph currently on the canvas. */
+    public GraphKind shownGraph() {
+        return shownGraph;
+    }
+
+    private String noun() {
+        return GraphLayoutService.nounFor(shownGraph);
+    }
+
+    private String pickPrompt() {
+        return "Pick " + (shownGraph == GraphKind.CONFIGURED_TARGETS
+                        ? "a target" : "an action")
+                + " to draw its neighbourhood, or switch to the whole build."
+                + " Double-click a node to refocus on it.";
+    }
+
+    private String[] currentLabels() {
+        return shownGraph == GraphKind.CONFIGURED_TARGETS ? labelGraphLabels : actionLabels;
+    }
+
+    private long[] currentDurations() {
+        return shownGraph == GraphKind.CONFIGURED_TARGETS
+                ? labelGraphDurations : actionDurations;
     }
 
     /** Lets go of the session. */
     public void detach() {
         this.service = null;
-        this.labelsByNodeIndex = null;
-        this.durationsByNodeIndex = null;
+        this.actionLabels = null;
+        this.actionDurations = null;
+        this.labelGraphLabels = null;
+        this.labelGraphDurations = null;
+        this.shownGraph = GraphKind.DECLARED_ACTIONS;
         this.actionIdByNodeIndex = java.util.Map.of();
         this.rootNode = -1;
         this.aggregatedAutomatically = false;
@@ -248,7 +363,7 @@ public final class GraphCanvasPanel extends JPanel {
         mode.setSelectedItem(pathMode);
         setText(description, "Drawing…");
         service.submitPath(
-                GraphLayoutService.Request.forPath(EdgeDerivation.DECLARED, pathMode),
+                GraphLayoutService.Request.forPath(shownGraph, pathMode),
                 nodes, this::rendered, this::failed);
     }
 
@@ -272,7 +387,97 @@ public final class GraphCanvasPanel extends JPanel {
     public void raiseLimits(int nodes, int edges) {
         this.nodeLimit = nodes;
         this.edgeLimit = edges;
+        // The spinner is the visible face of the same number; a bar that
+        // raised the limit while the control still showed the old one would
+        // make the control a lie. The guard stops the write echoing back
+        // through the change listener as a second refresh.
+        syncingLimitControl = true;
+        try {
+            nodeLimitControl.setValue(
+                    Math.max(MIN_NODE_LIMIT, Math.min(MAX_NODE_LIMIT, nodes)));
+        } finally {
+            syncingLimitControl = false;
+        }
         refresh();
+    }
+
+    /** The spinner's half of {@link #raiseLimits}: a typed number is a request. */
+    private void nodeLimitTyped() {
+        if (syncingLimitControl) {
+            return;
+        }
+        int wanted = (Integer) nodeLimitControl.getValue();
+        if (wanted == nodeLimit) {
+            return;
+        }
+        this.nodeLimit = wanted;
+        refresh();
+    }
+
+    /**
+     * Recentres the drawing on the node at a layout position.
+     *
+     * <p>The missing half of exploration: clicking used to move only the two
+     * tree views while the canvas kept drawing the old root's neighbourhood,
+     * so there was no way to walk the graph by looking at it. Reached by
+     * double-click and by the context menu's "Focus here".
+     */
+    void focusOnPosition(int position) {
+        GraphModel model = canvas.model();
+        if (position < 0 || position >= model.size()) {
+            return;
+        }
+        if (model.isCluster()) {
+            // A box is a summary, not a node; there is nothing to centre on.
+            setText(description,
+                    "Groups cannot be focused. Switch to a node view and pick one "
+                            + noun() + ".");
+            return;
+        }
+        int node = model.nodeAt(position);
+        // The trees follow, exactly as they do for a single click, so the two
+        // halves of the view keep talking about the same node.
+        nodeListener.accept(node);
+        showNode(node);
+    }
+
+    /**
+     * A right-click menu on the canvas, so refocusing is discoverable.
+     *
+     * <p>The double-click does the same thing faster, but nothing on screen
+     * advertises a double-click; a context menu is the affordance a user can
+     * find by trying.
+     */
+    private void installFocusMenu() {
+        canvas.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mousePressed(java.awt.event.MouseEvent event) {
+                maybeShow(event);
+            }
+
+            @Override
+            public void mouseReleased(java.awt.event.MouseEvent event) {
+                maybeShow(event);
+            }
+
+            private void maybeShow(java.awt.event.MouseEvent event) {
+                if (!event.isPopupTrigger()) {
+                    return;
+                }
+                java.util.OptionalInt hit = canvas.positionAt(event.getX(), event.getY());
+                if (hit.isEmpty() || canvas.model().isCluster()) {
+                    return;
+                }
+                int position = hit.getAsInt();
+                javax.swing.JPopupMenu menu = new javax.swing.JPopupMenu();
+                javax.swing.JMenuItem focus = new javax.swing.JMenuItem(
+                        "Focus here — redraw around "
+                                + canvas.model().displayLabelAt(position));
+                focus.addActionListener(action -> focusOnPosition(position));
+                menu.add(focus);
+                menu.show(canvas, event.getX(), event.getY());
+            }
+        });
     }
 
     public int nodeLimit() {
@@ -315,17 +520,17 @@ public final class GraphCanvasPanel extends JPanel {
                 || chosen == GraphExtract.Mode.DEPENDENCIES
                 || chosen == GraphExtract.Mode.DEPENDENTS;
         if (rooted && rootNode < 0) {
-            showNothing("Pick an action to draw its neighbourhood.");
+            showNothing(pickPrompt());
             return;
         }
 
         GraphLayoutService.Request request = switch (chosen) {
             case CLUSTERS -> GraphLayoutService.Request.clustered(
-                    EdgeDerivation.DECLARED, (GraphClustering.By) groupBy.getSelectedItem());
+                    shownGraph, (GraphClustering.By) groupBy.getSelectedItem());
             case WHOLE -> GraphLayoutService.Request.whole(
-                    EdgeDerivation.DECLARED, nodeLimit, edgeLimit);
+                    shownGraph, nodeLimit, edgeLimit);
             default -> GraphLayoutService.Request.around(
-                    EdgeDerivation.DECLARED, chosen,
+                    shownGraph, chosen,
                     Math.max(0, rootNode), (Integer) depth.getValue());
         };
         request = request
@@ -351,9 +556,9 @@ public final class GraphCanvasPanel extends JPanel {
             return;
         }
 
-        canvas.setModel(GraphModel.of(result, labelsByNodeIndex, durationsByNodeIndex));
+        canvas.setModel(GraphModel.of(result, currentLabels(), currentDurations()));
         setText(description, aggregatedAutomatically
-                ? "Too big to draw action by action, so it is grouped. "
+                ? "Too big to draw " + noun() + " by " + noun() + ", so it is grouped. "
                         + result.description()
                 : result.description());
         updateOmission();
@@ -379,7 +584,7 @@ public final class GraphCanvasPanel extends JPanel {
         // budget, doubling the budget is the honest offer.
         raiseLimit.setToolTipText(PlainText.tooltip(result.refused()
                 ? "Raise the limit to " + result.extract().totalNodes()
-                        + " actions and draw all of it."
+                        + " " + noun() + "s and draw all of it."
                 : "Double the search budget and look further."));
     }
 
@@ -462,7 +667,10 @@ public final class GraphCanvasPanel extends JPanel {
     /** The executed action behind a drawn node, when the session ran one. */
     java.util.OptionalLong actionIdAt(int position) {
         if (canvas.model().isCluster() || position < 0
-                || position >= canvas.model().size()) {
+                || position >= canvas.model().size()
+                // A label is not an action; index 7 in the label numbering
+                // must not open action 7's detail.
+                || shownGraph == GraphKind.CONFIGURED_TARGETS) {
             return java.util.OptionalLong.empty();
         }
         Long actionId = actionIdByNodeIndex.get(canvas.model().nodeAt(position));
@@ -482,7 +690,7 @@ public final class GraphCanvasPanel extends JPanel {
             return;
         }
         service.onGraph(
-                EdgeDerivation.DECLARED,
+                shownGraph,
                 graph -> GraphExport.visible(model, target, format),
                 this::exported,
                 this::exportFailed);
@@ -499,10 +707,10 @@ public final class GraphCanvasPanel extends JPanel {
         if (service == null) {
             return;
         }
-        String[] labels = labelsByNodeIndex;
-        long[] durations = durationsByNodeIndex;
+        String[] labels = currentLabels();
+        long[] durations = currentDurations();
         service.onGraph(
-                EdgeDerivation.DECLARED,
+                shownGraph,
                 graph -> GraphExport.whole(graph, labels, durations, target, format),
                 this::exported,
                 this::exportFailed);
@@ -580,6 +788,11 @@ public final class GraphCanvasPanel extends JPanel {
         return (GraphExtract.Mode) mode.getSelectedItem();
     }
 
+    /** The node-limit spinner, for tests that type into it. */
+    JSpinner nodeLimitControlForTesting() {
+        return nodeLimitControl;
+    }
+
     void drawItAnywayForTesting() {
         drawItAnyway();
     }
@@ -636,7 +849,7 @@ public final class GraphCanvasPanel extends JPanel {
                     .orElse(text + "  —  not timed in this session"));
             return;
         }
-        setText(selected, positions.length + " actions selected");
+        setText(selected, positions.length + " " + noun() + "s selected");
     }
 
     /** What the colours mean, including how much of the drawing they cannot speak for. */
@@ -651,7 +864,7 @@ public final class GraphCanvasPanel extends JPanel {
             // the boxes on screen add up to, so a user can check the drawing
             // against the build rather than take it on trust.
             String text = clustering.clusters().size() + " groups holding "
-                    + clustering.clusteredNodes() + " actions and "
+                    + clustering.clusteredNodes() + " " + noun() + "s and "
                     + clustering.clusteredEdges() + " dependencies between them.";
             long unnamed = clustering.clusters().stream()
                     .filter(GraphClustering.Cluster::isUnknown)

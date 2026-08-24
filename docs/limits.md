@@ -20,8 +20,10 @@ reached, and the first two can be raised from the graph toolbar.
 
 | Limit | Constant | Default | When reached |
 |---|---|---:|---|
-| Detailed graph nodes | `com.holtherndon.bazelviz.analysis.GraphExtract.DEFAULT_NODE_LIMIT` | 50000 | The extraction refuses and reports the exact totals. The canvas offers "Draw it anyway", "Narrow it", "Group instead" and "Export all of it". |
+| Detailed graph nodes | `com.holtherndon.bazelviz.analysis.GraphExtract.DEFAULT_NODE_LIMIT` | 50000 | The extraction refuses and reports the exact totals. The canvas offers "Draw it anyway", "Narrow it", "Group instead" and "Export all of it". The default of the toolbar's node-limit spinner, which sets the budget directly. |
 | Detailed graph edges | `com.holtherndon.bazelviz.analysis.GraphExtract.DEFAULT_EDGE_LIMIT` | 200000 | As above. |
+| Node-limit spinner floor | `com.holtherndon.bazelviz.ui.graph.GraphCanvasPanel.MIN_NODE_LIMIT` | 1 | The spinner will not go lower: a limit of zero draws nothing and would read as "the graph is empty", which is a claim about the build rather than the setting. |
+| Node-limit spinner ceiling | `com.holtherndon.bazelviz.ui.graph.GraphCanvasPanel.MAX_NODE_LIMIT` | 5000000 | The spinner will not go higher. Matches the largest planned graph (Tier 3, five million nodes); an unbounded control would read as "no limit", which is a claim plan 13.6 forbids. |
 | Cluster boxes | `com.holtherndon.bazelviz.analysis.GraphClustering.DEFAULT_CLUSTER_LIMIT` | 2000 | Grouping refuses with the exact group count and suggests a coarser dimension. Nothing is truncated. |
 | Timeline spans in one viewport | `com.holtherndon.bazelviz.ui.timeline.SpanWindow.MAX_SPANS` | 20000 | The window reports that it is capped and the aggregate bins remain exact; zooming in returns individual spans. |
 | Console lines retained | `com.holtherndon.bazelviz.ui.capture.ConsoleModel.DEFAULT_MAX_LINES` | 20000 | The oldest lines are dropped from the *view*; the full text is on disk in `raw/stdout.log`, which the panel says. |

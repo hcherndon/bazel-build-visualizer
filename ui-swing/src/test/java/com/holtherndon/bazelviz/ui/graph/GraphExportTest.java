@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import java.io.IOException;
@@ -50,7 +51,7 @@ final class GraphExportTest {
         }
         return GraphModel.of(
                 new GraphLayoutService.Rendered(
-                        GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 10),
+                        GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 10),
                         extract, GraphLayout.layered(extract, RUNNING), null,
                         extract.describe()),
                 labels, durations);

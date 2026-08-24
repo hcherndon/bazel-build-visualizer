@@ -4,7 +4,7 @@ import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.graph.CsrGraph;
-import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -138,7 +138,7 @@ public final class GraphLayoutService implements AutoCloseable {
             Request request, Consumer<LimitEstimate> onDone, Consumer<Throwable> onError) {
         worker.execute(() -> {
             try {
-                Optional<CsrGraph> forward = queries.forwardIndex(request.derivation());
+                Optional<CsrGraph> forward = queries.forwardIndex(request.graph());
                 LimitEstimate estimate = forward
                         .map(graph -> LimitEstimate.of(
                                 request.mode(), graph.nodeCount(), graph.edgeCount(),
@@ -168,14 +168,14 @@ public final class GraphLayoutService implements AutoCloseable {
      * keeps every route to the graph on one thread.
      */
     public <T> void onGraph(
-            EdgeDerivation derivation, GraphWork<T> work,
+            GraphKind graph, GraphWork<T> work,
             Consumer<T> onDone, Consumer<Throwable> onError) {
         worker.execute(() -> {
             try {
-                Optional<CsrGraph> forward = queries.forwardIndex(derivation);
+                Optional<CsrGraph> forward = queries.forwardIndex(graph);
                 if (forward.isEmpty()) {
                     throw new IllegalStateException(
-                            "this session has no " + derivation.displayName() + " graph");
+                            "this session has no " + graph.displayName());
                 }
                 T result = work.runOn(forward.get());
                 SwingUtilities.invokeLater(() -> onDone.accept(result));
@@ -209,7 +209,7 @@ public final class GraphLayoutService implements AutoCloseable {
 
         worker.execute(() -> {
             try {
-                Optional<CsrGraph> forward = queries.forwardIndex(request.derivation());
+                Optional<CsrGraph> forward = queries.forwardIndex(request.graph());
                 if (forward.isEmpty()) {
                     Rendered nothing = Rendered.unavailable(request);
                     SwingUtilities.invokeLater(() -> onDone.accept(nothing));
@@ -222,8 +222,9 @@ public final class GraphLayoutService implements AutoCloseable {
                 if (cancelled.get()) {
                     return;
                 }
-                Rendered rendered =
-                        new Rendered(request, extract, layout, null, extract.describe());
+                Rendered rendered = new Rendered(
+                        request, extract, layout, null,
+                        extract.describe(nounFor(request.graph())));
                 SwingUtilities.invokeLater(() -> onDone.accept(rendered));
             } catch (RuntimeException | java.io.IOException | java.sql.SQLException failure) {
                 if (cancelled.get()) {
@@ -242,19 +243,21 @@ public final class GraphLayoutService implements AutoCloseable {
 
     private Rendered compute(Request request, AtomicBoolean cancelled)
             throws java.io.IOException, java.sql.SQLException {
-        Optional<CsrGraph> forward = queries.forwardIndex(request.derivation());
+        Optional<CsrGraph> forward = queries.forwardIndex(request.graph());
         if (forward.isEmpty()) {
             return Rendered.unavailable(request);
         }
         CsrGraph graph = forward.get();
 
         if (request.mode() == GraphExtract.Mode.CLUSTERS) {
-            String[] keys = clusterKeys(request.clusterBy());
+            String[] keys = clusterKeys(request.graph(), request.clusterBy());
             GraphClustering.Result clustering = GraphClustering.cluster(
                     graph, keys, request.clusterBy(), request.clusterLimit(), cancelled);
             GraphExtract.Result extract = clustering.asExtract();
             GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
-            return new Rendered(request, extract, layout, clustering, clustering.describe());
+            return new Rendered(
+                    request, extract, layout, clustering,
+                    clustering.describe(nounFor(request.graph())));
         }
 
         GraphExtract.Result extract = switch (request.mode()) {
@@ -280,21 +283,32 @@ public final class GraphLayoutService implements AutoCloseable {
             case CLUSTERS -> throw new IllegalStateException("handled above");
         };
         GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
-        return new Rendered(request, extract, layout, null, extract.describe());
+        return new Rendered(
+                request, extract, layout, null, extract.describe(nounFor(request.graph())));
+    }
+
+    /** What one node of a graph is, for every sentence a drawing carries. */
+    static String nounFor(GraphKind graph) {
+        return graph == GraphKind.CONFIGURED_TARGETS ? "target" : "action";
     }
 
     private CsrGraph reverse(Request request) throws java.io.IOException, java.sql.SQLException {
-        return queries.reverseIndex(request.derivation()).orElseThrow(() ->
+        return queries.reverseIndex(request.graph()).orElseThrow(() ->
                 new IllegalStateException(
-                        "the reverse index for " + request.derivation() + " was never built"));
+                        "the reverse index for " + request.graph() + " was never built"));
     }
 
-    private String[] clusterKeys(GraphClustering.By by) throws java.sql.SQLException {
+    private String[] clusterKeys(GraphKind graph, GraphClustering.By by)
+            throws java.sql.SQLException {
+        // The label graph's answer to "mnemonic" is the rule class: the
+        // coarsest useful kind grouping a target has.
         return switch (by) {
-            case MNEMONIC -> queries.mnemonicsByNodeIndex();
-            case TARGET -> queries.labelsByNodeIndex();
+            case MNEMONIC -> graph == GraphKind.CONFIGURED_TARGETS
+                    ? queries.ruleClassesByNodeIndex()
+                    : queries.mnemonicsByNodeIndex();
+            case TARGET -> queries.labelsByNodeIndex(graph);
             case PACKAGE -> {
-                String[] labels = queries.labelsByNodeIndex();
+                String[] labels = queries.labelsByNodeIndex(graph);
                 for (int i = 0; i < labels.length; i++) {
                     labels[i] = GraphClustering.packageOf(labels[i]);
                 }
@@ -338,7 +352,7 @@ public final class GraphLayoutService implements AutoCloseable {
      * collision between two different pictures.
      */
     public record Request(
-            EdgeDerivation derivation,
+            GraphKind graph,
             GraphExtract.Mode mode,
             int sourceNode,
             int maxDepth,
@@ -348,37 +362,37 @@ public final class GraphLayoutService implements AutoCloseable {
             GraphClustering.By clusterBy,
             int clusterLimit) {
 
-        /** One of the three views rooted at an action, at the default limits. */
+        /** One of the three views rooted at a node, at the default limits. */
         public static Request around(
-                EdgeDerivation derivation, GraphExtract.Mode mode, int node, int depth) {
+                GraphKind graph, GraphExtract.Mode mode, int node, int depth) {
             return new Request(
-                    derivation, mode, node, depth,
+                    graph, mode, node, depth,
                     GraphExtract.DEFAULT_NODE_LIMIT, GraphExtract.DEFAULT_EDGE_LIMIT,
                     GraphLayout.defaultFor(mode), GraphClustering.By.PACKAGE,
                     GraphClustering.DEFAULT_CLUSTER_LIMIT);
         }
 
         /** The whole build, which will refuse itself unless it fits. */
-        public static Request whole(EdgeDerivation derivation, int nodeLimit, int edgeLimit) {
+        public static Request whole(GraphKind graph, int nodeLimit, int edgeLimit) {
             return new Request(
-                    derivation, GraphExtract.Mode.WHOLE, 0, Integer.MAX_VALUE,
+                    graph, GraphExtract.Mode.WHOLE, 0, Integer.MAX_VALUE,
                     nodeLimit, edgeLimit, GraphLayout.Kind.LAYERED,
                     GraphClustering.By.PACKAGE, GraphClustering.DEFAULT_CLUSTER_LIMIT);
         }
 
         /** A path that a search has already found. */
-        public static Request forPath(EdgeDerivation derivation, GraphExtract.Mode mode) {
+        public static Request forPath(GraphKind graph, GraphExtract.Mode mode) {
             return new Request(
-                    derivation, mode, 0, Integer.MAX_VALUE,
+                    graph, mode, 0, Integer.MAX_VALUE,
                     GraphExtract.DEFAULT_NODE_LIMIT, GraphExtract.DEFAULT_EDGE_LIMIT,
                     GraphLayout.Kind.LINEAR, GraphClustering.By.PACKAGE,
                     GraphClustering.DEFAULT_CLUSTER_LIMIT);
         }
 
         /** The far-zoom view: one box per group. */
-        public static Request clustered(EdgeDerivation derivation, GraphClustering.By by) {
+        public static Request clustered(GraphKind graph, GraphClustering.By by) {
             return new Request(
-                    derivation, GraphExtract.Mode.CLUSTERS, 0, Integer.MAX_VALUE,
+                    graph, GraphExtract.Mode.CLUSTERS, 0, Integer.MAX_VALUE,
                     GraphExtract.DEFAULT_NODE_LIMIT, GraphExtract.DEFAULT_EDGE_LIMIT,
                     GraphLayout.Kind.GRID, by, GraphClustering.DEFAULT_CLUSTER_LIMIT);
         }
@@ -386,14 +400,14 @@ public final class GraphLayoutService implements AutoCloseable {
         /** The same query drawn a different way. */
         public Request withLayout(GraphLayout.Kind kind) {
             return new Request(
-                    derivation, mode, sourceNode, maxDepth, nodeLimit, edgeLimit,
+                    graph, mode, sourceNode, maxDepth, nodeLimit, edgeLimit,
                     kind, clusterBy, clusterLimit);
         }
 
         /** The same query with a raised ceiling; plan 13.6's explicit opt-in. */
         public Request withLimits(int nodes, int edges) {
             return new Request(
-                    derivation, mode, sourceNode, maxDepth, nodes, edges,
+                    graph, mode, sourceNode, maxDepth, nodes, edges,
                     layout, clusterBy, clusterLimit);
         }
     }
@@ -417,6 +431,15 @@ public final class GraphLayoutService implements AutoCloseable {
             String description) {
 
         static Rendered unavailable(Request request) {
+            String explanation = request.graph() == GraphKind.CONFIGURED_TARGETS
+                    ? "This session has no configured-target graph index. It is built"
+                            + " when a capture's cquery succeeds; a session imported from"
+                            + " a BEP file alone, or captured before indexing existed,"
+                            + " has none."
+                    : "This session has no action graph index. It is built when a"
+                            + " capture's aquery succeeds; a session imported from a BEP"
+                            + " file alone, or captured before indexing existed, has"
+                            + " none.";
             return new Rendered(
                     request,
                     new GraphExtract.Result(
@@ -424,8 +447,7 @@ public final class GraphLayoutService implements AutoCloseable {
                             0, 0, false, request.nodeLimit()),
                     GraphLayout.Result.empty(request.layout()),
                     null,
-                    "This session has no action graph. Run an aquery from the graph view"
-                            + " to build one.");
+                    explanation);
         }
 
         /** True when there is a graph but it was too big to draw at this setting. */

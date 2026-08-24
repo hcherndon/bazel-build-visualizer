@@ -36,7 +36,7 @@ final class GraphCanvasTest {
         GraphExtract.Result extract = GraphExtract.whole(chain(nodes), 1_000, 1_000);
         return new GraphLayoutService.Rendered(
                 GraphLayoutService.Request.whole(
-                        com.holtherndon.bazelviz.core.graph.EdgeDerivation.DECLARED, 1_000, 1_000),
+                        com.holtherndon.bazelviz.core.graph.GraphKind.DECLARED_ACTIONS, 1_000, 1_000),
                 extract,
                 GraphLayout.layered(extract, RUNNING),
                 null,
@@ -109,7 +109,7 @@ final class GraphCanvasTest {
         GraphExtract.Result extract = clustering.asExtract();
         GraphLayoutService.Rendered clustered = new GraphLayoutService.Rendered(
                 GraphLayoutService.Request.clustered(
-                        com.holtherndon.bazelviz.core.graph.EdgeDerivation.DECLARED,
+                        com.holtherndon.bazelviz.core.graph.GraphKind.DECLARED_ACTIONS,
                         GraphClustering.By.PACKAGE),
                 extract,
                 GraphLayout.grid(extract, RUNNING),

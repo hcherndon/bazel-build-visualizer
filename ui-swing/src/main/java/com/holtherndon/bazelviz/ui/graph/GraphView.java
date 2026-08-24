@@ -1,6 +1,6 @@
 package com.holtherndon.bazelviz.ui.graph;
 
-import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.graph.ShortestPath;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
@@ -82,10 +82,23 @@ public final class GraphView extends JPanel {
     private final GraphCanvasPanel canvasPanel = new GraphCanvasPanel();
     private final javax.swing.JTabbedPane views = new javax.swing.JTabbedPane();
 
+    private final LazyExpander dependenciesExpander = new LazyExpander(true);
+    private final LazyExpander dependentsExpander = new LazyExpander(false);
+
     private ExecutorService worker;
     private GraphQueries queries;
     private GraphLayoutService layouts;
     private long generation;
+
+    /**
+     * The graph every control on this card is talking about.
+     *
+     * <p>Follows the source selector. The selector used to be a caption — it
+     * named the graph and changed nothing — and the trees and canvas silently
+     * traversed the action graph whatever it said, which is precisely the
+     * conflation rule 13 exists to prevent.
+     */
+    private GraphKind shownGraph = GraphKind.DECLARED_ACTIONS;
 
     public GraphView() {
         super(new BorderLayout());
@@ -107,7 +120,7 @@ public final class GraphView extends JPanel {
         top.add(row(new JLabel("Graph:"), sourceChoice));
         top.add(sourceDetail);
         top.add(warning);
-        top.add(row(new JLabel("Action:"), search, button("Show", this::showSearched)));
+        top.add(row(new JLabel("Find:"), search, button("Show", this::showSearched)));
 
         JScrollPane forward = new JScrollPane(dependencies);
         forward.setBorder(BorderFactory.createTitledBorder("Depends on"));
@@ -144,8 +157,8 @@ public final class GraphView extends JPanel {
         add(deck, BorderLayout.CENTER);
         showCard("empty");
 
-        dependencies.addTreeWillExpandListener(new LazyExpander(true));
-        dependents.addTreeWillExpandListener(new LazyExpander(false));
+        dependencies.addTreeWillExpandListener(dependenciesExpander);
+        dependents.addTreeWillExpandListener(dependentsExpander);
         // Picking a node on the canvas moves the trees to it. Two halves of one
         // view showing two different actions reads as a bug in the data.
         canvasPanel.onNodeSelected(this::rootTreesAt);
@@ -167,15 +180,17 @@ public final class GraphView extends JPanel {
             String[] labels;
             long[] durations;
             java.util.Map<Integer, Long> actionIds;
+            String[] targetLabels;
             try {
                 opened = source.openGraphQueries();
                 sources = opened.sources();
                 // Fetched here, once, because the canvas must never need a name
-                // or a duration during a paint (plan 17.7). Two queries for the
-                // whole session, not two per frame.
+                // or a duration during a paint (plan 17.7). A few queries for
+                // the whole session, not one per frame.
                 labels = opened.labelsByNodeIndex();
                 durations = opened.durationsByNodeIndex(false, GraphModel.UNKNOWN_DURATION);
                 actionIds = opened.actionIdsByNodeIndex();
+                targetLabels = opened.labelsByNodeIndex(GraphKind.CONFIGURED_TARGETS);
             } catch (RuntimeException | java.sql.SQLException failure) {
                 log.debug("no graph for this session", failure);
                 return;
@@ -190,6 +205,7 @@ public final class GraphView extends JPanel {
                 queries = opened;
                 layouts = service;
                 canvasPanel.attach(service, labels, durations, actionIds);
+                canvasPanel.attachLabelGraph(targetLabels);
                 installSources(sources);
             });
         });
@@ -242,6 +258,36 @@ public final class GraphView extends JPanel {
         String text = GraphSourceSummary.warning(source).orElse(" ");
         warning.setText(text);
         warning.setToolTipText(PlainText.tooltip(text));
+
+        // The selector is a control, not a caption: picking a source switches
+        // which graph the search, the trees and the canvas traverse. Node
+        // indexes do not translate between graphs, so the rooted views clear
+        // and ask for a new seed rather than reinterpreting the old one.
+        GraphKind chosen = source.graphKind().orElse(shownGraph);
+        if (chosen != shownGraph) {
+            shownGraph = chosen;
+            clearTrees();
+            pathResult.setText(" ");
+            canvasPanel.setShownGraph(chosen);
+        }
+    }
+
+    /**
+     * Moves the selector to the source behind {@code kind}, when it exists.
+     *
+     * @return true when that source is now selected
+     */
+    private boolean selectSource(GraphKind kind) {
+        for (int i = 0; i < sourceChoice.getItemCount(); i++) {
+            GraphQueries.GraphSource source = sourceChoice.getItemAt(i);
+            if (source.graphKind().filter(kind::equals).isPresent()) {
+                if (sourceChoice.getSelectedIndex() != i) {
+                    sourceChoice.setSelectedIndex(i);
+                }
+                return true;
+            }
+        }
+        return false;
     }
 
     // ------------------------------------------------------------- selection
@@ -251,11 +297,13 @@ public final class GraphView extends JPanel {
         if (pattern.isEmpty() || queries == null) {
             return;
         }
+        GraphKind kind = shownGraph;
         onWorker(work -> {
-            List<GraphQueries.GraphNode> found = work.search("%" + pattern + "%", 1);
+            List<GraphQueries.GraphNode> found = work.search(kind, "%" + pattern + "%", 1);
             SwingUtilities.invokeLater(() -> {
                 if (found.isEmpty()) {
-                    pathResult.setText("Nothing in the graph matches " + pattern + ".");
+                    pathResult.setText("Nothing in the "
+                            + kind.displayName() + " matches " + pattern + ".");
                     clearTrees();
                     return;
                 }
@@ -275,6 +323,10 @@ public final class GraphView extends JPanel {
      * that reads as "nothing depends on it".
      */
     public void showAction(long actionId) {
+        // An executed action lives in the action graph, whichever source was
+        // on screen; the selector follows so the label above the trees keeps
+        // naming the graph that is actually shown.
+        selectSource(GraphKind.DECLARED_ACTIONS);
         onWorker(work -> {
             java.util.OptionalLong nodeIndex = work.nodeForAction(actionId);
             if (nodeIndex.isEmpty()) {
@@ -305,6 +357,8 @@ public final class GraphView extends JPanel {
                     + " this session has no imported action graph.");
             return;
         }
+        // The chain's node indices are action-graph indices.
+        selectSource(GraphKind.DECLARED_ACTIONS);
         views.setSelectedComponent(canvasPanel);
         canvasPanel.showPath(
                 nodes, com.holtherndon.bazelviz.analysis.GraphExtract.Mode.CRITICAL_PATH);
@@ -326,8 +380,9 @@ public final class GraphView extends JPanel {
      * so telling it to redraw would clear the very selection that arrived here.
      */
     private void rootTreesAt(int nodeIndex) {
+        GraphKind kind = shownGraph;
         onWorker(work -> {
-            Optional<GraphQueries.GraphNode> found = work.node(nodeIndex);
+            Optional<GraphQueries.GraphNode> found = work.node(kind, nodeIndex);
             found.ifPresent(node -> SwingUtilities.invokeLater(() -> {
                 setRoot(dependencies, node, true);
                 setRoot(dependents, node, false);
@@ -346,10 +401,17 @@ public final class GraphView extends JPanel {
     }
 
     private void setRoot(JTree tree, GraphQueries.GraphNode node, boolean dependencies) {
-        DefaultMutableTreeNode root = new DefaultMutableTreeNode(new NodeRef(node, dependencies));
+        NodeRef ref = new NodeRef(
+                node, dependencies, shownGraph != GraphKind.CONFIGURED_TARGETS);
+        DefaultMutableTreeNode root = new DefaultMutableTreeNode(ref);
         root.add(new DefaultMutableTreeNode(NodeRef.LOADING));
         tree.setModel(new DefaultTreeModel(root));
         tree.expandPath(new javax.swing.tree.TreePath(root));
+        // Loaded directly rather than through the expansion listener: JTree
+        // expands a fresh model's root on its own, so by the time expandPath
+        // runs there is no collapsed-to-expanded transition left to fire the
+        // listener, and the root's children would stay a permanent "…".
+        (dependencies ? dependenciesExpander : dependentsExpander).loadInto(root, ref);
     }
 
     private void clearTrees() {
@@ -369,15 +431,16 @@ public final class GraphView extends JPanel {
         if (from.isEmpty() || to.isEmpty()) {
             return;
         }
+        GraphKind kind = shownGraph;
         onWorker(work -> {
-            List<GraphQueries.GraphNode> start = work.search("%" + from + "%", 1);
-            List<GraphQueries.GraphNode> end = work.search("%" + to + "%", 1);
+            List<GraphQueries.GraphNode> start = work.search(kind, "%" + from + "%", 1);
+            List<GraphQueries.GraphNode> end = work.search(kind, "%" + to + "%", 1);
             String text;
             if (start.isEmpty() || end.isEmpty()) {
                 text = "One of those is not in the graph.";
             } else {
                 Optional<ShortestPath.Result> result = work.path(
-                        EdgeDerivation.DECLARED, start.getFirst().nodeIndex(),
+                        kind, start.getFirst().nodeIndex(),
                         end.getFirst().nodeIndex(), PATH_BUDGET);
                 // describe() is the one place that distinguishes "no path" from
                 // "the search gave up", which are different answers and only
@@ -419,8 +482,15 @@ public final class GraphView extends JPanel {
         public void treeWillExpand(javax.swing.event.TreeExpansionEvent event) {
             Object last = event.getPath().getLastPathComponent();
             if (!(last instanceof DefaultMutableTreeNode parent)
-                    || !(parent.getUserObject() instanceof NodeRef ref)
-                    || ref.loaded) {
+                    || !(parent.getUserObject() instanceof NodeRef ref)) {
+                return;
+            }
+            loadInto(parent, ref);
+        }
+
+        /** Fetches a node's neighbours once, and fills its tree row. */
+        void loadInto(DefaultMutableTreeNode parent, NodeRef ref) {
+            if (ref.loaded) {
                 return;
             }
             ref.loaded = true;
@@ -428,10 +498,11 @@ public final class GraphView extends JPanel {
             // depends on is its reverse neighbours. This mapping was once the
             // other way round, and the "Depends on" tree listed dependents.
             boolean forwards = !dependencies;
+            GraphKind kind = shownGraph;
             onWorker(work -> {
                 List<GraphQueries.GraphNode> children = work.neighbours(
-                        EdgeDerivation.DECLARED, ref.node.nodeIndex(), forwards, CHILD_LIMIT);
-                int degree = work.degree(EdgeDerivation.DECLARED, ref.node.nodeIndex(), forwards);
+                        kind, ref.node.nodeIndex(), forwards, CHILD_LIMIT);
+                int degree = work.degree(kind, ref.node.nodeIndex(), forwards);
                 SwingUtilities.invokeLater(() -> fill(parent, children, degree));
             });
         }
@@ -445,8 +516,8 @@ public final class GraphView extends JPanel {
                 DefaultMutableTreeNode parent, List<GraphQueries.GraphNode> children, int degree) {
             parent.removeAllChildren();
             for (GraphQueries.GraphNode child : children) {
-                DefaultMutableTreeNode node =
-                        new DefaultMutableTreeNode(new NodeRef(child, dependencies));
+                DefaultMutableTreeNode node = new DefaultMutableTreeNode(new NodeRef(
+                        child, dependencies, shownGraph != GraphKind.CONFIGURED_TARGETS));
                 node.add(new DefaultMutableTreeNode(NodeRef.LOADING));
                 parent.add(node);
             }
@@ -475,11 +546,18 @@ public final class GraphView extends JPanel {
         /** Which tree this row belongs to; the expander asks the index. */
         final boolean dependencies;
 
+        /**
+         * False for label-graph rows: a label is never "executed", so the
+         * marker below would be a claim about a concept the graph lacks.
+         */
+        final boolean showsExecution;
+
         boolean loaded;
 
-        NodeRef(GraphQueries.GraphNode node, boolean dependencies) {
+        NodeRef(GraphQueries.GraphNode node, boolean dependencies, boolean showsExecution) {
             this.node = node;
             this.dependencies = dependencies;
+            this.showsExecution = showsExecution;
         }
 
         @Override
@@ -487,7 +565,7 @@ public final class GraphView extends JPanel {
             // A declared action that never ran is marked, because a tree full
             // of actions the build did not run is a fact about the graph and
             // not about the build.
-            return node.declaredOnly()
+            return showsExecution && node.declaredOnly()
                     ? node.displayName() + "  — not executed"
                     : node.displayName();
         }
@@ -564,6 +642,17 @@ public final class GraphView extends JPanel {
             }
             return rendered;
         }
+    }
+
+    /** Types a pattern and presses Show, for tests. */
+    void searchForTesting(String pattern) {
+        search.setText(pattern);
+        showSearched();
+    }
+
+    /** The graph the card is currently traversing, for tests. */
+    GraphKind shownGraphForTesting() {
+        return shownGraph;
     }
 
     /** The trees, for tests. */
