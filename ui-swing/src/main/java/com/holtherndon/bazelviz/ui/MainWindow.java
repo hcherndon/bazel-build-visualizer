@@ -25,7 +25,7 @@ import com.holtherndon.bazelviz.ui.events.EventValueFormat;
 import com.holtherndon.bazelviz.ui.actions.ActionsView;
 import com.holtherndon.bazelviz.ui.events.EventsView;
 import com.holtherndon.bazelviz.ui.enrich.CoverageView;
-import com.holtherndon.bazelviz.ui.failures.FailuresView;
+import com.holtherndon.bazelviz.ui.errors.ErrorsView;
 import com.holtherndon.bazelviz.ui.graph.GraphView;
 import com.holtherndon.bazelviz.ui.timeline.TimelineController;
 import com.holtherndon.bazelviz.ui.overview.OverviewPanel;
@@ -131,7 +131,7 @@ public final class MainWindow extends JFrame {
     private final ActionsView actionsView = new ActionsView();
     private final TargetsView targetsView = new TargetsView();
     private final TestsView testsView = new TestsView();
-    private final FailuresView failuresView = new FailuresView();
+    private final ErrorsView errorsView = new ErrorsView();
     private final CoverageView coverageView = new CoverageView();
     private final GraphView graphView = new GraphView();
     private final FindingsView findingsView = new FindingsView();
@@ -209,6 +209,21 @@ public final class MainWindow extends JFrame {
     private final JButton runButton = new JButton("Run");
     private final CapturePanel capturePanel = new CapturePanel();
     private final ConsoleView consoleView = new ConsoleView();
+
+    /**
+     * The Build card: how the capture is going, above what the build is saying.
+     *
+     * <p>One card where plan 17.1 had two. Following a build meant reading the
+     * phase, the three counters and the stop buttons on Capture and Bazel's own
+     * output on Console, which are the two halves of one question and were a
+     * card apart. The status is a header strip a few rows deep; the console
+     * takes the rest, which is the shape that matters because the console is
+     * the part that grows.
+     *
+     * <p>Declared after both halves: field initializers run in order, and
+     * {@link #buildBuildCard()} reads them.
+     */
+    private final JComponent buildCard = buildBuildCard();
     private final LaunchController launchController;
     private CaptureStatusModel captureStatus = CaptureStatusModel.idle();
 
@@ -313,7 +328,7 @@ public final class MainWindow extends JFrame {
                 "Actions: " + EventValueFormat.count(snapshot.actions())));
         targetsView.onShowSourceEvent(this::revealEvent);
         testsView.onShowSourceEvent(this::revealEvent);
-        failuresView.onShowSourceEvent(this::revealEvent);
+        errorsView.onShowSourceEvent(this::revealEvent);
         // The manifest's event count is absent for a session whose import never
         // finished; the database always knows, so the status bar takes the real
         // number from the view once it is open rather than keeping an em dash
@@ -1045,7 +1060,7 @@ public final class MainWindow extends JFrame {
         actionsView.openSession(opened);
         targetsView.openSession(opened);
         testsView.openSession(opened);
-        failuresView.openSession(opened);
+        errorsView.openSession(opened);
         coverageView.openSession(opened);
         graphView.openSession(opened);
         timeline.openSession(opened);
@@ -1068,7 +1083,7 @@ public final class MainWindow extends JFrame {
         actionsView.closeSession();
         targetsView.closeSession();
         testsView.closeSession();
-        failuresView.closeSession();
+        errorsView.closeSession();
         coverageView.closeSession();
         graphView.closeSession();
         timeline.closeSession();
@@ -1132,7 +1147,7 @@ public final class MainWindow extends JFrame {
         actionsView.showEmpty("No session is open.");
         targetsView.showEmpty("No session is open.");
         testsView.showEmpty("No session is open.");
-        failuresView.showEmpty("No session is open.");
+        errorsView.showEmpty("No session is open.");
         sessionStatus.setText("Session: none");
         eventStatus.setText("Events: " + UNKNOWN);
         actionStatus.setText("Actions: " + UNKNOWN);
@@ -1173,7 +1188,7 @@ public final class MainWindow extends JFrame {
             case TIMELINE -> NavEntry.TIMELINE;
             case GRAPH -> NavEntry.GRAPH;
             case TESTS -> NavEntry.TESTS;
-            case FAILURES -> NavEntry.FAILURES;
+            case FAILURES -> NavEntry.ERRORS;
             case COVERAGE, OVERVIEW -> NavEntry.OVERVIEW;
         };
         if (link.focusId().isPresent()) {
@@ -1294,7 +1309,7 @@ public final class MainWindow extends JFrame {
         runButton.setEnabled(false);
         setCaptureStatus(captureStatus.withPhase(
                 CaptureStatusModel.Phase.PREPARING, "Resolving Bazel and probing capabilities…"));
-        showCard(NavEntry.CAPTURE);
+        showCard(NavEntry.BUILD);
         launchController.preflight(request);
     }
 
@@ -1427,7 +1442,10 @@ public final class MainWindow extends JFrame {
             setCaptureStatus(captureStatus.withPhase(
                     CaptureStatusModel.Phase.CAPTURING,
                     String.join(" ", preflight.plan().effective().userVisibleArgs())));
-            showCard(NavEntry.CONSOLE);
+            // No card change. The status and the console are one card now, so
+            // the user who navigated elsewhere while the plan dialog was up
+            // stays where they went; startLaunch already put the Build card up
+            // for the user who did not.
         }
 
         @Override
@@ -1612,12 +1630,11 @@ public final class MainWindow extends JFrame {
             case ACTIONS -> actionsView;
             case TARGETS -> targetsView;
             case TESTS -> testsView;
-            case FAILURES -> failuresView;
+            case ERRORS -> errorsView;
             case GRAPH -> graphView;
             case TIMELINE -> timeline.view();
             case EVENTS -> eventsView;
-            case CONSOLE -> consoleView;
-            case CAPTURE -> capturePanel;
+            case BUILD -> buildCard;
             case FINDINGS -> findingsView;
             default -> placeholderCard(entry);
         };
@@ -1640,6 +1657,14 @@ public final class MainWindow extends JFrame {
         split.setResizeWeight(0.62);
         split.setBorder(null);
         return split;
+    }
+
+    /** Stacks the capture status above the console, one card for one build. */
+    private JComponent buildBuildCard() {
+        JPanel card = new JPanel(new BorderLayout());
+        card.add(capturePanel, BorderLayout.NORTH);
+        card.add(consoleView, BorderLayout.CENTER);
+        return card;
     }
 
     private JComponent buildStatusBar() {

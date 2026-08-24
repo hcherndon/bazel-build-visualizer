@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-08-22. This file states what exists in the tree, not what
+Last updated: 2026-08-23. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## Phases
@@ -1129,8 +1129,32 @@ What ships: a local, single-user macOS application that launches or imports a
 Bazel build, captures it raw-first, normalizes it into a queryable session,
 enriches it from the execution log, the trace profile, `aquery` and `cquery`,
 and shows it as an overview, a timeline, an action table, dependency trees, a
-graph canvas, tests, failures, events, a console and evidence-backed findings —
+graph canvas, tests, errors, events, a build pane and evidence-backed findings —
 at five million actions, without loading the build into memory, and without
 claiming a number it does not have.
 
 Plan section 28's deferred roadmap starts here.
+
+## After v1
+
+Two navigation changes from use, landed 2026-08-23. Neither changed a query, a
+table or a column; both are renames and one layout.
+
+- **Console and Capture are one Build pane.** `NavEntry.BUILD` replaces
+  `CONSOLE` and `CAPTURE`. `MainWindow.buildBuildCard()` puts `CapturePanel` at
+  `BorderLayout.NORTH` as a header strip over `ConsoleView` at `CENTER`.
+  Following one build no longer means switching cards, and `captureStarted` no
+  longer moves the user, because there is nowhere to move them to. Left
+  navigation is ten entries where plan 17.1 lists eleven.
+- **The Failures view is the Errors view.** `NavEntry.FAILURES` is `ERRORS`,
+  `ui/failures/` is `ui/errors/`, `FailuresView`/`FailureInspection` are
+  `ErrorsView`/`ErrorInspection`, and `FailureQueries`/`FailureRow` are
+  `ErrorQueries`/`ErrorRow`. The view has always listed `Kind.OUTPUT` rows —
+  whatever Bazel wrote to stderr — and a compiler warning on the way to a
+  successful action is not a failure. **Java identifiers only:** no table,
+  column or SQL literal changed and no migration was added, so every session
+  already on disk still opens.
+
+`./gradlew build`: **BUILD SUCCESSFUL, 1,490 tests across 172 classes, 0
+failures, 0 errors, 0 skipped** — one more test than Phase 10's 1,489, which is
+the `NavEntryTest` case pinning the merged entry.

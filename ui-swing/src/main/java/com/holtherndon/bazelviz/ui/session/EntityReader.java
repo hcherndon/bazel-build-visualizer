@@ -8,8 +8,8 @@ import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
-import com.holtherndon.bazelviz.storage.entities.FailureQueries;
-import com.holtherndon.bazelviz.storage.entities.FailureRow;
+import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
+import com.holtherndon.bazelviz.storage.entities.ErrorRow;
 import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetRow;
@@ -115,23 +115,23 @@ public interface EntityReader extends AutoCloseable {
     /** Where a test's logs were written; the content is not captured. */
     List<TestQueries.TestLog> testLogs(long testId);
 
-    // --- failures ---------------------------------------------------------
+    // --- errors -----------------------------------------------------------
 
     /** The three failure counts, which do not scale together. */
-    FailureCounts failureCounts();
+    ErrorCounts errorCounts();
 
-    List<FailureRow> failedActions(OptionalLong afterId, int limit);
+    List<ErrorRow> failedActions(OptionalLong afterId, int limit);
 
-    List<FailureRow> failedTargets(OptionalLong afterId, int limit);
+    List<ErrorRow> failedTargets(OptionalLong afterId, int limit);
 
     /** Targets an abort named. Listed on request; the count is what is shown. */
-    List<FailureRow> abortedTargets(OptionalLong afterId, int limit);
+    List<ErrorRow> abortedTargets(OptionalLong afterId, int limit);
 
     /** Abort reasons and their counts. */
-    List<FailureQueries.ReasonCount> abortReasons();
+    List<ErrorQueries.ReasonCount> abortReasons();
 
     /** Progress events carrying console error output, for compiler diagnostics. */
-    List<FailureQueries.ProgressRef> progressOutputEvents(int limit);
+    List<ErrorQueries.ProgressRef> progressOutputEvents(int limit);
 
     /**
      * How much of each kind of bad news there is.
@@ -141,7 +141,7 @@ public interface EntityReader extends AutoCloseable {
      * message from either alone, and the second number is the one that explains
      * the first.
      */
-    record FailureCounts(long failedActions, long failedTargets, long aborted) {
+    record ErrorCounts(long failedActions, long failedTargets, long aborted) {
         public long total() {
             return failedActions + failedTargets + aborted;
         }
