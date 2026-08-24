@@ -17,6 +17,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.swing.SwingUtilities;
 
@@ -36,10 +37,16 @@ import javax.swing.SwingUtilities;
  */
 final class FakeSessionReader implements SessionReader {
 
-    private final List<EventSummary> summaries = new ArrayList<>();
-    private final Map<Long, RawLocation> locations = new HashMap<>();
-    private final Map<Long, EventIdentity> identities = new HashMap<>();
-    private final Map<Long, RawPayload> payloads = new HashMap<>();
+    // Concurrent collections throughout, rather than plain ArrayList/HashMap:
+    // EventsViewLiveRefreshTest grows this from the JUnit thread while a
+    // background page or detail executor may be reading it, the same shape as
+    // a real SQLite connection watching rows a live capture is still writing.
+    // Plain collections would make that a genuine, if usually-invisible, data
+    // race; these make it a race-free one instead.
+    private final List<EventSummary> summaries = new CopyOnWriteArrayList<>();
+    private final Map<Long, RawLocation> locations = new ConcurrentHashMap<>();
+    private final Map<Long, EventIdentity> identities = new ConcurrentHashMap<>();
+    private final Map<Long, RawPayload> payloads = new ConcurrentHashMap<>();
 
     private final AtomicInteger pageAfterCalls = new AtomicInteger();
     private final AtomicInteger pageBeforeCalls = new AtomicInteger();
