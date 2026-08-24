@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import javax.swing.SwingUtilities;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +38,8 @@ public final class TimelineController {
 
     private final TimelineView view = new TimelineView();
     /**
-     * How often a live capture may rebuild the pyramid.
+     * How often a live capture may rebuild the pyramid, and how often the
+     * controller's own timer nudges one even if nothing tells it to.
      *
      * <p>Capture progress arrives per batch, which on a fast build is many
      * times a second, and a rebuild streams every span in the session. At Tier
@@ -50,13 +53,47 @@ public final class TimelineController {
      */
     private static final long LIVE_REBUILD_INTERVAL_MICROS = 2_000_000;
 
+    private final long liveRebuildIntervalMicros;
+
     private ExecutorService worker;
+    /**
+     * The controller's own clock, independent of {@link #refreshLive}'s caller.
+     *
+     * <h2>Why this exists</h2>
+     *
+     * <p>{@link #refreshLive} used to be the only way a live session ever
+     * rebuilt, and it only ran when something else called it — in practice,
+     * {@code MainWindow}'s BES progress callback. On a quiet build, ticks are
+     * sparse or stop arriving for a stretch (a long-running action between
+     * progress events), and the timeline stalled along with them even though
+     * time kept passing and the wall kept growing. The overview panel does not
+     * have this problem because it drives its own
+     * {@code ScheduledExecutorService} on a fixed delay rather than waiting to
+     * be told; this is the same fix, here.
+     *
+     * <p>The two drivers share {@link #lastLiveRebuildMicros}'s throttle, so a
+     * progress tick and a timer tick landing close together do not rebuild
+     * twice — whichever runs first satisfies the interval and the other is a
+     * no-op, exactly as two progress ticks would be today.
+     */
+    private ScheduledExecutorService ticker;
     private SessionSource source;
     private long generation;
     private long lastLiveRebuildMicros;
     private volatile boolean rebuildInFlight;
 
     public TimelineController() {
+        this(LIVE_REBUILD_INTERVAL_MICROS);
+    }
+
+    /**
+     * @param liveRebuildIntervalMicros the throttle in {@link #refreshLive} and
+     *     the controller's own timer's period, both at once — a test's hook to
+     *     drive several ticks in a fraction of a second, the same reason the
+     *     overview panel's constructor takes its interval as a parameter.
+     */
+    TimelineController(long liveRebuildIntervalMicros) {
+        this.liveRebuildIntervalMicros = liveRebuildIntervalMicros;
         view.onViewportChanged(this::refreshWindow);
     }
 
@@ -126,6 +163,27 @@ public final class TimelineController {
                 }
             });
         });
+        startTicker();
+    }
+
+    /**
+     * Starts the controller's own clock, ticking at {@link #liveRebuildIntervalMicros}
+     * for as long as this session is open. Every tick just calls {@link #refreshLive}
+     * back on the EDT — the same call a BES progress tick makes — so a quiet
+     * stretch of a build with no progress event still gets rebuilt, and the
+     * shared throttle in {@link #refreshLive} is what keeps a progress tick and
+     * a timer tick landing close together from doing the work twice.
+     */
+    private void startTicker() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "bbv-timeline-ticker");
+            thread.setDaemon(true);
+            return thread;
+        });
+        ticker = scheduler;
+        long periodMillis = Math.max(1, liveRebuildIntervalMicros / 1_000);
+        scheduler.scheduleWithFixedDelay(() -> SwingUtilities.invokeLater(this::refreshLive),
+                periodMillis, periodMillis, TimeUnit.MILLISECONDS);
     }
 
     /** Lets go of the session. */
@@ -136,6 +194,11 @@ public final class TimelineController {
         source = null;
         if (executor != null) {
             executor.shutdownNow();
+        }
+        ScheduledExecutorService scheduler = ticker;
+        ticker = null;
+        if (scheduler != null) {
+            scheduler.shutdownNow();
         }
         view.showEmpty("No session is open.");
     }
@@ -153,7 +216,7 @@ public final class TimelineController {
             return;
         }
         long now = System.currentTimeMillis() * 1_000L;
-        if (now - lastLiveRebuildMicros < LIVE_REBUILD_INTERVAL_MICROS) {
+        if (now - lastLiveRebuildMicros < liveRebuildIntervalMicros) {
             return;
         }
         // One rebuild at a time. Without this a build whose ticks outpace the
