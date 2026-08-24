@@ -141,6 +141,58 @@ final class EventsViewLiveRefreshTest {
 
     @Test
     @Timeout(30)
+    @DisplayName("a live refresh preserves a column width the user resized")
+    void refreshPreservesAResizedColumnWidth() throws Exception {
+        // A regression test for a review finding on this same task: EventsView
+        // never disables autoCreateColumnsFromModel, so JTable.setModel throws
+        // away the TableColumnModel (and every width in it) on every call --
+        // including the one a live refresh makes every couple of seconds.
+        // Before swapRows() read the widths back and reapplied them, a column
+        // the user had resized to read a long value would silently snap back
+        // to sizeColumns()'s hardcoded default on the very next tick.
+        FakeSessionReader reader = FakeSessionReader.dense(300);
+        FakeSource source = new FakeSource(reader, SessionState.CAPTURING);
+        List<String> failures = new ArrayList<>();
+
+        long tickIntervalMicros = 40_000; // 40 ms, same as the tests above
+        events = onEdt(() -> new EventsView(tickIntervalMicros));
+
+        onEdt(() -> {
+            events.openSession(source, failures::add);
+            return null;
+        });
+        await(() -> onEdt(() -> events.tableModelForTest() != null));
+        assertThat(failures).isEmpty();
+
+        // sizeColumns()'s hardcoded default for column 4 ("Event id") is 320;
+        // resize it the way a user's mouse drag would, to a value nothing in
+        // this view would ever pick on its own.
+        int resizedWidth = 555;
+        onEdt(() -> {
+            javax.swing.table.TableColumn column =
+                    events.tableForTest().getColumnModel().getColumn(4);
+            column.setPreferredWidth(resizedWidth);
+            column.setWidth(resizedWidth);
+            return null;
+        });
+
+        reader.add(301, 300, DecodeStatus.OK);
+
+        await(() -> onEdt(() -> events.tableModelForTest().getRowCount()) == 301);
+
+        assertThat(onEdt(() ->
+                events.tableForTest().getColumnModel().getColumn(4).getPreferredWidth()))
+                .as("the resized preferred width survives the live model swap")
+                .isEqualTo(resizedWidth);
+        assertThat(onEdt(() ->
+                events.tableForTest().getColumnModel().getColumn(4).getWidth()))
+                .as("the resized actual width survives the live model swap")
+                .isEqualTo(resizedWidth);
+        assertThat(failures).isEmpty();
+    }
+
+    @Test
+    @Timeout(30)
     @DisplayName("rule 11: a live session's count is stated as a lower bound, a finished one is not")
     void liveCountIsStatedAsALowerBound() throws Exception {
         FakeSessionReader liveReader = FakeSessionReader.dense(10);

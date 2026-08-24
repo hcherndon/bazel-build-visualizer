@@ -408,17 +408,21 @@ public final class EventsView extends JPanel {
      * pays only when the row count or the row-index mode actually changed,
      * never on an idle tick.
      *
-     * <h2>Selection and scroll, preserved explicitly</h2>
+     * <h2>Selection, scroll, and column widths, preserved explicitly</h2>
      *
      * <p>{@code JTable.setModel} clears the current selection unconditionally
-     * — it delivers a structural {@code TableModelEvent} and {@code JTable}
-     * treats that as "the whole table changed". Losing the row a user is
-     * reading, and the scroll position they navigated to, on every tick of a
-     * background timer would make the table nearly unusable to actually read
-     * during a build. BEP events are only ever appended, never reordered or
-     * deleted, so a row index or a pixel offset valid before the swap still
-     * names the same event and the same place in the table afterwards, and
-     * {@link #swapRows} reapplies both once the new model is installed.
+     * and, because {@code autoCreateColumnsFromModel} is never disabled,
+     * discards the whole {@code TableColumnModel} along with it -- it
+     * delivers a structural {@code TableModelEvent} and {@code JTable} treats
+     * that as "the whole table changed". Losing the row a user is reading,
+     * the scroll position they navigated to, and a column they widened to
+     * read a long event id, on every tick of a background timer, would make
+     * the table nearly unusable to actually read during a build. BEP events
+     * are only ever appended, never reordered or deleted, so a row index or a
+     * pixel offset valid before the swap still names the same event and the
+     * same place in the table afterwards, and column widths do not depend on
+     * row content at all; {@link #swapRows} reapplies all three once the new
+     * model is installed.
      */
     public void refreshLive() {
         if (pageExecutor == null || source == null || rows == null) {
@@ -465,21 +469,22 @@ public final class EventsView extends JPanel {
 
     /**
      * Installs {@code freshRows} in place of the current row source,
-     * preserving the table's selection and scroll position across the swap.
-     * See {@link #refreshLive} for why the swap happens at all and why that
-     * loses both without this.
+     * preserving the table's selection, scroll position, and column widths
+     * across the swap. See {@link #refreshLive} for why the swap happens at
+     * all and why that loses all three without this.
      */
     private void swapRows(SessionSource opened, EventRowSource freshRows) {
         int viewRow = table.getSelectedRow();
         int modelRowToReselect = viewRow >= 0 ? table.convertRowIndexToModel(viewRow) : -1;
         Point viewPosition = tableScroll.getViewport().getViewPosition();
+        int[] columnWidths = currentColumnWidths();
 
         rows = freshRows;
         tableModel = new PagedTableModel<>(freshRows, EventTableColumns.columns(), pageExecutor,
                 freshRows.pageSize(), CACHE_PAGES);
         tableModel.addTableModelListener(this::rowsUpdated);
         table.setModel(tableModel);
-        sizeColumns();
+        restoreColumnWidths(columnWidths);
         statusLabel.setText(describe(opened.info(), freshRows));
         rowCountListener.accept(freshRows.rowCount());
 
@@ -487,6 +492,50 @@ public final class EventsView extends JPanel {
             table.setRowSelectionInterval(modelRowToReselect, modelRowToReselect);
         }
         tableScroll.getViewport().setViewPosition(viewPosition);
+    }
+
+    /**
+     * The current column widths, in view order, captured just before a live
+     * refresh replaces the table's model. See {@link #restoreColumnWidths}
+     * for why this is captured at all.
+     */
+    private int[] currentColumnWidths() {
+        int count = table.getColumnCount();
+        int[] widths = new int[count];
+        for (int column = 0; column < count; column++) {
+            widths[column] = table.getColumnModel().getColumn(column).getWidth();
+        }
+        return widths;
+    }
+
+    /**
+     * Reapplies widths captured by {@link #currentColumnWidths}, in place of
+     * {@link #sizeColumns}'s hardcoded defaults.
+     *
+     * <h2>Why this instead of {@link #sizeColumns}</h2>
+     *
+     * <p>{@code EventsView} never disables {@code autoCreateColumnsFromModel},
+     * so every {@code JTable.setModel} call -- including the one a live
+     * refresh makes every couple of seconds for the length of a build --
+     * discards the existing {@code TableColumnModel} and builds a fresh one
+     * from scratch, each column back at its default width. Calling
+     * {@link #sizeColumns} there, as {@link #swapRows} used to, would
+     * silently snap a column the user had resized back to its hardcoded
+     * default on the very next tick (rule 12: never silently override) --
+     * so this reads the previous widths back first instead, the same "read
+     * before, reapply after" treatment already given to selection and scroll
+     * a few lines above. Both {@code width} and {@code preferredWidth} are
+     * restored because {@link #sizeColumns} only ever sets the latter and a
+     * user's interactive resize only ever sets the former; a live refresh
+     * should disturb neither kind of sizing.
+     */
+    private void restoreColumnWidths(int[] widths) {
+        int count = Math.min(widths.length, table.getColumnCount());
+        for (int column = 0; column < count; column++) {
+            javax.swing.table.TableColumn tableColumn = table.getColumnModel().getColumn(column);
+            tableColumn.setPreferredWidth(widths[column]);
+            tableColumn.setWidth(widths[column]);
+        }
     }
 
     /**
