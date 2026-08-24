@@ -88,7 +88,8 @@ class InspectorPanelTest {
     }
 
     @Test
-    @DisplayName("with the shared actions installed, the strip takes over and nothing appears twice")
+    @DisplayName("with the shared actions installed, the overflow menu takes over"
+            + " and nothing appears twice")
     void sharedActionsReplaceTheLegacyButton() throws Exception {
         List<com.holtherndon.bazelviz.ui.nav.EntityActions.Command> dispatched =
                 new ArrayList<>();
@@ -109,6 +110,7 @@ class InspectorPanelTest {
         onEdt(() -> {
             panel.installEntityActions(actions, java.util.Set.of());
             panel.show(new Inspection.Builder("//pkg:target")
+                    .subtitle("Javac · SUCCEEDED")
                     .sourceEvent(OptionalLong.of(4_812L))
                     .ref(new com.holtherndon.bazelviz.ui.nav.EntityRef.EventId(4_812L))
                     .ref(new com.holtherndon.bazelviz.ui.nav.EntityRef.TargetLabel("//pkg:target"))
@@ -118,25 +120,33 @@ class InspectorPanelTest {
             return null;
         });
 
-        // Exactly one "Show source event" on screen: the strip's. The legacy
-        // button yields rather than doubling it. (Scrollbar arrow buttons
-        // have no text and are not part of the offering.)
+        InspectorHeader header = panel.headerForTest();
+        assertThat(onEdt(header::titleForTest)).isEqualTo("//pkg:target");
+        assertThat(onEdt(header::subtitleForTest)).isEqualTo("Javac · SUCCEEDED");
+
+        // Exactly one "Show source event" on offer: the menu's. The legacy
+        // button yields rather than doubling it, so the only visible titled
+        // button left in the whole panel is the overflow's ellipsis.
+        assertThat(onEdt(() -> menuTitlesOf(header)))
+                .containsExactly("Open target", "Show source event");
         assertThat(onEdt(() -> titledButtonsOf(panel)))
-                .containsExactlyInAnyOrder("Open target", "Show source event");
+                .containsExactly(InspectorHeader.OVERFLOW_TEXT);
 
         onEdt(() -> {
-            buttonsOf(panel).forEach(button -> button.doClick());
+            clickMenu(header, "Open target");
+            clickMenu(header, "Show source event");
             return null;
         });
-        assertThat(dispatched).containsExactlyInAnyOrder(
+        assertThat(dispatched).containsExactly(
                 com.holtherndon.bazelviz.ui.nav.EntityActions.Command.OPEN_TARGET,
                 com.holtherndon.bazelviz.ui.nav.EntityActions.Command.SHOW_SOURCE_EVENT);
-        assertThat(receivedRefs).contains(
-                new com.holtherndon.bazelviz.ui.nav.EntityRef.EventId(4_812L),
-                new com.holtherndon.bazelviz.ui.nav.EntityRef.TargetLabel("//pkg:target"));
+        assertThat(receivedRefs).containsExactly(
+                new com.holtherndon.bazelviz.ui.nav.EntityRef.TargetLabel("//pkg:target"),
+                new com.holtherndon.bazelviz.ui.nav.EntityRef.EventId(4_812L));
 
         // An inspection with no refs — a view that has not adopted the
-        // facility — falls back to the legacy button, exactly as before.
+        // facility — falls back to the legacy button, exactly as before, and
+        // offers no overflow at all rather than an empty menu.
         onEdt(() -> {
             panel.show(new Inspection.Builder("//pkg:other")
                     .sourceEvent(OptionalLong.of(7L))
@@ -147,6 +157,29 @@ class InspectorPanelTest {
         });
         assertThat(onEdt(() -> titledButtonsOf(panel)))
                 .containsExactly("Show source event");
+    }
+
+    /** The menu the header's overflow button would open, by item text. */
+    private static List<String> menuTitlesOf(InspectorHeader header) {
+        List<String> titles = new ArrayList<>();
+        javax.swing.JPopupMenu menu = header.overflowMenuForTest();
+        for (int i = 0; i < menu.getComponentCount(); i++) {
+            titles.add(((javax.swing.JMenuItem) menu.getComponent(i)).getText());
+        }
+        return titles;
+    }
+
+    /** Activates one item of the menu the overflow button would open. */
+    private static void clickMenu(InspectorHeader header, String title) {
+        javax.swing.JPopupMenu menu = header.overflowMenuForTest();
+        for (int i = 0; i < menu.getComponentCount(); i++) {
+            javax.swing.JMenuItem item = (javax.swing.JMenuItem) menu.getComponent(i);
+            if (item.getText().equals(title)) {
+                item.doClick();
+                return;
+            }
+        }
+        throw new AssertionError("no menu item titled " + title);
     }
 
     /** The visible, titled buttons — the offering, without scrollbar arrows. */

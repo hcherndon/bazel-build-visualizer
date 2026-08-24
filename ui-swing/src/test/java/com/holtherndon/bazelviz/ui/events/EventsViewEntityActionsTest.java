@@ -12,6 +12,7 @@ import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.storage.events.RawLocation;
 import com.holtherndon.bazelviz.testsupport.bep.BepBinaryWriter;
 import com.holtherndon.bazelviz.testsupport.bep.SyntheticBepStream;
+import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.RawPayload;
@@ -121,8 +122,9 @@ class EventsViewEntityActionsTest {
     }
 
     @Test
-    @DisplayName("the inspector offers label actions for a labelled event and nothing otherwise")
-    void inspectorStripAppearsOnlyWithALabel() throws Exception {
+    @DisplayName("the inspector's header offers label actions for a labelled event"
+            + " and nothing otherwise")
+    void inspectorOverflowAppearsOnlyWithALabel() throws Exception {
         Recorder recorder = new Recorder();
         EntityActions actions = new EntityActions(
                 EnumSet.of(EntityActions.Command.OPEN_TARGET,
@@ -132,24 +134,35 @@ class EventsViewEntityActionsTest {
         SwingUtilities.invokeAndWait(() -> {
             EventInspectorPanel panel = new EventInspectorPanel();
             panel.installEntityActions(actions);
+            InspectorHeader header = panel.headerForTest();
 
             EventRow labelled = row(1, Optional.of("TargetCompleted //a:b"));
             RawPayload payload = new RawPayload(new byte[] {1}, SourceKind.BEP_BINARY);
             panel.show(EventInspection.loaded(labelled, payload,
                     new RawPayloadRenderer.Rendered("t", Optional.empty(), List.of()), "h"));
-            assertThat(panel.actionsRegionForTest().getComponentCount())
-                    .as("a strip appears for a labelled event")
-                    .isEqualTo(1);
+            // The label is the subtitle and the thing the menu acts on, so
+            // both arrive together or not at all.
+            assertThat(header.subtitleForTest()).isEqualTo("//a:b");
+            assertThat(header.titleForTest()).contains("Event row 1, sequence 1");
+            assertThat(header.overflowForTest().isVisible())
+                    .as("the overflow appears for a labelled event")
+                    .isTrue();
+            JPopupMenu menu = header.overflowMenuForTest();
+            assertThat(menu.getComponentCount()).isEqualTo(2);
+            ((JMenuItem) menu.getComponent(0)).doClick();
+            assertThat(recorder.commands).containsExactly(EntityActions.Command.OPEN_TARGET);
+            assertThat(recorder.refs).containsExactly(new EntityRef.TargetLabel("//a:b"));
 
             EventRow unlabelled = row(2, Optional.of("Progress #4"));
             panel.show(EventInspection.loaded(unlabelled, payload,
                     new RawPayloadRenderer.Rendered("t", Optional.empty(), List.of()), "h"));
-            assertThat(panel.actionsRegionForTest().getComponentCount())
-                    .as("no strip for an event with no parseable label")
-                    .isZero();
+            assertThat(header.overflowForTest().isVisible())
+                    .as("no overflow for an event with no parseable label")
+                    .isFalse();
+            assertThat(header.subtitleForTest()).isEqualTo(" ");
 
             panel.show(EventInspection.none());
-            assertThat(panel.actionsRegionForTest().getComponentCount()).isZero();
+            assertThat(header.overflowForTest().isVisible()).isFalse();
         });
     }
 

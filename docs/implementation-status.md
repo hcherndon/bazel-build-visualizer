@@ -1997,3 +1997,50 @@ it is a different tab and was not reported.
   and Query (`TestsViewColumnStateTest`, `QueryTabColumnStateTest`);
   `EventsViewLiveRefreshTest`'s width-preservation test now passes through
   the shared store unchanged.
+
+- **One inspector header, and the actions stopped falling off the edge**
+  (2026-08-24). Three inspectors hand-rolled the same header and shared the
+  same failure: a non-wrapping `EntityActions.buttonStripFor` strip whose
+  preferred width grew with the number of offers, sitting in a
+  `BorderLayout.EAST` slot that `BorderLayout` hands its full preferred width
+  whatever the container's own width is. Dragged narrow, the strip walked left
+  off its own panel — "the toolbar is entirely hidden unless the pane is
+  pulled all the way to the side". New `ui/inspect/InspectorHeader`: a bold
+  title line, a disabled-colour subtitle line, and **one** `…` overflow button
+  that opens `EntityActions.popupFor` for the inspection's refs. A button of
+  fixed width cannot outgrow its slot, and a menu is a window, so it is
+  bounded by the screen rather than by the pane. What gives way instead is the
+  *text*: the two lines sit in a `GridLayout` inside `BorderLayout`'s CENTER —
+  both of which hand a child exactly the width available, the condition a
+  `JLabel` needs to ellipsize, where `BoxLayout` would floor each label at its
+  own preferred width and let it overhang — and each carries the whole string
+  in a `PlainText.tooltip`. `getMinimumSize` is overridden to the edge's width
+  plus room for an ellipsis rather than the title's natural width, so an
+  ancestor honouring it is not an ancestor that refuses to narrow.
+  **Honest absence, unchanged in kind:** the button exists only when
+  `offersFor` returns something — no facility, no refs, or no wired command of
+  the refs' kind means no button, never an ellipsis over an empty rectangle.
+  `addTrailing` lets a host put its own control on the same protected edge.
+  Adopted by all three: `InspectorPanel` (Actions/Targets/Tests/Errors) drops
+  its EAST strip and its private title/subtitle labels, and the legacy
+  "Show source event" button becomes a trailing control that still yields when
+  the menu offers the same jump — the old `stripShowsSource` check is now
+  `header.offers(SHOW_SOURCE_EVENT)`; `EventInspectorPanel` drops its
+  `BorderLayout.SOUTH` label-actions region, its headline becomes the title
+  and the inspected event's target label becomes both the subtitle and the
+  refs the menu acts on (no label → neither, as before); `TimelineView`'s
+  inline inspector drops `inspectorTitle`/`inspectorActions`, its Close rides
+  the header's edge via `addTrailing`, and `SpanDetails`'s first line — which
+  the controller already words as the segment's one-line identity, "Action 7
+  (Javac) — SUCCESS" — becomes the subtitle with the rest as the body, so
+  `SpanDetails` needed no new field. The `installEntityActions` wiring is
+  untouched: `MainWindow` still installs the facility per view and each view
+  forwards it, with its own omissions (`REVEAL_ACTION` in Actions,
+  `SHOW_ON_TIMELINE` in the Timeline). New `InspectorHeaderTest` measures the
+  layout promise rather than describing it — laid out at 160 px with a 78-
+  character label, the button keeps its full preferred width and stays inside
+  the header's bounds while the title shrinks below its own, the minimum width
+  stays under 200 px, the menu equals `popupFor`'s list including omissions,
+  and the button is absent in each of the three ways it can have nothing
+  behind it. `InspectorPanelTest`, `EventsViewEntityActionsTest` and
+  `TimelineInspectorTest` now assert against the menu instead of a strip.
