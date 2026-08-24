@@ -246,6 +246,26 @@ final class FindingsViewTest {
     }
 
     @Test
+    @DisplayName("the evidence and link buttons carry their full text as a tooltip, so a"
+            + " narrow window's ellipsis-clipped label is still readable on hover")
+    void evidenceAndLinkButtonsHaveATooltip() {
+        FindingsView view = new FindingsView();
+
+        view.show(new MetricsService.Result(
+                metrics(bothPaths(), List.of()), List.of(finding("Something is slow")),
+                FindingThresholds.defaults()));
+        view.selectForTest(0);
+
+        javax.swing.AbstractButton evidence = findButton(view, "//pkg:lib — took 4.2 s");
+        assertThat(evidence).as("the evidence button").isNotNull();
+        assertThat(evidence.getToolTipText()).isEqualTo("//pkg:lib — took 4.2 s");
+
+        javax.swing.AbstractButton link = findButton(view, "See it on the timeline");
+        assertThat(link).as("the link button").isNotNull();
+        assertThat(link.getToolTipText()).isEqualTo("See it on the timeline");
+    }
+
+    @Test
     @DisplayName("the summary and catalog grids track the viewport's width instead of"
             + " overflowing it")
     void topContentTracksViewportWidth() {

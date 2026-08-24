@@ -1883,7 +1883,12 @@ it is a different tab and was not reported.
   helper (extended with a bold variant) instead of a plain, non-wrapping
   `JLabel`, so long text wraps instead of being silently clipped (rule 12).
   `getVerticalScrollBar().setUnitIncrement(16)` is now set on all three
-  scroll panes. New tests in `FindingsViewTest`: the summary/catalog grids
-  and the detail pane each track the viewport's width instead of overflowing
-  it, and every scroll pane uses the fast wheel increment rather than the
-  1-pixel-per-notch default.
+  scroll panes. Because an evidence/link `JButton`'s text cannot wrap, a
+  narrow window still ellipsis-clips it — so, mirroring the existing
+  `PlainText.tooltip(...)` use on `FindingRenderer`'s list cells, both
+  buttons now carry their full, untruncated text as a tooltip, keeping a
+  clipped label reachable by hover instead of unreadable. New tests in
+  `FindingsViewTest`: the summary/catalog grids and the detail pane each
+  track the viewport's width instead of overflowing it, every scroll pane
+  uses the fast wheel increment rather than the 1-pixel-per-notch default,
+  and the evidence and link buttons carry their full text as a tooltip.

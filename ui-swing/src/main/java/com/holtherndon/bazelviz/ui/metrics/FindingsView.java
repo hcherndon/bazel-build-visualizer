@@ -512,6 +512,8 @@ public final class FindingsView extends JPanel {
                 JButton open = new JButton(evidence.label() + " — " + evidence.detail());
                 open.setHorizontalAlignment(SwingConstants.LEFT);
                 open.setAlignmentX(LEFT_ALIGNMENT);
+                open.setToolTipText(
+                        PlainText.tooltip(evidence.label() + " — " + evidence.detail()));
                 open.addActionListener(event -> onActionSelected.accept(actionId));
                 detail.add(open);
             } else {
@@ -534,6 +536,7 @@ public final class FindingsView extends JPanel {
                 JButton go = new JButton(link.description());
                 go.setHorizontalAlignment(SwingConstants.LEFT);
                 go.setAlignmentX(LEFT_ALIGNMENT);
+                go.setToolTipText(PlainText.tooltip(link.description()));
                 go.addActionListener(event -> onNavigate.accept(link));
                 detail.add(go);
             }
