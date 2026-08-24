@@ -11,8 +11,11 @@ import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
- * The failures table's read path: three different kinds of bad news, kept
- * apart.
+ * The Errors card's read path: four different kinds of bad news, kept apart.
+ *
+ * <p>There is no {@code errors} table and this adds none. The rows are
+ * assembled from {@code actions}, {@code configured_targets},
+ * {@code aborted_events} and {@code progress_output} as they already stand.
  *
  * <h2>Why three queries and not one UNION</h2>
  *
@@ -36,7 +39,7 @@ import java.util.OptionalLong;
  * zero structured diagnostics — and the message lives only in the progress
  * events, which {@link #progressOutputEvents} finds.
  */
-public final class FailureQueries implements AutoCloseable {
+public final class ErrorQueries implements AutoCloseable {
 
     private static final String FAILED_ACTIONS =
             "SELECT a.id, a.primary_output, l.value, a.failure_category, a.failure_message,"
@@ -77,7 +80,7 @@ public final class FailureQueries implements AutoCloseable {
 
     private final Connection connection;
 
-    public FailureQueries(Connection connection) {
+    public ErrorQueries(Connection connection) {
         this.connection = Objects.requireNonNull(connection, "connection");
     }
 
@@ -94,16 +97,16 @@ public final class FailureQueries implements AutoCloseable {
         return scalar(COUNT_ABORTED);
     }
 
-    public List<FailureRow> failedActions(OptionalLong afterId, int limit) throws SQLException {
-        List<FailureRow> rows = new ArrayList<>();
+    public List<ErrorRow> failedActions(OptionalLong afterId, int limit) throws SQLException {
+        List<ErrorRow> rows = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(FAILED_ACTIONS)) {
             statement.setLong(1, afterId.orElse(0L));
             statement.setInt(2, limit);
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) {
                     String label = result.getString(3);
-                    rows.add(new FailureRow(
-                            FailureRow.Kind.ACTION,
+                    rows.add(new ErrorRow(
+                            ErrorRow.Kind.ACTION,
                             result.getLong(1),
                             // An action with no label -- the workspace-status
                             // action on three of the four versions -- is named
@@ -118,15 +121,15 @@ public final class FailureQueries implements AutoCloseable {
         return rows;
     }
 
-    public List<FailureRow> failedTargets(OptionalLong afterId, int limit) throws SQLException {
-        List<FailureRow> rows = new ArrayList<>();
+    public List<ErrorRow> failedTargets(OptionalLong afterId, int limit) throws SQLException {
+        List<ErrorRow> rows = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(FAILED_TARGETS)) {
             statement.setLong(1, afterId.orElse(0L));
             statement.setInt(2, limit);
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) {
-                    rows.add(new FailureRow(
-                            FailureRow.Kind.TARGET,
+                    rows.add(new ErrorRow(
+                            ErrorRow.Kind.TARGET,
                             result.getLong(1),
                             result.getString(2),
                             text(result, 3),
@@ -146,16 +149,16 @@ public final class FailureQueries implements AutoCloseable {
      * sibling of one broken target appears here saying {@code INCOMPLETE},
      * which is a statement about the sibling and not about them.
      */
-    public List<FailureRow> abortedTargets(OptionalLong afterId, int limit) throws SQLException {
-        List<FailureRow> rows = new ArrayList<>();
+    public List<ErrorRow> abortedTargets(OptionalLong afterId, int limit) throws SQLException {
+        List<ErrorRow> rows = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(ABORTED)) {
             statement.setLong(1, afterId.orElse(0L));
             statement.setInt(2, limit);
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) {
                     String label = result.getString(2);
-                    rows.add(new FailureRow(
-                            FailureRow.Kind.NOT_BUILT,
+                    rows.add(new ErrorRow(
+                            ErrorRow.Kind.NOT_BUILT,
                             result.getLong(1),
                             // Patterns and other id kinds abort too and carry no
                             // label; the row still counts, so it is named by
@@ -187,7 +190,7 @@ public final class FailureQueries implements AutoCloseable {
      *
      * <p>Only the locations: the bytes stay in the journal and are read for the
      * one the user opens. A build that fails to parse produces no structured
-     * diagnostic anywhere else, so without this the failures view would have
+     * diagnostic anywhere else, so without this the Errors view would have
      * nothing to show for the most common kind of failure there is.
      */
     public List<ProgressRef> progressOutputEvents(int limit) throws SQLException {

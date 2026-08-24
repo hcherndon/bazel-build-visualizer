@@ -119,7 +119,7 @@ class EntityViewsWiringTest {
             }
 
             // --- failures -------------------------------------------------
-            EntityReader.FailureCounts failures = reader.failureCounts();
+            EntityReader.ErrorCounts failures = reader.errorCounts();
             assertThat(failures.failedActions()).isEqualTo(overview.actionsFailed());
             assertThat(failures.aborted()).isEqualTo(overview.abortedEvents());
         }

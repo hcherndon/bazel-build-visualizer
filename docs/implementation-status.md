@@ -1129,13 +1129,70 @@ What ships: a local, single-user macOS application that launches or imports a
 Bazel build, captures it raw-first, normalizes it into a queryable session,
 enriches it from the execution log, the trace profile, `aquery` and `cquery`,
 and shows it as an overview, a timeline, an action table, dependency trees, a
-graph canvas, tests, failures, events, a console and evidence-backed findings —
+graph canvas, tests, errors, events, a build pane and evidence-backed findings —
 at five million actions, without loading the build into memory, and without
 claiming a number it does not have.
 
 Plan section 28's deferred roadmap starts here.
 
+## After v1
+
+Two navigation changes from use, landed 2026-08-23. Neither changed a query, a
+table or a column; both are renames and one layout.
+
+- **Console and Capture are one Build pane.** `NavEntry.BUILD` replaces
+  `CONSOLE` and `CAPTURE`. `MainWindow.buildBuildCard()` puts `CapturePanel` at
+  `BorderLayout.NORTH` as a header strip over `ConsoleView` at `CENTER`.
+  Following one build no longer means switching cards, and `captureStarted` no
+  longer moves the user, because there is nowhere to move them to. Left
+  navigation is ten entries where plan 17.1 lists eleven.
+- **The Failures view is the Errors view.** `NavEntry.FAILURES` is `ERRORS`,
+  `ui/failures/` is `ui/errors/`, `FailuresView`/`FailureInspection` are
+  `ErrorsView`/`ErrorInspection`, and `FailureQueries`/`FailureRow` are
+  `ErrorQueries`/`ErrorRow`. The view has always listed `Kind.OUTPUT` rows —
+  whatever Bazel wrote to stderr — and a compiler warning on the way to a
+  successful action is not a failure. **Java identifiers only:** no table,
+  column or SQL literal changed and no migration was added, so every session
+  already on disk still opens.
+
+`./gradlew build`: **BUILD SUCCESSFUL, 1,490 tests across 172 classes, 0
+failures, 0 errors, 0 skipped** — one more test than Phase 10's 1,489, which is
+the `NavEntryTest` case pinning the merged entry.
+
 ## Post-v1 fixes
+
+**2026-08-23 — the Overview tab no longer overflows the window.** Two
+compounding causes in `OverviewPanel`: the tile rows used a fixed
+`GridLayout(0, 4, …)`, which sizes every column to its widest cell's preferred
+width regardless of window width, so one tile with a long note set all four
+columns that wide; and the scroll pane's content was a plain `JPanel`, which
+is not `Scrollable`, so the scroll pane honoured that oversized preferred
+width instead of narrowing the content to fit. `CoverageView` — shown in the
+same tab, stacked below the overview in a `JSplitPane` — had the identical
+missing-`Scrollable` weakness.
+
+Fixed with two new reusable pieces in `ui/theme`: `WrapLayout` (a
+`FlowLayout` that reflows a row's cells to the available width instead of
+demanding one unbroken row, replacing the tile grid's `GridLayout`) and
+`ScrollableViewport` (a `JPanel` implementing `Scrollable`, so a
+`JScrollPane`'s view tracks the viewport's width instead of overflowing it —
+now the view in both `OverviewPanel` and `CoverageView`). Because forcing the
+content narrower exposed a second problem — several of `CoverageView`'s
+explanatory notes measure over 800px wide at the default font and would have
+been silently clipped once actually confined to the window's width — its
+notes now render through a third new helper, `WrappingLabel`, a
+non-editable `JTextArea` styled to look like a label, which wraps instead of
+using `<html>` (deliberately unavailable here; see `PlainText`'s javadoc for
+why HTML rendering is off).
+
+Not touched: the `GridBagLayout` name/value rows inside `OverviewPanel`'s own
+detail sections, and `CoverageView`'s paired name/value rows, are unchanged
+and still do not wrap. Their content today is short enough not to be at
+practical risk, but an exceptionally long single value in either could still
+be clipped at the narrowest supported window width — a smaller instance of
+the same class of problem, left for whoever hits it. `ui/metrics/FindingsView`
+has the same latent `GridLayout`/non-`Scrollable` shape and was not touched:
+it is a different tab and was not reported.
 
 - **Cancellation is one ladder, and it always ends the client** (2026-08-23).
   `CaptureCoordinator.cancel` started a fresh thread running a full escalation

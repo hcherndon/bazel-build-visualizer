@@ -112,15 +112,19 @@ Above the findings is the **coverage** banner. Read it first. A cache-miss
 finding over a build whose cache state was 12% covered is a different claim from
 the same finding at 99%, and the banner is what tells them apart.
 
-### Tests, Failures, Events, Console
+### Tests, Errors, Events, Build
 
 - **Tests** — one row per test target, with attempts, and the distinction
   between a test that failed and a test that never built.
-- **Failures** — failed actions, failed targets, and targets never built, as
-  three separate counts. They are never summed: one broken target in a large
-  workspace would otherwise look like a catastrophe.
+- **Errors** — failed actions, failed targets, targets never built, and what
+  Bazel printed to stderr. The first three are three separate counts and are
+  never summed: one broken target in a large workspace would otherwise look
+  like a catastrophe. The stderr rows are why the card is called Errors rather
+  than Failures — for most broken builds the compiler's own text is the only
+  diagnostic there is, and not all of it describes a failure.
 - **Events** — the raw event stream, with the original bytes of any event.
-- **Console** — what Bazel printed.
+- **Build** — one pane for the running build: the capture's phase, counters and
+  stop buttons across the top, and what Bazel printed below them.
 
 ---
 

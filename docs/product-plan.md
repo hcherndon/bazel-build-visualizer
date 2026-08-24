@@ -2117,6 +2117,14 @@ Avoid:
 - Capture
 - Findings
 
+> **As built (2026-08-23):** ten entries, not these eleven. **Console** and
+> **Capture** are one **Build** entry — the capture status is a header strip
+> above the console, because following one build meant reading both — and
+> **Failures** is named **Errors**, because the view also lists Bazel's console
+> diagnostics and a warning on stderr is not a failure. Sections 17.10 and 17.12
+> below are the plan text for those views and are unchanged; only the names and
+> the card count moved.
+
 ### Right inspector
 
 Dockable and resizable.
@@ -2323,6 +2331,8 @@ Show:
 
 ## 17.10 Failures view
 
+> Shipped as the **Errors** view; see the note under 17.1's left navigation.
+
 Combine:
 
 - Failed actions
@@ -2349,6 +2359,9 @@ Modes:
 Render full protobuf text only for the selected event.
 
 ## 17.12 Console
+
+> Shipped as the body of the **Build** pane, under the capture-status header;
+> see the note under 17.1's left navigation.
 
 - Separate stdout and stderr channels
 - Combined timestamped view

@@ -1,22 +1,22 @@
-package com.holtherndon.bazelviz.ui.failures;
+package com.holtherndon.bazelviz.ui.errors;
 
-import com.holtherndon.bazelviz.storage.entities.FailureRow;
+import com.holtherndon.bazelviz.storage.entities.ErrorRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 
 /**
- * Describes a failure for the shared inspector.
+ * Describes one Errors-card row for the shared inspector.
  *
  * <p>The message is Bazel's own text, shown verbatim. It is never parsed — its
  * wording changes between versions — and for a compiler error it is often the
  * only structured thing there is, because a syntax error produces thirteen
  * events and zero structured diagnostics.
  */
-public final class FailureInspection {
+public final class ErrorInspection {
 
-    private FailureInspection() {}
+    private ErrorInspection() {}
 
-    public static Inspection of(FailureRow row) {
+    public static Inspection of(ErrorRow row) {
         Inspection.Builder builder = new Inspection.Builder(row.subject())
                 .subtitle(row.kind().title())
                 .sourceEvent(row.bepEventId());
@@ -25,11 +25,11 @@ public final class FailureInspection {
                 .field("Kind", row.kind().title())
                 .field("Subject", row.subject())
                 .field(EntityFormat.field(
-                        row.kind() == FailureRow.Kind.NOT_BUILT ? "Reason" : "Category",
+                        row.kind() == ErrorRow.Kind.NOT_BUILT ? "Reason" : "Category",
                         row.detail()))
                 .field(EntityFormat.field("Message", row.message()));
 
-        if (row.kind() == FailureRow.Kind.NOT_BUILT) {
+        if (row.kind() == ErrorRow.Kind.NOT_BUILT) {
             // Worth saying out loud: under --nokeep_going this row is a
             // statement about a sibling's failure, not about this target.
             builder.section("What this means").field(

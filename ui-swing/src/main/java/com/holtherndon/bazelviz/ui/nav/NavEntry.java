@@ -8,6 +8,25 @@ import java.util.Locale;
  * replaces its placeholder. Arrival phases come from the per-phase "UI
  * deliverable" lists in docs/product-plan.md section 24 — change them there
  * first, then here.
+ *
+ * <h2>Ten entries, not the plan's eleven</h2>
+ *
+ * <p>Two departures from plan 17.1's list, both from use rather than from
+ * design:
+ *
+ * <ul>
+ *   <li><b>Console and Capture are one {@code BUILD} entry.</b> They were
+ *       always read together — the capture's phase and counters answer "is it
+ *       still going" and the console answers "what is it saying" — and
+ *       splitting them made the user switch cards mid-build to follow one
+ *       build. The card now carries the capture status as a header strip above
+ *       the console.
+ *   <li><b>{@code FAILURES} is {@code ERRORS}.</b> The view lists Bazel's
+ *       console diagnostics alongside failed actions and targets, and a
+ *       compiler warning printed on stderr is not a failure. "Errors" covers
+ *       what is actually on the card; "Failures" promised something narrower
+ *       than what it showed.
+ * </ul>
  */
 public enum NavEntry {
     OVERVIEW("Overview", 3),
@@ -16,10 +35,9 @@ public enum NavEntry {
     TARGETS("Targets", 3),
     GRAPH("Graph", 5),
     TESTS("Tests", 3),
-    FAILURES("Failures", 3),
+    ERRORS("Errors", 3),
     EVENTS("Events", 1),
-    CONSOLE("Console", 2),
-    CAPTURE("Capture", 2),
+    BUILD("Build", 2),
     FINDINGS("Findings", 8);
 
     private final String title;

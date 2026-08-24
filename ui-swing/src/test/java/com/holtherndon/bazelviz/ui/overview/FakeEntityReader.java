@@ -8,8 +8,8 @@ import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
-import com.holtherndon.bazelviz.storage.entities.FailureQueries;
-import com.holtherndon.bazelviz.storage.entities.FailureRow;
+import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
+import com.holtherndon.bazelviz.storage.entities.ErrorRow;
 import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetRow;
@@ -172,32 +172,32 @@ final class FakeEntityReader implements EntityReader {
     }
 
     @Override
-    public FailureCounts failureCounts() {
-        return new FailureCounts(0, 0, 0);
+    public ErrorCounts errorCounts() {
+        return new ErrorCounts(0, 0, 0);
     }
 
     @Override
-    public List<FailureRow> failedActions(OptionalLong afterId, int limit) {
+    public List<ErrorRow> failedActions(OptionalLong afterId, int limit) {
         return List.of();
     }
 
     @Override
-    public List<FailureRow> failedTargets(OptionalLong afterId, int limit) {
+    public List<ErrorRow> failedTargets(OptionalLong afterId, int limit) {
         return List.of();
     }
 
     @Override
-    public List<FailureRow> abortedTargets(OptionalLong afterId, int limit) {
+    public List<ErrorRow> abortedTargets(OptionalLong afterId, int limit) {
         return List.of();
     }
 
     @Override
-    public List<FailureQueries.ReasonCount> abortReasons() {
+    public List<ErrorQueries.ReasonCount> abortReasons() {
         return List.of();
     }
 
     @Override
-    public List<FailureQueries.ProgressRef> progressOutputEvents(int limit) {
+    public List<ErrorQueries.ProgressRef> progressOutputEvents(int limit) {
         return List.of();
     }
 
