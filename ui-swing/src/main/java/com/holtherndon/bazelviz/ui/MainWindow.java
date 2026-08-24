@@ -307,6 +307,11 @@ public final class MainWindow extends JFrame {
         this.launchController = new LaunchController(
                 captureWorker, SwingUtilities::invokeLater, new CaptureListener());
         this.exports = new ExportController(worker, SwingUtilities::invokeLater);
+        // The Query card's saved queries and views live under the settings
+        // directory, resolved as a sibling the same way the single-argument
+        // constructor resolves the catalog. Path arithmetic only; the library
+        // creates directories lazily on its own I/O thread.
+        queryView.attachLibrary(sessionsRoot.resolveSibling("settings"));
 
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setMinimumSize(new Dimension(960, 640));

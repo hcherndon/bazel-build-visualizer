@@ -56,6 +56,14 @@ import java.util.Set;
  *       across five schema versions and no generated schema page; a user who
  *       wants the same answer for a table the browser is not showing should be
  *       able to ask for it directly.
+ *   <li>{@code CREATE TEMP VIEW <name> AS <tabular>} — the one admitted
+ *       non-read, because a temp view lives in the connection's own temp
+ *       schema: per-connection, gone at close, incapable of holding rows, and
+ *       creatable even though the main database is opened
+ *       {@code SQLITE_OPEN_READONLY}. Every other {@code CREATE} — TABLE,
+ *       non-temp VIEW, INDEX, TRIGGER, VIRTUAL TABLE, and the TEMP spellings
+ *       of TABLE and TRIGGER — is refused by name in
+ *       {@link #checkTempViewDefinition}.
  * </ul>
  *
  * <p>An {@code EXPLAIN} of anything, and a {@code PRAGMA}, are <b>direct</b>:
@@ -108,11 +116,34 @@ public final class ReadOnlySql {
          * because these statements describe the schema or the query, not the
          * build.
          */
-        DIRECT
+        DIRECT,
+        /**
+         * {@code CREATE TEMP VIEW <name> AS <tabular>} — the one statement this
+         * layer admits that is not a read. It writes only the connection's own
+         * temp schema, which is per-connection and never the session file: the
+         * main database stays opened {@code SQLITE_OPEN_READONLY} and a
+         * non-temp {@code CREATE} of any kind is still refused here. Returns no
+         * rows; {@code AdHocQueries} executes it and reports the definition.
+         */
+        DEFINE
     }
 
-    /** One validated statement. */
-    public record Statement(String sql, Shape shape) { }
+    /**
+     * One validated statement.
+     *
+     * @param sql the statement, exactly as the user wrote it
+     * @param shape how its rows can be reached
+     * @param tempViewName for {@link Shape#DEFINE} only, the view's name with
+     *     any quoting removed; {@code null} otherwise
+     * @param tempViewSelect for {@link Shape#DEFINE} only, the tabular body
+     *     after {@code AS}; {@code null} otherwise
+     */
+    public record Statement(String sql, Shape shape, String tempViewName, String tempViewSelect) {
+
+        public Statement(String sql, Shape shape) {
+            this(sql, shape, null, null);
+        }
+    }
 
     private static final Set<String> TABULAR_STARTS = Set.of("select", "with", "values");
 
@@ -147,6 +178,13 @@ public final class ReadOnlySql {
      * an ordinary scalar function and banning the word would break real
      * queries. {@code REPLACE INTO} is caught by the two-word rule below
      * instead.
+     *
+     * <p>{@code create} is here even though {@code CREATE TEMP VIEW} is
+     * admitted: a statement whose <em>first</em> word is {@code CREATE} takes
+     * the {@link #checkTempViewDefinition} path before this scan runs, and that
+     * path re-runs the scan over the view's body — so {@code create} anywhere
+     * it could actually do harm (inside a SELECT, after an EXPLAIN, in a view
+     * body) is still refused.
      */
     private static final List<String> WRITING_WORDS = List.of(
             "insert", "update", "delete", "drop", "alter", "attach", "detach",
@@ -188,23 +226,30 @@ public final class ReadOnlySql {
         int[] only = segments.get(0);
         String statement = submitted.substring(only[0], only[1]).strip();
         String bones = skeleton.substring(only[0], only[1]);
+        String original = submitted.substring(only[0], only[1]);
+
+        // CREATE first, because the writing-word scan below bans the word
+        // outright and the one CREATE this view admits needs its own parse.
+        if ("create".equals(firstWord(bones))) {
+            return checkTempViewDefinition(submitted, statement, bones, original);
+        }
 
         rejectWritingWords(submitted, bones);
 
         // EXPLAIN is transparent, not terminal. It prefixes another statement
         // and does not suppress it -- see the class javadoc -- so what is
         // classified is whatever EXPLAIN was put in front of.
-        String inner = bones;
-        String lead = firstWord(inner);
+        int at = 0;
+        String lead = wordAt(bones, at);
         boolean explained = false;
         while ("explain".equals(lead)) {
             explained = true;
-            inner = afterExplainKeyword(inner);
-            lead = firstWord(inner);
+            at = afterExplainKeyword(bones, at);
+            lead = wordAt(bones, at);
         }
 
         if ("pragma".equals(lead)) {
-            rejectNonIntrospectionPragma(submitted, inner);
+            rejectNonIntrospectionPragma(submitted, bones, original, afterWordAt(bones, at));
             return new Statement(statement, Shape.DIRECT);
         }
         if (TABULAR_STARTS.contains(lead)) {
@@ -220,47 +265,245 @@ public final class ReadOnlySql {
                         + " VALUES, and the introspection PRAGMAs (table_info, index_list, …)."
                 : "Only read-only statements run here, and \""
                         + (lead.isEmpty() ? statement : lead.toUpperCase(Locale.ROOT))
-                        + "\" is not one. Allowed: SELECT, WITH, VALUES, EXPLAIN, and the"
-                        + " introspection PRAGMAs (table_info, index_list, …).");
+                        + "\" is not one. Allowed: SELECT, WITH, VALUES, EXPLAIN,"
+                        + " CREATE TEMP VIEW, and the introspection PRAGMAs (table_info,"
+                        + " index_list, …).");
+    }
+
+    // ------------------------------------------------------- CREATE TEMP VIEW
+
+    /**
+     * Admits exactly {@code CREATE TEMP VIEW <name> AS <tabular>} (or
+     * {@code TEMPORARY}), and refuses every other {@code CREATE} by name.
+     *
+     * <p>The narrowness is the point. A temp view is a named SELECT in the
+     * connection's own temp schema: per-connection, gone at close, incapable of
+     * holding data, and creatable even though the main database is opened
+     * {@code SQLITE_OPEN_READONLY} — the temp schema is a different database.
+     * Everything else CREATE can make is refused with the reason: a plain
+     * TABLE, VIEW, INDEX, TRIGGER or VIRTUAL TABLE writes the session file
+     * (and the open mode would refuse it anyway), and a TEMP TABLE or TEMP
+     * TRIGGER can hold data or run statements, which a view cannot.
+     *
+     * <p>The head is parsed token by token — {@code CREATE}, the temp word,
+     * {@code VIEW}, one name, {@code AS} — and the body after {@code AS} is
+     * then checked by the same rules as a standalone statement: the
+     * writing-word scan runs over it and it must classify as tabular. Nothing
+     * can hide between the fixed tokens, because anything unexpected there is
+     * a refusal rather than a skip.
+     */
+    private static Statement checkTempViewDefinition(
+            String submitted, String statement, String bones, String original) {
+        int at = afterWordAt(bones, 0);
+        String second = wordAt(bones, at);
+        if (!"temp".equals(second) && !"temporary".equals(second)) {
+            throw new SqlNotAllowedException(submitted, "CREATE "
+                    + (second.isEmpty() ? "(nothing)" : second.toUpperCase(Locale.ROOT))
+                    + " would write the session database, and this connection is opened"
+                    + " read-only. The one CREATE this view runs is CREATE TEMP VIEW"
+                    + " <name> AS SELECT …, which lives in this connection's temp schema"
+                    + " and touches no file.");
+        }
+        at = afterWordAt(bones, at);
+        String third = wordAt(bones, at);
+        if (!"view".equals(third)) {
+            throw new SqlNotAllowedException(submitted, "CREATE TEMP "
+                    + (third.isEmpty() ? "(nothing)" : third.toUpperCase(Locale.ROOT))
+                    + " is not run here. Only a TEMP VIEW is: a view is a named SELECT"
+                    + " and cannot hold rows or run statements, which is what keeps the"
+                    + " temp schema harmless. A temp table or temp trigger can.");
+        }
+        at = afterWordAt(bones, at);
+        if ("if".equals(wordAt(bones, at))) {
+            int afterIf = afterWordAt(bones, at);
+            if ("not".equals(wordAt(bones, afterIf))
+                    && "exists".equals(wordAt(bones, afterWordAt(bones, afterIf)))) {
+                throw new SqlNotAllowedException(submitted,
+                        "IF NOT EXISTS is not accepted: redefining is what running a"
+                                + " CREATE TEMP VIEW again does here, so \"already"
+                                + " exists\" is never the situation.");
+            }
+        }
+        int nameStart = skipBlanked(bones, original, at);
+        ParsedName name = parseViewName(submitted, original, nameStart);
+        if (name.name().isBlank()) {
+            throw new SqlNotAllowedException(submitted,
+                    "The view has no name. Write CREATE TEMP VIEW <name> AS SELECT ….");
+        }
+        int afterName = skipBlanked(bones, original, name.end());
+        if (afterName < original.length() && original.charAt(afterName) == '.') {
+            throw new SqlNotAllowedException(submitted,
+                    "Name the view without a schema qualifier — a temp view always"
+                            + " lives in this connection's temp schema, so \""
+                            + name.name() + ".\" names a schema, not a view.");
+        }
+        if (afterName < original.length() && original.charAt(afterName) == '(') {
+            throw new SqlNotAllowedException(submitted,
+                    "A column list after the view name is not accepted; name the"
+                            + " columns in the SELECT itself, with AS.");
+        }
+        if (!"as".equals(wordAt(bones, afterName))) {
+            throw new SqlNotAllowedException(submitted,
+                    "Expected AS after the view name: CREATE TEMP VIEW <name> AS"
+                            + " SELECT ….");
+        }
+        int bodyStart = afterWordAt(bones, afterName);
+        String bodyBones = bones.substring(bodyStart);
+        if (bodyBones.isBlank()) {
+            throw new SqlNotAllowedException(submitted,
+                    "The view has no body. Write CREATE TEMP VIEW <name> AS SELECT ….");
+        }
+        rejectWritingWords(submitted, bodyBones);
+        String bodyLead = firstWord(bodyBones);
+        if (!TABULAR_STARTS.contains(bodyLead)) {
+            throw new SqlNotAllowedException(submitted,
+                    "A temp view's body must be a SELECT, WITH or VALUES, and \""
+                            + (bodyLead.isEmpty() ? "this" : bodyLead.toUpperCase(Locale.ROOT))
+                            + "\" is none of them.");
+        }
+        return new Statement(statement, Shape.DEFINE, name.name(),
+                original.substring(bodyStart).strip());
+    }
+
+    /** A parsed identifier and the index just past it. */
+    private record ParsedName(String name, int end) { }
+
+    /**
+     * The view's name at {@code i} in {@code original}: a bare identifier, or
+     * one quoted with {@code "…"}, {@code `…`} or {@code […]} — unquoted in the
+     * result, so callers re-quote it themselves and a name SQLite would accept
+     * in any spelling round-trips.
+     */
+    private static ParsedName parseViewName(String submitted, String original, int i) {
+        int n = original.length();
+        if (i >= n) {
+            throw new SqlNotAllowedException(submitted,
+                    "The view has no name. Write CREATE TEMP VIEW <name> AS SELECT ….");
+        }
+        char c = original.charAt(i);
+        if (c == '"' || c == '`') {
+            return parseQuotedName(original, i, c);
+        }
+        if (c == '[') {
+            int close = original.indexOf(']', i + 1);
+            // An unclosed bracket cannot reach here: skeleton() blanked it to
+            // the end of the text, so AS was never found and the check above
+            // already refused. Guarded anyway.
+            if (close < 0) {
+                throw new SqlNotAllowedException(submitted,
+                        "The [ opened at character " + (i + 1) + " is never closed.");
+            }
+            return new ParsedName(original.substring(i + 1, close), close + 1);
+        }
+        if (c == '\'') {
+            throw new SqlNotAllowedException(submitted,
+                    "A view name is an identifier, not a string literal. Quote it"
+                            + " with double quotes if it needs quoting.");
+        }
+        if (Character.isLetter(c) || c == '_') {
+            int end = i;
+            while (end < n && isWordChar(original.charAt(end))) {
+                end++;
+            }
+            return new ParsedName(original.substring(i, end), end);
+        }
+        throw new SqlNotAllowedException(submitted,
+                "Expected a view name after CREATE TEMP VIEW, not \"" + c + "\".");
+    }
+
+    private static ParsedName parseQuotedName(String original, int start, char quote) {
+        StringBuilder name = new StringBuilder();
+        int i = start + 1;
+        int n = original.length();
+        while (i < n) {
+            char c = original.charAt(i);
+            if (c == quote) {
+                if (i + 1 < n && original.charAt(i + 1) == quote) {
+                    name.append(quote);
+                    i += 2;
+                    continue;
+                }
+                return new ParsedName(name.toString(), i + 1);
+            }
+            name.append(c);
+            i++;
+        }
+        // Unreachable in practice: skeleton() refuses unterminated quotes
+        // before any of this parsing runs.
+        throw new SqlNotAllowedException(original,
+                "The quote opened at character " + (start + 1) + " is never closed.");
     }
 
     /**
-     * {@code bones} with a leading {@code EXPLAIN} or {@code EXPLAIN QUERY
-     * PLAN} removed.
+     * Advances {@code from} past positions that are whitespace in the skeleton
+     * — real whitespace and blanked comments — stopping early when the original
+     * text holds a quote or bracket there, because a blanked quote is content
+     * (a quoted identifier) and not space.
+     */
+    private static int skipBlanked(String bones, String original, int from) {
+        while (from < bones.length()
+                && Character.isWhitespace(bones.charAt(from))
+                && !isQuoteStart(original.charAt(from))) {
+            from++;
+        }
+        return from;
+    }
+
+    private static boolean isQuoteStart(char c) {
+        return c == '"' || c == '\'' || c == '`' || c == '[';
+    }
+
+    // ------------------------------------------------------------- word walking
+
+    /** Index of the first letter at or after {@code from}. */
+    private static int letterStart(String text, int from) {
+        while (from < text.length() && !Character.isLetter(text.charAt(from))) {
+            from++;
+        }
+        return from;
+    }
+
+    /** The identifier word starting at or after {@code from}, lower-cased. */
+    private static String wordAt(String text, int from) {
+        int start = letterStart(text, from);
+        int end = start;
+        while (end < text.length() && isIdentifierChar(text.charAt(end))) {
+            end++;
+        }
+        return text.substring(start, end).toLowerCase(Locale.ROOT);
+    }
+
+    /** Index just past the identifier word starting at or after {@code from}. */
+    private static int afterWordAt(String text, int from) {
+        int start = letterStart(text, from);
+        while (start < text.length() && isIdentifierChar(text.charAt(start))) {
+            start++;
+        }
+        return start;
+    }
+
+    private static boolean isIdentifierChar(char c) {
+        return Character.isLetterOrDigit(c) || c == '_';
+    }
+
+    /**
+     * Index just past a leading {@code EXPLAIN} or {@code EXPLAIN QUERY PLAN}
+     * at {@code at}.
      *
      * <p>Both spellings, because a rule that only knew the short one would let
      * {@code EXPLAIN QUERY PLAN PRAGMA query_only = OFF} through. {@code QUERY}
      * is consumed only when {@code PLAN} follows it; anything else is left in
-     * place and fails the classification below, which is the safe direction.
+     * place and fails the classification, which is the safe direction.
      */
-    private static String afterExplainKeyword(String bones) {
-        String rest = afterFirstWord(bones);
-        if ("query".equals(firstWord(rest))) {
-            String afterQuery = afterFirstWord(rest);
-            if ("plan".equals(firstWord(afterQuery))) {
-                return afterFirstWord(afterQuery);
+    private static int afterExplainKeyword(String bones, int at) {
+        int rest = afterWordAt(bones, at);
+        if ("query".equals(wordAt(bones, rest))) {
+            int afterQuery = afterWordAt(bones, rest);
+            if ("plan".equals(wordAt(bones, afterQuery))) {
+                return afterWordAt(bones, afterQuery);
             }
         }
         return rest;
-    }
-
-    /**
-     * {@code text} with its first identifier word removed.
-     *
-     * <p>Always shorter than its input when the input holds a word at all,
-     * which is what makes the EXPLAIN loop above terminate.
-     */
-    private static String afterFirstWord(String text) {
-        int i = 0;
-        int n = text.length();
-        while (i < n && !Character.isLetter(text.charAt(i))) {
-            i++;
-        }
-        while (i < n
-                && (Character.isLetterOrDigit(text.charAt(i)) || text.charAt(i) == '_')) {
-            i++;
-        }
-        return text.substring(i);
     }
 
     private static void rejectWritingWords(String submitted, String bones) {
@@ -287,17 +530,35 @@ public final class ReadOnlySql {
         }
     }
 
-    private static void rejectNonIntrospectionPragma(String submitted, String bones) {
-        String rest = bones.strip().substring("pragma".length()).stripLeading();
-        // PRAGMA main.table_info(x) is legal; the schema qualifier is not the
-        // pragma's name.
-        int dot = rest.indexOf('.');
-        int paren = rest.indexOf('(');
-        int equals = rest.indexOf('=');
-        if (dot >= 0 && (paren < 0 || dot < paren) && (equals < 0 || dot < equals)) {
-            rest = rest.substring(dot + 1).stripLeading();
+    /**
+     * Refuses any pragma whose bare name is not on the allowlist — and any
+     * pragma whose name is not spelled bare at all.
+     *
+     * <p>The quoted-name refusal is explicit, not incidental. {@code PRAGMA
+     * "query_only" = table_info} is legal SQLite: the quotes name the pragma
+     * and the unquoted word is its <em>value</em>. An earlier version of this
+     * check parsed the name out of the skeleton, where quoted identifiers are
+     * blanked — so the first bare word it found was the value, and a value
+     * that happened to be an allowlisted name would have let a settable
+     * pragma through. Names are therefore read from the original text, and a
+     * quote or bracket where the name should be is refused by rule rather
+     * than by accident.
+     *
+     * @param afterPragma index in {@code bones}/{@code original} just past the
+     *     {@code PRAGMA} keyword
+     */
+    private static void rejectNonIntrospectionPragma(
+            String submitted, String bones, String original, int afterPragma) {
+        int i = skipBlanked(bones, original, afterPragma);
+        String word = barePragmaWord(submitted, original, i);
+        int next = skipBlanked(bones, original, i + word.length());
+        if (!word.isEmpty() && next < original.length() && original.charAt(next) == '.') {
+            // PRAGMA main.table_info(x) is legal; the schema qualifier is not
+            // the pragma's name.
+            i = skipBlanked(bones, original, next + 1);
+            word = barePragmaWord(submitted, original, i);
         }
-        String name = firstWord(rest).toLowerCase(Locale.ROOT);
+        String name = word.toLowerCase(Locale.ROOT);
         if (!INTROSPECTION_PRAGMAS.contains(name)) {
             throw new SqlNotAllowedException(submitted,
                     "PRAGMA " + (name.isEmpty() ? "(nothing)" : name)
@@ -306,6 +567,34 @@ public final class ReadOnlySql {
                             + ". Every other pragma either changes state or has a spelling that"
                             + " does.");
         }
+    }
+
+    /**
+     * The bare identifier at {@code i} in the original text, or {@code ""}
+     * when there is none — refusing outright when a quote or bracket sits
+     * where the name should be.
+     */
+    private static String barePragmaWord(String submitted, String original, int i) {
+        if (i >= original.length()) {
+            return "";
+        }
+        char c = original.charAt(i);
+        if (isQuoteStart(c)) {
+            throw new SqlNotAllowedException(submitted,
+                    "A quoted pragma name is refused outright: the allowlist admits the"
+                            + " introspection pragmas by their bare names, and a quoted"
+                            + " spelling such as PRAGMA \"query_only\" = … would otherwise"
+                            + " be judged by its value instead of its name. Spell it bare:"
+                            + " PRAGMA table_info(…), PRAGMA index_list(…), ….");
+        }
+        if (!Character.isLetter(c) && c != '_') {
+            return "";
+        }
+        int end = i;
+        while (end < original.length() && isWordChar(original.charAt(end))) {
+            end++;
+        }
+        return original.substring(i, end);
     }
 
     /**

@@ -138,6 +138,12 @@ final class QueryRowSourceTest {
         }
 
         @Override
+        public List<String> applyTempViews(
+                List<com.holtherndon.bazelviz.storage.query.TempViewDefinition> views) {
+            return List.of();
+        }
+
+        @Override
         public void cancel() {
         }
 

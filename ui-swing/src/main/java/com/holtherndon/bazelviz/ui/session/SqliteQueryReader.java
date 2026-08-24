@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.storage.query.AdHocQueries;
 import com.holtherndon.bazelviz.storage.query.QueryOutline;
 import com.holtherndon.bazelviz.storage.query.QueryRow;
 import com.holtherndon.bazelviz.storage.query.SchemaTable;
+import com.holtherndon.bazelviz.storage.query.TempViewDefinition;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
@@ -47,6 +48,11 @@ final class SqliteQueryReader implements QueryReader {
     @Override
     public List<QueryRow> page(QueryOutline outline, long offset, int limit) {
         return queries.page(outline, offset, limit);
+    }
+
+    @Override
+    public List<String> applyTempViews(List<TempViewDefinition> views) {
+        return queries.applyTempViews(views);
     }
 
     @Override

@@ -140,6 +140,13 @@ public final class AdHocQueries implements AutoCloseable {
     private volatile boolean deadlineFired;
     private boolean closed;
 
+    /**
+     * Names of the temp views {@link #applyTempViews} currently maintains on
+     * this connection, so a replay can drop exactly what it created — and only
+     * that: views the user typed into the editor are not its to drop.
+     */
+    private final List<String> appliedTempViews = new ArrayList<>();
+
     /** Wraps a caller-owned read-only connection with the default deadline. */
     public AdHocQueries(Connection connection) {
         this(connection, DEFAULT_TIMEOUT_SECONDS);
@@ -285,6 +292,8 @@ public final class AdHocQueries implements AutoCloseable {
         return switch (checked.shape()) {
             case TABULAR -> describeTabular(checked.sql(), rowLimit, started);
             case DIRECT -> describeDirect(checked.sql(), rowLimit, started);
+            case DEFINE -> describeDefine(
+                    checked.sql(), checked.tempViewName(), rowLimit, started);
         };
     }
 
@@ -347,6 +356,131 @@ public final class AdHocQueries implements AutoCloseable {
     }
 
     /**
+     * Runs a validated {@code CREATE TEMP VIEW}, redefining an existing view
+     * of the same name rather than refusing it.
+     *
+     * <p>The temp schema is a different database from the session file — it is
+     * per-connection, it dies with the connection, and it stays writable even
+     * though the main database is opened {@code SQLITE_OPEN_READONLY}. What
+     * does refuse it is {@code query_only}, whose refusal is connection-wide
+     * rather than per-schema, so this method lifts that one flag for exactly
+     * the DROP-and-CREATE pair and puts it back in a {@code finally}. The
+     * write <em>guarantee</em> is untouched throughout: the open mode is not
+     * reachable from SQL, and {@code AdHocQueriesTest} proves a main-schema
+     * CREATE still fails while the flag is down.
+     *
+     * <p>The DROP is qualified {@code temp.} so it can never name a main
+     * schema view — not that the open mode would let it drop one.
+     */
+    private QueryOutline describeDefine(String sql, String viewName, long rowLimit, long started) {
+        execute(QueryFailedException.Stage.DEFINE, sql, statement -> {
+            withTempSchemaWritable(statement, () -> {
+                statement.execute("DROP VIEW IF EXISTS temp." + quoteIdentifier(viewName));
+                statement.execute(sql);
+            });
+            return null;
+        });
+        return new QueryOutline(
+                sql,
+                ReadOnlySql.Shape.DEFINE,
+                List.of(),
+                OptionalLong.of(0),
+                0,
+                rowLimit,
+                System.nanoTime() - started,
+                List.of());
+    }
+
+    /**
+     * Replaces this connection's replayed temp views with {@code views}.
+     *
+     * <p>Called when a reader opens (replaying the saved definitions) and when
+     * the saved set changes (a rename, an edit, a delete). Every view this
+     * method defined previously is dropped first, so the connection ends up
+     * holding exactly the given set — a rename does not leave its old name
+     * behind. Views the user defined by typing {@code CREATE TEMP VIEW} into
+     * the editor are not tracked here and are left alone.
+     *
+     * <p>A definition that cannot be applied — a body that fails
+     * {@link ReadOnlySql}, or one SQLite refuses — is reported in the returned
+     * list and skipped, rather than failing the rest: saved views are user
+     * data, and one broken file must not take the whole query surface down.
+     *
+     * @return one human-readable problem per definition that was not applied;
+     *     empty when all of them were
+     */
+    public List<String> applyTempViews(List<TempViewDefinition> views) {
+        Objects.requireNonNull(views, "views");
+        List<String> problems = new ArrayList<>();
+        List<TempViewDefinition> valid = new ArrayList<>();
+        for (TempViewDefinition view : views) {
+            try {
+                ReadOnlySql.Statement checked = ReadOnlySql.check(view.select());
+                if (checked.shape() != ReadOnlySql.Shape.TABULAR) {
+                    problems.add("view \"" + view.name()
+                            + "\": its body must be a SELECT, WITH or VALUES,"
+                            + " not a statement of its own");
+                    continue;
+                }
+                valid.add(view);
+            } catch (SqlNotAllowedException refused) {
+                problems.add("view \"" + view.name() + "\": " + refused.getMessage());
+            }
+        }
+        execute(QueryFailedException.Stage.DEFINE, "replaying saved temp views", statement -> {
+            withTempSchemaWritable(statement, () -> {
+                for (String name : appliedTempViews) {
+                    statement.execute("DROP VIEW IF EXISTS temp." + quoteIdentifier(name));
+                }
+                appliedTempViews.clear();
+                for (TempViewDefinition view : valid) {
+                    try {
+                        statement.execute(
+                                "DROP VIEW IF EXISTS temp." + quoteIdentifier(view.name()));
+                        statement.execute("CREATE TEMP VIEW " + quoteIdentifier(view.name())
+                                + " AS " + view.select());
+                        appliedTempViews.add(view.name());
+                    } catch (SQLException refused) {
+                        problems.add("view \"" + view.name() + "\": " + refused.getMessage());
+                    }
+                }
+            });
+            return null;
+        });
+        return List.copyOf(problems);
+    }
+
+    @FunctionalInterface
+    private interface SqlWork {
+        void run() throws SQLException;
+    }
+
+    /**
+     * Runs {@code work} with {@code query_only} lifted, and puts it back
+     * whatever happens.
+     *
+     * <p>The one guarantee — the main database cannot be written — is the open
+     * mode and holds throughout; {@code query_only} is the defence-in-depth
+     * refusal, and it is connection-wide, so writing the (legitimately
+     * writable) temp schema requires lifting it briefly. Restoring in
+     * {@code finally} means even a failed CREATE leaves the refusal in place;
+     * and if the restore itself failed, {@link #requireStillReadOnly()} refuses
+     * the next statement loudly rather than running on a weakened connection.
+     */
+    private void withTempSchemaWritable(Statement statement, SqlWork work) throws SQLException {
+        statement.execute("PRAGMA query_only=OFF");
+        try {
+            work.run();
+        } finally {
+            statement.execute("PRAGMA query_only=ON");
+        }
+    }
+
+    private static String quoteIdentifier(String name) {
+        return "\"" + name.replace("\"", "\"\"") + "\"";
+    }
+
+    /**
      * The rows of {@code outline} from {@code offset}, at most {@code limit} of
      * them.
      *
@@ -401,32 +535,46 @@ public final class AdHocQueries implements AutoCloseable {
      * and a few hundred columns on a current session.
      */
     public List<SchemaTable> schema() {
-        String listing = "SELECT name, type, COALESCE(sql, '') FROM sqlite_master"
-                + " WHERE type IN ('table', 'view') ORDER BY type, name";
-        record Entry(String name, String kind, String ddl) { }
+        // Temp views live in temp.sqlite_master, a different catalog from the
+        // session's own: they exist on this connection alone and vanish with
+        // it. Listing them here is what lets the schema browser show the views
+        // this tab's connection actually has — and only views, because views
+        // are the one temp object this surface can create.
+        String listing = "SELECT name, type, COALESCE(sql, ''), 'main' FROM sqlite_master"
+                + " WHERE type IN ('table', 'view')"
+                + " UNION ALL"
+                + " SELECT name, type, COALESCE(sql, ''), 'temp' FROM temp.sqlite_master"
+                + " WHERE type = 'view'"
+                + " ORDER BY 4, 2, 1";
+        record Entry(String name, String kind, String schema, String ddl) { }
         List<Entry> entries = execute(QueryFailedException.Stage.SCHEMA, listing, statement -> {
             try (ResultSet rows = statement.executeQuery(listing)) {
                 List<Entry> found = new ArrayList<>();
                 while (rows.next()) {
-                    found.add(new Entry(rows.getString(1), rows.getString(2), rows.getString(3)));
+                    found.add(new Entry(rows.getString(1), rows.getString(2),
+                            rows.getString(4), rows.getString(3)));
                 }
                 return found;
             }
         });
         List<SchemaTable> tables = new ArrayList<>(entries.size());
         for (Entry entry : entries) {
-            tables.add(new SchemaTable(
-                    entry.name(), entry.kind(), columnsOf(entry.name()), entry.ddl()));
+            tables.add(new SchemaTable(entry.name(), entry.kind(), entry.schema(),
+                    columnsOf(entry.name(), entry.schema()), entry.ddl()));
         }
         return List.copyOf(tables);
     }
 
-    private List<SchemaColumn> columnsOf(String table) {
+    private List<SchemaColumn> columnsOf(String table, String schema) {
         // table_info takes no bind parameter, so the name is quoted into the
         // statement. It came from sqlite_master a moment ago, and doubling any
         // embedded quote is what keeps that true even for a table somebody
-        // named with one.
-        String sql = "PRAGMA table_info(\"" + table.replace("\"", "\"\"") + "\")";
+        // named with one. The schema qualifier is this codebase's own literal
+        // ('main' or 'temp', from the UNION above), and it matters: a temp
+        // view can shadow a main table's name, and an unqualified table_info
+        // would then describe the shadow both times.
+        String sql = "PRAGMA " + schema + ".table_info(\""
+                + table.replace("\"", "\"\"") + "\")";
         return execute(QueryFailedException.Stage.SCHEMA, sql, statement -> {
             try (ResultSet rows = statement.executeQuery(sql)) {
                 List<SchemaColumn> columns = new ArrayList<>();

@@ -36,6 +36,13 @@ dependencies {
 
     implementation(libs.flatlaf)
 
+    // The Query card's editor: SQL syntax highlighting, schema-aware
+    // completion, and a formatter. License/maintenance/performance review in
+    // gradle/libs.versions.toml's header; user-approved 2026-08-24.
+    implementation(libs.rsyntaxtextarea)
+    implementation(libs.autocomplete)
+    implementation(libs.sql.formatter)
+
     // Real BEP fixtures, so the Events view is tested against a session an
     // actual import produced rather than against hand-built rows.
     testImplementation(project(":test-support"))

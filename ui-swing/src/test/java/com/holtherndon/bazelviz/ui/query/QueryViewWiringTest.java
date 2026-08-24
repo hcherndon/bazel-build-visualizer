@@ -297,6 +297,156 @@ class QueryViewWiringTest {
         view = null;
     }
 
+    // ------------------------------------------------------- tabs and temp views
+
+    @Test
+    @Timeout(180)
+    @DisplayName("the starter SQL runs as shipped, over the session's real columns")
+    void theStarterQueryRunsAsShipped() throws Exception {
+        assertThat(onEdt(view::sqlForTest)).isEqualTo(QueryView.STARTER_SQL);
+        SwingUtilities.invokeAndWait(view::run);
+        await(() -> onEdt(() -> !view.isRunningForTest()));
+
+        assertThat(onEdt(view::errorShownForTest))
+                .as("a starter that errors teaches the schema is unknowable: %s",
+                        onEdt(view::errorForTest))
+                .isFalse();
+        assertThat(onEdt(view::statusForTest)).contains("rows").contains("4 columns");
+    }
+
+    @Test
+    @Timeout(180)
+    @DisplayName("each tab owns its connection, so a temp view is one tab's alone")
+    void aTempViewBelongsToItsTab() throws Exception {
+        runSql("CREATE TEMP VIEW mine AS SELECT id FROM bep_events");
+        assertThat(onEdt(view::statusForTest)).contains("Temporary view defined");
+        await(() -> onEdt(() -> view.schemaTablesForTest().stream()
+                .anyMatch(label -> label.startsWith("mine") && label.contains("temp view"))));
+
+        // Queryable where it was defined.
+        runSql("SELECT COUNT(*) AS c FROM mine");
+        assertThat(onEdt(view::errorShownForTest)).isFalse();
+
+        // A second tab is a second connection: the view is not there, and the
+        // schema tree follows the selected tab.
+        SwingUtilities.invokeAndWait(view::addTab);
+        assertThat(onEdt(view::tabCountForTest)).isEqualTo(2);
+        await(() -> onEdt(() -> !view.schemaTablesForTest().isEmpty()));
+        assertThat(onEdt(view::schemaTablesForTest))
+                .noneSatisfy(label -> assertThat(label).startsWith("mine"));
+        runSql("SELECT COUNT(*) FROM mine");
+        assertThat(onEdt(view::errorShownForTest)).isTrue();
+        assertThat(onEdt(view::errorForTest)).contains("no such table");
+
+        // Back on the first tab, the view is still on its connection.
+        SwingUtilities.invokeAndWait(() -> view.selectTabForTest(0));
+        assertThat(onEdt(view::schemaTablesForTest))
+                .anySatisfy(label -> assertThat(label).startsWith("mine"));
+
+        SwingUtilities.invokeAndWait(view::closeSelectedTab);
+        assertThat(onEdt(view::tabCountForTest)).isEqualTo(1);
+    }
+
+    @Test
+    @Timeout(180)
+    @DisplayName("tabs rename, and the last one refuses to close with a reason")
+    void tabsRenameAndTheLastOneStays() throws Exception {
+        SwingUtilities.invokeAndWait(() -> view.renameSelectedTab("Slow joins"));
+        assertThat(onEdt(view::selectedTabTitleForTest)).isEqualTo("Slow joins");
+
+        SwingUtilities.invokeAndWait(view::closeSelectedTab);
+        assertThat(onEdt(view::tabCountForTest)).isEqualTo(1);
+        assertThat(onEdt(view::tabNoticeForTest)).contains("last tab");
+    }
+
+    @Test
+    @Timeout(180)
+    @DisplayName("two tabs run genuinely concurrently, on their own connections")
+    void twoTabsRunConcurrently() throws Exception {
+        SwingUtilities.invokeAndWait(view::addTab);
+        await(() -> onEdt(() -> !view.schemaTablesForTest().isEmpty()));
+
+        // A slow query on the second tab…
+        SwingUtilities.invokeAndWait(() -> {
+            view.setSqlForTest(SLOW_QUERY);
+            view.run();
+        });
+        assertThat(onEdt(view::isRunningForTest)).isTrue();
+
+        // …does not block a query on the first: two connections, two threads.
+        SwingUtilities.invokeAndWait(() -> view.selectTabForTest(0));
+        runSql("SELECT COUNT(*) AS c FROM bep_events");
+        assertThat(onEdt(view::errorShownForTest)).isFalse();
+        assertThat(onEdt(view::statusForTest)).contains("1 rows");
+
+        // The slow one is still running on its own tab; stop it.
+        SwingUtilities.invokeAndWait(() -> view.selectTabForTest(1));
+        assertThat(onEdt(view::isRunningForTest)).isTrue();
+        SwingUtilities.invokeAndWait(view::cancel);
+        assertThat(onEdt(view::isRunningForTest)).isFalse();
+    }
+
+    // ----------------------------------------------------------------- library
+
+    @Test
+    @Timeout(180)
+    @DisplayName("saved views seed on first use and replay onto every tab's connection")
+    void savedViewsReplayOntoTabs() throws Exception {
+        SwingUtilities.invokeAndWait(() ->
+                view.attachLibrary(temporary.resolve("settings")));
+        await(() -> onEdt(() -> view.libraryPanelForTest().viewNamesForTest()
+                .contains("mnemonic_totals")));
+
+        // Tabs opened before the library attached replay on demand; a fresh
+        // open replays for every tab. Reopen, which is the ordinary path.
+        SwingUtilities.invokeAndWait(() -> view.openSession(session));
+        await(() -> onEdt(() -> view.schemaTablesForTest().stream()
+                .anyMatch(label -> label.startsWith("actions_with_labels")
+                        && label.contains("temp view"))));
+
+        // The shipped example is real SQL over real columns.
+        runSql("SELECT mnemonic, total_ms FROM mnemonic_totals ORDER BY total_ms DESC");
+        assertThat(onEdt(view::errorShownForTest))
+                .as("the shipped example must run: %s", onEdt(view::errorForTest))
+                .isFalse();
+        assertThat(onEdt(view::statusForTest)).contains("columns");
+    }
+
+    @Test
+    @Timeout(180)
+    @DisplayName("saving the editor's CREATE TEMP VIEW persists it and applies it everywhere")
+    void aViewSavedFromTheEditorReachesEveryTab() throws Exception {
+        SwingUtilities.invokeAndWait(() ->
+                view.attachLibrary(temporary.resolve("settings")));
+        await(() -> onEdt(() -> view.libraryPanelForTest().viewNamesForTest()
+                .contains("mnemonic_totals")));
+
+        List<String> problems = new java.util.concurrent.CopyOnWriteArrayList<>();
+        SwingUtilities.invokeAndWait(() -> {
+            view.setSqlForTest("CREATE TEMP VIEW event_ids AS SELECT id FROM bep_events");
+            view.panelHostForTest().saveViewFromEditor(problems::add);
+        });
+        await(() -> onEdt(() -> view.libraryPanelForTest().viewNamesForTest()
+                .contains("event_ids")));
+        assertThat(problems).isEmpty();
+
+        // The saved view lands on the open tab's connection without a reopen.
+        await(() -> onEdt(() -> view.schemaTablesForTest().stream()
+                .anyMatch(label -> label.startsWith("event_ids"))));
+        runSql("SELECT COUNT(*) AS c FROM event_ids");
+        assertThat(onEdt(view::errorShownForTest)).isFalse();
+
+        // And an editor whose text is not a definition is told what to do.
+        List<String> refused = new java.util.concurrent.CopyOnWriteArrayList<>();
+        SwingUtilities.invokeAndWait(() -> {
+            view.setSqlForTest("SELECT 1");
+            view.panelHostForTest().saveViewFromEditor(refused::add);
+        });
+        assertThat(refused)
+                .singleElement()
+                .satisfies(text -> assertThat(text).contains("CREATE TEMP VIEW"));
+    }
+
     // ------------------------------------------------------------------- helpers
 
     private void runSql(String sql) throws Exception {

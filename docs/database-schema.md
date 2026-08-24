@@ -31,6 +31,32 @@ session is a scan per table, and a count shown before it had been taken would
 be a zero standing in for "not known yet" (rule 11); `SELECT COUNT(*)` in the
 editor beside it answers that in one query.
 
+### Temporary views (the one thing a query can create)
+
+The Query card admits exactly one non-read statement: `CREATE TEMP VIEW <name>
+AS <select>`. A temp view lives in the connection's **temp schema**, which is a
+different database from the session file — per-connection, gone when the
+connection closes, incapable of holding rows — so it exists on the query tab
+that created it and on no other, and the session file is never touched (the
+main database stays open `SQLITE_OPEN_READONLY`, which is a guarantee rather
+than a filter). The schema tree lists them as *"(temp view, this tab only)"*,
+read from `temp.sqlite_master` with schema-qualified `table_info`, so a temp
+view that shadows a main table's name is described as itself rather than as
+the table it shadows.
+
+Every other `CREATE` — TABLE, non-temp VIEW, INDEX, TRIGGER, VIRTUAL TABLE,
+and the TEMP spellings of TABLE and TRIGGER — is refused by the statement
+filter (`ReadOnlySql`), and would be refused by the open mode anyway for the
+main schema.
+
+**Saved views** persist these definitions across sessions: name plus SELECT
+body as a `.sql` file under the settings directory
+(`settings/views/<name>.sql` with an `index.json`), replayed onto each query
+tab's connection when it opens and whenever the saved set changes. A shipped
+pair of examples (`actions_with_labels`, `mnemonic_totals`) resolves the
+`labels`/`mnemonics` interning tables, which is the join everyone writes
+first.
+
 ## Catalog database (`catalog.db`)
 
 | Table | Purpose |
