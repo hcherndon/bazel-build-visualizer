@@ -70,23 +70,32 @@ final class TimelineViewTest {
         };
     }
 
-    /** A view showing a real wall, sized so mouse pixel math means something. */
-    private static TimelineView viewShowingAWall() {
+    /** A ten-second wall, the same one every test in this class looks at. */
+    private static TimelineModel aModel() {
         TimelineLodIndex index = TimelineLodIndex.build(
                 sourceOf(List.of(new Span(WALL_START, WALL_START + 1_000, 0, 0,
                         SpanSource.BYTES_UNKNOWN))),
                 WALL_START, WALL_END);
-        TimelineModel model = new TimelineModel(
+        return new TimelineModel(
                 index,
                 List.of(new TimelineModel.Lane(
                         "All actions", "", 1, 1_000, WALL_START, WALL_START + 1_000)),
                 List.of(), Map.of(), 0, 0, 0);
+    }
+
+    /** A view showing the given model, sized so mouse pixel math means something. */
+    private static TimelineView viewShowing(TimelineModel model) {
         TimelineView view = new TimelineView();
         // Before setModel: the fitted viewport's zoom is derived from the
         // canvas width at the moment the model lands.
         view.canvasForTest().setSize(WIDTH, HEIGHT);
         view.setModel(model);
         return view;
+    }
+
+    /** A view showing a real wall, sized so mouse pixel math means something. */
+    private static TimelineView viewShowingAWall() {
+        return viewShowing(aModel());
     }
 
     private static MouseListener pressListener(JComponent canvas) {
@@ -171,5 +180,43 @@ final class TimelineViewTest {
         wheelListener(canvas).mouseWheelMoved(wheelAt(canvas, 500, 3.0));
         assertThat(view.viewport().orElseThrow().transform().pixelsPerMicro())
                 .isCloseTo(minPpm, within(minPpm * 1e-9));
+    }
+
+    @Test
+    @DisplayName("the axis draws no tick for a time before the wall, even parked at the "
+            + "extreme left of the clamp")
+    void axisNeverLabelsATimeBeforeTheWall() {
+        // A bounded pan is still a real fix for t5's "time should not be
+        // negative" only if the axis itself never asserts one of those
+        // in-bounds-but-before-the-wall x positions as a time. This drives the
+        // view to the exact floor panningIsBounded already proved exists, via
+        // the same real mouse handler, and then calls the exact method
+        // Header.paintComponent calls to decide what to draw -- not a
+        // reimplementation of its rule.
+        TimelineModel model = aModel();
+        TimelineView view = viewShowing(model);
+        JComponent canvas = view.canvasForTest();
+
+        pressListener(canvas).mousePressed(pressAt(canvas, 500));
+        dragListener(canvas).mouseDragged(dragTo(canvas, 50_500));
+
+        TimelineViewport viewport = view.viewport().orElseThrow();
+        // x = 0 is provably inside the clamped margin here: the floor test
+        // already established offsetMicros sits at wallStart - 0.5*visible,
+        // strictly before the wall, and x = 0 is exactly where that offset is
+        // shown.
+        double microsAtLeftEdge = viewport.transform().microsAtX(0) - model.wallStartMicros();
+        assertThat(microsAtLeftEdge)
+                .as("the setup must actually reach into the margin, or this test proves nothing")
+                .isNegative();
+
+        List<TimelineView.Tick> ticks = TimelineView.ticksFor(viewport, model, WIDTH);
+
+        assertThat(ticks)
+                .as("no tick may claim a time before the build started")
+                .noneMatch(tick -> tick.label().startsWith("-"));
+        // Not merely non-negative by coincidence: the leftmost tick position
+        // sits in the margin and must be entirely absent, tick and label both.
+        assertThat(ticks).noneMatch(tick -> tick.x() == 0);
     }
 }

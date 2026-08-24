@@ -13,6 +13,7 @@ import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -338,6 +339,37 @@ public final class TimelineView extends JPanel {
 
     // ------------------------------------------------------------------ parts
 
+    /** One axis tick: the pixel it sits at, and the label to draw there. */
+    record Tick(int x, String label) {}
+
+    /**
+     * The ticks the axis header draws for one frame -- pure computation, no
+     * {@link Graphics2D}, so what gets drawn can be checked without painting.
+     *
+     * <p>Every hundred pixels, labelled in seconds from the build's start
+     * rather than in epoch time: a reader cares how far into the build
+     * something happened. {@link #clamp} lets a pan or a zoom show a little
+     * space before the wall as a margin, on purpose -- but there is no build
+     * time before the build started, so an x whose computed time falls before
+     * {@code model.wallStartMicros()} is left out of the result entirely, tick
+     * and label both. Printing "-0.42s" there would assert a time that does
+     * not exist; printing "0.00s" at several different x positions would
+     * assert a position the viewport is not actually at. Neither is honest,
+     * so the margin gets no tick at all rather than a wrong one.
+     */
+    static List<Tick> ticksFor(TimelineViewport viewport, TimelineModel model, int width) {
+        List<Tick> ticks = new ArrayList<>();
+        for (int x = 0; x < width; x += 100) {
+            double micros = viewport.transform().microsAtX(x) - model.wallStartMicros();
+            if (micros < 0) {
+                continue;
+            }
+            ticks.add(new Tick(x, String.format(
+                    java.util.Locale.ROOT, "%.2fs", micros / 1_000_000.0)));
+        }
+        return ticks;
+    }
+
     /** The time axis. Its own component so it can stay put while lanes scroll. */
     private final class Header extends JComponent {
 
@@ -358,14 +390,9 @@ public final class TimelineView extends JPanel {
                 g2.fillRect(0, 0, getWidth(), getHeight());
                 g2.setColor(Color.GRAY);
                 g2.drawLine(0, getHeight() - 1, getWidth(), getHeight() - 1);
-                // Ticks every hundred pixels, labelled in seconds from the
-                // build's start rather than in epoch time: a reader cares how
-                // far into the build something happened.
-                for (int x = 0; x < getWidth(); x += 100) {
-                    double micros = viewport.transform().microsAtX(x) - model.wallStartMicros();
-                    g2.drawLine(x, getHeight() - 6, x, getHeight() - 1);
-                    g2.drawString(String.format(
-                            java.util.Locale.ROOT, "%.2fs", micros / 1_000_000.0), x + 3, 14);
+                for (Tick tick : ticksFor(viewport, model, getWidth())) {
+                    g2.drawLine(tick.x(), getHeight() - 6, tick.x(), getHeight() - 1);
+                    g2.drawString(tick.label(), tick.x() + 3, 14);
                 }
             } finally {
                 g2.dispose();
