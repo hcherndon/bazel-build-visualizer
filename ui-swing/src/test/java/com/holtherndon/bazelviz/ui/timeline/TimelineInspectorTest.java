@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.timeline;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.awt.Component;
@@ -12,6 +13,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import javax.swing.JButton;
+import javax.swing.JMenuItem;
+import javax.swing.JPopupMenu;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -65,15 +68,24 @@ final class TimelineInspectorTest {
                 List.of(), Map.of(), 0, 0, 0);
     }
 
+    /** The buttons a user could actually press, invisible ones excluded. */
     private static List<JButton> buttonsIn(Container container) {
         List<JButton> found = new ArrayList<>();
         for (Component child : container.getComponents()) {
-            if (child instanceof JButton button) {
+            if (child instanceof JButton button && button.isVisible()) {
                 found.add(button);
             }
             if (child instanceof Container nested) {
                 found.addAll(buttonsIn(nested));
             }
+        }
+        return found;
+    }
+
+    private static List<JMenuItem> itemsIn(JPopupMenu menu) {
+        List<JMenuItem> found = new ArrayList<>();
+        for (int i = 0; i < menu.getComponentCount(); i++) {
+            found.add((JMenuItem) menu.getComponent(i));
         }
         return found;
     }
@@ -118,20 +130,26 @@ final class TimelineInspectorTest {
 
         view.showInspector(new SpanDetails(
                 "//pkg:thing",
-                List.of("Action 7 (Javac) — SUCCESS"),
+                List.of("Action 7 (Javac) — SUCCESS", "Primary output: thing.jar"),
                 List.of(new EntityRef.ActionId(7),
                         new EntityRef.TargetLabel("//pkg:thing"))));
 
-        List<JButton> buttons = buttonsIn(view.inspectorActionsForTest());
-        assertThat(buttons)
-                .extracting(JButton::getText)
-                .containsExactlyInAnyOrder("Open target", "Reveal action")
+        InspectorHeader header = view.inspectorHeaderForTest();
+        // The controller's first line is the segment's one-line identity, so
+        // it is the header's subtitle rather than the first body line.
+        assertThat(header.subtitleForTest()).isEqualTo("Action 7 (Javac) — SUCCESS");
+        assertThat(header.overflowForTest().isVisible()).isTrue();
+
+        List<JMenuItem> items = itemsIn(header.overflowMenuForTest());
+        assertThat(items)
+                .extracting(JMenuItem::getText)
+                .containsExactly("Open target", "Reveal action")
                 // Not "Show on timeline": the segment it would show is the one
                 // already under the pointer.
                 .doesNotContain("Show on timeline");
 
-        buttons.stream()
-                .filter(button -> button.getText().equals("Reveal action"))
+        items.stream()
+                .filter(item -> item.getText().equals("Reveal action"))
                 .findFirst().orElseThrow().doClick();
 
         assertThat(recorder.commands).containsExactly(EntityActions.Command.REVEAL_ACTION);
@@ -139,14 +157,20 @@ final class TimelineInspectorTest {
     }
 
     @Test
-    @DisplayName("without the facility installed, details show and no dead buttons appear")
+    @DisplayName("without the facility installed, details show and no dead affordance appears")
     void noFacilityMeansNoButtons() {
         TimelineView view = new TimelineView();
         view.showInspector(new SpanDetails(
                 "Action 9", List.of("a line"), List.of(new EntityRef.ActionId(9))));
 
         assertThat(view.inspectorVisibleForTest()).isTrue();
-        assertThat(buttonsIn(view.inspectorActionsForTest())).isEmpty();
+        assertThat(view.inspectorHeaderForTest().overflowForTest().isVisible()).isFalse();
+        assertThat(view.inspectorHeaderForTest().overflowMenuForTest().getComponentCount())
+                .isZero();
+        // Close is the view's own control and stays, on the same fixed edge.
+        assertThat(buttonsIn(view.inspectorHeaderForTest()))
+                .extracting(JButton::getText)
+                .containsExactly("Close");
     }
 
     @Test

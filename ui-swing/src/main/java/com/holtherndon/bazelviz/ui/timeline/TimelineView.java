@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.timeline;
 
+import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
@@ -163,10 +164,13 @@ public final class TimelineView extends JPanel {
 
     // ------------------------------------------------------- inline inspector
     private final JPanel inspector = new JPanel(new BorderLayout(8, 2));
-    private final JLabel inspectorTitle = new JLabel(" ");
+    /**
+     * The same header the shared inspector and the Events inspector wear:
+     * title, subtitle, and one overflow button that holds the cross-view
+     * actions. The timeline's own Close rides its fixed edge.
+     */
+    private final InspectorHeader inspectorHeader = new InspectorHeader();
     private final JTextArea inspectorBody = new JTextArea();
-    private final JPanel inspectorActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-    private EntityActions entityActions;
 
     private TimelineModel model;
     private SpanWindow window = SpanWindow.EMPTY;
@@ -295,22 +299,15 @@ public final class TimelineView extends JPanel {
         inspector.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, Color.GRAY),
                 BorderFactory.createEmptyBorder(4, 8, 4, 8)));
-        inspectorTitle.setFont(inspectorTitle.getFont().deriveFont(Font.BOLD));
-        PlainText.disableHtml(inspectorTitle);
         inspectorBody.setEditable(false);
         inspectorBody.setOpaque(false);
         inspectorBody.setLineWrap(false);
         inspectorBody.setFont(status.getFont());
-        inspectorActions.setOpaque(false);
         JButton close = new JButton("Close");
         close.addActionListener(event -> hideInspector());
-        JPanel top = new JPanel(new BorderLayout(8, 0));
-        top.setOpaque(false);
-        top.add(inspectorTitle, BorderLayout.CENTER);
-        top.add(close, BorderLayout.EAST);
-        inspector.add(top, BorderLayout.NORTH);
+        inspectorHeader.addTrailing(close);
+        inspector.add(inspectorHeader, BorderLayout.NORTH);
         inspector.add(inspectorBody, BorderLayout.CENTER);
-        inspector.add(inspectorActions, BorderLayout.SOUTH);
         inspector.setVisible(false);
     }
 
@@ -344,7 +341,10 @@ public final class TimelineView extends JPanel {
      * jumps — honest absence, never dead buttons.
      */
     public void installEntityActions(EntityActions actions) {
-        this.entityActions = actions;
+        // Not "show on timeline": the segment it would show is the one
+        // already under the pointer.
+        inspectorHeader.installEntityActions(
+                actions, Set.of(EntityActions.Command.SHOW_ON_TIMELINE));
     }
 
     /**
@@ -565,16 +565,16 @@ public final class TimelineView extends JPanel {
      * already knows the moment of the click.
      */
     public void showInspector(SpanDetails details) {
-        inspectorTitle.setText(details.title());
-        inspectorTitle.setToolTipText(PlainText.tooltip(details.title()));
-        inspectorBody.setText(String.join("\n", details.lines()));
-        inspectorActions.removeAll();
-        if (entityActions != null && !details.refs().isEmpty()) {
-            // Not "show on timeline": the segment it would show is the one
-            // already under the pointer.
-            inspectorActions.add(entityActions.buttonStripFor(
-                    details.refs(), Set.of(EntityActions.Command.SHOW_ON_TIMELINE)));
-        }
+        // The controller words the first line as the segment's one-line
+        // identity — "Action 7 (Javac) — SUCCESS" — which is exactly what the
+        // header's subtitle slot is for. The rest stay the body.
+        List<String> lines = details.lines();
+        inspectorHeader.show(
+                details.title(),
+                lines.isEmpty() ? Optional.empty() : Optional.of(lines.getFirst()),
+                details.refs());
+        inspectorBody.setText(lines.isEmpty()
+                ? "" : String.join("\n", lines.subList(1, lines.size())));
         inspector.setVisible(true);
         inspector.revalidate();
         inspector.repaint();
@@ -583,7 +583,7 @@ public final class TimelineView extends JPanel {
     /** Hides the inline inspector. */
     public void hideInspector() {
         inspector.setVisible(false);
-        inspectorActions.removeAll();
+        inspectorHeader.clear();
     }
 
     /** Whether the inline inspector is showing, for tests. */
@@ -591,14 +591,14 @@ public final class TimelineView extends JPanel {
         return inspector.isVisible();
     }
 
-    /** The inspector's action strip container, for tests that click through it. */
-    JPanel inspectorActionsForTest() {
-        return inspectorActions;
+    /** The inspector's shared header, for tests that read it or open its menu. */
+    InspectorHeader inspectorHeaderForTest() {
+        return inspectorHeader;
     }
 
     /** The inspector's title text, for tests. */
     String inspectorTitleForTest() {
-        return inspectorTitle.getText();
+        return inspectorHeader.titleForTest();
     }
 
     /**

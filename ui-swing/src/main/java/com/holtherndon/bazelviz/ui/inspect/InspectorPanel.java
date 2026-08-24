@@ -6,7 +6,6 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
-import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
@@ -41,7 +40,9 @@ import javax.swing.UIManager;
  *
  * <p>When the inspection carries one, a button offers to open it in the Events
  * view. That is the whole of "event-to-domain provenance is inspectable": from
- * any row in any table, one click to the bytes Bazel actually sent.
+ * any row in any table, one click to the bytes Bazel actually sent. Once the
+ * shared actions are installed the offer moves into {@link InspectorHeader}'s
+ * overflow menu, and the button yields rather than double it.
  */
 public final class InspectorPanel extends JPanel {
 
@@ -50,8 +51,11 @@ public final class InspectorPanel extends JPanel {
     /** What a field with no value says. Deliberately a word, not a dash. */
     static final String UNKNOWN = "unknown";
 
-    private final JLabel titleLabel = new JLabel(" ");
-    private final JLabel subtitleLabel = new JLabel(" ");
+    /**
+     * Title, subtitle and the overflow menu — the same header the Events and
+     * Timeline inspectors wear, which is why it is not built here.
+     */
+    private final InspectorHeader header = new InspectorHeader();
     private final JButton sourceButton = new JButton("Show source event");
     private final JPanel body = new JPanel();
     private final JLabel emptyLabel =
@@ -60,43 +64,18 @@ public final class InspectorPanel extends JPanel {
     private LongConsumer sourceEventHandler = eventId -> { };
     private Inspection current = Inspection.NONE;
 
-    /**
-     * The shared navigation actions, once a host installs them. The panel
-     * keeps its legacy "Show source event" button for hosts that have not:
-     * every view renders exactly as it did until it adopts the facility.
-     */
-    private EntityActions entityActions;
-    private Set<EntityActions.Command> entityActionsOmit = Set.of();
-    private final JPanel actionsRegion = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
-
     public InspectorPanel() {
         super(new BorderLayout());
 
-        PlainText.disableHtml(titleLabel);
-        PlainText.disableHtml(subtitleLabel);
         PlainText.disableHtml(emptyLabel);
-        titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD));
-        subtitleLabel.setEnabled(false);
         sourceButton.setVisible(false);
         sourceButton.addActionListener(event ->
                 current.sourceEventId().ifPresent(id -> sourceEventHandler.accept(id)));
 
-        JPanel titles = new JPanel();
-        titles.setLayout(new BoxLayout(titles, BoxLayout.Y_AXIS));
-        titleLabel.setAlignmentX(LEFT_ALIGNMENT);
-        subtitleLabel.setAlignmentX(LEFT_ALIGNMENT);
-        titles.add(titleLabel);
-        titles.add(subtitleLabel);
-
-        JPanel header = new JPanel(new BorderLayout(8, 0));
         header.setBorder(BorderFactory.createEmptyBorder(8, 8, 4, 8));
-        header.add(titles, BorderLayout.CENTER);
-        actionsRegion.setOpaque(false);
-        JPanel east = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
-        east.setOpaque(false);
-        east.add(actionsRegion);
-        east.add(sourceButton);
-        header.add(east, BorderLayout.EAST);
+        // The legacy button rides the header's fixed edge, so it cannot be
+        // pushed off screen by a long title any more than the menu can.
+        header.addTrailing(sourceButton);
 
         body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
         body.setBorder(BorderFactory.createEmptyBorder(0, 8, 8, 8));
@@ -120,17 +99,15 @@ public final class InspectorPanel extends JPanel {
 
     /**
      * Adopts the shared cross-view actions: inspections carrying
-     * {@linkplain Inspection#refs() refs} grow a button strip in the header,
-     * and the legacy source-event button yields to the strip's own
-     * "Show source event" whenever the strip offers one — the same action
-     * must not appear twice.
+     * {@linkplain Inspection#refs() refs} grow the header's overflow menu, and
+     * the legacy source-event button yields to that menu's own "Show source
+     * event" whenever it offers one — the same action must not appear twice.
      *
      * @param omit commands never offered here — a host passes the one that
      *     would navigate to itself
      */
     public void installEntityActions(EntityActions actions, Set<EntityActions.Command> omit) {
-        this.entityActions = Objects.requireNonNull(actions, "actions");
-        this.entityActionsOmit = Set.copyOf(Objects.requireNonNull(omit, "omit"));
+        header.installEntityActions(actions, omit);
         show(current);
     }
 
@@ -139,32 +116,18 @@ public final class InspectorPanel extends JPanel {
         current = Objects.requireNonNull(inspection, "inspection");
         body.removeAll();
 
-        actionsRegion.removeAll();
         if (inspection.isEmpty()) {
-            titleLabel.setText(" ");
-            subtitleLabel.setText(" ");
+            header.clear();
             sourceButton.setVisible(false);
             JPanel empty = new JPanel(new BorderLayout());
             empty.add(emptyLabel, BorderLayout.CENTER);
             body.add(empty);
         } else {
-            titleLabel.setText(inspection.title());
-            titleLabel.setToolTipText(PlainText.tooltip(inspection.title()));
-            subtitleLabel.setText(inspection.subtitle().orElse(" "));
-            boolean stripShowsSource = false;
-            if (entityActions != null && !inspection.refs().isEmpty()) {
-                stripShowsSource = entityActions
-                        .offersFor(inspection.refs(), entityActionsOmit)
-                        .stream()
-                        .anyMatch(offer -> offer.command()
-                                == EntityActions.Command.SHOW_SOURCE_EVENT);
-                actionsRegion.add(entityActions.buttonStripFor(
-                        inspection.refs(), entityActionsOmit));
-            }
+            header.show(inspection.title(), inspection.subtitle(), inspection.refs());
             // The legacy button stays for hosts without the facility, and
-            // yields when the strip already offers the same jump.
-            sourceButton.setVisible(
-                    inspection.sourceEventId().isPresent() && !stripShowsSource);
+            // yields when the menu already offers the same jump.
+            sourceButton.setVisible(inspection.sourceEventId().isPresent()
+                    && !header.offers(EntityActions.Command.SHOW_SOURCE_EVENT));
             inspection.sourceEventId().ifPresent(id ->
                     sourceButton.setToolTipText("Open event " + id + " in the Events view"));
             for (Inspection.Section section : inspection.sections()) {
@@ -172,15 +135,15 @@ public final class InspectorPanel extends JPanel {
                 body.add(Box.createVerticalStrut(8));
             }
         }
-        actionsRegion.revalidate();
-        actionsRegion.repaint();
+        header.revalidate();
+        header.repaint();
         body.revalidate();
         body.repaint();
     }
 
-    /** Visible for testing: the strip the shared actions render into. */
-    public JPanel actionsRegionForTest() {
-        return actionsRegion;
+    /** Visible for testing: the shared header, with its title and overflow menu. */
+    public InspectorHeader headerForTest() {
+        return header;
     }
 
     /** Visible for testing: what is on screen right now. */
