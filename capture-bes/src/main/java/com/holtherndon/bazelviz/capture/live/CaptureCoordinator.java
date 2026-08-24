@@ -63,6 +63,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -116,6 +117,23 @@ public final class CaptureCoordinator implements AutoCloseable {
      * launch path asks before starting anything.
      */
     private final AtomicReference<CancellationMode> pendingCancel = new AtomicReference<>();
+
+    /**
+     * Whether the one escalation ladder has been started.
+     *
+     * <p>{@link #cancel} used to start a fresh daemon thread on every call, each
+     * running a full escalation ladder against the same process and each timing
+     * its own grace period. A user who clicked Cancel, then Terminate, then
+     * Force Kill inside the thirty-second Cancel grace — which is exactly what a
+     * user does when the first click appears to do nothing — had three ladders
+     * racing, sending rungs in whatever order they woke up in.
+     *
+     * <p>Now the first request runs the ladder and every later one only delivers
+     * its harsher rung, immediately, into the same process. The ladder picks the
+     * new rung up because {@link BazelLauncher.BazelProcess#cancel} never re-sends
+     * a rung and always continues from the harshest one already delivered.
+     */
+    private final AtomicBoolean escalating = new AtomicBoolean();
 
     private BesServer server;
     /** Where a captured action graph is written. */
@@ -332,10 +350,14 @@ public final class CaptureCoordinator implements AutoCloseable {
                 running.set(process);
                 // A stop that arrived while the process was starting would have
                 // found `running` still null a moment ago. Re-checked here so
-                // that window cannot swallow it either.
-                CancellationMode raced = pendingCancel.get();
-                if (raced != null) {
-                    process.cancel(raced, true);
+                // that window cannot swallow it either -- and applied through
+                // the same single stopper, because a click landing in that same
+                // window sees a process now and starts its own. Two entries into
+                // one ladder is precisely the race this routes around; running
+                // the ladder inline here would also block this thread for up to
+                // three-quarters of a minute before await() was ever reached.
+                if (pendingCancel.get() != null) {
+                    applyPendingCancel();
                 }
                 outcome = process.await();
                 awaitStreamsToSettle(outcome);
@@ -365,7 +387,13 @@ public final class CaptureCoordinator implements AutoCloseable {
             // request to stop capturing, not a request to abandon what was
             // captured.
             boolean interrupted = Thread.interrupted();
-            running.set(null);
+            // Cleared before either of these runs: reaping waits on the client
+            // and an interrupted thread cannot wait. Taken out of `running` in
+            // the same step, so a stop arriving during finalization signals
+            // nothing rather than racing the reap.
+            BazelLauncher.BazelProcess launched = running.getAndSet(null);
+            reportEscalation(launched, warnings);
+            reapIfStillRunning(launched, warnings);
             sink.detach();
             // Closed in the order that preserves the most: the pipeline first
             // so its threads stop feeding the journal, then the journal, then
@@ -429,13 +457,48 @@ public final class CaptureCoordinator implements AutoCloseable {
         // exists yet, the user has asked to stop, and that fact must outlive
         // this call.
         pendingCancel.accumulateAndGet(mode, CaptureCoordinator::harsherOf);
+        applyPendingCancel();
+    }
+
+    /**
+     * Delivers whatever stop has been asked for, on a thread of its own.
+     *
+     * <p>The first caller to get here runs the escalation ladder; every later
+     * one delivers its rung and returns. That division is what makes the
+     * buttons responsive and the ladder single: a Terminate clicked two seconds
+     * into the Cancel grace sends {@code SIGTERM} at once rather than queueing
+     * behind twenty-eight seconds of waiting, and it does so without a second
+     * ladder timing its own grace periods against the same client.
+     *
+     * <p>The ladder is asked to escalate — see
+     * {@link BazelLauncher.BazelProcess#cancel} — because there is no guarantee
+     * of a second click. The CLI has one Ctrl-C and the window has none at all
+     * once it is closing, and a client that outlives its cancellation holds the
+     * workspace's command lock against every later Bazel command. Escalation is
+     * therefore the promise, and {@link #reportEscalation} is the part that
+     * keeps it from being a silent one.
+     *
+     * <p>Called with no process only from {@link #cancel}, where the request is
+     * already remembered in {@code pendingCancel} and the launch path asks
+     * again the moment there is something to signal.
+     */
+    private void applyPendingCancel() {
         BazelLauncher.BazelProcess process = running.get();
         if (process == null) {
             return;
         }
+        boolean runsTheLadder = escalating.compareAndSet(false, true);
         Thread stopper = new Thread(() -> {
+            CancellationMode mode = pendingCancel.get();
+            if (mode == null) {
+                return;
+            }
             try {
-                process.cancel(mode, true);
+                if (runsTheLadder) {
+                    process.cancel(mode, true);
+                } else {
+                    process.requestStop(mode);
+                }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
@@ -475,6 +538,63 @@ public final class CaptureCoordinator implements AutoCloseable {
     /** The harsher of two stops, so a second request never softens the first. */
     private static CancellationMode harsherOf(CancellationMode current, CancellationMode next) {
         return current == null || next.ordinal() > current.ordinal() ? next : current;
+    }
+
+    /**
+     * Says so when the ladder had to go further than the user asked.
+     *
+     * <p>Escalation is the promise that the client dies and the workspace lock
+     * is released, and it is worth keeping. It is also an override of a choice
+     * the user made — Cancel keeps the event stream, Force Kill costs it — and
+     * rule 12 does not permit an override to be silent. The session records
+     * which rung it actually took, so "why is my stream incomplete when I
+     * pressed Cancel?" has an answer written down next to the session.
+     */
+    private void reportEscalation(BazelLauncher.BazelProcess process, List<String> warnings) {
+        if (process == null) {
+            return;
+        }
+        CancellationMode asked = pendingCancel.get();
+        CancellationMode applied = process.stoppedBy().orElse(null);
+        if (asked == null || applied == null || applied.ordinal() <= asked.ordinal()) {
+            return;
+        }
+        warnings.add("the build did not stop when it was asked to, so the stop was escalated from "
+                + asked + " to " + applied + "; a Bazel client that is still running holds this"
+                + " workspace's command lock, and every later Bazel command in it — 'clean'"
+                + " included — waits for that lock");
+    }
+
+    /**
+     * Force-stops a client that is somehow still alive at finalization.
+     *
+     * <p>The backstop for the one path the escalation ladder does not cover:
+     * {@link BazelLauncher.BazelProcess#await()} is an untimed
+     * {@code waitFor}, and the only way out of it other than the process
+     * exiting is an interrupt — which unwinds straight to the {@code finally}
+     * with the client untouched and the last reference to it about to be
+     * dropped. That leaves a Bazel client nobody is watching, holding the
+     * workspace's command lock until the user finds the pid themselves — and
+     * every Bazel command in that workspace, {@code clean} first among them,
+     * waiting on it in the meantime.
+     *
+     * <p>Nothing is force-killed on a normal ending, because there is nothing
+     * left alive to kill: {@code await()} returns when the process exits.
+     */
+    private void reapIfStillRunning(BazelLauncher.BazelProcess process, List<String> warnings) {
+        if (process == null || !process.isAlive()) {
+            return;
+        }
+        log.warn("the capture is finalizing while the Bazel client {} is still running;"
+                + " force-stopping it so it does not hold the workspace lock", process.pid());
+        warnings.add("the Bazel client was still running when the capture ended, so it was"
+                + " force-stopped; leaving it alive would have held this workspace's command lock"
+                + " and blocked every later Bazel command in it, including 'clean'");
+        try {
+            process.cancel(CancellationMode.FORCE_KILL, false);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Override

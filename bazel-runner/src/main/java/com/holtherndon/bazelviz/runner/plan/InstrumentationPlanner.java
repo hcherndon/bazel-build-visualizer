@@ -83,6 +83,28 @@ public final class InstrumentationPlanner {
      */
     public static final String BES_TIMEOUT_VALUE = "60s";
 
+    /** Why the timeout is added when this application is the backend. */
+    private static final String OUR_BACKEND_TIMEOUT_REASON =
+            "Bounds how long Bazel waits for this application to acknowledge the event"
+                    + " stream. Bazel's own default is to wait forever, so without this a"
+                    + " fault here would hang your build with no error.";
+
+    /**
+     * Why the timeout is added when the user's own backend is being kept.
+     *
+     * <p>Different words because it is a different promise. Here the backend is
+     * theirs and the hang would be theirs, but the invocation is still the one
+     * this application launched and offers a Stop button for — and a Bazel
+     * client waiting forever on an upload holds the workspace's command lock
+     * for exactly as long, which is what makes the next {@code bazel clean}
+     * block instead of running.
+     */
+    private static final String THEIR_BACKEND_TIMEOUT_REASON =
+            "Bounds how long Bazel waits for your own Build Event Service backend to"
+                    + " acknowledge the upload. Bazel's own default is to wait forever, and a"
+                    + " build waiting on an upload holds the workspace lock, so no later Bazel"
+                    + " command in this workspace can run — not even 'clean'.";
+
     public InstrumentationPlan plan(PlanRequest request) {
         Objects.requireNonNull(request, "request");
         BazelCommand original = request.original();
@@ -155,6 +177,14 @@ public final class InstrumentationPlanner {
         if (useFileFallback) {
             addBepFileFallback(request, capabilities, added, outputs, availability, warnings,
                     conflicts, replaced, userFlags);
+            // The user's own --bes_backend is still on the command line and is
+            // still the one Bazel uploads to, so the build is still exposed to
+            // an upload that never finishes. This path used to inject no
+            // timeout at all, because the injection lived inside
+            // addBesBackend() and this branch does not call it: the one plan
+            // this application produces that leaves a foreign backend in place
+            // was the one plan with Bazel's wait-forever default.
+            addBesTimeout(request, capabilities, added, userFlags, THEIR_BACKEND_TIMEOUT_REASON);
         } else if (request.besEndpoint().isEmpty()) {
             errors.add("the embedded Build Event Service is not listening, so no events could be"
                     + " captured from this build");
@@ -240,7 +270,7 @@ public final class InstrumentationPlanner {
                             + " about the one it shadowed."));
         }
 
-        addBesTimeout(request, capabilities, added, userFlags);
+        addBesTimeout(request, capabilities, added, userFlags, OUR_BACKEND_TIMEOUT_REASON);
 
         availability.put(DataSource.BES_ENVELOPE, new SourceAvailability.Entry(
                 status.isSupported()
@@ -268,12 +298,22 @@ public final class InstrumentationPlanner {
      * expressed an intent about how long to wait, and overriding it to protect
      * them from us would be presumptuous. The plan still shows the flag, marked
      * as not applied, so the choice is visible.
+     *
+     * <p>Called from both backend paths — the embedded one and the
+     * keep-your-own-backend fallback — because the failure it prevents belongs
+     * to the invocation, not to whose server is at the far end. It carries
+     * {@code userCanDisable}, so a user whose upload legitimately takes longer
+     * than a minute can veto it and see what they gave up.
+     *
+     * @param reason the sentence the dialog shows, which differs by path
+     *     because the hang it describes is a different hang
      */
     private void addBesTimeout(
             PlanRequest request,
             BazelCapabilities capabilities,
             List<AddedFlag> added,
-            UserFlags userFlags) {
+            UserFlags userFlags,
+            String reason) {
         CapabilityStatus status = capabilities.status(Capability.BES_TIMEOUT);
         String flagName = capabilities.preferredFlag(Capability.BES_TIMEOUT).orElse("bes_timeout");
         if (userFlags.has(flagName)) {
@@ -286,9 +326,7 @@ public final class InstrumentationPlanner {
                 request.vetoed().contains(Capability.BES_TIMEOUT)
                         ? CapabilityStatus.UNSUPPORTED
                         : status,
-                "Bounds how long Bazel waits for this application to acknowledge the event"
-                        + " stream. Bazel's own default is to wait forever, so without this a"
-                        + " fault here would hang your build with no error.",
+                reason,
                 DataSource.BES_ENVELOPE,
                 Overhead.LOW,
                 Optional.empty(),

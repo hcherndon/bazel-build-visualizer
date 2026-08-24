@@ -37,10 +37,14 @@ class InstrumentationPlannerTest {
 
         assertThat(plan.canLaunch()).isTrue();
         assertThat(plan.injectedArgv()).containsExactly(
-                "--bes_backend=" + ENDPOINT, "--build_event_publish_all_actions");
+                "--bes_backend=" + ENDPOINT,
+                "--bes_timeout=" + InstrumentationPlanner.BES_TIMEOUT_VALUE,
+                "--build_event_publish_all_actions");
         assertThat(plan.effective().toArgv()).containsExactly(
                 "/usr/bin/bazel", "build",
-                "--bes_backend=" + ENDPOINT, "--build_event_publish_all_actions", "//...");
+                "--bes_backend=" + ENDPOINT,
+                "--bes_timeout=" + InstrumentationPlanner.BES_TIMEOUT_VALUE,
+                "--build_event_publish_all_actions", "//...");
         assertThat(plan.original().toArgv()).containsExactly("/usr/bin/bazel", "build", "//...");
         assertThat(plan.sourceAvailability().isPlanned(DataSource.BES_ENVELOPE)).isTrue();
     }
@@ -151,6 +155,78 @@ class InstrumentationPlannerTest {
     }
 
     @Test
+    @DisplayName("the file fallback bounds the upload too, or a kept backend can hang the build")
+    void theFileFallbackStillGetsATimeout(@TempDir Path raw) {
+        InstrumentationPlan plan = planner.plan(PlanRequest.initial(
+                        parse("build", "--bes_backend=grpc://corp.example:443", "//..."),
+                        fullCapabilities(), CapturePreset.LIVE_ESSENTIALS, raw, Optional.of(ENDPOINT))
+                .resolving(PlanConflict.Kind.EXISTING_BES_BACKEND,
+                        PlanConflict.RESOLUTION_KEEP_BES_USE_FILE));
+
+        // This is the one plan that leaves a foreign Build Event Service
+        // backend on the command line, and it was the one plan with no
+        // --bes_timeout: the injection used to live inside the embedded-backend
+        // branch, which this path does not take. Bazel's default is 0s, which
+        // means wait for ever, and a Bazel client waiting for ever holds the
+        // workspace's command lock for exactly as long — so the next build,
+        // and the 'clean' the user reaches for when it will not start, block
+        // on a process they cannot see.
+        assertThat(plan.injectedArgv())
+                .contains("--bes_timeout=" + InstrumentationPlanner.BES_TIMEOUT_VALUE);
+
+        AddedFlag timeout = plan.addedFlags().stream()
+                .filter(flag -> flag.capability() == Capability.BES_TIMEOUT)
+                .findFirst()
+                .orElseThrow();
+        // The reason names the backend that is actually at the far end, which
+        // on this path is theirs and not ours.
+        assertThat(timeout.reason()).contains("your own Build Event Service backend");
+        assertThat(timeout.reason()).contains("clean");
+        // Their upload may legitimately be slow, so the choice stays theirs.
+        assertThat(timeout.userCanDisable()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a user's own --bes_timeout is never overridden, on either backend path")
+    void theirTimeoutWins(@TempDir Path raw) {
+        InstrumentationPlan embedded = planner.plan(PlanRequest.initial(
+                parse("build", "--bes_timeout=10m", "//..."),
+                fullCapabilities(), CapturePreset.LIVE_ESSENTIALS, raw, Optional.of(ENDPOINT)));
+
+        InstrumentationPlan fallback = planner.plan(PlanRequest.initial(
+                        parse("build", "--bes_backend=grpc://corp.example:443",
+                                "--bes_timeout=10m", "//..."),
+                        fullCapabilities(), CapturePreset.LIVE_ESSENTIALS, raw, Optional.of(ENDPOINT))
+                .resolving(PlanConflict.Kind.EXISTING_BES_BACKEND,
+                        PlanConflict.RESOLUTION_KEEP_BES_USE_FILE));
+
+        // They have expressed an intent about how long to wait. Appending ours
+        // would win by last-value and Bazel would say nothing about the one it
+        // shadowed, which is the silent override the contract forbids.
+        assertThat(embedded.injectedArgv()).noneMatch(flag -> flag.startsWith("--bes_timeout="));
+        assertThat(fallback.injectedArgv()).noneMatch(flag -> flag.startsWith("--bes_timeout="));
+        assertThat(embedded.effective().toArgv()).contains("--bes_timeout=10m");
+        assertThat(fallback.effective().toArgv()).contains("--bes_timeout=10m");
+    }
+
+    @Test
+    @DisplayName("a vetoed timeout is shown and not applied, so the cost of vetoing it is visible")
+    void aVetoedTimeoutIsStillExplained(@TempDir Path raw) {
+        InstrumentationPlan plan = planner.plan(PlanRequest
+                .initial(parse("build", "//..."), fullCapabilities(), CapturePreset.LIVE_ESSENTIALS,
+                        raw, Optional.of(ENDPOINT))
+                .vetoing(Capability.BES_TIMEOUT));
+
+        assertThat(plan.injectedArgv()).noneMatch(flag -> flag.startsWith("--bes_timeout="));
+        AddedFlag timeout = plan.addedFlags().stream()
+                .filter(flag -> flag.capability() == Capability.BES_TIMEOUT)
+                .findFirst()
+                .orElseThrow();
+        assertThat(timeout.isApplied()).isFalse();
+        assertThat(timeout.reason()).isNotBlank();
+    }
+
+    @Test
     @DisplayName("an existing destination file is not overwritten without saying so")
     void existingDestinationBlocks(@TempDir Path raw) throws Exception {
         java.nio.file.Files.writeString(
@@ -252,7 +328,9 @@ class InstrumentationPlannerTest {
                         raw, Optional.of(ENDPOINT))
                 .vetoing(Capability.PUBLISH_ALL_ACTIONS));
 
-        assertThat(plan.injectedArgv()).containsExactly("--bes_backend=" + ENDPOINT);
+        assertThat(plan.injectedArgv()).containsExactly(
+                "--bes_backend=" + ENDPOINT,
+                "--bes_timeout=" + InstrumentationPlanner.BES_TIMEOUT_VALUE);
         assertThat(plan.canLaunch()).isTrue();
     }
 
@@ -378,6 +456,7 @@ class InstrumentationPlannerTest {
         return capabilities(
                 spec("bes_backend", "build", "test", "run"),
                 spec("bes_lifecycle_events", "build", "test", "run"),
+                spec("bes_timeout", "build", "test", "run"),
                 spec("build_event_binary_file", "build", "test", "run"),
                 spec("build_event_json_file", "build", "test", "run"),
                 spec("build_event_publish_all_actions", "build", "test", "run"),

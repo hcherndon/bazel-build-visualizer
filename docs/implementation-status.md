@@ -1193,3 +1193,28 @@ be clipped at the narrowest supported window width — a smaller instance of
 the same class of problem, left for whoever hits it. `ui/metrics/FindingsView`
 has the same latent `GridLayout`/non-`Scrollable` shape and was not touched:
 it is a different tab and was not reported.
+
+- **Cancellation is one ladder, and it always ends the client** (2026-08-23).
+  `CaptureCoordinator.cancel` started a fresh thread running a full escalation
+  ladder on every click, so a user who pressed Cancel, then Terminate, then
+  Force Kill — which is what a user does when the first click appears to do
+  nothing — had three ladders racing, each timing its own grace period against
+  one process. Signal delivery is now serialized inside
+  `BazelLauncher.BazelProcess`: the first request runs the ladder, later ones
+  deliver their harsher rung immediately, and no rung is ever sent twice or
+  after a harsher one. An interrupted ladder now force-kills rather than walking
+  away from a client that was demonstrably ignoring its signal, and a client
+  still alive when the capture finalizes is force-stopped instead of orphaned —
+  either would leave the workspace's command lock held, which is what makes a
+  later `bazel clean` hang. Escalation past what the user asked for is recorded
+  in the session's warnings rather than applied silently (rule 12).
+  `--bes_timeout=60s` is now injected on the keep-your-own-backend path too; it
+  used to be injected only alongside the embedded backend, leaving the one plan
+  that keeps a foreign Build Event Service running on Bazel's wait-for-ever
+  default. Signal delivery became testable through the package-private
+  `StopSignals` seam: `CancellationLadderTest` asserts the exact sequence of
+  rungs under concurrent stops, `RealSubprocessLadderTest` proves the same
+  ladder against a real process that ignores `SIGINT` and `SIGTERM` without
+  starting a Bazel server, and `RealBazelCaptureTest` proves the workspace lock
+  is free after three stops in a row. See `docs/troubleshooting.md`, "A build
+  will not stop, or the next Bazel command hangs".
