@@ -335,18 +335,42 @@ class InstrumentationPlannerTest {
     }
 
     @Test
-    @DisplayName("a preset naming sources this version cannot capture says so rather than implying it can")
-    void unimplementedPresetSourcesAreDeclared(@TempDir Path raw) {
+    @DisplayName("the Full Graph Diagnostics preset does not warn that aquery/cquery go uncaptured")
+    void auxiliaryQueryGraphsAreDeclaredPlanned(@TempDir Path raw) {
         InstrumentationPlan plan = planner.plan(PlanRequest.initial(
-                parse("build", "//..."), fullCapabilities(), CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                parse("build", "//..."), fullCapabilities(), CapturePreset.FULL_GRAPH_DIAGNOSTICS,
                 raw, Optional.of(ENDPOINT)));
 
-        // aquery and cquery arrive in Phase 5. The execution log and the
-        // profile were on this list until Phase 4 and are not any more.
-        assertThat(plan.sourceAvailability().entry(DataSource.AQUERY).reason())
-                .contains("does not capture it yet");
-        assertThat(plan.warnings()).anyMatch(warning -> warning.contains("does not capture yet"));
+        // aquery and cquery are captured after every build
+        // (CaptureCoordinator.queryGraphsQuietly, capture-bes). The dialog
+        // used to warn "this version does not capture yet" here even though
+        // the queries had already shipped -- a stale Phase 2 placeholder
+        // that outlived the Phase 5 feature which made it false. See
+        // docs/implementation-status.md.
+        assertThat(plan.sourceAvailability().entry(DataSource.AQUERY).availability())
+                .isEqualTo(SourceAvailability.Availability.PLANNED);
+        assertThat(plan.sourceAvailability().entry(DataSource.CQUERY).availability())
+                .isEqualTo(SourceAvailability.Availability.PLANNED);
+        assertThat(plan.warnings()).noneMatch(warning -> warning.contains("does not capture"));
         assertThat(plan.canLaunch()).isTrue();
+    }
+
+    @Test
+    @DisplayName("aquery and cquery are planned even for a preset that never names them")
+    void auxiliaryQueryGraphsArePlannedRegardlessOfPreset(@TempDir Path raw) {
+        InstrumentationPlan plan = planner.plan(PlanRequest.initial(
+                parse("build", "//..."), fullCapabilities(), CapturePreset.LIVE_ESSENTIALS,
+                raw, Optional.of(ENDPOINT)));
+
+        // CaptureCoordinator runs both queries unconditionally after every
+        // live capture, so the availability map must say PLANNED even for
+        // Live Essentials, whose requestedCapabilities() names neither
+        // AQUERY_PROTO_OUTPUT nor CQUERY_PROTO_OUTPUT: gating this entry on
+        // the preset would make the map wrong, not the queries conditional.
+        assertThat(plan.sourceAvailability().entry(DataSource.AQUERY).availability())
+                .isEqualTo(SourceAvailability.Availability.PLANNED);
+        assertThat(plan.sourceAvailability().entry(DataSource.CQUERY).availability())
+                .isEqualTo(SourceAvailability.Availability.PLANNED);
     }
 
     @Test
