@@ -143,6 +143,79 @@ final class GraphQueriesTest {
     }
 
     @Test
+    @DisplayName("an exact label finds its node, and a longer label sharing its prefix does not")
+    void nodeForLabelIsExact() throws Exception {
+        // //chain:t3 is a proper prefix of //chain:t3_extra, which is the case
+        // the old "%pattern%" jump got wrong: it would land on whichever the
+        // LIKE happened to order first.
+        exec("INSERT INTO labels (id, value) VALUES (6, '//chain:t3_extra')");
+        exec("INSERT INTO declared_actions"
+                + " (id, source_id, graph_id, label_id, mnemonic_id, node_index)"
+                + " VALUES (6, 1, 5, 6, 1, 5)");
+
+        assertThat(queries.nodeForLabel(GraphKind.DECLARED_ACTIONS, "//chain:t3"))
+                .hasValue(3);
+        assertThat(queries.nodeForLabel(GraphKind.DECLARED_ACTIONS, "//chain:t3_extra"))
+                .hasValue(5);
+        // A label this session never declared is absent, not node 0.
+        assertThat(queries.nodeForLabel(GraphKind.DECLARED_ACTIONS, "//no/such:target"))
+                .isEmpty();
+        // And the substring that would have matched both matches neither.
+        assertThat(queries.nodeForLabel(GraphKind.DECLARED_ACTIONS, "chain:t3"))
+                .isEmpty();
+        assertThat(queries.nodeForLabel(GraphKind.DECLARED_ACTIONS, "%:t3%")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("one label's several actions answer with the same node every time")
+    void nodeForLabelIsStableAcrossActions() throws Exception {
+        // Two more actions for //chain:t0, at higher node indexes: a label
+        // owns many actions in any real build, and a jump to the label must
+        // not land somewhere different each time.
+        exec("INSERT INTO declared_actions"
+                + " (id, source_id, graph_id, label_id, mnemonic_id, node_index)"
+                + " VALUES (7, 1, 6, 1, 1, 6)");
+        exec("INSERT INTO declared_actions"
+                + " (id, source_id, graph_id, label_id, mnemonic_id, node_index)"
+                + " VALUES (8, 1, 7, 1, 1, 7)");
+
+        assertThat(queries.nodeForLabel(GraphKind.DECLARED_ACTIONS, "//chain:t0"))
+                .hasValue(0)
+                .isEqualTo(queries.nodeForLabel(GraphKind.DECLARED_ACTIONS, "//chain:t0"));
+    }
+
+    @Test
+    @DisplayName("the label graph answers in its own numbering, and empty when it has no such node")
+    void nodeForLabelInTheLabelGraph() throws Exception {
+        // The fixture's cquery source failed, so the label graph is empty:
+        // every label is absent there even though the action graph has it.
+        assertThat(queries.nodeForLabel(GraphKind.CONFIGURED_TARGETS, "//chain:t3"))
+                .isEmpty();
+
+        // With configured targets imported, the answer is the label graph's
+        // own index — the position in the sorted label universe, which is not
+        // the action graph's node index for the same label. A fresh reader,
+        // because the universe is loaded once per GraphQueries and the one
+        // above has already read the empty one.
+        exec("INSERT INTO configured_target_nodes (source_id, label_id, rule_class)"
+                + " VALUES (2, 4, 'java_library')");
+        exec("INSERT INTO configured_target_nodes (source_id, label_id, rule_class)"
+                + " VALUES (2, 5, 'java_binary')");
+        GraphQueries reopened = new GraphQueries(connection, tempDir.resolve("indexes"));
+
+        assertThat(reopened.nodeForLabel(GraphKind.CONFIGURED_TARGETS, "//chain:t3"))
+                .hasValue(0);
+        assertThat(reopened.nodeForLabel(GraphKind.CONFIGURED_TARGETS, "//chain:t4"))
+                .hasValue(1);
+        assertThat(reopened.nodeForLabel(GraphKind.CONFIGURED_TARGETS, "//chain:t0"))
+                .isEmpty();
+        // The same label, two numberings: node 3 in the action graph, node 0
+        // in the label graph. A jump that mixed them up would draw a stranger.
+        assertThat(reopened.nodeForLabel(GraphKind.DECLARED_ACTIONS, "//chain:t3"))
+                .hasValue(3);
+    }
+
+    @Test
     @DisplayName("an untimed node keeps the unknown sentinel rather than a zero")
     void unknownDurationsStayUnknown() throws Exception {
         long[] durations = queries.durationsByNodeIndex(false, -1);

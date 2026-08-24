@@ -97,11 +97,15 @@ public final class EntityActions {
             return switch (this) {
                 case OPEN_TARGET, SHOW_ACTIONS_FOR_LABEL, SHOW_EVENTS_FOR_LABEL ->
                         ref instanceof EntityRef.TargetLabel;
-                // The tree and graph views focus on actions today; the split
-                // may widen these to labels, which is a change to this switch
-                // and to the handler, nowhere else.
-                case OPEN_IN_TREE, OPEN_IN_GRAPH, REVEAL_ACTION, SHOW_ON_TIMELINE ->
-                        ref instanceof EntityRef.ActionId;
+                // The widening this switch was written expecting: the tree and
+                // the canvas take a target label as well as an action, because
+                // a label is a node in its own right in the configured-target
+                // graph and the owner of actions in the action graph. Both
+                // arms of the handler take both kinds.
+                case OPEN_IN_TREE, OPEN_IN_GRAPH ->
+                        ref instanceof EntityRef.ActionId
+                                || ref instanceof EntityRef.TargetLabel;
+                case REVEAL_ACTION, SHOW_ON_TIMELINE -> ref instanceof EntityRef.ActionId;
                 case SHOW_SOURCE_EVENT -> ref instanceof EntityRef.EventId;
             };
         }
@@ -127,6 +131,21 @@ public final class EntityActions {
         this.wired = wired.isEmpty()
                 ? EnumSet.noneOf(Command.class) : EnumSet.copyOf(wired);
         this.handler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /**
+     * Whether something real is behind {@code command} in this application.
+     *
+     * <p>Menus and strips never need to ask: an unwired command is simply not
+     * offered, which is the honest form of absence for an affordance built
+     * per selection. A <em>fixed</em> toolbar cannot do that — its buttons
+     * exist before anything is selected — so the Targets card asks this and
+     * disables the button with the reason in its tooltip, which is the honest
+     * form of absence for a control that is always on screen. What neither
+     * form allows is a control that clicks into silence.
+     */
+    public boolean isWired(Command command) {
+        return wired.contains(Objects.requireNonNull(command, "command"));
     }
 
     /**

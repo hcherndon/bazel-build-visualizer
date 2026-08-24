@@ -14,7 +14,9 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 
 /**
@@ -59,6 +61,17 @@ public final class GraphQueries implements AutoCloseable {
                     + " LEFT JOIN mnemonics m ON m.id = da.mnemonic_id"
                     + " LEFT JOIN artifacts art ON art.id = da.primary_output_id"
                     + " WHERE da.node_index = ?";
+
+    private static final String NODE_BY_EXACT_LABEL =
+            "SELECT da.node_index FROM declared_actions da"
+                    + " JOIN labels l ON l.id = da.label_id"
+                    + " WHERE l.value = ? AND da.node_index IS NOT NULL"
+                    + " ORDER BY da.node_index LIMIT 1";
+
+    private static final String LABEL_NODE_BY_EXACT_LABEL =
+            "SELECT n.label_id FROM configured_target_nodes n"
+                    + " JOIN labels l ON l.id = n.label_id"
+                    + " WHERE l.value = ? LIMIT 1";
 
     private static final String LABEL_NODES_BY_PATTERN =
             "SELECT n.label_id, l.value, min(n.rule_class)"
@@ -281,6 +294,57 @@ public final class GraphQueries implements AutoCloseable {
             statement.setLong(1, actionId);
             try (ResultSet rows = statement.executeQuery()) {
                 return rows.next() ? OptionalLong.of(rows.getLong(1)) : OptionalLong.empty();
+            }
+        }
+    }
+
+    /**
+     * The node for exactly this label, when the graph carries one.
+     *
+     * <p>Not {@link #search(GraphKind, String, int)} with a {@code %pattern%}:
+     * a substring search for {@code //app:server} also matches
+     * {@code //app:server_lib}, and a cross-view jump that lands on a
+     * neighbour of the target the user asked for is worse than one that says
+     * the target is not in the graph. {@code labels.value} is UNIQUE, so
+     * equality here is both exact and indexed.
+     *
+     * <p>The two graphs answer with their own numbering, which is why the kind
+     * is a parameter rather than a guess: an action-graph index means nothing
+     * to the label graph's CSR and vice versa. In the action graph a label
+     * usually owns several actions, and the lowest node index is returned so
+     * that repeated jumps to one label land in the same place every time.
+     *
+     * @param graphKind which graph's numbering the answer is in
+     * @return the node index, or empty when no node in that graph carries the
+     *     label — never a zero standing in for "not found"
+     */
+    public OptionalInt nodeForLabel(GraphKind graphKind, String label)
+            throws SQLException {
+        Objects.requireNonNull(label, "label");
+        if (graphKind != GraphKind.CONFIGURED_TARGETS) {
+            try (PreparedStatement statement =
+                    connection.prepareStatement(NODE_BY_EXACT_LABEL)) {
+                statement.setString(1, label);
+                try (ResultSet rows = statement.executeQuery()) {
+                    return rows.next()
+                            ? OptionalInt.of(rows.getInt(1))
+                            : OptionalInt.empty();
+                }
+            }
+        }
+        long[] universe = labelUniverse();
+        try (PreparedStatement statement =
+                connection.prepareStatement(LABEL_NODE_BY_EXACT_LABEL)) {
+            statement.setString(1, label);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    return OptionalInt.empty();
+                }
+                int index = java.util.Arrays.binarySearch(universe, rows.getLong(1));
+                // A label imported after the universe was read is treated
+                // exactly as search(GraphKind, ...) treats it: reported as
+                // absent rather than given an index the CSR does not have.
+                return index < 0 ? OptionalInt.empty() : OptionalInt.of(index);
             }
         }
     }
