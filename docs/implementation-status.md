@@ -1418,3 +1418,73 @@ it is a different tab and was not reported.
   `INSERT` are still refused and the rows are unchanged — the guarantee
   outliving the refusal — before asserting that the per-execution guard notices,
   says so, and puts `query_only` back.
+
+- **The Query card grew into a suite: tabs, saved queries, saved views, a real
+  editor** (2026-08-24). Four things the first cut shipped without, and one
+  bug it shipped with.
+  The **starter SQL was invalid two ways** — it named a `mnemonic` column
+  (`actions` has interning FKs `mnemonic_id`/`label_id`, resolved through
+  `mnemonics`/`labels`) and a `duration_micros` column that does not exist
+  (durations are `end_micros - start_micros`, either end nullable). The first
+  thing a user ran errored on the schema the card exists to teach. The
+  replacement joins `mnemonics`, groups on `mnemonics.value`, and is honest
+  about NULL: `timed_actions` counts the rows whose difference is non-NULL,
+  which is exactly the set `SUM` covers, so untimed actions are counted beside
+  the total rather than folded silently into it.
+  `QueryViewWiringTest.theStarterQueryRunsAsShipped` runs the literal constant
+  against a real imported session, so the starter can never regress to
+  fiction again.
+  **Tabs** (`QueryTab`, up to `QueryView.MAX_TABS` = 16, docs/limits.md): each
+  tab owns its editor, results grid, row source, and its own `QueryReader`
+  from `SessionSource.openQueryReader()` on its own single-thread executor —
+  the per-view connection pattern the events/actions tables use, and the
+  reason two tabs' queries run genuinely concurrently instead of queuing on
+  one connection (`twoTabsRunConcurrently` proves it with a slow recursive CTE
+  on one tab and a fast count on the other). Tabs rename and close; the last
+  one refuses to close with a reason; session close mirrors the old
+  `closeSession()` discipline per tab (interrupt, then shut down, then close,
+  on a daemon thread).
+  **`CREATE TEMP VIEW <name> AS <tabular>`** is now the one non-read the
+  statement filter admits, as a genuinely new `ReadOnlySql.Shape.DEFINE` —
+  it cannot be wrapped in `SELECT * FROM (…)`, so it could not ride on
+  TABULAR. The head is parsed token by token (CREATE, TEMP/TEMPORARY, VIEW,
+  one name — bare, `"quoted"`, `` `backquoted` `` or `[bracketed]` — then AS),
+  and the body is re-checked by the same rules as a standalone statement.
+  Every other CREATE stays banned by name: TABLE, non-temp VIEW, INDEX,
+  TRIGGER, VIRTUAL TABLE, and the TEMP spellings of TABLE and TRIGGER, which
+  can hold data or run statements where a view cannot. The temp schema is a
+  different database from the session file, writable even though main is
+  opened `SQLITE_OPEN_READONLY` — but `query_only` refuses connection-wide,
+  so `AdHocQueries` lifts that one flag for exactly the DROP-and-CREATE pair
+  and restores it in a `finally`; `aTempViewCannotBeWrittenThrough` re-proves
+  the open-mode guarantee at the precise moment the flag is down (main-schema
+  CREATE TABLE/VIEW/INDEX/TRIGGER/VIRTUAL TABLE all refused `readonly`), and
+  a shadowing temp view is shown to be local, harmless, and described as
+  itself in the schema tree (schema-qualified `table_info`;
+  `temp.sqlite_master` is listed alongside main's).
+  A prior review found the **quoted-pragma refusal worked only by side
+  effect**: `PRAGMA "query_only" = table_info` is legal SQLite where the
+  quotes name the pragma and the bare word is its *value*, and the old check
+  — reading the name out of the skeleton, where quoted identifiers are
+  blanked — judged that statement by its value. A value matching an
+  allowlisted name would have cleared `query_only` through `EXPLAIN`. Names
+  are now read from the original text and a quote or bracket where the name
+  should be is refused by rule (`quotedPragmaNamesAreRefusedExplicitly`), in
+  every spelling and through `EXPLAIN`.
+  **Saved queries and saved views** (`QueryLibrary`): plain `.sql` files plus
+  a small JSON `index.json` under `settings/queries/` and `settings/views/` —
+  human-editable on purpose, index rebuilt from the files when missing,
+  index entries that point outside their directory ignored. Saved views store
+  name + SELECT body and are **replayed** onto every tab's connection at open
+  and on every library change (`QueryReader.applyTempViews`, drop-what-I-made
+  semantics so a rename does not leave its old name behind); a broken saved
+  view is reported and skipped, never fatal. Two examples ship on first use —
+  `actions_with_labels` and `mnemonic_totals`, the interning joins everyone
+  writes first — and deleting them is respected, not reseeded.
+  **The editor** is now RSyntaxTextArea with SQL highlighting and line
+  numbers, AutoComplete fed from the connection's own schema (tables, views,
+  temp views, columns — so completion tracks the selected tab), and a Format
+  button behind vertical-blank's sql-formatter. All three are BSD-3-Clause/
+  MIT, reviewed in `gradle/libs.versions.toml`'s header, user-approved, and
+  lockfiles regenerated. rsyntaxtextarea is pinned to 3.6.1 — the version
+  autocomplete 3.3.3 declares — rather than the fresh 4.x major.

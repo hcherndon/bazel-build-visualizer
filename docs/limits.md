@@ -49,6 +49,7 @@ looked edgeless would be a claim about the build, and a false one.
 | Ad hoc query deadline, seconds | `com.holtherndon.bazelviz.storage.query.AdHocQueries.DEFAULT_TIMEOUT_SECONDS` | 60 | The statement is interrupted (`sqlite3_interrupt`) and the card says it was stopped rather than that it failed — a cancelled query is not a broken one. The backstop for a window nobody is watching; the Cancel button is the one a person uses. |
 | Row-cap spinner floor | `com.holtherndon.bazelviz.ui.query.QueryView.MIN_ROW_LIMIT` | 1 | The spinner will not go lower, for the reason the graph's node-limit floor is 1: a cap of zero shows an empty grid, and an empty grid reads as "the query matched nothing", which is a claim about the build rather than about the setting. |
 | Row-cap spinner ceiling | `com.holtherndon.bazelviz.ui.query.QueryView.MAX_ROW_LIMIT` | 20000000 | The spinner will not go higher. Four times the largest planned session (Tier 3, five million actions), so a join that multiplies rows still fits, and far below `Integer.MAX_VALUE`, where `JTable`'s int-based row geometry stops working. An unbounded control would read as "no limit", which plan 13.6 forbids. |
+| Query tabs | `com.holtherndon.bazelviz.ui.query.QueryView.MAX_TABS` | 16 | The card refuses to open another tab and says so on screen, with the number and the way out (close one). Nothing open is closed for you. Every tab is a SQLite connection and a thread, which is also what makes tabs genuinely concurrent. |
 
 ## Ingest and storage limits
 

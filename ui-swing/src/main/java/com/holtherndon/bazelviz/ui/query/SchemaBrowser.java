@@ -179,6 +179,11 @@ final class SchemaBrowser extends JPanel {
     }
 
     private static String label(SchemaTable table) {
+        if (table.isTemp()) {
+            // Named as what it is: this connection's, not the session's. A
+            // temp view listed like a table would read as part of the file.
+            return table.name() + "  (temp view, this tab only)";
+        }
         return table.name() + (table.isView() ? "  (view)" : "");
     }
 
@@ -206,7 +211,7 @@ final class SchemaBrowser extends JPanel {
             return;
         }
         String label = String.valueOf(node.getUserObject());
-        int marker = label.indexOf("  (view)");
+        int marker = label.indexOf("  (");
         tableChosen.accept(marker < 0 ? label : label.substring(0, marker));
     }
 

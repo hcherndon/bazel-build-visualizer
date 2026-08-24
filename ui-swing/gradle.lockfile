@@ -2,7 +2,10 @@
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
 # To regenerate this file, run: ./gradlew :ui-swing:dependencies --write-locks
+com.fifesoft:autocomplete:3.3.3=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+com.fifesoft:rsyntaxtextarea:3.6.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.formdev:flatlaf:3.7.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+com.github.vertical-blank:sql-formatter:2.0.5=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.google.android:annotations:4.1.1.4=runtimeClasspath,testRuntimeClasspath
 com.google.api.grpc:proto-google-common-protos:2.64.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.google.code.findbugs:jsr305:3.0.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath

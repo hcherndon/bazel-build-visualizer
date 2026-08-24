@@ -1,48 +1,36 @@
 package com.holtherndon.bazelviz.ui.query;
 
-import com.holtherndon.bazelviz.storage.query.AdHocQueries;
-import com.holtherndon.bazelviz.storage.query.QueryFailedException;
-import com.holtherndon.bazelviz.storage.query.QueryOutline;
 import com.holtherndon.bazelviz.storage.query.QueryRow;
+import com.holtherndon.bazelviz.storage.query.ReadOnlySql;
 import com.holtherndon.bazelviz.storage.query.SchemaTable;
 import com.holtherndon.bazelviz.storage.query.SqlNotAllowedException;
-import com.holtherndon.bazelviz.ui.session.QueryReader;
+import com.holtherndon.bazelviz.storage.query.TempViewDefinition;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
-import java.awt.event.InputEvent;
-import java.awt.event.KeyEvent;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import javax.swing.AbstractAction;
-import javax.swing.BorderFactory;
+import java.util.function.Consumer;
 import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
-import javax.swing.JScrollPane;
-import javax.swing.JSpinner;
 import javax.swing.JSplitPane;
-import javax.swing.JTable;
-import javax.swing.JTextArea;
-import javax.swing.KeyStroke;
-import javax.swing.ListSelectionModel;
-import javax.swing.SpinnerNumberModel;
+import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
-import javax.swing.table.DefaultTableModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The Query card: a SQL editor over the open session, a schema tree beside it
- * and a paged result grid under it.
+ * The Query card: SQL over the open session, in tabs.
  *
  * <h2>What this is for</h2>
  *
@@ -54,35 +42,32 @@ import org.slf4j.LoggerFactory;
  * the actions and events tables use serves a result of any size, a page at a
  * time.
  *
+ * <h2>Tabs, and why each owns a connection</h2>
+ *
+ * <p>Each tab ({@link QueryTab}) holds its own editor, its own results, and its
+ * own {@code QueryReader} over its own read-only connection, on its own
+ * executor. That is what makes two long queries genuinely concurrent — a JDBC
+ * connection runs one statement at a time — and it is what scopes temp views:
+ * a {@code CREATE TEMP VIEW} lives on the connection that ran it, so the
+ * schema tree always shows the <em>selected</em> tab's connection.
+ *
+ * <h2>The library</h2>
+ *
+ * <p>Saved queries and saved views live as {@code .sql} files with a JSON
+ * index under the application settings directory ({@link QueryLibrary}), so
+ * they are the user's to edit and version. Saved views are replayed onto every
+ * tab's connection when it opens and again whenever the saved set changes —
+ * see {@code QueryReader#applyTempViews}. All library I/O runs on this view's
+ * own single-threaded executor, never the EDT.
+ *
  * <h2>Nothing typed here can write to the session</h2>
  *
- * <p>That is a guarantee and not a hope: the connection is opened
+ * <p>That is a guarantee and not a hope: every tab's connection is opened
  * {@code SQLITE_OPEN_READONLY}, the flag is fixed at open time, and no SQL
- * reaches it. Every write fails in SQLite's VFS whatever the statement says.
- *
- * <p>{@code PRAGMA query_only = ON} and {@code ReadOnlySql}'s single-read-only-
- * statement filter sit in front of that, and they are refusals rather than
- * guarantees — {@code query_only} is connection state and
- * {@code EXPLAIN PRAGMA query_only = OFF} clears it at prepare time, which is
- * why the filter treats {@code EXPLAIN} as transparent and why
- * {@code AdHocQueries} re-reads the flag before every execution. What they buy
- * is the things the open mode does not cover: a second statement out of a
- * semicolon-joined string, an {@code ATTACH} of somebody else's database, and
- * process-global settings such as {@code soft_heap_limit} that would reach the
- * writer connection ingesting a build.
- *
- * <h2>Threads</h2>
- *
- * <p>One single-threaded executor owns the one {@link QueryReader}, and serves
- * both the description (columns and count) and the grid's page fetches. One
- * thread rather than two on purpose: they share a connection, and a connection
- * is not thread-safe.
- *
- * <p>{@link QueryReader#cancel()} is the exception and is called straight from
- * the event thread. It is {@code sqlite3_interrupt}; it returns immediately and
- * cannot block. That is the whole cancel path: the button interrupts the
- * statement, the generation counter makes the in-flight answer stale, and the
- * executor thread unwinds on its own.
+ * reaches it. In front of it sit {@code PRAGMA query_only} and
+ * {@code ReadOnlySql}'s single-statement filter — refusals rather than
+ * guarantees, lifted only for the one statement shape ({@code CREATE TEMP
+ * VIEW}) that writes the connection's own temp schema and nothing else.
  */
 public final class QueryView extends JPanel {
 
@@ -112,534 +97,452 @@ public final class QueryView extends JPanel {
      */
     public static final int MAX_ROW_LIMIT = 20_000_000;
 
-    /** Pages held in the grid's LRU cache; a few thousand rows in memory. */
-    private static final int CACHE_PAGES = 24;
+    /**
+     * Most query tabs the card will open.
+     *
+     * <p>Sixteen. Every tab holds a SQLite connection and a thread, both real
+     * resources, and past a handful of tabs the tab strip itself stops being
+     * navigable. When the limit is hit the card says so, with the number and
+     * the way out (close a tab); nothing existing is closed for you.
+     */
+    public static final int MAX_TABS = 16;
 
-    private static final String STARTER_SQL = """
+    /**
+     * The editor's starting text: a real question over real columns, so the
+     * first Run teaches the schema instead of erroring on it.
+     *
+     * <p>Durations are {@code end_micros - start_micros} and either end can be
+     * NULL (a discovered-but-never-executed action, or a version that did not
+     * report times). {@code SUM} skips NULL differences, so {@code total_ms}
+     * covers exactly the rows {@code timed_actions} counts — the untimed ones
+     * are counted in {@code actions} and not silently folded into a total they
+     * are absent from.
+     */
+    static final String STARTER_SQL = """
             -- Read-only SQL over this session's database. Ctrl/Cmd-Enter runs.
             -- Double-click a table on the left to start one.
-            SELECT mnemonic, COUNT(*) AS actions, SUM(duration_micros) / 1000 AS total_ms
+            -- Total execution time by mnemonic; timed_actions says how many
+            -- rows the total actually covers, because either end of a duration
+            -- can be NULL.
+            SELECT mnemonics.value AS mnemonic,
+                   COUNT(*) AS actions,
+                   COUNT(actions.end_micros - actions.start_micros) AS timed_actions,
+                   SUM(actions.end_micros - actions.start_micros) / 1000 AS total_ms
             FROM actions
-            GROUP BY mnemonic
+            JOIN mnemonics ON mnemonics.id = actions.mnemonic_id
+            GROUP BY mnemonics.value
             ORDER BY total_ms DESC""";
 
     private final SchemaBrowser schema = new SchemaBrowser();
-    private final JTextArea editor = new JTextArea(STARTER_SQL, 8, 60);
-    private final JButton runButton = new JButton("Run");
-    private final JButton cancelButton = new JButton("Cancel");
-    private final JSpinner rowCap = new JSpinner(new SpinnerNumberModel(
-            AdHocQueries.DEFAULT_ROW_LIMIT, MIN_ROW_LIMIT, MAX_ROW_LIMIT, 100_000));
-    private final JTable results = new JTable();
-    private final JLabel status = new JLabel(" ");
-    private final JLabel legend = new JLabel(" ");
-    private final JLabel capNotice = new JLabel(" ");
-    private final JButton raiseCapButton = new JButton("Raise the cap");
-    private final JTextArea errorArea = new JTextArea(3, 60);
-    private final JScrollPane errorScroll = new JScrollPane(errorArea);
+    private final QueryLibraryPanel libraryPanel;
+    private final JTabbedPane tabs = new JTabbedPane();
+    private final JButton newTabButton = new JButton("New tab");
+    private final JButton renameTabButton = new JButton("Rename tab…");
+    private final JButton closeTabButton = new JButton("Close tab");
+    private final JLabel tabNotice = new JLabel(" ");
 
-    private ExecutorService executor;
-    private QueryReader reader;
+    /**
+     * Library I/O and nothing else. A field with a thread for the same reason
+     * every view here has one: this component reaches things that block (the
+     * session, the library files), and the EDT is not where that happens.
+     */
+    private final ExecutorService io;
+
     private SessionSource source;
-    private PagedTableModel<QueryRow> tableModel;
-    private QueryRowSource rowSource;
+    private QueryLibrary library;
+    private int nextTabNumber = 1;
 
-    /** Bumped whenever a result stops being wanted: a new run, a cancel, a close. */
-    private long generation;
+    private final QueryTab.Host tabHost = new QueryTab.Host() {
+        @Override
+        public List<TempViewDefinition> savedViewDefinitions() {
+            QueryLibrary lib = library;
+            if (lib == null) {
+                return List.of();
+            }
+            List<TempViewDefinition> definitions = new ArrayList<>();
+            for (QueryLibrary.SavedView view : lib.views()) {
+                definitions.add(new TempViewDefinition(view.name(), view.select()));
+            }
+            return List.copyOf(definitions);
+        }
 
-    private boolean running;
+        @Override
+        public void schemaUpdated(QueryTab tab, List<SchemaTable> tables) {
+            if (tab == selectedTab()) {
+                schema.show(tables);
+            }
+        }
+    };
 
     public QueryView() {
         super(new BorderLayout());
+        this.io = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "bbv-query-library");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.libraryPanel = new QueryLibraryPanel(new PanelHost());
 
-        PlainText.install(results);
-        results.setDefaultRenderer(Object.class, new SqlValueRenderer());
-        results.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-        results.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        results.setFillsViewportHeight(true);
+        PlainText.disableHtml(tabNotice);
+        tabNotice.setEnabled(false);
 
-        editor.setLineWrap(false);
-        editor.setTabSize(2);
-        editor.setFont(monospaced(editor));
-
-        errorArea.setEditable(false);
-        errorArea.setLineWrap(true);
-        errorArea.setWrapStyleWord(true);
-        errorScroll.setVisible(false);
-        errorScroll.setBorder(BorderFactory.createTitledBorder("The query did not run"));
-
-        PlainText.disableHtml(status);
-        PlainText.disableHtml(legend);
-        PlainText.disableHtml(capNotice);
-        legend.setEnabled(false);
-        legend.setText("An italic NULL is a SQL NULL — not 0, and not an empty string.");
-        capNotice.setText(" ");
-        raiseCapButton.setVisible(false);
-        raiseCapButton.addActionListener(event -> raiseCapAndRerun());
-
-        runButton.addActionListener(event -> run());
-        cancelButton.addActionListener(event -> cancel());
-        cancelButton.setEnabled(false);
-        rowCap.setToolTipText(PlainText.tooltip(
-                "Rows the grid will address. A query matching more says so and is not truncated"
-                        + " on disk; raise this or add LIMIT/OFFSET to reach the rest."));
-
-        schema.onTableChosen(this::insertTableQuery);
-        installRunShortcut();
-
-        JSplitPane split = new JSplitPane(
-                JSplitPane.HORIZONTAL_SPLIT, schema, buildRightSide());
-        split.setResizeWeight(0.22);
-        split.setBorder(null);
-        schema.setMinimumSize(new Dimension(180, 120));
-        add(split, BorderLayout.CENTER);
-
-        setEnabledForSession(false);
-        status.setText("Open a session to query it.");
-    }
-
-    private JComponent buildRightSide() {
-        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
-        toolbar.add(runButton);
-        toolbar.add(cancelButton);
-        toolbar.add(PlainText.disableHtml(new JLabel("Row cap:")));
-        toolbar.add(rowCap);
-
-        JPanel top = new JPanel(new BorderLayout());
-        top.add(toolbar, BorderLayout.NORTH);
-        JScrollPane editorScroll = new JScrollPane(editor);
-        editorScroll.setMinimumSize(new Dimension(280, 90));
-        top.add(editorScroll, BorderLayout.CENTER);
-        top.add(errorScroll, BorderLayout.SOUTH);
-
-        JPanel footer = new JPanel(new BorderLayout(8, 0));
-        JPanel capRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        capRow.add(capNotice);
-        capRow.add(raiseCapButton);
-        footer.add(status, BorderLayout.NORTH);
-        footer.add(capRow, BorderLayout.CENTER);
-        footer.add(legend, BorderLayout.SOUTH);
-        footer.setBorder(BorderFactory.createEmptyBorder(2, 6, 4, 6));
-
-        JPanel bottom = new JPanel(new BorderLayout());
-        JScrollPane resultScroll = new JScrollPane(results);
-        resultScroll.setMinimumSize(new Dimension(280, 120));
-        bottom.add(resultScroll, BorderLayout.CENTER);
-        bottom.add(footer, BorderLayout.SOUTH);
-
-        JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, top, bottom);
-        vertical.setResizeWeight(0.34);
-        vertical.setBorder(null);
-        return vertical;
-    }
-
-    private void installRunShortcut() {
-        editor.getActionMap().put("bbv-run-query", new AbstractAction() {
-            private static final long serialVersionUID = 1L;
-
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent event) {
-                run();
+        newTabButton.addActionListener(event -> addTab());
+        renameTabButton.addActionListener(event -> renameSelectedTabInteractively());
+        closeTabButton.addActionListener(event -> closeSelectedTab());
+        tabs.addChangeListener(event -> {
+            QueryTab selected = selectedTab();
+            if (selected != null) {
+                schema.show(selected.schemaTables());
             }
         });
-        // Both modifiers, spelled out rather than asked of the Toolkit:
-        // getMenuShortcutKeyMaskEx() throws HeadlessException, and these views
-        // are built headless in test. Cmd-Enter is the macOS habit and
-        // Ctrl-Enter is everyone else's; binding both costs nothing.
-        for (int modifier : new int[] {InputEvent.META_DOWN_MASK, InputEvent.CTRL_DOWN_MASK}) {
-            editor.getInputMap(JComponent.WHEN_FOCUSED).put(
-                    KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, modifier), "bbv-run-query");
-        }
+        schema.onTableChosen(table -> {
+            QueryTab selected = selectedTab();
+            if (selected != null) {
+                selected.insertTableQuery(table);
+            }
+        });
+
+        JPanel tabBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        tabBar.add(newTabButton);
+        tabBar.add(renameTabButton);
+        tabBar.add(closeTabButton);
+        tabBar.add(tabNotice);
+
+        JPanel right = new JPanel(new BorderLayout());
+        right.add(tabBar, BorderLayout.NORTH);
+        right.add(tabs, BorderLayout.CENTER);
+
+        JSplitPane left = new JSplitPane(JSplitPane.VERTICAL_SPLIT, schema, libraryPanel);
+        left.setResizeWeight(0.6);
+        left.setBorder(null);
+        schema.setMinimumSize(new Dimension(180, 120));
+        libraryPanel.setMinimumSize(new Dimension(180, 100));
+
+        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, right);
+        split.setResizeWeight(0.22);
+        split.setBorder(null);
+        add(split, BorderLayout.CENTER);
+
+        addTab();
     }
 
-    private static java.awt.Font monospaced(JComponent component) {
-        return new java.awt.Font(java.awt.Font.MONOSPACED, java.awt.Font.PLAIN,
-                component.getFont() == null ? 12 : component.getFont().getSize());
+    /**
+     * Points the library at the application settings directory and loads it.
+     *
+     * <p>Called once by the application shell; path arithmetic only on the
+     * EDT, with the listing (and the first-run example views) on the I/O
+     * thread. Without a library the tabs still work — saving is what needs a
+     * place on disk, not querying.
+     */
+    public void attachLibrary(Path settingsDirectory) {
+        Objects.requireNonNull(settingsDirectory, "settingsDirectory");
+        this.library = new QueryLibrary(settingsDirectory);
+        QueryLibrary lib = this.library;
+        io.execute(() -> {
+            try {
+                lib.seedExampleViewsIfNeverUsed();
+            } catch (RuntimeException failure) {
+                log.warn("could not seed the example views", failure);
+            }
+            refreshLibraryLists(lib);
+        });
     }
 
     // ------------------------------------------------------------ session hooks
 
-    /** Opens a session and reads its schema. Returns immediately. */
+    /** Opens a session in every tab. Returns immediately. */
     public void openSession(SessionSource newSource) {
         Objects.requireNonNull(newSource, "newSource");
-        closeSession();
         source = newSource;
-        executor = singleThreadExecutor("bbv-query");
-        status.setText("Reading the schema…");
-        ExecutorService opening = executor;
-        opening.execute(() -> {
-            try {
-                QueryReader opened = newSource.openQueryReader();
-                List<SchemaTable> tables = opened.schema();
-                SwingUtilities.invokeLater(() -> {
-                    if (source != newSource) {
-                        closeQuietly(opened);
-                        return;
-                    }
-                    reader = opened;
-                    schema.show(tables);
-                    setEnabledForSession(true);
-                    status.setText(tables.size() + " tables and views. "
-                            + "The connection is read-only; a runaway query is stopped after "
-                            + opened.timeoutSeconds() + " s.");
-                });
-            } catch (RuntimeException failure) {
-                log.error("could not open the query view", failure);
-                SwingUtilities.invokeLater(() -> {
-                    if (source == newSource) {
-                        showError("This session could not be opened for queries.",
-                                String.valueOf(failure.getMessage()));
-                        status.setText("No queryable session.");
-                    }
-                });
-            }
-        });
+        for (QueryTab tab : allTabs()) {
+            tab.openSession(newSource);
+        }
     }
 
-    /** Lets go of the session, off the EDT, without leaving a statement running. */
+    /** Lets go of the session in every tab, off the EDT. */
     public void closeSession() {
-        generation++;
-        running = false;
-        tableModel = null;
-        rowSource = null;
-        results.setModel(new DefaultTableModel());
-        schema.clear();
-        clearError();
-        capNotice.setText(" ");
-        raiseCapButton.setVisible(false);
-        setEnabledForSession(false);
-        status.setText("Open a session to query it.");
-
-        QueryReader closing = reader;
-        ExecutorService stopping = executor;
-        reader = null;
-        executor = null;
         source = null;
-        if (closing == null && stopping == null) {
+        for (QueryTab tab : allTabs()) {
+            tab.closeSession();
+        }
+        schema.clear();
+    }
+
+    // -------------------------------------------------------------------- tabs
+
+    /** Opens a new query tab, up to {@link #MAX_TABS}. */
+    public void addTab() {
+        if (tabs.getTabCount() >= MAX_TABS) {
+            tabNotice.setText("Tab limit reached: " + MAX_TABS
+                    + " tabs are open. Close one to open another.");
             return;
         }
-        Thread closer = new Thread(() -> {
-            // Interrupt before shutting down: a describe that is mid-scan would
-            // otherwise hold the executor for as long as the scan takes, and
-            // closing the connection under it blocks too. This is what keeps a
-            // session close from wedging behind a query nobody wants.
-            if (closing != null) {
-                closing.cancel();
+        tabNotice.setText(" ");
+        QueryTab tab = new QueryTab(tabHost, STARTER_SQL);
+        tabs.addTab("Query " + nextTabNumber++, tab);
+        tabs.setSelectedComponent(tab);
+        if (source != null) {
+            tab.openSession(source);
+        }
+        newTabButton.setEnabled(tabs.getTabCount() < MAX_TABS);
+    }
+
+    /** Closes the selected tab and its connection. The last tab stays. */
+    public void closeSelectedTab() {
+        QueryTab selected = selectedTab();
+        if (selected == null) {
+            return;
+        }
+        if (tabs.getTabCount() <= 1) {
+            tabNotice.setText("The last tab stays open; its session can still be closed"
+                    + " from the session menu.");
+            return;
+        }
+        tabNotice.setText(" ");
+        selected.closeSession();
+        tabs.remove(selected);
+        newTabButton.setEnabled(tabs.getTabCount() < MAX_TABS);
+        QueryTab now = selectedTab();
+        if (now != null) {
+            schema.show(now.schemaTables());
+        }
+    }
+
+    /** Renames the selected tab. */
+    public void renameSelectedTab(String title) {
+        int index = tabs.getSelectedIndex();
+        if (index >= 0 && title != null && !title.isBlank()) {
+            tabs.setTitleAt(index, title.strip());
+        }
+    }
+
+    private void renameSelectedTabInteractively() {
+        int index = tabs.getSelectedIndex();
+        if (index < 0) {
+            return;
+        }
+        Object answer = JOptionPane.showInputDialog(this, "Tab name:", "Rename tab",
+                JOptionPane.PLAIN_MESSAGE, null, null, tabs.getTitleAt(index));
+        if (answer instanceof String title) {
+            renameSelectedTab(title);
+        }
+    }
+
+    private QueryTab selectedTab() {
+        return tabs.getSelectedComponent() instanceof QueryTab tab ? tab : null;
+    }
+
+    private List<QueryTab> allTabs() {
+        List<QueryTab> all = new ArrayList<>(tabs.getTabCount());
+        for (int i = 0; i < tabs.getTabCount(); i++) {
+            if (tabs.getComponentAt(i) instanceof QueryTab tab) {
+                all.add(tab);
             }
-            shutdown(stopping);
-            if (closing != null) {
-                closing.close();
-            }
-        }, "bbv-query-close");
-        closer.setDaemon(true);
-        closer.start();
+        }
+        return all;
     }
 
     // ------------------------------------------------------------------ running
 
-    /** Runs whatever is in the editor. EDT only; returns immediately. */
+    /** Runs the selected tab's editor text. EDT only; returns immediately. */
     public void run() {
-        if (reader == null || running) {
-            return;
+        QueryTab selected = selectedTab();
+        if (selected != null) {
+            selected.run();
         }
-        String sql = editor.getText();
-        long cap = ((Number) rowCap.getValue()).longValue();
-        long mine = ++generation;
-        QueryReader active = reader;
-        ExecutorService on = executor;
-        if (on == null) {
-            return;
+    }
+
+    /** Abandons the selected tab's running query. Safe on the EDT. */
+    public void cancel() {
+        QueryTab selected = selectedTab();
+        if (selected != null) {
+            selected.cancel();
         }
-        setRunning(true);
-        clearError();
-        capNotice.setText(" ");
-        raiseCapButton.setVisible(false);
-        status.setText("Running…");
-        on.execute(() -> {
-            try {
-                QueryOutline outline = active.describe(sql, cap);
-                QueryRowSource built = new QueryRowSource(active, outline);
-                SwingUtilities.invokeLater(() -> install(mine, built));
-            } catch (SqlNotAllowedException refused) {
-                SwingUtilities.invokeLater(() -> {
-                    if (isCurrent(mine)) {
-                        setRunning(false);
-                        showError("Refused before anything ran.", refused.getMessage());
-                        status.setText("Nothing was executed.");
-                    }
-                });
-            } catch (QueryFailedException failed) {
-                SwingUtilities.invokeLater(() -> {
-                    if (isCurrent(mine)) {
-                        setRunning(false);
-                        reportFailure(failed);
-                    }
-                });
-            } catch (RuntimeException unexpected) {
-                log.error("the query view failed unexpectedly", unexpected);
-                SwingUtilities.invokeLater(() -> {
-                    if (isCurrent(mine)) {
-                        setRunning(false);
-                        showError("The query could not be run.",
-                                String.valueOf(unexpected.getMessage()));
-                        status.setText("The query did not run.");
-                    }
-                });
+    }
+
+    // ----------------------------------------------------------------- library
+
+    private void refreshLibraryLists(QueryLibrary lib) {
+        try {
+            List<QueryLibrary.SavedQuery> queries = lib.queries();
+            List<QueryLibrary.SavedView> views = lib.views();
+            SwingUtilities.invokeLater(() -> {
+                if (library == lib) {
+                    libraryPanel.showQueries(queries);
+                    libraryPanel.showViews(views);
+                }
+            });
+        } catch (RuntimeException failure) {
+            log.warn("could not read the query library", failure);
+            SwingUtilities.invokeLater(() -> libraryPanel.showProblem(
+                    "The library could not be read: " + failure.getMessage()));
+        }
+    }
+
+    private void afterViewsChanged(QueryLibrary lib) {
+        refreshLibraryLists(lib);
+        SwingUtilities.invokeLater(() -> {
+            for (QueryTab tab : allTabs()) {
+                tab.reapplySavedViews();
             }
         });
     }
 
-    /**
-     * Abandons the running query.
-     *
-     * <p>Called on the EDT and deliberately so: the interrupt underneath is
-     * {@code sqlite3_interrupt}, which returns without waiting for the
-     * statement. Nothing here blocks and nothing is left running — the
-     * generation bump means the answer, when it unwinds, is discarded.
-     */
-    public void cancel() {
-        if (!running) {
-            return;
+    /** The library panel's way of asking this view to do things. */
+    final class PanelHost {
+
+        /** The selected tab's editor text, for saving. EDT only. */
+        String currentEditorSql() {
+            QueryTab selected = selectedTab();
+            return selected == null ? "" : selected.editorText();
         }
-        generation++;
-        QueryReader active = reader;
-        if (active != null) {
-            active.cancel();
+
+        /** Loads {@code sql} into the selected tab's editor. EDT only. */
+        void loadIntoEditor(String sql) {
+            QueryTab selected = selectedTab();
+            if (selected != null) {
+                selected.setEditorText(sql);
+            }
         }
-        setRunning(false);
-        status.setText("Stopped. Nothing was changed; the connection is still open.");
-    }
 
-    private boolean isCurrent(long mine) {
-        return mine == generation;
-    }
-
-    private void install(long mine, QueryRowSource built) {
-        if (!isCurrent(mine)) {
-            return;
+        boolean hasLibrary() {
+            return library != null;
         }
-        setRunning(false);
-        QueryOutline outline = built.outline();
-        if (outline.columns().isEmpty()) {
-            // PRAGMA foreign_key_check on a clean database is the real case:
-            // it returns no columns at all, and a zero-column table model
-            // would throw rather than say so.
-            results.setModel(new DefaultTableModel());
-            tableModel = null;
-            rowSource = null;
-            status.setText("The statement returned no columns and no rows.");
-            return;
+
+        void saveQuery(String name, String sql, Consumer<String> problem) {
+            onLibrary(lib -> lib.saveQuery(name, sql), problem, false);
         }
-        rowSource = built;
-        tableModel = new PagedTableModel<>(
-                built, built.columns(), executor, QueryRowSource.PAGE_SIZE, CACHE_PAGES);
-        results.setModel(tableModel);
-        sizeColumns();
-        status.setText(describe(outline));
-        showCapNotice(outline);
-    }
 
-    private void sizeColumns() {
-        for (int i = 0; i < results.getColumnModel().getColumnCount(); i++) {
-            results.getColumnModel().getColumn(i).setPreferredWidth(160);
+        void renameQuery(String oldName, String newName, Consumer<String> problem) {
+            onLibrary(lib -> lib.renameQuery(oldName, newName), problem, false);
         }
-    }
 
-    private String describe(QueryOutline outline) {
-        StringBuilder text = new StringBuilder();
-        if (outline.isCapped()) {
-            text.append(count(outline.visibleRows())).append(" of ");
-            text.append(outline.matchedRows().isPresent()
-                    ? count(outline.matchedRows().getAsLong()) + " rows"
-                    : "an uncounted number of rows");
-        } else {
-            text.append(count(outline.visibleRows())).append(" rows");
+        void deleteQuery(String name, Consumer<String> problem) {
+            onLibrary(lib -> lib.deleteQuery(name), problem, false);
         }
-        text.append(" · ").append(outline.columns().size()).append(" columns · counted in ")
-                .append(millis(outline.elapsedNanos()));
-        return text.toString();
-    }
 
-    /**
-     * Rule 12: a capped result says so, with both exact numbers and a way out.
-     *
-     * <p>Nothing is dropped from the query — the rows are still in the database
-     * and the statement is unchanged. What is bounded is how much of the result
-     * the grid claims to be a view of, and that has to be visible or the last
-     * row on screen reads as the last row there is.
-     */
-    private void showCapNotice(QueryOutline outline) {
-        if (!outline.isCapped()) {
-            capNotice.setText(" ");
-            raiseCapButton.setVisible(false);
-            return;
+        /**
+         * Saves the definition in the selected editor as a view. The editor
+         * must hold a {@code CREATE TEMP VIEW} statement — that is where the
+         * name and the body come from — and the refusal message says so.
+         */
+        void saveViewFromEditor(Consumer<String> problem) {
+            String sql = currentEditorSql();
+            ReadOnlySql.Statement checked;
+            try {
+                checked = ReadOnlySql.check(sql);
+            } catch (SqlNotAllowedException refused) {
+                problem.accept(refused.getMessage());
+                return;
+            }
+            if (checked.shape() != ReadOnlySql.Shape.DEFINE) {
+                problem.accept("To save a view, the editor must hold its definition:"
+                        + " CREATE TEMP VIEW <name> AS SELECT …. The name and the"
+                        + " SELECT are what get saved.");
+                return;
+            }
+            String name = checked.tempViewName();
+            String body = checked.tempViewSelect();
+            onLibrary(lib -> lib.saveView(name, body), problem, true);
         }
-        long visible = outline.visibleRows();
-        String total = outline.matchedRows().isPresent()
-                ? count(outline.matchedRows().getAsLong()) + " that match"
-                : "an uncounted number that match";
-        capNotice.setText("Showing the first " + count(visible) + " rows of " + total
-                + ". The row cap is " + count(outline.rowLimit())
-                + "; nothing was dropped from the database. Raise the cap, or add"
-                + " LIMIT/OFFSET to the query, to reach the rest.");
-        long raised = raisedCap(outline);
-        raiseCapButton.setText("Raise to " + count(raised) + " and run again");
-        raiseCapButton.setVisible(raised > outline.rowLimit());
-        raiseCapButton.putClientProperty("bbv.raisedCap", raised);
-    }
 
-    private static long raisedCap(QueryOutline outline) {
-        long wanted = outline.matchedRows().isPresent()
-                ? outline.matchedRows().getAsLong()
-                : outline.rowLimit() * 2;
-        return Math.min(MAX_ROW_LIMIT, Math.max(wanted, outline.rowLimit() + 1));
-    }
-
-    private void raiseCapAndRerun() {
-        Object raised = raiseCapButton.getClientProperty("bbv.raisedCap");
-        if (raised instanceof Long value) {
-            rowCap.setValue((int) Math.min(MAX_ROW_LIMIT, value));
-            run();
+        void renameView(String oldName, String newName, Consumer<String> problem) {
+            onLibrary(lib -> lib.renameView(oldName, newName), problem, true);
         }
-    }
 
-    private void reportFailure(QueryFailedException failed) {
-        if (failed.wasStopped()) {
-            // Not an error. A stopped query reported as one teaches people to
-            // ignore the error area.
-            clearError();
-            status.setText("Stopped after " + (reader == null ? "the deadline"
-                    : reader.timeoutSeconds() + " s") + ". Nothing was changed.");
-            return;
+        void deleteView(String name, Consumer<String> problem) {
+            onLibrary(lib -> lib.deleteView(name), problem, true);
         }
-        showError("SQLite refused this statement.",
-                failed.getMessage()
-                        + "\n\nStage: " + failed.stage().description()
-                        + "\nStatement as executed:\n" + failed.statement());
-        status.setText("The query did not run.");
-    }
 
-    private void showError(String title, String detail) {
-        errorScroll.setBorder(BorderFactory.createTitledBorder(title));
-        errorArea.setText(detail);
-        errorArea.setCaretPosition(0);
-        errorScroll.setVisible(true);
-        revalidate();
-        repaint();
-    }
-
-    private void clearError() {
-        errorArea.setText("");
-        errorScroll.setVisible(false);
-    }
-
-    private void insertTableQuery(String table) {
-        editor.setText("SELECT *\nFROM " + quoteIfNeeded(table) + "\nLIMIT 200");
-        editor.setCaretPosition(editor.getDocument().getLength());
-    }
-
-    private static String quoteIfNeeded(String table) {
-        return table.matches("[A-Za-z_][A-Za-z0-9_]*")
-                ? table
-                : "\"" + table.replace("\"", "\"\"") + "\"";
-    }
-
-    private void setRunning(boolean nowRunning) {
-        running = nowRunning;
-        runButton.setEnabled(!nowRunning && reader != null);
-        cancelButton.setEnabled(nowRunning);
-        rowCap.setEnabled(!nowRunning);
-    }
-
-    private void setEnabledForSession(boolean open) {
-        runButton.setEnabled(open);
-        cancelButton.setEnabled(false);
-        rowCap.setEnabled(open);
-        editor.setEnabled(open);
-    }
-
-    private static String count(long value) {
-        return String.format(Locale.ROOT, "%,d", value);
-    }
-
-    private static String millis(long nanos) {
-        double ms = nanos / 1_000_000.0;
-        return ms >= 10 ? String.format(Locale.ROOT, "%,.0f ms", ms)
-                : String.format(Locale.ROOT, "%.1f ms", ms);
-    }
-
-    private static ExecutorService singleThreadExecutor(String name) {
-        return Executors.newSingleThreadExecutor(runnable -> {
-            Thread thread = new Thread(runnable, name);
-            thread.setDaemon(true);
-            return thread;
-        });
-    }
-
-    private static void shutdown(ExecutorService service) {
-        if (service == null) {
-            return;
-        }
-        service.shutdownNow();
-        try {
-            service.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    private static void closeQuietly(QueryReader opened) {
-        try {
-            opened.close();
-        } catch (RuntimeException failure) {
-            log.debug("a superseded query reader would not close", failure);
+        private void onLibrary(
+                Consumer<QueryLibrary> action, Consumer<String> problem, boolean viewsChanged) {
+            QueryLibrary lib = library;
+            if (lib == null) {
+                problem.accept("No settings directory is attached, so nothing can be"
+                        + " saved. This is expected only in tests.");
+                return;
+            }
+            io.execute(() -> {
+                try {
+                    action.accept(lib);
+                } catch (RuntimeException failure) {
+                    SwingUtilities.invokeLater(() -> problem.accept(
+                            String.valueOf(failure.getMessage())));
+                    return;
+                }
+                if (viewsChanged) {
+                    afterViewsChanged(lib);
+                } else {
+                    refreshLibraryLists(lib);
+                }
+            });
         }
     }
 
     // -------------------------------------------------------- visible for tests
 
-    /** Visible for testing: sets the editor text as a user typing would. */
+    /** Visible for testing: sets the selected tab's editor text. */
     public void setSqlForTest(String sql) {
-        editor.setText(sql);
+        QueryTab selected = selectedTab();
+        if (selected != null) {
+            selected.setEditorText(sql);
+        }
     }
 
-    /** Visible for testing: sets the row cap as the spinner would. */
+    /** Visible for testing: the selected tab's editor text. */
+    public String sqlForTest() {
+        QueryTab selected = selectedTab();
+        return selected == null ? "" : selected.editorText();
+    }
+
+    /** Visible for testing: sets the selected tab's row cap. */
     public void setRowCapForTest(int cap) {
-        rowCap.setValue(cap);
+        QueryTab selected = selectedTab();
+        if (selected != null) {
+            selected.setRowCapForTest(cap);
+        }
     }
 
-    /** Visible for testing: the installed model, or null when there is none. */
+    /** Visible for testing: the selected tab's installed model, or null. */
     public PagedTableModel<QueryRow> tableModelForTest() {
-        return tableModel;
+        QueryTab selected = selectedTab();
+        return selected == null ? null : selected.tableModelForTest();
     }
 
-    /** Visible for testing: the source behind the current grid. */
+    /** Visible for testing: the selected tab's row source. */
     public QueryRowSource rowSourceForTest() {
-        return rowSource;
+        QueryTab selected = selectedTab();
+        return selected == null ? null : selected.rowSourceForTest();
     }
 
-    /** Visible for testing: the status line. */
+    /** Visible for testing: the selected tab's status line. */
     public String statusForTest() {
-        return status.getText();
+        QueryTab selected = selectedTab();
+        return selected == null ? "" : selected.statusForTest();
     }
 
-    /** Visible for testing: the cap notice, or a single space when there is none. */
+    /** Visible for testing: the selected tab's cap notice. */
     public String capNoticeForTest() {
-        return capNotice.getText();
+        QueryTab selected = selectedTab();
+        return selected == null ? "" : selected.capNoticeForTest();
     }
 
-    /** Visible for testing: the error text, empty when there is none. */
+    /** Visible for testing: the selected tab's error text. */
     public String errorForTest() {
-        return errorArea.getText();
+        QueryTab selected = selectedTab();
+        return selected == null ? "" : selected.errorForTest();
     }
 
-    /** Visible for testing: whether the error area is on screen. */
+    /** Visible for testing: whether the selected tab's error area is shown. */
     public boolean errorShownForTest() {
-        return errorScroll.isVisible();
+        QueryTab selected = selectedTab();
+        return selected != null && selected.errorShownForTest();
     }
 
-    /** Visible for testing: whether a query is in flight. */
+    /** Visible for testing: whether the selected tab has a query in flight. */
     public boolean isRunningForTest() {
-        return running;
+        QueryTab selected = selectedTab();
+        return selected != null && selected.isRunning();
     }
 
     /** Visible for testing: the schema tree's table labels. */
@@ -664,11 +567,43 @@ public final class QueryView extends JPanel {
 
     /** Visible for testing: whether the raise-the-cap offer is on screen. */
     public boolean raiseOfferShownForTest() {
-        return raiseCapButton.isVisible();
+        return selectedTab() != null && selectedTab().raiseOfferShownForTest();
     }
 
     /** Visible for testing: the text of the raise-the-cap offer. */
     public String raiseOfferForTest() {
-        return raiseCapButton.getText();
+        QueryTab selected = selectedTab();
+        return selected == null ? "" : selected.raiseOfferForTest();
+    }
+
+    /** Visible for testing: how many tabs are open. */
+    public int tabCountForTest() {
+        return tabs.getTabCount();
+    }
+
+    /** Visible for testing: selects a tab by index. */
+    public void selectTabForTest(int index) {
+        tabs.setSelectedIndex(index);
+    }
+
+    /** Visible for testing: the selected tab's title. */
+    public String selectedTabTitleForTest() {
+        int index = tabs.getSelectedIndex();
+        return index < 0 ? "" : tabs.getTitleAt(index);
+    }
+
+    /** Visible for testing: the tab-strip notice. */
+    public String tabNoticeForTest() {
+        return tabNotice.getText();
+    }
+
+    /** Visible for testing: the library panel. */
+    public QueryLibraryPanel libraryPanelForTest() {
+        return libraryPanel;
+    }
+
+    /** Visible for testing: the panel host, for driving library actions. */
+    public PanelHost panelHostForTest() {
+        return new PanelHost();
     }
 }

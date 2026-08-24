@@ -3,6 +3,7 @@ package com.holtherndon.bazelviz.ui.session;
 import com.holtherndon.bazelviz.storage.query.QueryOutline;
 import com.holtherndon.bazelviz.storage.query.QueryRow;
 import com.holtherndon.bazelviz.storage.query.SchemaTable;
+import com.holtherndon.bazelviz.storage.query.TempViewDefinition;
 import java.util.List;
 
 /**
@@ -51,6 +52,20 @@ public interface QueryReader extends AutoCloseable {
 
     /** One page of {@code outline}'s rows. Blocking. */
     List<QueryRow> page(QueryOutline outline, long offset, int limit);
+
+    /**
+     * Replaces this reader's replayed temporary views with {@code views}.
+     *
+     * <p>Blocking. A temp view is per-connection state, which is why the saved
+     * definitions have to be replayed onto every reader rather than written
+     * once: each query tab owns a reader, and each reader's connection gets
+     * its own copy. Definitions that cannot be applied are reported in the
+     * returned list and skipped — saved views are user-edited files, and one
+     * broken file must not take the tab down.
+     *
+     * @return one human-readable problem per definition not applied
+     */
+    List<String> applyTempViews(List<TempViewDefinition> views);
 
     /**
      * Interrupts whatever this reader is running, from any thread including
