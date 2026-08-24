@@ -78,6 +78,18 @@ public final class GraphView extends JPanel {
     private final JLabel empty =
             new JLabel("No dependency graph has been imported.", SwingConstants.CENTER);
 
+    /**
+     * The path pane and its title, which names the nodes for what they are.
+     *
+     * <p>A field rather than a local because the title changes with the
+     * source selector: "Path between two actions" over the label graph would
+     * misname every endpoint the finder accepts.
+     */
+    private final JPanel pathPanel = new JPanel();
+
+    private final javax.swing.border.TitledBorder pathBorder =
+            BorderFactory.createTitledBorder("Path between two actions");
+
     private final JPanel deck = new JPanel(new java.awt.CardLayout());
     private final GraphCanvasPanel canvasPanel = new GraphCanvasPanel();
     private final javax.swing.JTabbedPane views = new javax.swing.JTabbedPane();
@@ -89,16 +101,6 @@ public final class GraphView extends JPanel {
     private GraphQueries queries;
     private GraphLayoutService layouts;
     private long generation;
-
-    /**
-     * The graph every control on this card is talking about.
-     *
-     * <p>Follows the source selector. The selector used to be a caption — it
-     * named the graph and changed nothing — and the trees and canvas silently
-     * traversed the action graph whatever it said, which is precisely the
-     * conflation rule 13 exists to prevent.
-     */
-    private GraphKind shownGraph = GraphKind.DECLARED_ACTIONS;
 
     public GraphView() {
         super(new BorderLayout());
@@ -130,16 +132,15 @@ public final class GraphView extends JPanel {
         trees.setResizeWeight(0.5);
         trees.setMinimumSize(new Dimension(400, 200));
 
-        JPanel path = new JPanel();
-        path.setLayout(new javax.swing.BoxLayout(path, javax.swing.BoxLayout.Y_AXIS));
-        path.setBorder(BorderFactory.createTitledBorder("Path between two actions"));
-        path.add(row(new JLabel("From:"), pathFrom, new JLabel("To:"), pathTo,
+        pathPanel.setLayout(new javax.swing.BoxLayout(pathPanel, javax.swing.BoxLayout.Y_AXIS));
+        pathPanel.setBorder(pathBorder);
+        pathPanel.add(row(new JLabel("From:"), pathFrom, new JLabel("To:"), pathTo,
                 button("Find path", this::findPath)));
-        path.add(pathResult);
+        pathPanel.add(pathResult);
 
         JPanel lists = new JPanel(new BorderLayout());
         lists.add(trees, BorderLayout.CENTER);
-        lists.add(path, BorderLayout.SOUTH);
+        lists.add(pathPanel, BorderLayout.SOUTH);
 
         // Two ways of reading the same graph. The trees answer "what exactly
         // does this depend on" one level at a time; the canvas answers "what
@@ -162,6 +163,22 @@ public final class GraphView extends JPanel {
         // Picking a node on the canvas moves the trees to it. Two halves of one
         // view showing two different actions reads as a bug in the data.
         canvasPanel.onNodeSelected(this::rootTreesAt);
+    }
+
+    /**
+     * The graph every control on this card is talking about.
+     *
+     * <p>Read from the canvas panel, which is the <em>only</em> holder of the
+     * selection. This view once kept its own copy, assigned only when the
+     * selector changed — and the copy survived {@link #closeSession} while the
+     * panel's did not, so a session whose preferred source matched the stale
+     * copy was "already selected": the trees traversed one graph while the
+     * canvas drew the other and hit-testing handed back wrong nodes with no
+     * error. One piece of state, one owner, and that failure has nowhere to
+     * live.
+     */
+    private GraphKind shownGraph() {
+        return canvasPanel.shownGraph();
     }
 
     /** Opens this session's graph, off the EDT. */
@@ -262,14 +279,18 @@ public final class GraphView extends JPanel {
         // The selector is a control, not a caption: picking a source switches
         // which graph the search, the trees and the canvas traverse. Node
         // indexes do not translate between graphs, so the rooted views clear
-        // and ask for a new seed rather than reinterpreting the old one.
-        GraphKind chosen = source.graphKind().orElse(shownGraph);
-        if (chosen != shownGraph) {
-            shownGraph = chosen;
+        // and ask for a new seed rather than reinterpreting the old one. The
+        // comparison asks the panel, never a copy: the panel's selection is
+        // reset by attach and detach, so it cannot leak across sessions.
+        GraphKind chosen = source.graphKind().orElse(shownGraph());
+        if (chosen != shownGraph()) {
             clearTrees();
             pathResult.setText(" ");
-            canvasPanel.setShownGraph(chosen);
         }
+        canvasPanel.setShownGraph(chosen);
+        pathBorder.setTitle("Path between two "
+                + (chosen == GraphKind.CONFIGURED_TARGETS ? "targets" : "actions"));
+        pathPanel.repaint();
     }
 
     /**
@@ -297,7 +318,7 @@ public final class GraphView extends JPanel {
         if (pattern.isEmpty() || queries == null) {
             return;
         }
-        GraphKind kind = shownGraph;
+        GraphKind kind = shownGraph();
         onWorker(work -> {
             List<GraphQueries.GraphNode> found = work.search(kind, "%" + pattern + "%", 1);
             SwingUtilities.invokeLater(() -> {
@@ -380,7 +401,7 @@ public final class GraphView extends JPanel {
      * so telling it to redraw would clear the very selection that arrived here.
      */
     private void rootTreesAt(int nodeIndex) {
-        GraphKind kind = shownGraph;
+        GraphKind kind = shownGraph();
         onWorker(work -> {
             Optional<GraphQueries.GraphNode> found = work.node(kind, nodeIndex);
             found.ifPresent(node -> SwingUtilities.invokeLater(() -> {
@@ -402,7 +423,7 @@ public final class GraphView extends JPanel {
 
     private void setRoot(JTree tree, GraphQueries.GraphNode node, boolean dependencies) {
         NodeRef ref = new NodeRef(
-                node, dependencies, shownGraph != GraphKind.CONFIGURED_TARGETS);
+                node, dependencies, shownGraph() != GraphKind.CONFIGURED_TARGETS);
         DefaultMutableTreeNode root = new DefaultMutableTreeNode(ref);
         root.add(new DefaultMutableTreeNode(NodeRef.LOADING));
         tree.setModel(new DefaultTreeModel(root));
@@ -431,7 +452,7 @@ public final class GraphView extends JPanel {
         if (from.isEmpty() || to.isEmpty()) {
             return;
         }
-        GraphKind kind = shownGraph;
+        GraphKind kind = shownGraph();
         onWorker(work -> {
             List<GraphQueries.GraphNode> start = work.search(kind, "%" + from + "%", 1);
             List<GraphQueries.GraphNode> end = work.search(kind, "%" + to + "%", 1);
@@ -498,7 +519,7 @@ public final class GraphView extends JPanel {
             // depends on is its reverse neighbours. This mapping was once the
             // other way round, and the "Depends on" tree listed dependents.
             boolean forwards = !dependencies;
-            GraphKind kind = shownGraph;
+            GraphKind kind = shownGraph();
             onWorker(work -> {
                 List<GraphQueries.GraphNode> children = work.neighbours(
                         kind, ref.node.nodeIndex(), forwards, CHILD_LIMIT);
@@ -517,7 +538,7 @@ public final class GraphView extends JPanel {
             parent.removeAllChildren();
             for (GraphQueries.GraphNode child : children) {
                 DefaultMutableTreeNode node = new DefaultMutableTreeNode(new NodeRef(
-                        child, dependencies, shownGraph != GraphKind.CONFIGURED_TARGETS));
+                        child, dependencies, shownGraph() != GraphKind.CONFIGURED_TARGETS));
                 node.add(new DefaultMutableTreeNode(NodeRef.LOADING));
                 parent.add(node);
             }
@@ -652,7 +673,7 @@ public final class GraphView extends JPanel {
 
     /** The graph the card is currently traversing, for tests. */
     GraphKind shownGraphForTesting() {
-        return shownGraph;
+        return shownGraph();
     }
 
     /** The trees, for tests. */

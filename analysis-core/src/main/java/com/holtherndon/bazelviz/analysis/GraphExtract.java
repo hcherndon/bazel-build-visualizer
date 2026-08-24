@@ -188,6 +188,18 @@ public final class GraphExtract {
         public String displayName() {
             return displayName;
         }
+
+        /**
+         * {@link #displayName()}, naming the nodes for what they are.
+         *
+         * <p>Only {@code PATH} carries a noun; "Path between two actions"
+         * over the label graph would misname both endpoints.
+         *
+         * @param noun what one node is — {@code "action"} or {@code "target"}
+         */
+        public String displayName(String noun) {
+            return this == PATH ? "Path between two " + noun + "s" : displayName;
+        }
     }
 
     /** One directed edge, in producer-to-consumer order. */
@@ -251,7 +263,7 @@ public final class GraphExtract {
                         + " the limit, narrow the filter, or switch to the cluster view.";
             }
             StringBuilder text = new StringBuilder();
-            text.append(mode.displayName()).append(": ").append(nodes.size())
+            text.append(mode.displayName(noun)).append(": ").append(nodes.size())
                     .append(nodes.size() == 1 ? " " + noun : " " + noun + "s")
                     .append(" and ").append(edges.size())
                     .append(edges.size() == 1 ? " dependency" : " dependencies");

@@ -142,7 +142,10 @@ public final class GraphCanvasPanel extends JPanel {
             GraphExtract.Mode.DEPENDENTS, GraphExtract.Mode.WHOLE, GraphExtract.Mode.CLUSTERS,
             GraphExtract.Mode.PATH, GraphExtract.Mode.CRITICAL_PATH,
         }));
-        mode.setRenderer(new Renderer<>(value -> ((GraphExtract.Mode) value).displayName()));
+        // The renderer asks at paint time, so the list re-words itself when
+        // the source selector switches graphs: "Path between two targets" over
+        // the label graph, "...two actions" over the action graphs.
+        mode.setRenderer(new Renderer<>(value -> ((GraphExtract.Mode) value).displayName(noun())));
         layout.setRenderer(new Renderer<>(value -> ((GraphLayout.Kind) value).displayName()));
         groupBy.setRenderer(new Renderer<>(value -> ((GraphClustering.By) value).displayName()));
 

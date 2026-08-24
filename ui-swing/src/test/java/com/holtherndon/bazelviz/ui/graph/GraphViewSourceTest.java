@@ -197,6 +197,33 @@ final class GraphViewSourceTest {
         assertThat(view.canvasPanel().actionIdAt(0)).isEmpty();
     }
 
+    @Test
+    @DisplayName("a selection from the last session cannot leak into the next")
+    void selectionDoesNotLeakAcrossSessions() throws Exception {
+        selectConfiguredTargets();
+        assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.CONFIGURED_TARGETS);
+
+        // Session B prefers the configured-target source too: with a stale
+        // copy of the selection surviving closeSession, the change detection
+        // sees "no change", never tells the canvas, and the trees traverse
+        // labels while the canvas draws actions -- a wrong node, silently.
+        exec(database.writerConnection(),
+                "UPDATE graph_sources SET state = 'FAILED' WHERE kind = 'DECLARED_ACTIONS'");
+        SwingUtilities.invokeAndWait(() -> {
+            view.closeSession();
+            view.openSession(new GraphOnlySource());
+        });
+        awaitCondition(() -> view.sourceSelector().getItemCount() == 2,
+                "the second session's sources to install");
+
+        assertThat(view.canvasPanel().shownGraph())
+                .as("the canvas and the trees must be reading the same graph")
+                .isEqualTo(view.shownGraphForTesting());
+        assertThat(view.canvasPanel().shownGraph())
+                .as("the preferred source of the new session is what is shown")
+                .isEqualTo(GraphKind.CONFIGURED_TARGETS);
+    }
+
     // ------------------------------------------------------------- plumbing
 
     private void searchOnEdt(String pattern) throws Exception {
