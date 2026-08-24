@@ -104,6 +104,21 @@ public final class EventRowSource implements RowSource<EventRow> {
         return pageSize;
     }
 
+    /**
+     * The reader backing this source.
+     *
+     * <p>Package-private: {@link EventsView} is the only caller, and the only
+     * reason it needs this is a live refresh, which rebuilds the row index
+     * over the same connection rather than opening a new one every tick — the
+     * connection is otherwise idle between page fetches, and a live capture
+     * that ticks every couple of seconds for the life of a long build would
+     * otherwise accumulate one reader per tick in {@code SqliteSessionSource}'s
+     * reader list, which is only ever cleared when the whole session closes.
+     */
+    SessionReader reader() {
+        return reader;
+    }
+
     /** How row indices are currently resolved; for the view's status line. */
     public EventRowIndex.Mode rowIndexMode() {
         return index.mode();

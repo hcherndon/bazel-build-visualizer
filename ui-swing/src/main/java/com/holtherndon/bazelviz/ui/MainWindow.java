@@ -1427,6 +1427,13 @@ public final class MainWindow extends JFrame {
                         // where "live" is most of the point -- watching a build
                         // fill in is the reason to have one open while it runs.
                         timeline.openSession(opened);
+                        // So does the Events tab: previously it opened nothing
+                        // until installSession() ran after captureFinished, so
+                        // it showed nothing at all while a build was running.
+                        // It keeps its own ticker (EventsView.startTicker),
+                        // exactly like the timeline's, so it stays current even
+                        // on a quiet build with no progress ticks.
+                        eventsView.openSession(opened, MainWindow.this::showSessionFailure);
                     });
                 } catch (RuntimeException notYet) {
                     // The manifest or the database is still being written. The
@@ -1459,6 +1466,10 @@ public final class MainWindow extends JFrame {
             // moves a following view and leaves a navigated one where the user
             // put it.
             timeline.refreshLive();
+            // A fast-path nudge on top of the Events tab's own ticker, exactly
+            // as above for the timeline: harmless when the ticker already beat
+            // it there, because both share refreshLive's own throttle.
+            eventsView.refreshLive();
         }
 
         @Override
