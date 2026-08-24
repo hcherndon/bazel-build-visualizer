@@ -46,9 +46,12 @@ import com.holtherndon.bazelviz.enrich.execlog.EnvironmentRedactor;
 import com.holtherndon.bazelviz.enrich.execlog.ExecutionLogImporter;
 import com.holtherndon.bazelviz.enrich.profile.ProfileImporter;
 import com.holtherndon.bazelviz.runner.plan.AddedFlag;
+import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.enrich.graph.ActionGraphImporter;
 import com.holtherndon.bazelviz.enrich.graph.AuxiliaryQueryRunner;
 import com.holtherndon.bazelviz.enrich.graph.ConfiguredTargetImporter;
+import com.holtherndon.bazelviz.storage.graph.ActionEdgeDeriver;
+import com.holtherndon.bazelviz.storage.graph.GraphIndexBuilder;
 import com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner;
 import java.io.IOException;
 import java.util.Map;
@@ -871,6 +874,57 @@ public final class CaptureCoordinator implements AutoCloseable {
                 (connection, file, argv) ->
                         new ConfiguredTargetImporter(connection).importFrom(file, argv)
                                 .succeeded());
+
+        buildGraphIndexesQuietly(database, layout, warnings);
+    }
+
+    /**
+     * Derives the action edges and builds the CSR indexes the graph view reads.
+     *
+     * <h2>Here, because this is the only place the graphs are ever imported</h2>
+     *
+     * <p>{@code aquery} and {@code cquery} need a live workspace, so only a
+     * capture can import them — a session imported from a BEP file alone has no
+     * graph to index. The edge derivation and the index build therefore belong
+     * to the same finalization step as the imports whose rows they read.
+     * Without this step the imports were a dead end: every real captured
+     * session had {@code declared_actions} rows and no index, so
+     * {@code GraphQueries.forwardIndex} answered empty and the canvas reported
+     * "no action graph" forever.
+     *
+     * <h2>On the capture worker, never anything interactive</h2>
+     *
+     * <p>This runs on the thread that ran the build, after the build, alongside
+     * the auxiliary queries themselves — which cost a Bazel analysis pass each
+     * and dwarf an edge derivation. Nothing on the EDT waits for it; the
+     * capture dialog polls the session state asynchronously.
+     *
+     * <h2>Quietly, like every other enrichment</h2>
+     *
+     * <p>A derivation or index build that fails costs the user the graph view
+     * and nothing else. The failure is logged, a warning names it, and the
+     * graph view degrades to its honest "no index" message rather than the
+     * capture failing — the raw query output is still on disk either way.
+     */
+    private void buildGraphIndexesQuietly(
+            SessionDatabase database, ManagedSessionLayout layout, List<String> warnings) {
+        try {
+            java.sql.Connection connection = database.writerConnection();
+            ActionEdgeDeriver.Result derived = new ActionEdgeDeriver(connection).deriveAll();
+            GraphIndexBuilder builder =
+                    new GraphIndexBuilder(connection, layout.indexesDirectory());
+            var declared = builder.build(EdgeDerivation.DECLARED);
+            var observed = builder.build(EdgeDerivation.OBSERVED);
+            log.info("derived {} declared and {} observed action edges; indexed {} / {}",
+                    derived.declaredEdges(), derived.observedEdges(),
+                    declared.map(Object::toString).orElse("no declared graph"),
+                    observed.map(Object::toString).orElse("no observed graph"));
+        } catch (SQLException | IOException | RuntimeException failure) {
+            log.warn("could not build the action graph index", failure);
+            warnings.add("The action dependency graph could not be indexed: " + failure
+                    + ". The graph view will report the graph as unavailable;"
+                    + " everything else in this session is unaffected.");
+        }
     }
 
     private void runGraphQuery(
