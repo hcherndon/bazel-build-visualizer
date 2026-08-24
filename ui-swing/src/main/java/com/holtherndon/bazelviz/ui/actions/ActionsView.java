@@ -151,6 +151,16 @@ public final class ActionsView extends JPanel {
     /** The visible face of {@link #labelFilter}; clicking it clears the filter. */
     private final javax.swing.JButton labelChip = new javax.swing.JButton();
 
+    /**
+     * The toolbar the chip lives in. Held onto so toggling the chip's
+     * visibility can be followed by {@code revalidate()}/{@code repaint()} —
+     * {@link java.awt.Component#setVisible} alone only invalidates, it does
+     * not schedule the re-layout that gives a newly-visible chip real bounds,
+     * so without this pairing the chip painted nothing and had no click
+     * target.
+     */
+    private final JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+
     /** Bumped on every reload so a slow one cannot overwrite a newer one. */
     private long reloadGeneration;
 
@@ -228,7 +238,7 @@ public final class ActionsView extends JPanel {
     }
 
     private JPanel buildToolbar() {
-        JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        JPanel bar = toolbar;
         mnemonicChoice.addItem(ANY_MNEMONIC);
         outcomeChoice.addItem(ANY_OUTCOME);
         for (ActionOutcome outcome : ActionOutcome.values()) {
@@ -365,6 +375,11 @@ public final class ActionsView extends JPanel {
                 "Showing only actions whose target label contains " + label
                         + ". Click to clear."));
         labelChip.setVisible(true);
+        // setVisible alone only invalidates; without this the toolbar, laid
+        // out while the chip was invisible, never gives it real bounds and
+        // it paints nothing — see the field comment on toolbar.
+        toolbar.revalidate();
+        toolbar.repaint();
         reload();
     }
 
@@ -374,6 +389,8 @@ public final class ActionsView extends JPanel {
         }
         labelFilter = Optional.empty();
         labelChip.setVisible(false);
+        toolbar.revalidate();
+        toolbar.repaint();
         reload();
     }
 
@@ -539,9 +556,13 @@ public final class ActionsView extends JPanel {
         return labelChip.isVisible() ? labelChip.getText() : null;
     }
 
-    /** Visible for testing: exactly what clicking the chip does. */
-    public void clearLabelFilterForTest() {
-        clearLabelFilter();
+    /**
+     * Visible for testing: the chip button itself, so a test can confirm it
+     * actually laid out (non-zero bounds) and drive it with a genuine
+     * {@code doClick()} rather than calling the private clear method.
+     */
+    public javax.swing.JButton labelChipComponentForTest() {
+        return labelChip;
     }
 
     /** Visible for testing: the mnemonic entries the filter offers. */

@@ -2,10 +2,14 @@ package com.holtherndon.bazelviz.ui.errors;
 
 import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
 import com.holtherndon.bazelviz.storage.entities.ErrorRow;
+import com.holtherndon.bazelviz.storage.events.RawLocation;
+import com.holtherndon.bazelviz.ui.events.RawPayloadRenderer;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
+import com.holtherndon.bazelviz.ui.session.RawPayload;
+import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
@@ -20,6 +24,7 @@ import java.util.OptionalLong;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongConsumer;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
@@ -61,6 +66,16 @@ import org.slf4j.LoggerFactory;
  * <p>Rows load a page at a time and the status line always says how many of how
  * many are shown. A view that displayed the first five hundred and said nothing
  * would be indistinguishable from a build with five hundred failures.
+ *
+ * <h2>Console text is read on selection, off the EDT</h2>
+ *
+ * <p>An {@link ErrorRow.Kind#OUTPUT} row has no message column: the diagnostic
+ * is {@code progress.stderr}, which stays in the journal (ADR-004). Selecting
+ * one starts a journal read on this view's executor and shows the text when it
+ * lands — the same read-on-selection shape {@code EventInspectorModel} uses,
+ * and for the same two reasons: the payload can be hundreds of kilobytes, and
+ * {@code JTable} fires selection events far more often than a user changes
+ * their mind, so a superseded read is dropped rather than rendered late.
  */
 public final class ErrorsView extends JPanel {
 
@@ -84,6 +99,15 @@ public final class ErrorsView extends JPanel {
      */
     private static final int OUTPUT_EVENTS = 200;
 
+    /**
+     * What the Message column says for a row whose text is in the journal.
+     *
+     * <p>Not an em dash. The column stays size-only by design — bulk text lives
+     * in the journal, not in a table cell (ADR-004) — but "—" claims the
+     * message is unknown, and it is not: it is elsewhere, and one click away.
+     */
+    static final String MESSAGE_IN_JOURNAL = "text in journal — select to view";
+
     private final CardLayout cards = new CardLayout();
     private final JPanel deck = new JPanel(cards);
     private final JLabel emptyLabel = new JLabel(" ", SwingConstants.CENTER);
@@ -97,10 +121,27 @@ public final class ErrorsView extends JPanel {
 
     private ExecutorService executor;
     private EntityReader reader;
+
+    /**
+     * The journal reader behind the console rows, bound to {@link #executor}'s
+     * one thread exactly as {@link EntityReader} is.
+     */
+    private SessionReader payloadReader;
+
+    /**
+     * Why {@link #payloadReader} is null, when it is null for a reason other
+     * than the session being closed. Kept so a console row can say what went
+     * wrong rather than the whole card refusing to open over it.
+     */
+    private String payloadFailure;
+
     private SessionSource source;
     private LongConsumer showEventHandler = eventId -> { };
     private EntityReader.ErrorCounts counts = new EntityReader.ErrorCounts(0, 0, 0);
     private boolean abortsListed;
+
+    /** Bumped by every selection; a console read whose turn has passed is dropped. */
+    private final AtomicLong selection = new AtomicLong();
 
     public ErrorsView() {
         super(new BorderLayout());
@@ -183,15 +224,40 @@ public final class ErrorsView extends JPanel {
         opening.execute(() -> {
             try {
                 EntityReader opened = newSource.openEntityReader();
+                // The journal reader is opened here, on the thread that will
+                // use it, because a SessionReader is bound to one thread. It is
+                // opened whether or not this session has console rows: finding
+                // that out is itself a query, and one connection is cheaper
+                // than deferring and re-deciding on the EDT.
+                //
+                // Its own failure is caught separately and kept as a sentence.
+                // Failing to reach the journal costs the console rows their
+                // text; it does not cost the card its failures, and refusing to
+                // open over it would hide the rows that did read.
+                SessionReader payloads = null;
+                String payloadsFailed = null;
+                try {
+                    payloads = newSource.openReader();
+                } catch (RuntimeException failure) {
+                    log.warn("could not open a journal reader for the Errors card", failure);
+                    payloadsFailed = describe(failure);
+                }
                 EntityReader.ErrorCounts read = opened.errorCounts();
                 List<ErrorQueries.ReasonCount> reasons =
                         read.aborted() > 0 ? opened.abortReasons() : List.of();
+                SessionReader openedPayloads = payloads;
+                String openFailure = payloadsFailed;
                 SwingUtilities.invokeLater(() -> {
                     if (source != newSource) {
                         opened.close();
+                        if (openedPayloads != null) {
+                            openedPayloads.close();
+                        }
                         return;
                     }
                     reader = opened;
+                    payloadReader = openedPayloads;
+                    payloadFailure = openFailure;
                     counts = read;
                     installCounts(reasons);
                 });
@@ -207,11 +273,15 @@ public final class ErrorsView extends JPanel {
         inspector.show(Inspection.NONE);
         loadMore.setVisible(false);
         listAborts.setVisible(false);
+        selection.incrementAndGet();
         ExecutorService stopping = executor;
         EntityReader closing = reader;
+        SessionReader closingPayloads = payloadReader;
         source = null;
         executor = null;
         reader = null;
+        payloadReader = null;
+        payloadFailure = null;
         if (stopping == null) {
             return;
         }
@@ -224,6 +294,9 @@ public final class ErrorsView extends JPanel {
             }
             if (closing != null) {
                 closing.close();
+            }
+            if (closingPayloads != null) {
+                closingPayloads.close();
             }
         }, "bbv-errors-close");
         closer.setDaemon(true);
@@ -238,6 +311,26 @@ public final class ErrorsView extends JPanel {
     /** Visible for testing. */
     int rowCountForTest() {
         return tableModel.getRowCount();
+    }
+
+    /** Visible for testing: what the inspector is showing right now. */
+    Inspection inspectionForTest() {
+        return inspector.displayed();
+    }
+
+    /** Visible for testing: one Message cell, as the table renders it. */
+    String messageCellForTest(int row) {
+        return String.valueOf(tableModel.getValueAt(row, 3));
+    }
+
+    /** Visible for testing: selects a row the way a click would. */
+    void selectForTest(int row) {
+        table.setRowSelectionInterval(row, row);
+    }
+
+    /** Visible for testing: the "Load more" button, without the button. */
+    void loadMoreForTest() {
+        loadNextPage();
     }
 
     private void installCounts(List<ErrorQueries.ReasonCount> reasons) {
@@ -316,9 +409,10 @@ public final class ErrorsView extends JPanel {
      *
      * <p>Read once and in full: there are a handful of these on a failing build
      * and they are the only diagnostic most failures have. The rows carry the
-     * byte counts; the text is reached through the inspector's source-event
-     * button, because the bytes live in the journal and copying them here would
-     * duplicate the largest thing in the stream.
+     * byte counts and the journal address of the bytes, not the bytes: copying
+     * the text into every row would duplicate the largest thing in the stream
+     * (ADR-004). The address is what makes the row openable — selecting it
+     * reads that one payload and shows the stderr inside it.
      */
     private static List<ErrorRow> outputRows(EntityReader reader) {
         List<ErrorRow> rows = new ArrayList<>();
@@ -329,7 +423,8 @@ public final class ErrorsView extends JPanel {
                     "console output at event " + ref.sequence(),
                     Optional.of(EntityFormat.count(ref.stderrBytes()) + " bytes on stderr"),
                     Optional.empty(),
-                    OptionalLong.of(ref.bepEventId())));
+                    OptionalLong.of(ref.bepEventId()),
+                    Optional.of(ref.rawLocation())));
         }
         return rows;
     }
@@ -370,11 +465,83 @@ public final class ErrorsView extends JPanel {
 
     private void selectionChanged() {
         int row = table.getSelectedRow();
+        long mine = selection.incrementAndGet();
         if (row < 0) {
             inspector.show(Inspection.NONE);
             return;
         }
-        inspector.show(ErrorInspection.of(tableModel.rowAt(row)));
+        ErrorRow selected = tableModel.rowAt(row);
+        Optional<RawLocation> location = selected.rawLocation();
+        if (location.isEmpty()) {
+            // Everything but a console row: its text is in the row already, so
+            // there is nothing to read and nothing to wait for.
+            inspector.show(ErrorInspection.of(selected));
+            return;
+        }
+        ExecutorService running = executor;
+        SessionReader reading = payloadReader;
+        if (running == null || reading == null) {
+            inspector.show(ErrorInspection.of(selected, ErrorInspection.Console.unavailable(
+                    payloadFailure != null
+                            ? "this session's journal could not be opened: " + payloadFailure
+                            : "this session is no longer open for reading")));
+            return;
+        }
+        inspector.show(ErrorInspection.of(selected, ErrorInspection.Console.reading()));
+        running.execute(() -> {
+            if (selection.get() != mine) {
+                // Superseded before the read started. A journal seek for a row
+                // the user has already left is a cost with no reader.
+                return;
+            }
+            ErrorInspection.Console console = readConsole(reading, location.get());
+            SwingUtilities.invokeLater(() -> {
+                if (selection.get() != mine) {
+                    return;
+                }
+                inspector.show(ErrorInspection.of(selected, console));
+            });
+        });
+    }
+
+    /**
+     * Reads one console row's payload back and decodes it. Runs on the view's
+     * executor; never throws.
+     *
+     * <p>Every failure becomes a stated absence rather than a dialog. A
+     * redacted session keeps its database and drops its {@code raw/} directory,
+     * so a journal read there fails by design — and a modal error for a row the
+     * user merely clicked would turn a session that is working as intended into
+     * something that looks broken.
+     */
+    private static ErrorInspection.Console readConsole(
+            SessionReader reader, RawLocation location) {
+        try {
+            RawPayload payload = reader.rawPayload(location);
+            RawPayloadRenderer.Console console = RawPayloadRenderer.console(payload);
+            return console.absence()
+                    .map(ErrorInspection.Console::unavailable)
+                    .orElseGet(() ->
+                            ErrorInspection.Console.text(console.stderr(), console.stdout()));
+        } catch (RuntimeException failure) {
+            log.warn("could not read the console output at {}", location, failure);
+            return ErrorInspection.Console.unavailable(
+                    "the bytes could not be read back from this session's journal: "
+                            + describe(failure));
+        }
+    }
+
+    /** A failure and its causes, in one line each, with no stack trace. */
+    private static String describe(Throwable failure) {
+        StringBuilder text = new StringBuilder(
+                failure.getMessage() != null ? failure.getMessage() : failure.toString());
+        Throwable cause = failure.getCause();
+        while (cause != null) {
+            text.append("; caused by ")
+                    .append(cause.getMessage() != null ? cause.getMessage() : cause.toString());
+            cause = cause.getCause();
+        }
+        return text.toString();
     }
 
     private void sizeColumns() {
@@ -415,8 +582,21 @@ public final class ErrorsView extends JPanel {
                 case 0 -> row.kind().title();
                 case 1 -> row.subject();
                 case 2 -> EntityFormat.text(row.detail());
-                default -> EntityFormat.text(row.message());
+                default -> messageCell(row);
             };
+        }
+
+        /**
+         * The Message cell: the text when the row has it, a pointer when the
+         * row knows where it is, and an em dash only when neither is true.
+         */
+        private static String messageCell(ErrorRow row) {
+            if (row.message().filter(text -> !text.isEmpty()).isPresent()) {
+                return row.message().orElseThrow();
+            }
+            return row.rawLocation().isPresent()
+                    ? MESSAGE_IN_JOURNAL
+                    : EntityFormat.UNKNOWN;
         }
 
         void append(List<ErrorRow> more) {

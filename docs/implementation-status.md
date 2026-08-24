@@ -1667,6 +1667,90 @@ it is a different tab and was not reported.
   case in `EntityActionsTest`, and a target-label case in
   `MainWindowNavWiringTest`.
 
+- **The Actions tab's label-filter chip, once shown, could not be removed**
+  (2026-08-24). `ActionsView.filterToLabel` and `clearLabelFilter` toggled
+  `labelChip.setVisible(...)` without the `revalidate()`/`repaint()` pairing
+  every other dynamic-visibility site in the module already carries
+  (`InspectorPanel`, `EventInspectorPanel`, `TimelineView`, `QueryTab`).
+  `JComponent.setVisible(true)` revalidates the chip *itself* as a side
+  effect, but that is not the fix: the chip's own toolbar — laid out while
+  the chip was invisible — was never told to redo its `FlowLayout`, so
+  nothing made room for the chip and it inherited stale, usually zero,
+  bounds. No pixels, no click target, no way to clear a filter arriving from
+  another view's "show actions for this target". Fixed by holding the
+  toolbar as a field and pairing both `setVisible` calls with
+  `toolbar.revalidate()`/`toolbar.repaint()`. **Why the existing test missed
+  it:** `labelFilterNarrowsVisiblyAndClears` never realized the component
+  tree and cleared the filter through the package-private
+  `clearLabelFilterForTest()` rather than a click — `isVisible()` was
+  already true under the bug, so nothing it checked could tell a chip with
+  real bounds from one sitting at (0,0,0,0). Strengthened rather than
+  patched: the test now calls `addNotify()` + `setSize` + `validate()` to
+  realize a genuinely displayable (if unshown — headless forbids any real
+  `Window`, `new JFrame()` throws `HeadlessException` even without
+  `setVisible(true)`) component tree, installs a recording `RepaintManager`
+  to confirm the *toolbar itself* — not merely the chip, which revalidates
+  on its own per `JComponent.setVisible(true)`'s own side effect — is asked
+  to re-lay-out on both the show and the hide, asserts the chip's bounds are
+  genuinely non-zero once that request is honored, and clears the filter
+  with a real `labelChip.doClick()` rather than the bypass method (now
+  removed). Confirmed to fail on each half of the reverted fix before
+  landing it.
+
+- **The Errors card reads a console row's stderr instead of calling it
+  unknown** (2026-08-24). An `ErrorRow.Kind.OUTPUT` row is a progress event
+  that wrote to the console, and for the most common failure a build has —
+  a syntax error, thirteen events, zero structured diagnostics — its
+  `progress.stderr` is the *only* copy of the compiler's own words
+  (docs/bep-content.md finding X2, rule 48). The card listed those rows,
+  showed their byte count, and rendered the em-dash "unknown" over text that
+  was on disk the whole time. Now selecting one reads it.
+  **The read.** `ErrorQueries.PROGRESS_WITH_STDERR` already selected
+  `raw_segment`/`raw_offset`/`raw_length` and threw them away;
+  `ProgressRef.rawLocation()` hands them over as the `RawLocation` they
+  describe, and `ErrorRow` grew an `Optional<RawLocation>` — present only for
+  the kind whose text is not in the row, absent for the three kinds whose
+  message column *is* the message. `ErrorsView` now opens a `SessionReader`
+  beside its `EntityReader`, on the same single thread (a JDBC connection is
+  not thread-safe, and a `SessionReader` is bound to the thread that opened
+  it), and a selection fetches exactly one payload on that thread —
+  `EventInspectorModel`'s shape, generation counter included, because `JTable`
+  fires selection events far more often than a user changes their mind and a
+  superseded read is dropped rather than rendered late.
+  **The decode.** `RawPayloadRenderer.console(RawPayload)` is the structural
+  accessor, beside `Rendered.targetLabel` and for the same reason: the card
+  needs the stderr string, not a sentence containing it, and reading it out of
+  the rendered protobuf text would be parsing a display format. It unwraps a
+  BES envelope, re-decodes a JSON record, and returns a `Console` whose
+  `absence` is populated exactly when the two strings are not this record's
+  own answer.
+  **Four states, never conflated.** "Reading it back from the journal…", the
+  text itself, "this event decoded and carried no console text", and the
+  reason the bytes could not be reached are four different facts and each says
+  which it is. A redacted session keeps its database and drops its `raw/`
+  directory, so its console rows name frames that are gone: that is a stated
+  absence in the inspector, never a modal dialog, because a session working as
+  intended must not look broken. A journal that will not *open* is caught the
+  same way and kept as a sentence — it costs the console rows their text, and
+  refusing to open the card over it would hide the failures that read fine.
+  The Message **column** stays size-only — bulk text lives in the journal, not
+  in a table cell (ADR-004) — but it now
+  reads `text in journal — select to view` rather than an em dash, because the
+  message is not unknown, it is elsewhere. stderr and stdout render a line per
+  field (the inspector draws a field's value in one label, so a multi-line
+  diagnostic in one field would come out as one unreadable run), capped at 400
+  lines with the withheld count stated.
+  New tests: `ErrorInspectionTest` (each of the four states, the journal
+  pointer, the disclosed line cap, and non-OUTPUT rows unchanged),
+  `ErrorsViewTest` (the stderr on screen after a selection, one payload read,
+  zero reads on the EDT, the redacted session's honest absence, a journal that
+  will not open leaving the card intact, no read at all for a row that carries
+  its own text, and both readers released on close),
+  `ErrorQueriesTest` (the journal address survives to the caller, only stderr
+  events are listed, the limit holds), and console cases in
+  `RawPayloadRendererTest` (binary, BES-wrapped, JSON, a non-progress event,
+  and bytes that will not decode).
+
 - **The Events tab follows a live build's tail, and auto-pauses when a user
   scrolls away from it** (2026-08-24). `EventsView` gains a "Follow tail"
   checkbox, checked by default, next to the status line — the events analogue

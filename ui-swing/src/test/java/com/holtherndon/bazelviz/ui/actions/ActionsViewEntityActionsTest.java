@@ -14,15 +14,21 @@ import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
+import java.awt.Container;
 import java.awt.GraphicsEnvironment;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import javax.swing.JComponent;
+import javax.swing.RepaintManager;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -56,6 +62,33 @@ class ActionsViewEntityActionsTest {
         public void navigate(EntityActions.Command command, EntityRef ref) {
             commands.add(command);
             refs.add(ref);
+        }
+    }
+
+    /**
+     * Records which components ask Swing to re-lay them out, by identity.
+     *
+     * <p>This is how the label-chip fix is actually verified: a real running
+     * window relays out asynchronously once {@code revalidate()} is called,
+     * but that pump requires a genuine {@code Window} ancestor, and headless
+     * forbids creating one at all ({@code new JFrame()} throws {@code
+     * HeadlessException} even unshown). {@code JComponent.setVisible(true)}
+     * already revalidates the component <em>itself</em> as a side effect --
+     * that is not the bug fixed here, and is not enough on its own: it is
+     * the chip's <em>toolbar</em>, laid out while the chip was invisible,
+     * that has to be told to redo its {@code FlowLayout} for the chip to get
+     * real bounds. Recording identities (rather than actually laying
+     * anything out) is observable without a display and distinguishes
+     * exactly this: whether the toolbar itself was asked to revalidate.
+     */
+    private static final class RecordingRepaintManager extends RepaintManager {
+        final Set<java.awt.Component> requested =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+
+        @Override
+        public void addInvalidComponent(JComponent component) {
+            requested.add(component);
+            super.addInvalidComponent(component);
         }
     }
 
@@ -110,24 +143,93 @@ class ActionsViewEntityActionsTest {
         await(() -> onEdt(() -> view.tableModelForTest() != null));
         long total = onEdt(() -> view.rowSourceForTest().rowCount());
 
-        SwingUtilities.invokeAndWait(() -> view.filterToLabel(label));
-        await(() -> onEdt(() ->
-                view.rowSourceForTest().filter().labelContains().isPresent()));
+        // Realized in a validated, sized container: setVisible alone
+        // schedules no layout, so a test that never validates the tree
+        // cannot tell a chip with real bounds from one the user can neither
+        // see nor click (the bug this test exists to catch). Container
+        // .validate() only recurses into children once the tree is
+        // displayable (addNotify() gives it a lightweight peer -- no
+        // JFrame needed, and none is possible under headless anyway); a
+        // JPanel that never got addNotify() silently skips the recursive
+        // layout validate() is supposed to do, which would make the bounds
+        // assertion below pass or fail for the wrong reason.
+        SwingUtilities.invokeAndWait(() -> {
+            view.addNotify();
+            view.setSize(900, 500);
+            view.validate();
+        });
 
-        assertThat(onEdt(() -> view.rowSourceForTest().filter().labelContains()))
-                .hasValue(label);
-        long filtered = onEdt(() -> view.rowSourceForTest().rowCount());
-        assertThat(filtered).isPositive().isLessThanOrEqualTo(total);
-        // The narrowing is visible: the chip names the label, and the status
-        // line says "of" the unfiltered total.
-        assertThat(onEdt(view::labelChipForTest)).contains(label);
-        assertThat(onEdt(view::statusForTest)).contains("match the filter");
+        // A real running window relays out asynchronously once revalidate()
+        // is called, but that pump needs a genuine Window ancestor, and
+        // headless forbids creating one at all -- see RecordingRepaintManager.
+        // Installed for the whole exchange (both the narrow and the clear),
+        // and always restored, even on failure.
+        RepaintManager originalManager = RepaintManager.currentManager(view);
+        RecordingRepaintManager probe = new RecordingRepaintManager();
+        SwingUtilities.invokeAndWait(() -> RepaintManager.setCurrentManager(probe));
+        try {
+            SwingUtilities.invokeAndWait(() -> view.filterToLabel(label));
+            await(() -> onEdt(() ->
+                    view.rowSourceForTest().filter().labelContains().isPresent()));
 
-        SwingUtilities.invokeAndWait(view::clearLabelFilterForTest);
-        await(() -> onEdt(() ->
-                view.rowSourceForTest().filter().labelContains().isEmpty()));
-        assertThat(onEdt(() -> view.rowSourceForTest().rowCount())).isEqualTo(total);
-        assertThat(onEdt(view::labelChipForTest)).isNull();
+            Container toolbar = onEdt(() -> view.labelChipComponentForTest().getParent());
+            // JComponent.setVisible(true) revalidates the chip *itself* as a
+            // side effect -- that alone is not the fix: the toolbar, laid
+            // out while the chip was invisible, has to be told to redo its
+            // FlowLayout for the chip's neighbours to make room and for the
+            // chip to get real bounds. Without an explicit toolbar
+            // .revalidate() this set holds the chip but never the toolbar.
+            assertThat(onEdt(() -> probe.requested.contains(toolbar)))
+                    .as("filterToLabel must ask the chip's own toolbar to re-lay-out -- relying"
+                            + " on the chip's own setVisible(true) alone leaves the toolbar's"
+                            + " other children exactly where they were laid out while the chip"
+                            + " was invisible, so the chip inherits stale (often zero) bounds"
+                            + " and offers no click target")
+                    .isTrue();
+
+            assertThat(onEdt(() -> view.rowSourceForTest().filter().labelContains()))
+                    .hasValue(label);
+            long filtered = onEdt(() -> view.rowSourceForTest().rowCount());
+            assertThat(filtered).isPositive().isLessThanOrEqualTo(total);
+            // The narrowing is visible: the chip names the label, and the
+            // status line says "of" the unfiltered total.
+            assertThat(onEdt(view::labelChipForTest)).contains(label);
+            assertThat(onEdt(view::statusForTest)).contains("match the filter");
+
+            // Stands in for the layout pass the live app's window pumps on
+            // its own once it sees the request just confirmed above;
+            // headless, nothing pumps that automatically.
+            SwingUtilities.invokeAndWait(view::validate);
+            java.awt.Rectangle chipBounds = onEdt(() ->
+                    view.labelChipComponentForTest().getBounds());
+            assertThat(chipBounds.width).as("label chip width").isGreaterThan(0);
+            assertThat(chipBounds.height).as("label chip height").isGreaterThan(0);
+
+            onEdt(() -> {
+                probe.requested.clear();
+                return null;
+            });
+
+            // Cleared with a genuine click, exactly as a user would, rather
+            // than reaching past the button into a private method.
+            SwingUtilities.invokeAndWait(() -> view.labelChipComponentForTest().doClick());
+            await(() -> onEdt(() ->
+                    view.rowSourceForTest().filter().labelContains().isEmpty()));
+
+            // clearLabelFilter must pair its setVisible(false) the same way:
+            // hiding the chip gets no free revalidate from JComponent (that
+            // only fires on becoming visible), so without the explicit call
+            // this set stays empty.
+            assertThat(onEdt(() -> probe.requested.contains(toolbar)))
+                    .as("clearLabelFilter must also ask the toolbar to re-lay-out when the chip"
+                            + " hides")
+                    .isTrue();
+            assertThat(onEdt(() -> view.rowSourceForTest().rowCount())).isEqualTo(total);
+            assertThat(onEdt(view::labelChipForTest)).isNull();
+            assertThat(onEdt(() -> view.labelChipComponentForTest().isVisible())).isFalse();
+        } finally {
+            SwingUtilities.invokeAndWait(() -> RepaintManager.setCurrentManager(originalManager));
+        }
 
         SwingUtilities.invokeAndWait(view::closeSession);
         opened.close();
