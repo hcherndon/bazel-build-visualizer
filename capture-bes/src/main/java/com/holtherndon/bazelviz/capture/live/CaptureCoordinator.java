@@ -915,10 +915,12 @@ public final class CaptureCoordinator implements AutoCloseable {
                     new GraphIndexBuilder(connection, layout.indexesDirectory());
             var declared = builder.build(EdgeDerivation.DECLARED);
             var observed = builder.build(EdgeDerivation.OBSERVED);
-            log.info("derived {} declared and {} observed action edges; indexed {} / {}",
+            var labels = builder.buildConfiguredTargets();
+            log.info("derived {} declared and {} observed action edges; indexed {} / {} / {}",
                     derived.declaredEdges(), derived.observedEdges(),
                     declared.map(Object::toString).orElse("no declared graph"),
-                    observed.map(Object::toString).orElse("no observed graph"));
+                    observed.map(Object::toString).orElse("no observed graph"),
+                    labels.map(Object::toString).orElse("no configured-target graph"));
         } catch (SQLException | IOException | RuntimeException failure) {
             log.warn("could not build the action graph index", failure);
             warnings.add("The action dependency graph could not be indexed: " + failure

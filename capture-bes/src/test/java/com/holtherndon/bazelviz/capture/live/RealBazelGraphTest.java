@@ -104,6 +104,10 @@ class RealBazelGraphTest {
                     + " WHERE derivation = 'DECLARED'")).isPositive();
             assertThat(scalar(c, "SELECT count(*) FROM graph_indexes"
                     + " WHERE kind = 'DECLARED'")).isEqualTo(2);
+            // The configured-target label graph got its index too — the graph
+            // closest to `bazel query deps(//foo)`, and a dead end until now.
+            assertThat(scalar(c, "SELECT count(*) FROM graph_indexes"
+                    + " WHERE kind = 'CONFIGURED_TARGETS'")).isEqualTo(2);
         }
 
         // And the indexes a reopened session loads really answer: the exact
@@ -130,6 +134,21 @@ class RealBazelGraphTest {
             assertThat(producers)
                     .describedAs("the fixture chain has a producer for t1")
                     .isNotEmpty();
+
+            // The label graph answers the same questions over labels: a label
+            // seeds a node, and t1's rule inputs include t0.
+            var labelKind = com.holtherndon.bazelviz.core.graph.GraphKind.CONFIGURED_TARGETS;
+            assertThat(queries.forwardIndex(labelKind))
+                    .describedAs("the configured-target label index is loadable")
+                    .isPresent();
+            var t1 = queries.search(labelKind, "%:t1", 1);
+            assertThat(t1).describedAs("a label seeds a label-graph node").isNotEmpty();
+            var labelProducers = queries.neighbours(
+                    labelKind, t1.getFirst().nodeIndex(), false, 10);
+            assertThat(labelProducers)
+                    .describedAs("t1 names t0 as a rule input")
+                    .anySatisfy(node ->
+                            assertThat(node.label().orElse("")).endsWith(":t0"));
         }
     }
 

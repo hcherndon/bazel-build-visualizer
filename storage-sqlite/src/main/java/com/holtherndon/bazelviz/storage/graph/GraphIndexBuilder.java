@@ -35,8 +35,64 @@ import java.util.Optional;
  */
 public final class GraphIndexBuilder {
 
+    /**
+     * The {@code graph_indexes.kind} under which the configured-target label
+     * graph is registered.
+     *
+     * <p>Distinct from the two {@link EdgeDerivation} kinds on purpose: the
+     * label graph's nodes are labels, not actions, and a registry that let the
+     * two share a kind would let a loader answer a question about one graph
+     * with the other's file.
+     */
+    public static final String CONFIGURED_TARGETS_KIND = "CONFIGURED_TARGETS";
+
     private static final String NODE_COUNT =
             "SELECT count(*) FROM declared_actions WHERE node_index IS NOT NULL";
+
+    /**
+     * The label-graph node universe: every distinct label some configured
+     * target was analysed under, in {@code label_id} order.
+     *
+     * <p>This ordering <em>is</em> the node numbering. The label graph has no
+     * {@code node_index} column the way {@code declared_actions} does; instead
+     * the dense index of a label is its position in this sorted list, which is
+     * a pure function of the imported rows — so the builder and every query
+     * compute the same numbering from the same tables, and there is no stored
+     * mapping to go stale. Labels are interned append-only, so a label's id
+     * never changes underneath a session.
+     */
+    private static final String LABEL_UNIVERSE =
+            "SELECT DISTINCT label_id FROM configured_target_nodes ORDER BY label_id";
+
+    /**
+     * The label-graph edges, in dependency-to-depender order once mapped.
+     *
+     * <p>{@code configured_target_edges} points from a configured target to a
+     * label it names as a rule input. Only edges whose target label is itself
+     * an analysed configured target become graph edges: an edge to a source
+     * file or an unanalysed label has no node to land on, exactly as the
+     * action graph excludes source artifacts with no producing action. The
+     * excluded edges are counted, never silently dropped — the count travels
+     * in the build {@link Result}.
+     *
+     * <p>{@code DISTINCT} collapses the same dependency seen through several
+     * configurations or attributes into one label-level edge, which is what
+     * makes this the <em>label</em> graph.
+     */
+    private static final String LABEL_EDGES =
+            "SELECT DISTINCT n.label_id, e.to_label_id FROM configured_target_edges e"
+                    + " JOIN configured_target_nodes n ON n.id = e.from_node_id"
+                    + " WHERE n.label_id <> e.to_label_id"
+                    + "   AND EXISTS (SELECT 1 FROM configured_target_nodes t"
+                    + "               WHERE t.label_id = e.to_label_id)";
+
+    private static final String LABEL_EDGES_EXCLUDED =
+            "SELECT count(*) FROM (SELECT DISTINCT n.label_id, e.to_label_id"
+                    + " FROM configured_target_edges e"
+                    + " JOIN configured_target_nodes n ON n.id = e.from_node_id"
+                    + " WHERE n.label_id <> e.to_label_id"
+                    + "   AND NOT EXISTS (SELECT 1 FROM configured_target_nodes t"
+                    + "                   WHERE t.label_id = e.to_label_id))";
 
     private static final String EDGES =
             "SELECT p.node_index, c.node_index FROM action_edges e"
@@ -85,21 +141,102 @@ public final class GraphIndexBuilder {
         if (nodeCount == 0) {
             return Optional.empty();
         }
+        return Optional.of(
+                buildAndRegister(derivation.name(), nodeCount, edgeStream(derivation), 0));
+    }
+
+    /**
+     * Builds and registers both directions of the configured-target label
+     * graph.
+     *
+     * <p>The graph the {@code cquery} import populates and nothing read until
+     * now: node = a label, numbered by {@link #configuredLabelUniverse}'s
+     * ordering; edge = "some analysed configuration of the consumer names the
+     * producer as a rule input", stored producer-to-consumer like the action
+     * graph so the two indexes answer the same questions the same way round.
+     *
+     * @return what was built, or empty when no cquery output was ever
+     *     imported — which is not a failure
+     */
+    public Optional<Result> buildConfiguredTargets() throws SQLException, IOException {
+        long[] universe = configuredLabelUniverse(connection);
+        if (universe.length == 0) {
+            return Optional.empty();
+        }
+        long excluded = scalar(LABEL_EDGES_EXCLUDED);
+        Result built = buildAndRegister(
+                CONFIGURED_TARGETS_KIND, universe.length, labelEdgeStream(universe), excluded);
+        return Optional.of(built);
+    }
+
+    private Result buildAndRegister(String kind, int nodeCount, EdgeStream edges, long excluded)
+            throws SQLException, IOException {
         Files.createDirectories(directory);
 
-        CsrGraph forward = CsrBuilder.build(nodeCount, edgeStream(derivation));
+        CsrGraph forward = CsrBuilder.build(nodeCount, edges);
         CsrGraph reverse = CsrBuilder.reverse(forward);
 
-        Path forwardFile = directory.resolve(fileName(derivation, "forward"));
-        Path reverseFile = directory.resolve(fileName(derivation, "reverse"));
+        Path forwardFile = directory.resolve(fileName(kind, "forward"));
+        Path reverseFile = directory.resolve(fileName(kind, "reverse"));
         long forwardChecksum = CsrFile.write(forward, forwardFile);
         long reverseChecksum = CsrFile.write(reverse, reverseFile);
 
-        register(derivation, "FORWARD", forwardFile, forward, forwardChecksum);
-        register(derivation, "REVERSE", reverseFile, reverse, reverseChecksum);
+        register(kind, "FORWARD", forwardFile, forward, forwardChecksum);
+        register(kind, "REVERSE", reverseFile, reverse, reverseChecksum);
 
-        return Optional.of(new Result(
-                nodeCount, forward.edgeCount(), forwardFile, reverseFile));
+        return new Result(nodeCount, forward.edgeCount(), forwardFile, reverseFile, excluded);
+    }
+
+    /**
+     * The sorted distinct label ids behind the label graph's node numbering.
+     *
+     * <p>Static and public within the package's contract because
+     * {@link GraphQueries} must translate the same way: a label's node index
+     * is its position in this array, found by binary search.
+     */
+    public static long[] configuredLabelUniverse(Connection connection) throws SQLException {
+        java.util.ArrayList<Long> ids = new java.util.ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(LABEL_UNIVERSE);
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                ids.add(rows.getLong(1));
+            }
+        }
+        long[] out = new long[ids.size()];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = ids.get(i);
+        }
+        return out;
+    }
+
+    /**
+     * The label edges as dense node indexes, replayable.
+     *
+     * <p>Emitted producer-to-consumer: the stored edge says "consumer names
+     * producer as an input", so the pair is flipped here once, and the forward
+     * index means the same thing for both graphs.
+     */
+    private EdgeStream labelEdgeStream(long[] universe) {
+        return visitor -> {
+            try (PreparedStatement statement = connection.prepareStatement(LABEL_EDGES);
+                    ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    int consumer = java.util.Arrays.binarySearch(universe, rows.getLong(1));
+                    int producer = java.util.Arrays.binarySearch(universe, rows.getLong(2));
+                    if (consumer < 0 || producer < 0) {
+                        // Cannot happen while the query and the universe read
+                        // the same tables; refusing is better than a wrong
+                        // node id in a file that outlives this method.
+                        throw new IllegalStateException("an edge names a label outside the"
+                                + " configured-target universe; the tables changed while the"
+                                + " index was being built");
+                    }
+                    visitor.edge(producer, consumer);
+                }
+            } catch (SQLException failure) {
+                throw new UncheckedEdgeException(failure);
+            }
+        };
     }
 
     /**
@@ -126,10 +263,10 @@ public final class GraphIndexBuilder {
     }
 
     private void register(
-            EdgeDerivation derivation, String direction, Path file, CsrGraph graph, long checksum)
+            String kind, String direction, Path file, CsrGraph graph, long checksum)
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(REGISTER)) {
-            statement.setString(1, derivation.name());
+            statement.setString(1, kind);
             statement.setString(2, direction);
             statement.setString(3, file.getFileName().toString());
             statement.setInt(4, CsrFile.FORMAT_VERSION);
@@ -151,10 +288,21 @@ public final class GraphIndexBuilder {
      */
     public Optional<CsrGraph> load(EdgeDerivation derivation, String direction)
             throws SQLException, IOException {
+        return load(derivation.name(), direction);
+    }
+
+    /** Loads the configured-target label graph's registered index. */
+    public Optional<CsrGraph> loadConfiguredTargets(String direction)
+            throws SQLException, IOException {
+        return load(CONFIGURED_TARGETS_KIND, direction);
+    }
+
+    private Optional<CsrGraph> load(String kind, String direction)
+            throws SQLException, IOException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT file_name, node_count, edge_count, checksum FROM graph_indexes"
                         + " WHERE kind = ? AND direction = ?")) {
-            statement.setString(1, derivation.name());
+            statement.setString(1, kind);
             statement.setString(2, direction);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) {
@@ -175,9 +323,8 @@ public final class GraphIndexBuilder {
         }
     }
 
-    private static String fileName(EdgeDerivation derivation, String direction) {
-        return derivation.name().toLowerCase(java.util.Locale.ROOT)
-                + "-" + direction + ".csr";
+    private static String fileName(String kind, String direction) {
+        return kind.toLowerCase(java.util.Locale.ROOT) + "-" + direction + ".csr";
     }
 
     private long scalar(String sql) throws SQLException {
@@ -187,8 +334,19 @@ public final class GraphIndexBuilder {
         }
     }
 
-    /** What was built. */
-    public record Result(int nodeCount, long edgeCount, Path forwardFile, Path reverseFile) {}
+    /**
+     * What was built.
+     *
+     * @param excludedEdges edges the source stored that this graph has no node
+     *     for — for the label graph, rule inputs that are source files or
+     *     labels the analysis did not cover. Zero for the action graph, whose
+     *     edge derivation excludes source artifacts before they reach here.
+     *     Counted so a caller can state the omission rather than imply the
+     *     stored edges all made it in.
+     */
+    public record Result(
+            int nodeCount, long edgeCount, Path forwardFile, Path reverseFile,
+            long excludedEdges) {}
 
     /** The file on disk is not the index the database registered. */
     public static final class StaleIndexException extends IOException {

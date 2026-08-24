@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.storage.graph;
 
 import com.holtherndon.bazelviz.core.graph.ConfigurationMatch;
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.graph.ShortestPath;
 import java.io.IOException;
@@ -11,7 +12,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -34,9 +34,6 @@ import java.util.OptionalLong;
  * that looks complete.
  */
 public final class GraphQueries implements AutoCloseable {
-
-    /** Neighbourhood rows returned before the caller is told to narrow down. */
-    public static final int DEFAULT_NODE_BUDGET = 2_000;
 
     private static final String SOURCES =
             "SELECT kind, command, state, configuration_match, mismatch_detail,"
@@ -63,10 +60,33 @@ public final class GraphQueries implements AutoCloseable {
                     + " LEFT JOIN artifacts art ON art.id = da.primary_output_id"
                     + " WHERE da.node_index = ?";
 
+    private static final String LABEL_NODES_BY_PATTERN =
+            "SELECT n.label_id, l.value, min(n.rule_class)"
+                    + " FROM configured_target_nodes n"
+                    + " JOIN labels l ON l.id = n.label_id"
+                    + " WHERE l.value LIKE ?"
+                    + " GROUP BY n.label_id, l.value ORDER BY l.value LIMIT ?";
+
+    private static final String LABEL_NODE_BY_ID =
+            "SELECT l.value, min(n.rule_class)"
+                    + " FROM configured_target_nodes n"
+                    + " JOIN labels l ON l.id = n.label_id"
+                    + " WHERE n.label_id = ? GROUP BY l.value";
+
     private final Connection connection;
     private final GraphIndexBuilder indexes;
-    private final Map<EdgeDerivation, CsrGraph> forward = new EnumMap<>(EdgeDerivation.class);
-    private final Map<EdgeDerivation, CsrGraph> reverse = new EnumMap<>(EdgeDerivation.class);
+    private final Map<String, CsrGraph> forward = new java.util.HashMap<>();
+    private final Map<String, CsrGraph> reverse = new java.util.HashMap<>();
+
+    /**
+     * The label graph's node numbering: sorted distinct label ids, loaded once.
+     *
+     * <p>One {@code long} per analysed label, which is the same order of cost
+     * as the CSR index it accompanies. Kept because every label-graph question
+     * translates through it, in both directions — array position to label id
+     * by indexing, label id to position by binary search.
+     */
+    private long[] labelUniverse;
 
     public GraphQueries(Connection connection, Path indexDirectory) {
         this.connection = connection;
@@ -270,6 +290,137 @@ public final class GraphQueries implements AutoCloseable {
         }
     }
 
+    /** {@link #search(String, int)} for any indexed graph. */
+    public List<GraphNode> search(GraphKind graphKind, String pattern, int limit)
+            throws SQLException {
+        if (graphKind != GraphKind.CONFIGURED_TARGETS) {
+            return search(pattern, limit);
+        }
+        long[] universe = labelUniverse();
+        List<GraphNode> out = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(LABEL_NODES_BY_PATTERN)) {
+            statement.setString(1, pattern);
+            statement.setInt(2, limit);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    int index = java.util.Arrays.binarySearch(universe, rows.getLong(1));
+                    if (index < 0) {
+                        // A label imported after the universe was read; the
+                        // session is read-only in practice, but skipping is
+                        // safer than inventing an index the CSR does not have.
+                        continue;
+                    }
+                    out.add(new GraphNode(
+                            index,
+                            Optional.ofNullable(rows.getString(2)),
+                            Optional.ofNullable(rows.getString(3)),
+                            Optional.empty(),
+                            OptionalLong.empty()));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** {@link #node(int)} for any indexed graph. */
+    public Optional<GraphNode> node(GraphKind graphKind, int nodeIndex) throws SQLException {
+        if (graphKind != GraphKind.CONFIGURED_TARGETS) {
+            return node(nodeIndex);
+        }
+        long[] universe = labelUniverse();
+        if (nodeIndex < 0 || nodeIndex >= universe.length) {
+            return Optional.empty();
+        }
+        try (PreparedStatement statement = connection.prepareStatement(LABEL_NODE_BY_ID)) {
+            statement.setLong(1, universe[nodeIndex]);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new GraphNode(
+                        nodeIndex,
+                        Optional.ofNullable(rows.getString(1)),
+                        Optional.ofNullable(rows.getString(2)),
+                        Optional.empty(),
+                        OptionalLong.empty()));
+            }
+        }
+    }
+
+    /**
+     * One label per label-graph node, or the action-graph labels.
+     *
+     * <p>The label-graph flavour of {@link #labelsByNodeIndex()}: what the
+     * canvas names nodes with and the clustering groups by, fetched once per
+     * session rather than during any paint.
+     */
+    public String[] labelsByNodeIndex(GraphKind graphKind) throws SQLException {
+        if (graphKind != GraphKind.CONFIGURED_TARGETS) {
+            return labelsByNodeIndex();
+        }
+        long[] universe = labelUniverse();
+        String[] out = new String[universe.length];
+        try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT DISTINCT n.label_id, l.value FROM configured_target_nodes n"
+                                + " JOIN labels l ON l.id = n.label_id");
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                int index = java.util.Arrays.binarySearch(universe, rows.getLong(1));
+                if (index >= 0) {
+                    out[index] = rows.getString(2);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * One rule class per label-graph node; the label graph's answer to
+     * {@link #mnemonicsByNodeIndex()}.
+     *
+     * <p>A label analysed in several configurations has one rule class — the
+     * rule is the same rule — so {@code min} is a formality, not a choice
+     * between different answers. Left null where cquery did not report one,
+     * which stays distinguishable from a real name (plan 11.4).
+     */
+    public String[] ruleClassesByNodeIndex() throws SQLException {
+        long[] universe = labelUniverse();
+        String[] out = new String[universe.length];
+        try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT n.label_id, min(n.rule_class) FROM configured_target_nodes n"
+                                + " GROUP BY n.label_id");
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                int index = java.util.Arrays.binarySearch(universe, rows.getLong(1));
+                if (index >= 0) {
+                    out[index] = rows.getString(2);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** How many nodes the configured-target label graph has. */
+    public int labelGraphNodeCount() throws SQLException {
+        return labelUniverse().length;
+    }
+
+    /**
+     * The label graph's node numbering, loaded once and kept.
+     *
+     * <p>The same numbering {@link GraphIndexBuilder#configuredLabelUniverse}
+     * built the CSR files with: a pure function of the imported rows, so the
+     * index files and these queries cannot disagree about which label a node
+     * id means unless the tables changed — and a changed table invalidates the
+     * registered index by checksum anyway.
+     */
+    private long[] labelUniverse() throws SQLException {
+        if (labelUniverse == null) {
+            labelUniverse = GraphIndexBuilder.configuredLabelUniverse(connection);
+        }
+        return labelUniverse;
+    }
+
     /**
      * The nodes directly reachable from {@code nodeIndex}.
      *
@@ -279,8 +430,15 @@ public final class GraphQueries implements AutoCloseable {
     public List<GraphNode> neighbours(
             EdgeDerivation derivation, int nodeIndex, boolean forwards, int limit)
             throws SQLException, IOException {
+        return neighbours(kindOf(derivation), nodeIndex, forwards, limit);
+    }
+
+    /** {@link #neighbours(EdgeDerivation, int, boolean, int)} for any indexed graph. */
+    public List<GraphNode> neighbours(
+            GraphKind graphKind, int nodeIndex, boolean forwards, int limit)
+            throws SQLException, IOException {
         Optional<CsrGraph> graph = forwards
-                ? forwardIndex(derivation) : reverseIndex(derivation);
+                ? forwardIndex(graphKind) : reverseIndex(graphKind);
         if (graph.isEmpty()) {
             return List.of();
         }
@@ -292,7 +450,7 @@ public final class GraphQueries implements AutoCloseable {
         });
         List<GraphNode> out = new ArrayList<>(targets.size());
         for (int target : targets) {
-            node(target).ifPresent(out::add);
+            node(graphKind, target).ifPresent(out::add);
         }
         return out;
     }
@@ -300,8 +458,14 @@ public final class GraphQueries implements AutoCloseable {
     /** How many direct neighbours a node has, whether or not they are listed. */
     public int degree(EdgeDerivation derivation, int nodeIndex, boolean forwards)
             throws SQLException, IOException {
+        return degree(kindOf(derivation), nodeIndex, forwards);
+    }
+
+    /** {@link #degree(EdgeDerivation, int, boolean)} for any indexed graph. */
+    public int degree(GraphKind graphKind, int nodeIndex, boolean forwards)
+            throws SQLException, IOException {
         Optional<CsrGraph> graph = forwards
-                ? forwardIndex(derivation) : reverseIndex(derivation);
+                ? forwardIndex(graphKind) : reverseIndex(graphKind);
         return graph.map(value -> value.degree(nodeIndex)).orElse(0);
     }
 
@@ -313,13 +477,25 @@ public final class GraphQueries implements AutoCloseable {
     public Optional<ShortestPath.Result> path(
             EdgeDerivation derivation, int from, int to, long budget)
             throws SQLException, IOException {
-        Optional<CsrGraph> forwardGraph = forwardIndex(derivation);
-        Optional<CsrGraph> reverseGraph = reverseIndex(derivation);
+        return path(kindOf(derivation), from, to, budget);
+    }
+
+    /** {@link #path(EdgeDerivation, int, int, long)} for any indexed graph. */
+    public Optional<ShortestPath.Result> path(GraphKind graphKind, int from, int to, long budget)
+            throws SQLException, IOException {
+        Optional<CsrGraph> forwardGraph = forwardIndex(graphKind);
+        Optional<CsrGraph> reverseGraph = reverseIndex(graphKind);
         if (forwardGraph.isEmpty() || reverseGraph.isEmpty()) {
             return Optional.empty();
         }
         return Optional.of(
                 new ShortestPath(forwardGraph.get(), reverseGraph.get()).find(from, to, budget));
+    }
+
+    /** The graph an edge derivation's index describes. */
+    private static GraphKind kindOf(EdgeDerivation derivation) {
+        return derivation == EdgeDerivation.DECLARED
+                ? GraphKind.DECLARED_ACTIONS : GraphKind.OBSERVED_EXECUTION;
     }
 
     /**
@@ -333,24 +509,62 @@ public final class GraphQueries implements AutoCloseable {
      */
     public Optional<CsrGraph> forwardIndex(EdgeDerivation derivation)
             throws SQLException, IOException {
-        return cached(forward, derivation, "FORWARD");
+        return cached(forward, derivation.name(), "FORWARD");
     }
 
     /** The consumer-to-producer index; see {@link #forwardIndex}. */
     public Optional<CsrGraph> reverseIndex(EdgeDerivation derivation)
             throws SQLException, IOException {
-        return cached(reverse, derivation, "REVERSE");
+        return cached(reverse, derivation.name(), "REVERSE");
+    }
+
+    /**
+     * The producer-to-consumer index of whichever graph is asked for.
+     *
+     * <p>Three graphs have indexes: the two action graphs (declared and
+     * observed edges, nodes are actions) and the configured-target label graph
+     * (nodes are labels). Any other {@link GraphKind} has no CSR index and
+     * gets an empty answer, which is the honest one — those graphs exist in
+     * the schema but are not traversable this way.
+     */
+    public Optional<CsrGraph> forwardIndex(GraphKind graph) throws SQLException, IOException {
+        Optional<String> kind = indexKind(graph);
+        if (kind.isEmpty()) {
+            return Optional.empty();
+        }
+        return cached(forward, kind.get(), "FORWARD");
+    }
+
+    /** The consumer-to-producer index of whichever graph is asked for. */
+    public Optional<CsrGraph> reverseIndex(GraphKind graph) throws SQLException, IOException {
+        Optional<String> kind = indexKind(graph);
+        if (kind.isEmpty()) {
+            return Optional.empty();
+        }
+        return cached(reverse, kind.get(), "REVERSE");
+    }
+
+    /** The {@code graph_indexes.kind} behind a graph, or empty when none exists. */
+    private static Optional<String> indexKind(GraphKind graph) {
+        return switch (graph) {
+            case DECLARED_ACTIONS -> Optional.of(EdgeDerivation.DECLARED.name());
+            case OBSERVED_EXECUTION -> Optional.of(EdgeDerivation.OBSERVED.name());
+            case CONFIGURED_TARGETS -> Optional.of(GraphIndexBuilder.CONFIGURED_TARGETS_KIND);
+            case BEP_EVENTS, TARGETS, TEMPORAL -> Optional.empty();
+        };
     }
 
     private Optional<CsrGraph> cached(
-            Map<EdgeDerivation, CsrGraph> into, EdgeDerivation derivation, String direction)
+            Map<String, CsrGraph> into, String kind, String direction)
             throws SQLException, IOException {
-        CsrGraph existing = into.get(derivation);
+        CsrGraph existing = into.get(kind);
         if (existing != null) {
             return Optional.of(existing);
         }
-        Optional<CsrGraph> loaded = indexes.load(derivation, direction);
-        loaded.ifPresent(graph -> into.put(derivation, graph));
+        Optional<CsrGraph> loaded = kind.equals(GraphIndexBuilder.CONFIGURED_TARGETS_KIND)
+                ? indexes.loadConfiguredTargets(direction)
+                : indexes.load(EdgeDerivation.valueOf(kind), direction);
+        loaded.ifPresent(graph -> into.put(kind, graph));
         return loaded;
     }
 
@@ -386,6 +600,22 @@ public final class GraphQueries implements AutoCloseable {
                 case "DECLARED_ACTIONS" -> "Declared action graph (aquery)";
                 case "CONFIGURED_TARGETS" -> "Configured targets (cquery)";
                 default -> kind;
+            };
+        }
+
+        /**
+         * The traversable graph behind this source, when there is one.
+         *
+         * <p>What the selector switches: a source row is a statement about an
+         * import, and this is the graph that import populated. Empty for a
+         * kind this build does not know how to traverse, which refuses rather
+         * than guesses.
+         */
+        public Optional<GraphKind> graphKind() {
+            return switch (kind) {
+                case "DECLARED_ACTIONS" -> Optional.of(GraphKind.DECLARED_ACTIONS);
+                case "CONFIGURED_TARGETS" -> Optional.of(GraphKind.CONFIGURED_TARGETS);
+                default -> Optional.empty();
             };
         }
     }

@@ -39,7 +39,6 @@ looked edgeless would be a claim about the build, and a false one.
 
 | Limit | Constant | Default | When reached |
 |---|---|---:|---|
-| Graph traversal nodes | `com.holtherndon.bazelviz.storage.graph.GraphQueries.DEFAULT_NODE_BUDGET` | 2000 | The traversal stops and says it did; the count is reported as a lower bound rather than as a total. |
 | Shortest-path search budget | `com.holtherndon.bazelviz.ui.graph.GraphView.PATH_BUDGET` | 200000 | `ShortestPath.Result.describe()` distinguishes "there is no path" from "the search gave up", which are different answers and only one is a fact about the build. |
 | Aggregate groups returned | `com.holtherndon.bazelviz.storage.metrics.MetricQueries.DEFAULT_GROUP_LIMIT` | 40 | The table states the total group count and how many actions the unlisted groups hold. |
 | Finding candidates per criterion | `com.holtherndon.bazelviz.storage.metrics.MetricQueries.DEFAULT_CANDIDATE_LIMIT` | 25 | Not a truncation of results but of *inputs*: the rules examine the extremes. Bounded so the rules cost the same on a five-million-action build as on a small one. |
