@@ -2124,6 +2124,12 @@ Avoid:
 > diagnostics and a warning on stderr is not a failure. Sections 17.10 and 17.12
 > below are the plan text for those views and are unchanged; only the names and
 > the card count moved.
+>
+> **As built (2026-08-24):** twelve entries. **Query** was added after v1 (SQL
+> over the captured data; in no phase of this plan), and **Graph** split into
+> **Graph** — the Phase 7 rendered canvas, now with selectable node weights —
+> and **Tree** — the Phase 5 dependency trees, search and path-between-nodes.
+> `NavEntry`'s javadoc and `docs/graph-model.md` carry the reasons.
 
 ### Right inspector
 

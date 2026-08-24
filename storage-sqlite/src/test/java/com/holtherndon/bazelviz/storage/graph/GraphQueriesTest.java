@@ -155,6 +155,27 @@ final class GraphQueriesTest {
     }
 
     @Test
+    @DisplayName("an unsized output keeps the unknown sentinel rather than a zero")
+    void unknownOutputSizesStayUnknown() throws Exception {
+        // Node 0's output was sized; node 1's artifact exists but was never
+        // measured; nodes 2..4 declare no primary output at all.
+        exec("INSERT INTO artifacts (id, path, size_bytes)"
+                + " VALUES (11, 'bin/t0.out', 2048)");
+        exec("INSERT INTO artifacts (id, path) VALUES (12, 'bin/t1.out')");
+        exec("UPDATE declared_actions SET primary_output_id = 11 WHERE id = 1");
+        exec("UPDATE declared_actions SET primary_output_id = 12 WHERE id = 2");
+
+        long[] sizes = queries.outputSizesByNodeIndex(-1);
+
+        assertThat(sizes).hasSize(5);
+        assertThat(sizes[0]).isEqualTo(2_048);
+        // Rule 11 again: an artifact nothing measured and an empty file are
+        // different facts, and the join must keep them apart.
+        assertThat(sizes[1]).isEqualTo(-1);
+        assertThat(sizes[2]).isEqualTo(-1);
+    }
+
+    @Test
     @DisplayName("labels and mnemonics arrive as dense arrays spanning the graph")
     void perNodeArraysSpanTheGraph() throws Exception {
         String[] labels = queries.labelsByNodeIndex();

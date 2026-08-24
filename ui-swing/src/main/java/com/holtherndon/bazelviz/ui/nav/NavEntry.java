@@ -9,9 +9,9 @@ import java.util.Locale;
  * deliverable" lists in docs/product-plan.md section 24 — change them there
  * first, then here.
  *
- * <h2>Eleven entries, and not the plan's eleven</h2>
+ * <h2>Twelve entries, and not the plan's eleven</h2>
  *
- * <p>Three departures from plan 17.1's list, all from use rather than from
+ * <p>Four departures from plan 17.1's list, all from use rather than from
  * design:
  *
  * <ul>
@@ -33,6 +33,14 @@ import java.util.Locale;
  *       field means "the phase by which this card is real"; it in fact shipped
  *       after Phase 10 closed, and is the first entry here that no phase of the
  *       plan asked for.
+ *   <li><b>The old Graph card is two entries.</b> {@code TREE} is the
+ *       dependency and reverse-dependency trees, the search and the
+ *       path-between-nodes — Phase 5's UI deliverable, which works at any
+ *       graph size. {@code GRAPH} is the rendered canvas — Phase 7's — with
+ *       layouts, semantic zoom and selectable node weights. They shared one
+ *       card behind an embedded sub-tab, which hid the canvas behind a control
+ *       nothing pointed at and made "open in graph" ambiguous between two
+ *       different answers.
  * </ul>
  */
 public enum NavEntry {
@@ -40,7 +48,8 @@ public enum NavEntry {
     TIMELINE("Timeline", 6),
     ACTIONS("Actions", 3),
     TARGETS("Targets", 3),
-    GRAPH("Graph", 5),
+    GRAPH("Graph", 7),
+    TREE("Tree", 5),
     TESTS("Tests", 3),
     ERRORS("Errors", 3),
     EVENTS("Events", 1),

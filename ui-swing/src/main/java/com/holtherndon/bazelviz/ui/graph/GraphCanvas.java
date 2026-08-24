@@ -83,6 +83,18 @@ public final class GraphCanvas extends JComponent {
 
     private static final BasicStroke OUTLINE = new BasicStroke(2f);
 
+    /**
+     * One stroke per weight bucket, thinnest first.
+     *
+     * <p>The thinnest is {@link #THIN} itself, so a drawing whose weights are
+     * all unknown — or whose weight has no spread — paints exactly as it did
+     * before weights existed. A fixed array rather than computed widths keeps
+     * stroke changes to a handful per frame instead of one per edge.
+     */
+    private static final BasicStroke[] EDGE_STROKES = {
+        THIN, new BasicStroke(1.75f), new BasicStroke(2.5f), new BasicStroke(3.25f),
+    };
+
     private GraphModel model = GraphModel.empty();
     private GraphTransform transform = GraphTransform.identity();
 
@@ -126,6 +138,21 @@ public final class GraphCanvas extends JComponent {
         selection.clear();
         hover = -1;
         fitToView();
+        repaint();
+    }
+
+    /**
+     * Swaps in a restyled model of the <em>same layout</em>, keeping the
+     * camera and the selection.
+     *
+     * <p>The weight selector's half of {@link #setModel}: the positions have
+     * not moved, so refitting the view or dropping the selection would punish
+     * the user for changing what the colours mean. The caller guarantees the
+     * two models share a layout; selection positions stay valid because
+     * positions are layout indices.
+     */
+    public void restyle(GraphModel model) {
+        this.model = model == null ? GraphModel.empty() : model;
         repaint();
     }
 
@@ -295,24 +322,35 @@ public final class GraphCanvas extends JComponent {
         int[][] edges = model.edgePositions();
         int count = edges[0].length;
         GraphLayout.Result layout = model.layout();
-        g.setStroke(THIN);
 
         // Colour set once for the bulk rather than once per edge: at two
         // hundred thousand edges the state changes cost more than the lines.
-        // Highlighted edges are a second pass, and only when there is a
+        // Thickness is the weight's edge encoding, drawn one bucket per pass
+        // so the stroke changes a handful of times per frame; an unweighted
+        // drawing has one bucket and pays for exactly one pass, as before.
+        // Highlighted edges are a final pass, and only when there is a
         // selection to highlight.
         g.setColor(GraphColours.EDGE);
-        for (int e = 0; e < count; e++) {
-            int from = edges[0][e];
-            int to = edges[1][e];
-            if (!selection.isEmpty() && (selection.contains(from) || selection.contains(to))) {
-                continue;
+        int lastBucket = model.maxEdgeBucket();
+        for (int bucket = 0; bucket <= lastBucket; bucket++) {
+            g.setStroke(EDGE_STROKES[bucket]);
+            for (int e = 0; e < count; e++) {
+                if (model.edgeBucketAt(e) != bucket) {
+                    continue;
+                }
+                int from = edges[0][e];
+                int to = edges[1][e];
+                if (!selection.isEmpty()
+                        && (selection.contains(from) || selection.contains(to))) {
+                    continue;
+                }
+                drawEdge(g, layout, world, from, to);
             }
-            drawEdge(g, layout, world, from, to);
         }
         if (selection.isEmpty()) {
             return;
         }
+        g.setStroke(THIN);
         g.setColor(GraphColours.EDGE_HIGHLIGHTED);
         for (int e = 0; e < count; e++) {
             int from = edges[0][e];
@@ -365,12 +403,16 @@ public final class GraphCanvas extends JComponent {
     }
 
     private void paintNodes(Graphics2D g, double[] world, Detail detail) {
-        double radius = Math.max(detail == Detail.FAR ? 1.5 : 2.5, NODE_RADIUS * transform.scale());
-        int diameter = (int) Math.round(radius * 2);
+        double base = Math.max(detail == Detail.FAR ? 1.5 : 2.5, NODE_RADIUS * transform.scale());
         model.index().forEachInRect(
                 world[0] - NODE_RADIUS, world[1] - NODE_RADIUS,
                 world[2] + NODE_RADIUS, world[3] + NODE_RADIUS,
                 position -> {
+                    // The weight's node encoding: a per-node multiplier over
+                    // the zoom-derived base, so weights change relative size
+                    // and zoom still changes absolute size.
+                    double radius = base * model.radiusScaleAt(position);
+                    int diameter = (int) Math.round(radius * 2);
                     int cx = (int) Math.round(transform.screenX(model.layout().xAt(position)));
                     int cy = (int) Math.round(transform.screenY(model.layout().yAt(position)));
                     g.setColor(model.colourAt(position));

@@ -28,14 +28,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The source selector as a control: one card, two graphs, and every question
- * asked of the one the selector names.
+ * The Tree card's source selector as a control: one card, two graphs, and
+ * every question asked of the one the selector names.
  *
  * <p>The selector used to be a caption — it described a graph and changed
  * nothing, and the trees traversed the action graph whatever it said. These
- * tests open a session holding <em>both</em> graphs and check that searching,
- * tree expansion and the canvas all follow the selection, and that the trees'
- * direction matches their titles.
+ * tests open a session holding <em>both</em> graphs and check that searching
+ * and tree expansion follow the selection, and that the trees' direction
+ * matches their titles. The canvas that once shared this card has its own —
+ * {@code GraphExplorerViewTest} covers its half of the selector contract.
  *
  * <h2>The fixture</h2>
  *
@@ -45,13 +46,13 @@ import org.junit.jupiter.api.io.TempDir;
  * is what proves a label-graph search is not an action-graph search wearing a
  * different name.
  */
-final class GraphViewSourceTest {
+final class TreeViewSourceTest {
 
     @TempDir
     Path tempDir;
 
     private SessionDatabase database;
-    private GraphView view;
+    private TreeView view;
 
     @BeforeEach
     void buildSession() throws Exception {
@@ -85,7 +86,7 @@ final class GraphViewSourceTest {
         builder.build(EdgeDerivation.DECLARED);
         builder.buildConfiguredTargets();
 
-        view = new GraphView();
+        view = new TreeView();
         view.setSize(1000, 700);
         view.openSession(new GraphOnlySource());
         awaitCondition(() -> view.sourceSelector().getItemCount() == 2,
@@ -132,15 +133,11 @@ final class GraphViewSourceTest {
         selectConfiguredTargets();
 
         assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.CONFIGURED_TARGETS);
-        assertThat(view.canvasPanel().shownGraph()).isEqualTo(GraphKind.CONFIGURED_TARGETS);
         // The sentence under the selector says what a node now means, because
         // the two graphs share label text and nothing else (rule 13).
         assertThat(view.detailLabel().getText())
                 .contains("4 configured targets were analysed")
                 .contains("A node is one target label");
-        // And the canvas asks for a target, in words, rather than keeping the
-        // old action-graph drawing that its numbering no longer describes.
-        assertThat(view.canvasPanel().descriptionText()).contains("Pick a target");
     }
 
     @Test
@@ -178,35 +175,15 @@ final class GraphViewSourceTest {
     }
 
     @Test
-    @DisplayName("the canvas draws the target graph in target words")
-    void canvasDrawsTargets() throws Exception {
-        selectConfiguredTargets();
-
-        searchOnEdt("t1");
-        awaitCondition(() -> view.canvasPanel().descriptionText().contains("from a graph of 4"),
-                "the label-graph neighbourhood to draw");
-
-        // Three of the four labels are in t1's neighbourhood, and the
-        // sentence calls them targets: a drawing of labels captioned
-        // "actions" would be the conflation the selector exists to prevent.
-        assertThat(view.canvasPanel().descriptionText())
-                .contains("targets")
-                .doesNotContain("actions");
-        // A label-graph node never maps to an executed action; index 1 of the
-        // label numbering must not open action 1's detail.
-        assertThat(view.canvasPanel().actionIdAt(0)).isEmpty();
-    }
-
-    @Test
     @DisplayName("a selection from the last session cannot leak into the next")
     void selectionDoesNotLeakAcrossSessions() throws Exception {
         selectConfiguredTargets();
         assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.CONFIGURED_TARGETS);
 
         // Session B prefers the configured-target source too: with a stale
-        // copy of the selection surviving closeSession, the change detection
-        // sees "no change", never tells the canvas, and the trees traverse
-        // labels while the canvas draws actions -- a wrong node, silently.
+        // selection surviving closeSession, the change detection would see
+        // "no change" and skip the switch entirely — which is why
+        // closeSession resets the shown graph to the default.
         exec(database.writerConnection(),
                 "UPDATE graph_sources SET state = 'FAILED' WHERE kind = 'DECLARED_ACTIONS'");
         SwingUtilities.invokeAndWait(() -> {
@@ -216,12 +193,12 @@ final class GraphViewSourceTest {
         awaitCondition(() -> view.sourceSelector().getItemCount() == 2,
                 "the second session's sources to install");
 
-        assertThat(view.canvasPanel().shownGraph())
-                .as("the canvas and the trees must be reading the same graph")
-                .isEqualTo(view.shownGraphForTesting());
-        assertThat(view.canvasPanel().shownGraph())
+        assertThat(view.shownGraphForTesting())
                 .as("the preferred source of the new session is what is shown")
                 .isEqualTo(GraphKind.CONFIGURED_TARGETS);
+        // And the path pane's title follows, which is the visible face of the
+        // same selection.
+        assertThat(view.detailLabel().getText()).contains("A node is one target label");
     }
 
     // ------------------------------------------------------------- plumbing

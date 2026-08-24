@@ -87,15 +87,24 @@ capture the row came from.
 The command line is shown one argument per numbered line, and secrets in it are
 masked.
 
-### Graph
+### Graph and Tree
 
 The dependency graph, derived from which action produced the file another action
-consumed. Trees on one tab, a canvas on the other.
+consumed — two cards, one graph. **Tree** browses dependencies and reverse
+dependencies one level at a time and finds paths between nodes; it works at any
+graph size. **Graph** draws bounded pieces of it on a canvas.
 
 A graph too large to draw in detail **groups itself** by package, target or
 mnemonic rather than showing you a blank canvas or a hairball. The exact totals
 are always on screen, and you can raise the limit, narrow the query, or export
 the whole thing. Nothing is silently sampled.
+
+The Graph card's **weight selector** decides what node size, edge thickness and
+colour mean: duration, immediate or transitive dependency counts, output size,
+or inputs. Transitive counts are exact for what is drawn; the whole-graph count
+for a selected node is budgeted, and shows "≥N (budget reached)" when the
+search gave up rather than a number pretending to be a total. A node with no
+recorded value is grey at base size — unknown is never shown as zero.
 
 ### Findings
 

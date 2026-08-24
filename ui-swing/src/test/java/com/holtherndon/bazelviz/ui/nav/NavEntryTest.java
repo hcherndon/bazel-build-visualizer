@@ -10,9 +10,10 @@ class NavEntryTest {
 
     @Test
     void sidebarEntriesMatchThePlanInDisplayOrder() {
-        // Eleven, where plan 17.1 lists a different eleven. Console and
-        // Capture were merged into one Build card, Failures was renamed
-        // Errors, and Query is in no phase of the plan at all; NavEntry's own
+        // Twelve, where plan 17.1 lists eleven. Console and Capture were
+        // merged into one Build card, Failures was renamed Errors, Query is
+        // in no phase of the plan at all, and the old Graph card split into
+        // Graph (the canvas) and Tree (the dependency trees); NavEntry's own
         // javadoc carries the reasons.
         assertThat(Arrays.stream(NavEntry.values()).map(NavEntry::title))
                 .containsExactly(
@@ -21,12 +22,25 @@ class NavEntryTest {
                         "Actions",
                         "Targets",
                         "Graph",
+                        "Tree",
                         "Tests",
                         "Errors",
                         "Events",
                         "Build",
                         "Findings",
                         "Query");
+    }
+
+    @Test
+    void theGraphTreeSplitIsTwoRealEntries() {
+        // The canvas and the trees were one card behind an embedded sub-tab,
+        // which made "open in graph" ambiguous between two different answers.
+        // GRAPH keeps its name and now means the drawing; TREE is the
+        // renamed home of the Phase 5 trees.
+        assertThat(NavEntry.GRAPH.title()).isEqualTo("Graph");
+        assertThat(NavEntry.GRAPH.cardName()).isEqualTo("graph");
+        assertThat(NavEntry.TREE.title()).isEqualTo("Tree");
+        assertThat(NavEntry.TREE.cardName()).isEqualTo("tree");
     }
 
     @Test
@@ -64,12 +78,15 @@ class NavEntryTest {
     void planFixedArrivalPhasesAreCorrect() {
         assertThat(NavEntry.OVERVIEW.arrivalPhase()).isEqualTo(3);
         assertThat(NavEntry.TIMELINE.arrivalPhase()).isEqualTo(6);
-        // Phase 5, not 7. Plan 24 gives Phase 5 the dependency and
-        // reverse-dependency trees, the selected-action neighbourhood, the
-        // path-between-nodes and the graph-source selector -- all of which are
-        // this card. Phase 7 is the rendered canvas with layouts and semantic
-        // zoom, which replaces the trees' company rather than their arrival.
-        assertThat(NavEntry.GRAPH.arrivalPhase()).isEqualTo(5);
+        // One phase each, and they are different phases: plan 24 gives
+        // Phase 5 the dependency and reverse-dependency trees, the
+        // selected-action neighbourhood, the path-between-nodes and the
+        // graph-source selector -- the Tree card. Phase 7 is the rendered
+        // canvas with layouts and semantic zoom -- the Graph card. While they
+        // shared a card the earlier phase named its arrival; split, each
+        // carries its own.
+        assertThat(NavEntry.TREE.arrivalPhase()).isEqualTo(5);
+        assertThat(NavEntry.GRAPH.arrivalPhase()).isEqualTo(7);
     }
 
     @Test

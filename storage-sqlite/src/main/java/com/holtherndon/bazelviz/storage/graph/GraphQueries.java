@@ -139,6 +139,41 @@ public final class GraphQueries implements AutoCloseable {
     }
 
     /**
+     * Each graph node's primary-output size in bytes, indexed by
+     * {@code node_index}.
+     *
+     * <p>The cheap size join: {@code declared_actions.primary_output_id} to
+     * {@code artifacts.size_bytes}. A node whose output was never sized — no
+     * primary output recorded, or an artifact the capture never measured —
+     * keeps {@code unknownSize} rather than a zero, because "this produced an
+     * empty file" and "nothing measured this" are different facts and only one
+     * of them is about the build.
+     */
+    public long[] outputSizesByNodeIndex(long unknownSize) throws SQLException {
+        int nodes = Math.toIntExact(scalar(
+                "SELECT coalesce(max(node_index), -1) + 1 FROM declared_actions"));
+        long[] sizes = new long[nodes];
+        java.util.Arrays.fill(sizes, unknownSize);
+        if (nodes == 0) {
+            return sizes;
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT da.node_index, art.size_bytes FROM declared_actions da"
+                                + " JOIN artifacts art ON art.id = da.primary_output_id"
+                                + " WHERE da.node_index IS NOT NULL"
+                                + "   AND art.size_bytes IS NOT NULL");
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                int index = rows.getInt(1);
+                if (index >= 0 && index < nodes) {
+                    sizes[index] = Math.max(0, rows.getLong(2));
+                }
+            }
+        }
+        return sizes;
+    }
+
+    /**
      * The executed action behind each graph node, where there is one.
      *
      * <p>What turns a path of node indices into something another view can

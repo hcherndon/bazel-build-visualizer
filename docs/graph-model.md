@@ -184,4 +184,44 @@ traversal answers the same question the same way round.
 forward one. The previous binding was inverted end to end — the "Depends on"
 tree and the Dependencies canvas mode listed *dependents* — and is pinned
 against regression by `GraphExtractTest`, `GraphQueriesTest` and
-`GraphViewSourceTest`.
+`TreeViewSourceTest` (`GraphViewSourceTest` until the Graph/Tree split).
+
+## What the Graph/Tree split added (2026-08-24)
+
+The one Graph card is two: **Tree** (`NavEntry.TREE`, the Phase 5 trees,
+search and path-between-nodes — `TreeView`, formerly `GraphView`) and
+**Graph** (`NavEntry.GRAPH`, the Phase 7 canvas — `GraphExplorerView`
+hosting the unchanged `GraphCanvasPanel` machinery). Each card keeps its own
+graph-source selector, because each is a separate statement about which graph
+is on screen. No schema change, no new graph kinds.
+
+### Node weights (`GraphWeight`, computed by `GraphWeights`)
+
+The Graph card's weight selector drives node radius, edge thickness and the
+colour ramp — visual encoding only. Positions come from the deterministic
+layouts (still no force-directed layout at any size), so the layout cache key
+is unchanged and re-selecting a weight re-renders without re-layout.
+
+- **Immediate deps / rdeps** — CSR degree off the offsets array, O(1) per
+  node.
+- **Transitive deps / rdeps** — two bounded shapes, because a transitive
+  closure remains forbidden (plan 13.3). *Exact over the drawn subgraph*:
+  per-node reachability over the extracted nodes and edges, bounded by the
+  extraction's own limits plus `SUBGRAPH_TRANSITIVE_WORK_BUDGET`; nodes past
+  the budget are unknown and the legend says so. *Budgeted over the whole
+  graph*, for the selected node only: a BFS over the full CSR index under
+  `GLOBAL_TRANSITIVE_NODE_BUDGET`, reported as "≥N (budget reached)" when it
+  gives up — a lower bound stated as one.
+- **Output size** — `declared_actions.primary_output_id` joined to
+  `artifacts.size_bytes` (`GraphQueries.outputSizesByNodeIndex`). An unsized
+  output is unknown, never zero: "empty file" and "never measured" are
+  different facts.
+- **Inputs** — presented as the immediate dependency count and labelled as
+  exactly that, because the session stores no distinct raw-input count per
+  node and a fabricated one with a truthful name would be worse than the
+  honest proxy.
+
+Unknown weights draw grey at base size — never the smallest, coldest node —
+and every scale sentence under the drawing names what the colours mean and
+how many nodes have no value (`GraphWeightEncodingTest`,
+`GraphCanvasPanelTest`).

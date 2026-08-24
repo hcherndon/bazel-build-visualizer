@@ -1576,3 +1576,41 @@ it is a different tab and was not reported.
   MIT, reviewed in `gradle/libs.versions.toml`'s header, user-approved, and
   lockfiles regenerated. rsyntaxtextarea is pinned to 3.6.1 — the version
   autocomplete 3.3.3 declares — rather than the fresh 4.x major.
+
+- **The Graph card split into Graph and Tree, and the Graph card gained
+  weights** (2026-08-24). `NavEntry.GRAPH` was the trees with the canvas
+  hidden behind an embedded "Canvas" sub-tab; now `NavEntry.TREE` ("Tree",
+  arrival phase 5, `TreeView` — the renamed `GraphView`) is the JTree
+  deps/rdeps browsing, search and path-between-nodes, and `NavEntry.GRAPH`
+  ("Graph", arrival phase 7, the new `GraphExplorerView`) hosts the canvas
+  machinery (`GraphCanvasPanel` and friends, unchanged in place). Twelve nav
+  entries; each card keeps its own graph-source selector. The
+  `EntityActions` split-wiring debt is paid: `OPEN_IN_GRAPH` re-pointed at
+  the new Graph card, `OPEN_IN_TREE` wired at the Tree card and added to
+  `MainWindow`'s wired set, leaving `SHOW_EVENTS_FOR_LABEL` the only
+  deliberately unwired command. The overview's derived-critical-path tile
+  still names `NavEntry.GRAPH` — the chain is a canvas drawing, so the split
+  moved its destination's content, not its link.
+  **Weights** (`GraphWeight`, computed off-EDT by `GraphWeights` via
+  `GraphLayoutService.weights`): immediate deps/rdeps (CSR degree, O(1)),
+  transitive deps/rdeps (exact over the drawn subgraph under
+  `SUBGRAPH_TRANSITIVE_WORK_BUDGET`, plus a budgeted whole-graph BFS for the
+  selected node only, rendered "≥N (budget reached)" when
+  `GLOBAL_TRANSITIVE_NODE_BUDGET` trips — a full transitive closure stays
+  forbidden), output size (`GraphQueries.outputSizesByNodeIndex`, the
+  `primary_output_id` → `artifacts.size_bytes` join; unsized outputs are
+  unknown, never zero), and inputs (presented as the immediate dependency
+  count and labelled as exactly that — no distinct raw-input count exists in
+  the session). The weight drives node radius, edge thickness and the colour
+  ramp only; positions stay with the LAYERED/RADIAL/LINEAR/GRID layouts (no
+  force-directed layout, unchanged rule), the layout cache key is untouched,
+  and re-selecting a weight restyles via `GraphCanvas.restyle` without
+  re-fitting the camera or dropping the selection. Unknown weights draw grey
+  at base size. Both budgets are in `docs/limits.md`; the split and the
+  weight definitions are in `docs/graph-model.md`. New tests:
+  `GraphWeightsTest` (exact subgraph counts on a diamond, budget trips,
+  lower-bound wording), `GraphWeightEncodingTest` (radius/colour/thickness
+  mapping, unknown-is-not-zero), `GraphExplorerViewTest` (the new card's
+  selector and honest absences), weight cases in `GraphCanvasPanelTest`, a
+  size-join case in `GraphQueriesTest`, and the renamed
+  `TreeViewSourceTest`; `NavEntryTest` pins the twelve entries.
