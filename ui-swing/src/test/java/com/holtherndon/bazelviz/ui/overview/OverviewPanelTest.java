@@ -218,6 +218,11 @@ class OverviewPanelTest {
         }
 
         @Override
+        public com.holtherndon.bazelviz.ui.session.QueryReader openQueryReader() {
+            throw new UnsupportedOperationException("the overview runs no ad hoc SQL");
+        }
+
+        @Override
         public EntityReader openEntityReader() {
             return reader;
         }

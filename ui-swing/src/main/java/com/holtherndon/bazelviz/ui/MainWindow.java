@@ -27,6 +27,7 @@ import com.holtherndon.bazelviz.ui.events.EventsView;
 import com.holtherndon.bazelviz.ui.enrich.CoverageView;
 import com.holtherndon.bazelviz.ui.errors.ErrorsView;
 import com.holtherndon.bazelviz.ui.graph.GraphView;
+import com.holtherndon.bazelviz.ui.query.QueryView;
 import com.holtherndon.bazelviz.ui.timeline.TimelineController;
 import com.holtherndon.bazelviz.ui.overview.OverviewPanel;
 import com.holtherndon.bazelviz.ui.targets.TargetsView;
@@ -135,6 +136,17 @@ public final class MainWindow extends JFrame {
     private final CoverageView coverageView = new CoverageView();
     private final GraphView graphView = new GraphView();
     private final FindingsView findingsView = new FindingsView();
+
+    /**
+     * The ad hoc SQL card.
+     *
+     * <p>Opened over the same {@link SessionSource} as every other view, but
+     * on a connection the others do not share: {@code openQueryReader()}
+     * hands it one that is read-only in fact rather than by convention,
+     * because it is the only view whose statements this codebase did not
+     * write.
+     */
+    private final QueryView queryView = new QueryView();
     private final TimelineController timeline = new TimelineController();
 
     /**
@@ -1073,6 +1085,7 @@ public final class MainWindow extends JFrame {
                         .map(com.holtherndon.bazelviz.analysis.CriticalPath.Result::path)
                         .orElse(List.of()));
         findingsView.attach(metricsService);
+        queryView.openSession(opened);
         closeSource(previous);
     }
 
@@ -1087,6 +1100,7 @@ public final class MainWindow extends JFrame {
         coverageView.closeSession();
         graphView.closeSession();
         timeline.closeSession();
+        queryView.closeSession();
         findingsView.detach();
         derivedCriticalPath = List.of();
         MetricsService closing = metricsService;
@@ -1647,6 +1661,7 @@ public final class MainWindow extends JFrame {
             case EVENTS -> eventsView;
             case BUILD -> buildCard;
             case FINDINGS -> findingsView;
+            case QUERY -> queryView;
             default -> placeholderCard(entry);
         };
     }

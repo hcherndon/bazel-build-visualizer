@@ -314,6 +314,11 @@ final class GraphViewSourceTest {
         }
 
         @Override
+        public com.holtherndon.bazelviz.ui.session.QueryReader openQueryReader() {
+            throw new UnsupportedOperationException("the graph view never asks");
+        }
+
+        @Override
         public Connection openTimelineConnection() {
             throw new UnsupportedOperationException("the graph view never asks");
         }

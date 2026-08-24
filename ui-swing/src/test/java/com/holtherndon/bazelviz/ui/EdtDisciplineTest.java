@@ -45,6 +45,7 @@ final class EdtDisciplineTest {
             "com.holtherndon.bazelviz.ui.session.SessionSource",
             "com.holtherndon.bazelviz.ui.session.SessionReader",
             "com.holtherndon.bazelviz.ui.session.EntityReader",
+            "com.holtherndon.bazelviz.ui.session.QueryReader",
             "com.holtherndon.bazelviz.ui.table.RowSource",
             "com.holtherndon.bazelviz.ui.timeline.SpanSource",
             "com.holtherndon.bazelviz.storage.graph.GraphQueries",

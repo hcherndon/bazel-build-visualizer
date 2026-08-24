@@ -10,8 +10,9 @@ class NavEntryTest {
 
     @Test
     void sidebarEntriesMatchThePlanInDisplayOrder() {
-        // Ten, where plan 17.1 lists eleven. Console and Capture were merged
-        // into one Build card, and Failures was renamed Errors; NavEntry's own
+        // Eleven, where plan 17.1 lists a different eleven. Console and
+        // Capture were merged into one Build card, Failures was renamed
+        // Errors, and Query is in no phase of the plan at all; NavEntry's own
         // javadoc carries the reasons.
         assertThat(Arrays.stream(NavEntry.values()).map(NavEntry::title))
                 .containsExactly(
@@ -24,7 +25,8 @@ class NavEntryTest {
                         "Errors",
                         "Events",
                         "Build",
-                        "Findings");
+                        "Findings",
+                        "Query");
     }
 
     @Test
@@ -45,6 +47,17 @@ class NavEntryTest {
         assertThat(NavEntry.BUILD.arrivalPhase()).isEqualTo(2);
         assertThat(NavEntry.BUILD.cardName()).isEqualTo("build");
         assertThat(NavEntry.ERRORS.cardName()).isEqualTo("errors");
+    }
+
+    @Test
+    void theQueryEntryIsLastAndReal() {
+        // Perfetto's query page, which nothing in plan 17.1 asked for. Last in
+        // display order because it is the card you go to when none of the
+        // others answers the question, and its card name has to satisfy the
+        // same [a-z]+ rule as every other.
+        assertThat(NavEntry.values()[NavEntry.values().length - 1]).isEqualTo(NavEntry.QUERY);
+        assertThat(NavEntry.QUERY.cardName()).isEqualTo("query");
+        assertThat(NavEntry.QUERY.arrivalPhase()).isEqualTo(10);
     }
 
     @Test

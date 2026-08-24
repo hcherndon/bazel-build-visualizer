@@ -9,9 +9,9 @@ import java.util.Locale;
  * deliverable" lists in docs/product-plan.md section 24 — change them there
  * first, then here.
  *
- * <h2>Ten entries, not the plan's eleven</h2>
+ * <h2>Eleven entries, and not the plan's eleven</h2>
  *
- * <p>Two departures from plan 17.1's list, both from use rather than from
+ * <p>Three departures from plan 17.1's list, all from use rather than from
  * design:
  *
  * <ul>
@@ -26,6 +26,13 @@ import java.util.Locale;
  *       compiler warning printed on stderr is not a failure. "Errors" covers
  *       what is actually on the card; "Failures" promised something narrower
  *       than what it showed.
+ *   <li><b>{@code QUERY} is not in plan 17.1 at all.</b> Perfetto's query page
+ *       is the one thing it does that nothing here replaced: SQL over the
+ *       captured data, for the question nobody built a view for. Its arrival
+ *       phase is recorded as 10 because that is the last plan phase and the
+ *       field means "the phase by which this card is real"; it in fact shipped
+ *       after Phase 10 closed, and is the first entry here that no phase of the
+ *       plan asked for.
  * </ul>
  */
 public enum NavEntry {
@@ -38,7 +45,8 @@ public enum NavEntry {
     ERRORS("Errors", 3),
     EVENTS("Events", 1),
     BUILD("Build", 2),
-    FINDINGS("Findings", 8);
+    FINDINGS("Findings", 8),
+    QUERY("Query", 10);
 
     private final String title;
     private final int arrivalPhase;

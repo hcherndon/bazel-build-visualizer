@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.format.session.SessionManifest;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
+import com.holtherndon.bazelviz.storage.query.AdHocQueries;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.events.EventDetail;
 import com.holtherndon.bazelviz.storage.events.EventPage;
@@ -53,6 +54,7 @@ public final class SqliteSessionSource implements SessionSource {
     private final Path journalDirectory;
     private final List<SqliteSessionReader> readers = new CopyOnWriteArrayList<>();
     private final List<EntityReader> entityReaders = new CopyOnWriteArrayList<>();
+    private final List<QueryReader> queryReaders = new CopyOnWriteArrayList<>();
     private volatile boolean closed;
 
     private SqliteSessionSource(
@@ -214,6 +216,35 @@ public final class SqliteSessionSource implements SessionSource {
     }
 
     @Override
+    public QueryReader openQueryReader() {
+        if (closed) {
+            throw new SessionDataException("session " + root + " is closed");
+        }
+        Connection connection;
+        try {
+            // newQueryConnection, not newReadConnection: this is the one
+            // connection in the application that runs SQL nobody here wrote.
+            connection = database.newQueryConnection();
+        } catch (SQLException e) {
+            throw new SessionDataException("cannot open a query connection to " + root, e);
+        }
+        QueryReader reader;
+        try {
+            reader = new SqliteQueryReader(
+                    root.toString(), connection, new AdHocQueries(connection));
+        } catch (RuntimeException refused) {
+            try {
+                connection.close();
+            } catch (SQLException ignored) {
+                // The refusal is what matters.
+            }
+            throw refused;
+        }
+        queryReaders.add(reader);
+        return reader;
+    }
+
+    @Override
     public EntityReader openEntityReader() {
         if (closed) {
             throw new SessionDataException("session " + root + " is closed");
@@ -249,6 +280,17 @@ public final class SqliteSessionSource implements SessionSource {
             }
         }
         entityReaders.clear();
+        for (QueryReader reader : queryReaders) {
+            try {
+                reader.close();
+            } catch (RuntimeException failure) {
+                // Same reason as the entity readers above: the query card's
+                // executor may still be inside a statement, and the session is
+                // being torn down either way.
+                log.debug("a query reader for {} would not close", root, failure);
+            }
+        }
+        queryReaders.clear();
         try {
             database.close();
         } catch (SQLException e) {

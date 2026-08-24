@@ -194,6 +194,11 @@ final class TimelineControllerTest {
         }
 
         @Override
+        public com.holtherndon.bazelviz.ui.session.QueryReader openQueryReader() {
+            throw new UnsupportedOperationException("the timeline runs no ad hoc SQL");
+        }
+
+        @Override
         public Connection openTimelineConnection() {
             opens.incrementAndGet();
             try {
