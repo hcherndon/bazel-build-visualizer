@@ -1852,6 +1852,97 @@ it is a different tab and was not reported.
   honesty, truncation, browse listing/landing/filtering
   (`GraphExplorerViewTest`).
 
+- **The Findings pane no longer overflows the window, and scrolling it is no
+  longer extremely slow** (2026-08-24). The exact latent shape the Overview
+  fix's changelog entry named and left untouched: `FindingsView`'s `summary`
+  panel and each `section()` (invocation metrics, the per-mnemonic table) used
+  a fixed `GridLayout(0, 2, …)`, sizing every row in a column to that column's
+  single widest cell; and both the header/summary/catalog stack (`top`) and
+  the finding-detail pane (`detail`) were plain `BoxLayout` `JPanel`s handed
+  bare to a `JScrollPane`, so neither was `Scrollable` and neither told the
+  scroll pane to track the viewport's width. Findings volume compounds this —
+  `FindingRules` emits several findings per mnemonic group across three
+  rules, each with a title, evidence and links built from this build's own
+  (potentially long) strings — and none of the three scroll panes (`top`,
+  the finding list, `detail`) had a wheel unit increment set, so the platform
+  default of one pixel per notch made scrolling any of them feel frozen.
+
+  Fixed the same way as the Overview tab: `top` and `detail` are now
+  `ui.theme.ScrollableViewport`s, so their enclosing `JScrollPane`s track the
+  viewport's width and never grow a horizontal scrollbar, however wide a
+  single row's value or a finding's evidence/link button text wants to be —
+  confirmed for both by embedding the real scroll pane at a narrow width and
+  asserting no horizontal scrollbar appears, even with a finding fixture
+  carrying a deliberately long evidence label and link description. `summary`
+  and `section()` moved from `GridLayout(0, 2, …)` to the `GridBagLayout`
+  two-column name/value shape `OverviewPanel.section` already uses, so one
+  long row no longer sets every row in its column to the same width. Inside
+  `detail`, a finding's title and each metric's `name: value` line — both of
+  which can be full sentences built from this build's own numbers, not just
+  short labels — now render through the existing `wrapped()` `JTextArea`
+  helper (extended with a bold variant) instead of a plain, non-wrapping
+  `JLabel`, so long text wraps instead of being silently clipped (rule 12).
+  `getVerticalScrollBar().setUnitIncrement(16)` is now set on all three
+  scroll panes. Because an evidence/link `JButton`'s text cannot wrap, a
+  narrow window still ellipsis-clips it — so, mirroring the existing
+  `PlainText.tooltip(...)` use on `FindingRenderer`'s list cells, both
+  buttons now carry their full, untruncated text as a tooltip, keeping a
+  clipped label reachable by hover instead of unreadable. New tests in
+  `FindingsViewTest`: the summary/catalog grids and the detail pane each
+  track the viewport's width instead of overflowing it, every scroll pane
+  uses the fast wheel increment rather than the 1-pixel-per-notch default,
+  and the evidence and link buttons carry their full text as a tooltip.
+
+- **The timeline's lanes are sized by their content and the plot scrolls**
+  (2026-08-24). Lane height used to be `canvas.getHeight() / lanes` with a
+  three-pixel floor, and `boundsOfSpan` divided that again by the lane's
+  stacking depth (up to `SpanStacking.MAX_SUB_ROWS`, 6). On any real session
+  that produced one- and two-pixel sub-rows — marks too thin to see and too
+  thin to click, and thinner the more concurrency the build actually had,
+  which is exactly backwards. The in-flight band above them already drew
+  fixed-height rows, so one plot used two rules. Now there is one:
+  `TimelineView.SUB_ROW_HEIGHT` (18, in docs/limits.md, checked by
+  `LimitsDocTest`) is the height of every lane sub-row *and* every band row,
+  a lane is `SpanStacking.depthOf(key)` of those tall — **depth-scaled**, so
+  only lanes with real overlap grow and a quiet lane pays nothing for a busy
+  neighbour's concurrency — and the row layout (`relayoutLanes`, rebuilt
+  whenever the lanes or the stacking change) is a function of the data alone,
+  never of the window. `MAX_SUB_ROWS` is unchanged at 6 and the overflow
+  count is still stated exactly; what changed is that the budget now buys
+  height rather than rationing it.
+  The total height goes to a `JScrollPane`: the canvas is the view and
+  reports it as its preferred size, `laneLabels` is the pane's
+  `rowHeaderView` so labels and rows scroll in lockstep by construction
+  rather than by arithmetic, and the time axis stays outside the pane,
+  pinned — behind a strut of the label column's width, which also fixes the
+  axis having been offset by that width all along. Vertically the policy is
+  as-needed with a 16-pixel unit; horizontally there is **no** scrolling
+  ever: the canvas is `Scrollable` with `getScrollableTracksViewportWidth()`
+  true and the policy `HORIZONTAL_SCROLLBAR_NEVER`, because horizontal
+  position belongs to the pan/zoom transform and two mechanisms for one axis
+  would fight. When the lanes do not fill the window the canvas tracks the
+  viewport's height instead, so the aggregate density plot keeps the full
+  height it drew in before. The wheel over the plot still means zoom and only
+  zoom — the event is consumed in the canvas handler *and* the pane's own
+  wheel scrolling is off, because a gesture that zoomed and scrolled at once
+  would be unusable. Scroll state is the viewport's, not the
+  `TimelineViewport` record's (which stays immutable and time-only): the
+  position is read before and reapplied after every model swap — the
+  `EventsView` live-refresh pattern — clamped to what the new plot is
+  actually tall enough to show, so a live rebuild neither returns a reading
+  user to the top nor parks them past the end; and the reveal paths
+  (`MainWindow.revealOnTimeline`, the inline inspector's own click) scroll
+  the selected span's lane into view, vertically only. New tests in
+  `TimelineVerticalSpaceTest`: a depth-1 lane against a depth-6 one, every
+  one of the six sub-rows separately hittable, preferred height reported as
+  band-plus-lanes with the row header agreeing, position preserved across a
+  live rebuild and clamped when a regroup shortens the plot, reveal
+  scrolling the lane fully into view, and wheel-zooms-without-scrolling. The
+  existing coordinate-driven timeline tests
+  (`TimelineSpanPlacementTest`, `TimelineViewTest`, `TimelineLiveBandTest`,
+  `TimelineInspectorTest`) pass unchanged: their clicks were already inside
+  the first sub-row, which is now taller rather than shorter.
+
 - **Table headers grew up: 3-state sort where honest, a column menu
   everywhere, and column state that survives restarts** (2026-08-24). New
   shared machinery in `ui/table`: `TableHeaderInteractions` (a
