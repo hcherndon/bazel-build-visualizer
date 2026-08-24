@@ -6,6 +6,8 @@ import com.holtherndon.bazelviz.bepcodec.EventIdDisplay;
 import com.holtherndon.bazelviz.bepcodec.BesEnvelope;
 import com.holtherndon.bazelviz.bepcodec.BesEnvelopeDecoder;
 import com.holtherndon.bazelviz.bepcodec.DecodeResult;
+import com.holtherndon.bazelviz.capture.file.json.JsonBuildEventDecoder;
+import com.holtherndon.bazelviz.capture.file.json.JsonDecodeResult;
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import com.holtherndon.bazelviz.core.journal.JournalFormat.SourceKind;
 import com.holtherndon.bazelviz.ui.session.RawPayload;
@@ -81,6 +83,119 @@ public final class RawPayloadRenderer {
         public Rendered(String text, Optional<String> decodeFailure, List<String> notices) {
             this(text, decodeFailure, notices, Optional.empty());
         }
+    }
+
+    /**
+     * The console text one record carries, or why it carries none.
+     *
+     * <p>A structured accessor beside {@link Rendered#targetLabel}, and for the
+     * same reason: the Errors card needs the stderr string itself, not a
+     * sentence containing it, and reading it back out of the rendered protobuf
+     * text would be parsing a display format. It exists because
+     * {@code progress.stderr} is the only copy of a compiler or parser
+     * diagnostic there is — a syntax-error build produces thirteen events and
+     * zero structured messages (docs/bep-content.md, finding X2 and rule 48).
+     *
+     * @param stdout what the event says was written to stdout, empty string
+     *     when it carried none. Never null and never a stand-in for "unknown":
+     *     when the answer is not known, {@code absence} says so and both
+     *     strings are empty
+     * @param stderr what the event says was written to stderr
+     * @param absence why this record has nothing to say about the console —
+     *     it did not decode, it is transport rather than an event, or it
+     *     decoded and is not a progress event. Empty exactly when the two
+     *     strings above are this record's own answer
+     */
+    public record Console(String stdout, String stderr, Optional<String> absence) {
+
+        public Console {
+            Objects.requireNonNull(stdout, "stdout");
+            Objects.requireNonNull(stderr, "stderr");
+            Objects.requireNonNull(absence, "absence");
+            if (absence.isPresent() && !(stdout.isEmpty() && stderr.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "a record that explains its silence must not also carry text");
+            }
+        }
+
+        /** Whether either stream carried anything at all. */
+        public boolean hasText() {
+            return !stdout.isEmpty() || !stderr.isEmpty();
+        }
+    }
+
+    /**
+     * Reads {@code payload} as a progress event and returns what Bazel wrote to
+     * the console.
+     *
+     * <p>Decodes the record the same way {@link #render} does, wrappers
+     * included, so a BES-transported progress event answers exactly as a
+     * file-imported one does. Never throws: a record that will not decode is a
+     * {@link Console} whose {@code absence} says so, because "the bytes are
+     * unreadable" is something the user has to be shown rather than an error
+     * the selection should fail on.
+     *
+     * <p>Parses protobuf; call it from a background executor, never the EDT.
+     */
+    public static Console console(RawPayload payload) {
+        Objects.requireNonNull(payload, "payload");
+        byte[] bytes = payload.bytes();
+        return switch (payload.sourceKind()) {
+            case BEP_BINARY -> consoleOf(BepEventDecoder.withDefaults().decode(bytes));
+            case BEP_JSON_RECORD -> consoleOfJson(bytes);
+            case BES_LIFECYCLE -> silent(
+                    "this record is BES lifecycle traffic, which carries no build event");
+            case BES_ENVELOPE -> consoleOfEnvelope(bytes);
+        };
+    }
+
+    private static Console consoleOfEnvelope(byte[] bytes) {
+        BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
+        BesEnvelopeDecoder.Result result = decoder.decodeToolEvent(bytes, 0, bytes.length);
+        if (result.isFailed()) {
+            return silent("this record is a BES request that could not be read as one: "
+                    + result.failureDetail().orElse("no detail was recorded"));
+        }
+        BesEnvelope envelope = result.envelope().orElseThrow();
+        if (!envelope.kind().carriesBuildEvent()) {
+            return silent("this envelope is stream control traffic and carries no build event");
+        }
+        return consoleOf(BepEventDecoder.withDefaults()
+                .decode(envelope.bazelEventBytes().orElseThrow().toByteArray()));
+    }
+
+    private static Console consoleOfJson(byte[] bytes) {
+        JsonDecodeResult result = new JsonBuildEventDecoder().decode(bytes);
+        return result.decodedEvent()
+                .map(RawPayloadRenderer::consoleOf)
+                .orElseGet(() -> silent("this JSON record could not be read as a BuildEvent: "
+                        + result.detail().orElse("no detail was recorded")));
+    }
+
+    private static Console consoleOf(DecodeResult result) {
+        if (result.isFailed()) {
+            return silent("this record could not be decoded as a BuildEvent: "
+                    + result.failureDetail().orElse("no detail was recorded"));
+        }
+        return consoleOf(result.requireEvent());
+    }
+
+    private static Console consoleOf(BuildEvent event) {
+        if (!event.hasProgress()) {
+            // Not a shortfall of the display: console text is carried by
+            // progress events and by nothing else, so saying "unknown" here
+            // would invent a gap where the protocol has none.
+            return silent("this event is not a progress event, and console text is carried"
+                    + " only by progress events");
+        }
+        return new Console(
+                event.getProgress().getStdout(),
+                event.getProgress().getStderr(),
+                Optional.empty());
+    }
+
+    private static Console silent(String why) {
+        return new Console("", "", Optional.of(why));
     }
 
     /**

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildStarted;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Progress;
 import com.google.devtools.build.v1.OrderedBuildEvent;
 import com.google.devtools.build.v1.PublishBuildToolEventStreamRequest;
 import com.google.devtools.build.v1.StreamId;
@@ -136,6 +137,76 @@ class RawPayloadRendererTest {
 
         assertThat(rendered.text()).contains("could not be read");
         assertThat(rendered.decodeFailure()).isPresent();
+    }
+
+    @Test
+    @DisplayName("a progress event's console text is read structurally, not out of the rendering")
+    void consoleTextIsStructural() {
+        BuildEvent event = BuildEvent.newBuilder()
+                .setProgress(Progress.newBuilder()
+                        .setStderr("ERROR: BUILD.bazel:3:5: syntax error at 'outs'\n")
+                        .setStdout("Loading: 0 packages loaded\n"))
+                .build();
+
+        RawPayloadRenderer.Console console = RawPayloadRenderer.console(
+                new RawPayload(event.toByteArray(), SourceKind.BEP_BINARY));
+
+        assertThat(console.absence()).isEmpty();
+        assertThat(console.stderr()).isEqualTo("ERROR: BUILD.bazel:3:5: syntax error at 'outs'\n");
+        assertThat(console.stdout()).isEqualTo("Loading: 0 packages loaded\n");
+        assertThat(console.hasText()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a BES-transported progress event answers exactly as a file-imported one")
+    void consoleTextThroughAnEnvelope() {
+        BuildEvent inner = BuildEvent.newBuilder()
+                .setProgress(Progress.newBuilder().setStderr("boom\n"))
+                .build();
+
+        RawPayloadRenderer.Console console = RawPayloadRenderer.console(
+                new RawPayload(toolEventEnvelope(inner, 3), SourceKind.BES_ENVELOPE));
+
+        assertThat(console.stderr()).isEqualTo("boom\n");
+        assertThat(console.absence()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a JSON record's console text is read too, rather than quietly skipped")
+    void consoleTextFromJson() {
+        String json = "{\"progress\":{\"stderr\":\"boom\\n\"}}";
+
+        RawPayloadRenderer.Console console = RawPayloadRenderer.console(new RawPayload(
+                json.getBytes(StandardCharsets.UTF_8), SourceKind.BEP_JSON_RECORD));
+
+        assertThat(console.stderr()).isEqualTo("boom\n");
+        assertThat(console.absence()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an event that is not a progress event says so, rather than reporting no output")
+    void nonProgressEventExplainsItself() {
+        BuildEvent event = BuildEvent.newBuilder()
+                .setStarted(BuildStarted.newBuilder().setUuid("inv-1"))
+                .build();
+
+        RawPayloadRenderer.Console console = RawPayloadRenderer.console(
+                new RawPayload(event.toByteArray(), SourceKind.BEP_BINARY));
+
+        assertThat(console.hasText()).isFalse();
+        assertThat(console.absence())
+                .hasValueSatisfying(why -> assertThat(why).contains("not a progress event"));
+    }
+
+    @Test
+    @DisplayName("bytes that will not decode become a stated absence, never an exception")
+    void undecodableBytesAreAnAbsence() {
+        RawPayloadRenderer.Console console =
+                RawPayloadRenderer.console(new RawPayload(new byte[] {0x08}, SourceKind.BEP_BINARY));
+
+        assertThat(console.hasText()).isFalse();
+        assertThat(console.absence())
+                .hasValueSatisfying(why -> assertThat(why).contains("could not be decoded"));
     }
 
     private static byte[] toolEventEnvelope(BuildEvent inner, long sequence) {

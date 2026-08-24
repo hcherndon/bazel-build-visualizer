@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.storage.entities;
 
+import com.holtherndon.bazelviz.storage.events.RawLocation;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -222,7 +223,25 @@ public final class ErrorQueries implements AutoCloseable {
             int stderrBytes,
             int rawSegment,
             long rawOffset,
-            int rawLength) {}
+            int rawLength) {
+
+        /**
+         * The three raw columns as the one thing they describe.
+         *
+         * <p>They are selected here and nowhere else in this class for a
+         * reason: {@code progress.stderr} is the only copy of a compiler or
+         * parser diagnostic there is (finding X2, rule 48), and the row records
+         * only how many bytes of it exist. Without an address for those bytes
+         * the Errors card can say "1,203 bytes on stderr" and never show one of
+         * them. {@code raw_segment}, {@code raw_offset} and {@code raw_length}
+         * are {@code NOT NULL} in every schema version, so this always names a
+         * frame — whether the journal still holds it is a separate question,
+         * and the reader's to answer.
+         */
+        public RawLocation rawLocation() {
+            return new RawLocation(rawSegment, rawOffset, rawLength);
+        }
+    }
 
     private long scalar(String sql) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(sql);
