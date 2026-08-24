@@ -1852,6 +1852,47 @@ it is a different tab and was not reported.
   honesty, truncation, browse listing/landing/filtering
   (`GraphExplorerViewTest`).
 
+- **The Findings pane no longer overflows the window, and scrolling it is no
+  longer extremely slow** (2026-08-24). The exact latent shape the Overview
+  fix's changelog entry named and left untouched: `FindingsView`'s `summary`
+  panel and each `section()` (invocation metrics, the per-mnemonic table) used
+  a fixed `GridLayout(0, 2, …)`, sizing every row in a column to that column's
+  single widest cell; and both the header/summary/catalog stack (`top`) and
+  the finding-detail pane (`detail`) were plain `BoxLayout` `JPanel`s handed
+  bare to a `JScrollPane`, so neither was `Scrollable` and neither told the
+  scroll pane to track the viewport's width. Findings volume compounds this —
+  `FindingRules` emits several findings per mnemonic group across three
+  rules, each with a title, evidence and links built from this build's own
+  (potentially long) strings — and none of the three scroll panes (`top`,
+  the finding list, `detail`) had a wheel unit increment set, so the platform
+  default of one pixel per notch made scrolling any of them feel frozen.
+
+  Fixed the same way as the Overview tab: `top` and `detail` are now
+  `ui.theme.ScrollableViewport`s, so their enclosing `JScrollPane`s track the
+  viewport's width and never grow a horizontal scrollbar, however wide a
+  single row's value or a finding's evidence/link button text wants to be —
+  confirmed for both by embedding the real scroll pane at a narrow width and
+  asserting no horizontal scrollbar appears, even with a finding fixture
+  carrying a deliberately long evidence label and link description. `summary`
+  and `section()` moved from `GridLayout(0, 2, …)` to the `GridBagLayout`
+  two-column name/value shape `OverviewPanel.section` already uses, so one
+  long row no longer sets every row in its column to the same width. Inside
+  `detail`, a finding's title and each metric's `name: value` line — both of
+  which can be full sentences built from this build's own numbers, not just
+  short labels — now render through the existing `wrapped()` `JTextArea`
+  helper (extended with a bold variant) instead of a plain, non-wrapping
+  `JLabel`, so long text wraps instead of being silently clipped (rule 12).
+  `getVerticalScrollBar().setUnitIncrement(16)` is now set on all three
+  scroll panes. Because an evidence/link `JButton`'s text cannot wrap, a
+  narrow window still ellipsis-clips it — so, mirroring the existing
+  `PlainText.tooltip(...)` use on `FindingRenderer`'s list cells, both
+  buttons now carry their full, untruncated text as a tooltip, keeping a
+  clipped label reachable by hover instead of unreadable. New tests in
+  `FindingsViewTest`: the summary/catalog grids and the detail pane each
+  track the viewport's width instead of overflowing it, every scroll pane
+  uses the fast wheel increment rather than the 1-pixel-per-notch default,
+  and the evidence and link buttons carry their full text as a tooltip.
+
 - **The timeline's lanes are sized by their content and the plot scrolls**
   (2026-08-24). Lane height used to be `canvas.getHeight() / lanes` with a
   three-pixel floor, and `boundsOfSpan` divided that again by the lane's
