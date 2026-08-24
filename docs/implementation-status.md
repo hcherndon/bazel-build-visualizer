@@ -1308,3 +1308,51 @@ it is a different tab and was not reported.
   removed. The storage graph package gained its own test classes (37 tests) and
   `RealBazelGraphTest` now proves, on a real captured build, that the loaded
   indexes answer label searches and bounded traversals over both graphs.
+
+- **A session can be asked a question nobody built a view for** (2026-08-24).
+  Perfetto's query page is the one thing it does that nothing here replaced —
+  SQL over the captured data — and it is unreachable on a build large enough to
+  matter because Perfetto is a web application. This is a desktop application
+  over a local SQLite file, so the size that stops Perfetto is not a constraint:
+  the same `PagedTableModel` the actions and events tables use carries a result
+  of any size, a page at a time, unmodified. A new **Query** card
+  (`NavEntry.QUERY`, eleventh and last, in no phase of plan 17.1) holds a SQL
+  editor, a schema tree read from `sqlite_master` and `PRAGMA table_info` at run
+  time — the 59 tables across five schema versions had no reachable description
+  at all before this — and a paged result grid.
+  Nothing typed there can damage the session, three ways that do not trust each
+  other. `SessionDatabase.newQueryConnection()` opens with
+  `SQLITE_OPEN_READONLY`, so a write fails in the VFS; it sets
+  `PRAGMA query_only = ON`, so a write fails again at prepare time; and
+  `ReadOnlySql` refuses text that is not a single read-only statement, which
+  neither of the others would have done — `Statement.execute` runs every
+  statement in a semicolon-joined string, so `SELECT 1; DROP TABLE actions` is
+  refused by the app layer before any of it is sent. `AdHocQueries` refuses a
+  connection that can write rather than trusting one, which is what makes the
+  distinction between `newReadConnection()` (a convention) and
+  `newQueryConnection()` (a fact) load-bearing.
+  Paging is `SELECT * FROM (…) LIMIT ? OFFSET ?`, the one place in this
+  codebase that uses OFFSET, because keyset paging needs a sort key and a
+  unique tiebreaker that an arbitrary user query does not expose — its
+  `ORDER BY` may be over an expression or absent. The row count is an exact
+  `SELECT COUNT(*) FROM (…)` rather than a plan estimate: `PagedTableModel`
+  reads its count on the EDT and never re-asks, and an estimate in a status
+  line is a guess presented as a total (rule 11). A SQL NULL reaches the grid
+  as `null` and is drawn as an italic, dimmed `NULL` — distinguishable from the
+  four-letter string "NULL", from an empty string and from 0, which Swing's
+  default renderer draws identically. A BLOB states its exact byte length
+  instead of rendering as `[B@6d06d69c`. A result over the cap states the cap,
+  the exact number of matching rows, and offers a button that raises the cap to
+  the full match and runs again (rule 12).
+  Cancel is `sqlite3_interrupt` and is called straight from the EDT because it
+  cannot block; a 60 s deadline fires the same interrupt for a window nobody is
+  watching, and both report themselves as *stopped* rather than as failed. JDBC
+  `setQueryTimeout` is deliberately unused — in sqlite-jdbc 3.53.2.1 it only
+  sets the busy timeout and does nothing to a statement that is running.
+  `EdtDisciplineTest` now counts `QueryReader` among the field types that mean
+  a component can block, so the new card is held to the same rule as every
+  other. `AdHocQueriesTest` proves the refusal at run time by attempting an
+  INSERT, an UPDATE and a DROP on the query connection and asserting SQLite
+  rejects all three with the rows unchanged; `QueryViewWiringTest` proves the
+  same through the card, over a real imported session, and proves that Cancel
+  returns in milliseconds and leaves the connection usable.
