@@ -289,15 +289,21 @@ public final class GraphClustering {
 
         /** What the view must say alongside the boxes. */
         public String describe() {
+            return describe("action");
+        }
+
+        /** {@link #describe()}, naming the nodes for what they are. */
+        public String describe(String noun) {
             if (hitLimit) {
-                return "Grouping " + totalNodes + " actions by " + by.displayName().toLowerCase()
+                return "Grouping " + totalNodes + " " + noun + "s by "
+                        + by.displayName().toLowerCase()
                         + " gives " + clusterCount + " groups, more than the " + maxClusters
                         + " this view draws. Nothing is hidden — group by something coarser,"
                         + " narrow the filter, or raise the limit.";
             }
             return by.displayName() + ": " + clusters.size()
                     + (clusters.size() == 1 ? " group" : " groups")
-                    + " covering all " + totalNodes + " actions and "
+                    + " covering all " + totalNodes + " " + noun + "s and "
                     + totalEdges + " dependencies.";
         }
 

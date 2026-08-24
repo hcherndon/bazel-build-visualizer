@@ -258,11 +258,15 @@ public final class GraphLayoutService implements AutoCloseable {
         }
 
         GraphExtract.Result extract = switch (request.mode()) {
+            // Dependencies live behind a node in the producer-to-consumer
+            // index, so "what does this need" walks the reverse index and
+            // "what needs this" walks forward. This pairing was inverted once,
+            // and the trees showed a leaf compile as depending on the linker.
             case DEPENDENCIES -> GraphExtract.dependencies(
-                    graph, request.sourceNode(), request.maxDepth(), request.nodeLimit());
-            case DEPENDENTS -> GraphExtract.dependents(
                     reverse(request), request.sourceNode(), request.maxDepth(),
                     request.nodeLimit());
+            case DEPENDENTS -> GraphExtract.dependents(
+                    graph, request.sourceNode(), request.maxDepth(), request.nodeLimit());
             case NEIGHBOURHOOD -> GraphExtract.neighbourhood(
                     graph, reverse(request), request.sourceNode(), request.maxDepth(),
                     request.nodeLimit());

@@ -345,8 +345,8 @@ public final class GraphView extends JPanel {
         return canvasPanel;
     }
 
-    private void setRoot(JTree tree, GraphQueries.GraphNode node, boolean forwards) {
-        DefaultMutableTreeNode root = new DefaultMutableTreeNode(new NodeRef(node, forwards));
+    private void setRoot(JTree tree, GraphQueries.GraphNode node, boolean dependencies) {
+        DefaultMutableTreeNode root = new DefaultMutableTreeNode(new NodeRef(node, dependencies));
         root.add(new DefaultMutableTreeNode(NodeRef.LOADING));
         tree.setModel(new DefaultTreeModel(root));
         tree.expandPath(new javax.swing.tree.TreePath(root));
@@ -408,10 +408,11 @@ public final class GraphView extends JPanel {
     /** Loads a node's children the first time it is opened, and never before. */
     private final class LazyExpander implements javax.swing.event.TreeWillExpandListener {
 
-        private final boolean forwards;
+        /** True for the "Depends on" tree, false for "Depended on by". */
+        private final boolean dependencies;
 
-        LazyExpander(boolean forwards) {
-            this.forwards = forwards;
+        LazyExpander(boolean dependencies) {
+            this.dependencies = dependencies;
         }
 
         @Override
@@ -423,6 +424,10 @@ public final class GraphView extends JPanel {
                 return;
             }
             ref.loaded = true;
+            // The forward index is producer-to-consumer, so what a node
+            // depends on is its reverse neighbours. This mapping was once the
+            // other way round, and the "Depends on" tree listed dependents.
+            boolean forwards = !dependencies;
             onWorker(work -> {
                 List<GraphQueries.GraphNode> children = work.neighbours(
                         EdgeDerivation.DECLARED, ref.node.nodeIndex(), forwards, CHILD_LIMIT);
@@ -441,7 +446,7 @@ public final class GraphView extends JPanel {
             parent.removeAllChildren();
             for (GraphQueries.GraphNode child : children) {
                 DefaultMutableTreeNode node =
-                        new DefaultMutableTreeNode(new NodeRef(child, forwards));
+                        new DefaultMutableTreeNode(new NodeRef(child, dependencies));
                 node.add(new DefaultMutableTreeNode(NodeRef.LOADING));
                 parent.add(node);
             }
@@ -453,9 +458,9 @@ public final class GraphView extends JPanel {
             }
             if (degree == 0) {
                 parent.add(new DefaultMutableTreeNode(
-                        forwards ? "nothing it depends on" : "nothing depends on it"));
+                        dependencies ? "nothing it depends on" : "nothing depends on it"));
             }
-            JTree tree = forwards ? dependencies : dependents;
+            JTree tree = dependencies ? GraphView.this.dependencies : dependents;
             ((DefaultTreeModel) tree.getModel()).nodeStructureChanged(parent);
         }
     }
@@ -466,12 +471,15 @@ public final class GraphView extends JPanel {
         static final String LOADING = "…";
 
         final GraphQueries.GraphNode node;
-        final boolean forwards;
+
+        /** Which tree this row belongs to; the expander asks the index. */
+        final boolean dependencies;
+
         boolean loaded;
 
-        NodeRef(GraphQueries.GraphNode node, boolean forwards) {
+        NodeRef(GraphQueries.GraphNode node, boolean dependencies) {
             this.node = node;
-            this.forwards = forwards;
+            this.dependencies = dependencies;
         }
 
         @Override

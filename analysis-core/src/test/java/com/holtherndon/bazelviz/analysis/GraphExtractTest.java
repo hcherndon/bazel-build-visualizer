@@ -33,29 +33,48 @@ final class GraphExtractTest {
     }
 
     @Test
-    @DisplayName("dependencies reach forward and stop at the depth asked for")
+    @DisplayName("dependencies are what a node needs, and the depth is honoured")
     void dependenciesRespectDepth() {
         CsrGraph forward = chain(5);
 
-        GraphExtract.Result depth1 = GraphExtract.dependencies(forward, 0, 1, 100);
-        GraphExtract.Result depth3 = GraphExtract.dependencies(forward, 0, 3, 100);
+        // Node 4 is the end of the chain, so everything before it is a
+        // dependency; the walk runs over the reverse index.
+        GraphExtract.Result depth1 = GraphExtract.dependencies(reverseOf(forward), 4, 1, 100);
+        GraphExtract.Result depth3 = GraphExtract.dependencies(reverseOf(forward), 4, 3, 100);
 
-        assertThat(depth1.nodes()).hasSizeLessThan(depth3.nodes().size());
-        assertThat(depth3.nodes()).contains(0, 1, 2, 3);
+        assertThat(depth1.nodes()).containsExactlyInAnyOrder(4, 3);
+        assertThat(depth3.nodes()).containsExactlyInAnyOrder(4, 3, 2, 1);
+        assertThat(depth1.mode()).isEqualTo(GraphExtract.Mode.DEPENDENCIES);
     }
 
     @Test
-    @DisplayName("reverse dependencies reach backward, and their arrows still point forward")
-    void dependentsKeepEdgeDirection() {
+    @DisplayName("a dependency walk runs backward, and its arrows still point forward")
+    void dependenciesKeepEdgeDirection() {
         CsrGraph forward = chain(4);
 
-        GraphExtract.Result back = GraphExtract.dependents(reverseOf(forward), 3, 3, 100);
+        GraphExtract.Result needs = GraphExtract.dependencies(reverseOf(forward), 3, 3, 100);
 
-        assertThat(back.nodes()).contains(3, 2, 1, 0);
+        assertThat(needs.nodes()).contains(3, 2, 1, 0);
         // Traversed backwards; drawn forwards. An arrow pointing the way the
         // traversal walked would say a consumer produces its producer.
-        assertThat(back.edges()).contains(new GraphExtract.Edge(0, 1));
-        assertThat(back.edges()).doesNotContain(new GraphExtract.Edge(1, 0));
+        assertThat(needs.edges()).contains(new GraphExtract.Edge(0, 1));
+        assertThat(needs.edges()).doesNotContain(new GraphExtract.Edge(1, 0));
+    }
+
+    @Test
+    @DisplayName("dependents are what needs a node, walked over the forward index")
+    void dependentsReachForward() {
+        CsrGraph forward = chain(4);
+
+        GraphExtract.Result neededBy = GraphExtract.dependents(forward, 0, 3, 100);
+
+        // Everything downstream of the chain's head needs it. Before the
+        // direction fix this answer wore the "dependencies" name, and a leaf
+        // compile appeared to depend on the linker.
+        assertThat(neededBy.nodes()).contains(0, 1, 2, 3);
+        assertThat(neededBy.mode()).isEqualTo(GraphExtract.Mode.DEPENDENTS);
+        assertThat(neededBy.edges()).contains(new GraphExtract.Edge(0, 1));
+        assertThat(neededBy.edges()).doesNotContain(new GraphExtract.Edge(1, 0));
     }
 
     @Test
