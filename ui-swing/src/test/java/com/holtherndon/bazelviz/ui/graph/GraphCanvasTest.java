@@ -503,6 +503,26 @@ final class GraphCanvasTest {
     }
 
     @Test
+    @DisplayName("the jitter inside an ordinary click does not become a drag")
+    void clickJitterIsNotADrag() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(modelOf(10, allTimed(10)));
+        int sx = screenXOf(canvas, 4);
+        int sy = screenYOf(canvas, 4);
+
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_PRESSED, sx, sy);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_DRAGGED, sx + 1, sy + 1);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_RELEASED, sx + 1, sy + 1);
+
+        // A one-pixel wobble is a click, not a rearrangement: no offset is
+        // written, "Reset positions" stays unarmed, and the select stands.
+        assertThat(canvas.hasDragOffsets()).isFalse();
+        assertThat(canvas.selectedPositions()).containsExactly(4);
+        assertThat(canvas.positionAt(sx, sy)).hasValue(4);
+    }
+
+    @Test
     @DisplayName("a press on empty canvas still pans")
     void emptyPressStillPans() {
         GraphCanvas canvas = new GraphCanvas();

@@ -96,11 +96,44 @@ final class GraphExportTest {
         List<String> nodes = Files.readAllLines(result.files().get(0));
         List<String> edges = Files.readAllLines(result.files().get(1));
         assertThat(nodes.get(0)).startsWith("# Visible graph.").contains("from a graph of 30");
-        assertThat(nodes.get(1)).isEqualTo("id,label,duration_micros");
+        assertThat(nodes.get(1)).isEqualTo("id,name,duration_micros");
         assertThat(edges.get(0)).startsWith("# Visible graph.");
         assertThat(edges.get(1)).isEqualTo("from,to");
         // Node 1 is the untimed one; its duration cell is empty, not zero.
         assertThat(nodes).anyMatch(line -> line.endsWith(",") && line.contains("target1"));
+    }
+
+    @Test
+    @DisplayName("the visible export writes drawn names; the complete export writes labels")
+    void eachExportNamesItsColumnTruthfully() throws IOException {
+        // The visible model is built from display names — for action graphs
+        // "Mnemonic — output basename", which is not a Bazel label — while
+        // the complete export streams real target labels. A byte-identical
+        // "label" header over both would make one of the files a lie, so the
+        // headers pin which carries which.
+        GraphExtract.Result extract = GraphExtract.whole(chain(2), 10, 10);
+        String[] drawnNames = {"Javac — t0.o", "Javac — t1.o"};
+        GraphModel model = GraphModel.of(
+                new GraphLayoutService.Rendered(
+                        GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 10, 10),
+                        extract, GraphLayout.layered(extract, RUNNING), null,
+                        extract.describe()),
+                drawnNames, null);
+
+        GraphExport.Result visible = GraphExport.visible(
+                model, tempDir.resolve("drawn.csv"), GraphExport.Format.CSV);
+        GraphExport.Result complete = GraphExport.whole(
+                chain(2), new String[] {"//pkg:t0", "//pkg:t1"}, null,
+                tempDir.resolve("all.csv"), GraphExport.Format.CSV);
+
+        List<String> visibleNodes = Files.readAllLines(visible.files().get(0));
+        assertThat(visibleNodes.get(1)).isEqualTo("id,name,duration_micros");
+        assertThat(visibleNodes.get(2)).contains("Javac — t0.o");
+
+        List<String> completeNodes = Files.readAllLines(complete.files().get(0));
+        assertThat(completeNodes.get(1)).isEqualTo("id,label,duration_micros");
+        assertThat(completeNodes.get(2)).contains("//pkg:t0");
+        assertThat(String.join("\n", completeNodes)).doesNotContain("Javac");
     }
 
     @Test

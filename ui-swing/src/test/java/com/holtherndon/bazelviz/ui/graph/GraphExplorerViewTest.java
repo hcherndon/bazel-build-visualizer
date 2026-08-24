@@ -175,6 +175,19 @@ final class GraphExplorerViewTest {
     }
 
     @Test
+    @DisplayName("typing a drawn name's mnemonic finds its nodes, not a false absence")
+    void findMatchesTheDrawnName() throws Exception {
+        // Every fixture action draws as "Genrule" (no outputs recorded), so a
+        // Find that answered "nothing matches Genrule" would be a false claim
+        // about the graph. The search covers the parts the name is made of.
+        SwingUtilities.invokeAndWait(() -> view.typeFindForTesting("Genrule"));
+        awaitCondition(
+                () -> view.findResultsForTesting().size() == 3, "the mnemonic matches");
+
+        assertThat(view.statusForTesting()).isBlank();
+    }
+
+    @Test
     @DisplayName("a pattern nothing matches says so instead of listing nothing silently")
     void findAdmitsNoMatches() throws Exception {
         SwingUtilities.invokeAndWait(() -> view.typeFindForTesting("zzz"));

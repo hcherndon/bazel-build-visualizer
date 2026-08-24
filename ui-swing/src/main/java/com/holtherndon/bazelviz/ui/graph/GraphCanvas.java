@@ -59,6 +59,16 @@ public final class GraphCanvas extends JComponent {
     /** How close a click must land, in pixels, to select a node. */
     private static final int HIT_RADIUS_PIXELS = 12;
 
+    /**
+     * Pixels a press-on-node must move before it becomes a node drag.
+     *
+     * <p>Without it, the one-pixel jitter inside an ordinary click-select
+     * writes a permanent sub-pixel offset: {@code hasDragOffsets()} flips
+     * true, "Reset positions" arms, and hit testing takes the filtered path —
+     * all for a move nobody made on purpose.
+     */
+    private static final int NODE_DRAG_THRESHOLD_PIXELS = 3;
+
     /** Margin left around a fitted graph. */
     private static final double FIT_MARGIN = 40;
 
@@ -158,10 +168,13 @@ public final class GraphCanvas extends JComponent {
      */
     private final java.util.Map<Integer, double[]> dragOffsets = new java.util.HashMap<>();
 
-    /** The layout position being dragged, or -1. */
+    /** The layout position armed for dragging by a press, or -1. */
     private int nodeDrag = -1;
 
     private Point nodeDragPoint;
+
+    /** True once an armed press has moved past the threshold. */
+    private boolean nodeDragging;
 
     /** Labels skipped for overlap in the last paint; the declutter's count. */
     private int declutteredLabels;
@@ -205,6 +218,7 @@ public final class GraphCanvas extends JComponent {
         // layout kind and refresh arrives here, so this is the reset point.
         dragOffsets.clear();
         nodeDrag = -1;
+        nodeDragging = false;
         fitToView();
         repaint();
     }
@@ -435,6 +449,9 @@ public final class GraphCanvas extends JComponent {
      * wheel events.
      */
     void zoomForTesting(double factor) {
+        // A zoom is a zoom: the fit's cap note describes the fitted view, so
+        // it clears here exactly as it does for a wheel zoom.
+        fitLabelNote = "";
         setTransform(transform.zoomedAround(getWidth() / 2.0, getHeight() / 2.0, factor));
     }
 
@@ -908,6 +925,7 @@ public final class GraphCanvas extends JComponent {
         }
         dragOffsets.clear();
         nodeDrag = -1;
+        nodeDragging = false;
         repaint();
     }
 
@@ -968,6 +986,19 @@ public final class GraphCanvas extends JComponent {
                 return;
             }
             if (nodeDrag >= 0 && nodeDragPoint != null) {
+                if (!nodeDragging) {
+                    if (event.getPoint().distance(nodeDragPoint)
+                            < NODE_DRAG_THRESHOLD_PIXELS) {
+                        // The jitter inside an ordinary click. Writing an
+                        // offset here would arm "Reset positions" for a move
+                        // nobody made on purpose.
+                        return;
+                    }
+                    // The anchor is still the press point, so the first real
+                    // drag event applies the whole distance moved — the
+                    // threshold delays the decision, it does not eat pixels.
+                    nodeDragging = true;
+                }
                 double[] offset = dragOffsets.computeIfAbsent(
                         nodeDrag, position -> new double[2]);
                 offset[0] += (event.getX() - nodeDragPoint.x) / transform.scale();
@@ -1018,6 +1049,7 @@ public final class GraphCanvas extends JComponent {
             dragOrigin = null;
             nodeDrag = -1;
             nodeDragPoint = null;
+            nodeDragging = false;
             if (panning) {
                 panning = false;
                 // The detail suppressed during the drag comes back here.

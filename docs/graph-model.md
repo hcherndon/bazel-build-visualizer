@@ -240,7 +240,10 @@ leaves the mnemonic alone; no mnemonic falls back to the target label, then
 the basename; nothing at all stays null so the canvas says "(name not
 recorded)". Label-graph nodes keep their target labels — a label *is* the node
 there — and the complete export keeps target labels too, because its `label`
-column must keep meaning the target.
+column must keep meaning the target. The visible export writes the drawn
+names, so its node CSV is headed `id,name,duration_micros`: a `label` header
+over "Javac — t0.o" would be a false claim, and the two exports' different
+headers pin which file carries which.
 
 **Label declutter and label-aware Fit.** Within a zoom band, a label that
 would paint over an already-painted label is skipped under a deterministic
@@ -267,9 +270,16 @@ and mid-drag frames draw none, exactly like the other detail the canvas
 suspends, so the 50,000-node paint budget holds.
 
 **Find and Browse.** The Graph card's Find field lists up to `FIND_LIMIT`
-as-you-type matches (queried off the EDT), each named exactly as the canvas
-draws it, and choosing one lands on that exact node — replacing the old silent
-first-substring-match jump. A Browse toggle opens a filter-plus-tree listing
-(the schema-browser pattern) of up to `BROWSE_LIMIT` nodes grouped by package,
-its root naming the graph's total so a truncated listing cannot read as
-complete.
+as-you-type matches (queried off the EDT), and choosing one lands on that
+exact node — replacing the old silent first-substring-match jump. A dropdown
+row shows the target label followed by the distinct name in parentheses —
+`//pkg:t1  (Javac — t1.o)` — and a Browse leaf shows the same with the
+package stripped, since the package is the group it sits under; neither is
+byte-identical to the canvas's drawn name, which omits the label. The search
+matches every part a drawn name is composed from — target label, mnemonic
+and primary-output path in the action graphs, label and rule class in the
+label graph — so a name a user can read on the canvas is one they can type
+back without being told it does not exist. Browse is a filter-plus-tree
+listing (the schema-browser pattern) of up to `BROWSE_LIMIT` nodes grouped
+by package, its root naming the graph's total so a truncated listing cannot
+read as complete.

@@ -85,6 +85,43 @@ final class GraphQueriesTest {
     }
 
     @Test
+    @DisplayName("the drawn name is findable: mnemonic and output basename match too")
+    void searchFindsByMnemonicAndOutput() throws Exception {
+        // The canvas draws "Javac — t2.out"; a search that could not match
+        // either half would claim a graph full of Javac nodes has none.
+        exec("INSERT INTO artifacts (id, path) VALUES (31, 'bazel-out/bin/chain/t2.out')");
+        exec("UPDATE declared_actions SET primary_output_id = 31 WHERE id = 3");
+
+        List<GraphQueries.GraphNode> byMnemonic = queries.search("%Javac%", 10);
+        assertThat(byMnemonic).hasSize(5);
+
+        List<GraphQueries.GraphNode> byOutput = queries.search("%t2.out%", 10);
+        assertThat(byOutput).hasSize(1);
+        assertThat(byOutput.getFirst().nodeIndex()).isEqualTo(2);
+
+        // The limit binds the widened search exactly as it bound the old one.
+        assertThat(queries.search("%Javac%", 2)).hasSize(2);
+        // And a pattern matching none of the three parts is still an absence.
+        assertThat(queries.search("%NoSuchThing%", 10)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("the label-graph search matches rule classes as well as labels")
+    void labelGraphSearchFindsByRuleClass() throws Exception {
+        exec("INSERT INTO configured_target_nodes (source_id, label_id, rule_class)"
+                + " VALUES (2, 4, 'java_library')");
+        GraphQueries reopened = new GraphQueries(connection, tempDir.resolve("indexes"));
+
+        List<GraphQueries.GraphNode> byRule =
+                reopened.search(GraphKind.CONFIGURED_TARGETS, "%java_library%", 10);
+
+        // The search rows show the rule class beside the label, so a rule
+        // class a user can read must be one they can type back.
+        assertThat(byRule).hasSize(1);
+        assertThat(byRule.getFirst().label()).contains("//chain:t3");
+    }
+
+    @Test
     @DisplayName("a node's detail names its label, mnemonic and executed action")
     void nodeDetailIsComplete() throws Exception {
         GraphQueries.GraphNode node = queries.node(2).orElseThrow();

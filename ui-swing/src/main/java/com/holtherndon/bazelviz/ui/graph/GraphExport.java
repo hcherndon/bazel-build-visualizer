@@ -100,6 +100,13 @@ public final class GraphExport {
      *
      * <p>Including its description, which is the part that says how much of the
      * build this is.
+     *
+     * <p>The node-name column is headed {@code name}, not {@code label},
+     * because it holds what the canvas draws — for action graphs that is the
+     * per-action "Mnemonic — output basename", which is not a Bazel label.
+     * {@link #whole} writes real target labels and keeps the {@code label}
+     * header; two different contents under one header would make one of the
+     * two files a lie.
      */
     public static Result visible(GraphModel model, Path target, Format format)
             throws IOException {
@@ -128,7 +135,10 @@ public final class GraphExport {
         Path edgeFile = sibling(target, "-edges.csv");
         writeAtomically(nodeFile, out -> {
             out.write("# " + provenance + "\n");
-            out.write("id,label,duration_micros\n");
+            // "name", not "label": this is the drawn display name, which for
+            // an action graph is "Mnemonic — output basename" rather than a
+            // Bazel label. The complete export is the one that writes labels.
+            out.write("id,name,duration_micros\n");
             for (int i = 0; i < nodes; i++) {
                 out.write(i + "," + csv(model.displayLabelAt(i)) + ","
                         + (model.durationAt(i).isPresent()

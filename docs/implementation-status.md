@@ -1677,8 +1677,10 @@ it is a different tab and was not reported.
   made all of a target's actions read as the same string. Absent pieces
   degrade honestly — mnemonic alone, then target label, then basename, then
   null so the canvas keeps saying "(name not recorded)" — and the grammar is
-  one public static, `composeDisplayLabel`, so the Find dropdown and Browse
-  tree name a node exactly as the canvas draws it. The panel takes the array
+  one public static, `composeDisplayLabel`, which the Find dropdown and
+  Browse tree reuse for the parenthesised distinct half of their rows: a
+  dropdown row reads `//pkg:t1  (Javac — t1.o)`, a Browse leaf the same with
+  the package stripped (the package is its group). The panel takes the array
   via `attachActionDisplayLabels`, separate from the target labels, which the
   complete export keeps for its `label` column; the label graph keeps target
   labels, a label being the node there. **Declutter:** within a zoom band the
@@ -1710,7 +1712,14 @@ it is a different tab and was not reported.
   as-you-type dropdown of up to `FIND_LIMIT` matches, queried on the card's
   worker (never the EDT), each entry landing on its exact `node_index`
   instead of the old silent first-substring-match; one row past the limit is
-  fetched so "only the first 12" is a fact, not a guess. A Browse… toggle
+  fetched so "only the first 12" is a fact, not a guess. The search matches
+  every part a search row shows — label, mnemonic and primary-output path in
+  the action graphs, label and rule class in the label graph — so typing
+  "Javac" over a graph drawn full of "Javac — …" cannot be answered with a
+  false "nothing matches". The visible export's node CSV is headed
+  `id,name,duration_micros` because it carries these drawn names; the
+  complete export keeps `id,label,…` over real target labels, and
+  `GraphExportTest` pins which file carries which. A Browse… toggle
   opens `GraphNodeBrowser` — the schema browser's filter-tree pattern rebuilt
   for graph nodes, package-grouped, at most `BROWSE_LIMIT` entries with the
   graph's total named at the root and the truncation stated in the summary.

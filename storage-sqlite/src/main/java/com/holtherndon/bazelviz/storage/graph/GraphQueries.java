@@ -46,13 +46,25 @@ public final class GraphQueries implements AutoCloseable {
             "SELECT node_index FROM declared_actions WHERE action_id = ?"
                     + " AND node_index IS NOT NULL LIMIT 1";
 
-    private static final String NODES_BY_LABEL =
+    /**
+     * The action-graph search: any of the three name parts may match.
+     *
+     * <p>The canvas draws an action as "Mnemonic — output basename", so a
+     * search that only matched the target label would answer "nothing
+     * matches Javac" about a graph full of nodes drawn "Javac — …" — a false
+     * claim about the graph. Labels, mnemonics and primary-output paths are
+     * all searched, which is exactly the set of parts a drawn name is
+     * composed from. Ordered by label with the unlabelled last, so the
+     * ordering is unchanged for every row the old label-only search found.
+     */
+    private static final String NODES_BY_NAME =
             "SELECT da.node_index, l.value, m.value, art.path FROM declared_actions da"
                     + " LEFT JOIN labels l ON l.id = da.label_id"
                     + " LEFT JOIN mnemonics m ON m.id = da.mnemonic_id"
                     + " LEFT JOIN artifacts art ON art.id = da.primary_output_id"
-                    + " WHERE da.node_index IS NOT NULL AND l.value LIKE ?"
-                    + " ORDER BY l.value LIMIT ?";
+                    + " WHERE da.node_index IS NOT NULL"
+                    + " AND (l.value LIKE ? OR m.value LIKE ? OR art.path LIKE ?)"
+                    + " ORDER BY l.value IS NULL, l.value LIMIT ?";
 
     private static final String NODE_DETAIL =
             "SELECT da.node_index, l.value, m.value, art.path, da.action_id"
@@ -73,11 +85,16 @@ public final class GraphQueries implements AutoCloseable {
                     + " JOIN labels l ON l.id = n.label_id"
                     + " WHERE l.value = ? LIMIT 1";
 
+    /**
+     * The label-graph search: the label or the rule class may match, because
+     * both appear in the rows a search shows — the same reasoning as
+     * {@link #NODES_BY_NAME}, over the parts a label node is presented with.
+     */
     private static final String LABEL_NODES_BY_PATTERN =
             "SELECT n.label_id, l.value, min(n.rule_class)"
                     + " FROM configured_target_nodes n"
                     + " JOIN labels l ON l.id = n.label_id"
-                    + " WHERE l.value LIKE ?"
+                    + " WHERE l.value LIKE ? OR n.rule_class LIKE ?"
                     + " GROUP BY n.label_id, l.value ORDER BY l.value LIMIT ?";
 
     private static final String LABEL_NODE_BY_ID =
@@ -265,9 +282,10 @@ public final class GraphQueries implements AutoCloseable {
     /**
      * "Mnemonic — output basename", degrading honestly when pieces are absent.
      *
-     * <p>Static and public so the views composing search results can name a
-     * found node exactly as the canvas will draw it, rather than keeping a
-     * second, drifting copy of this grammar.
+     * <p>Static and public so the views composing search rows reuse this
+     * grammar for the distinct half of a row — they show it in parentheses
+     * after the target label — rather than keeping a second, drifting copy
+     * of it.
      *
      * @return the composed name, or null when there is nothing to compose —
      *     never an empty string, which would draw as a blank that reads as
@@ -421,12 +439,21 @@ public final class GraphQueries implements AutoCloseable {
         }
     }
 
-    /** Nodes whose label matches {@code pattern}, which may contain {@code %}. */
+    /**
+     * Nodes whose label, mnemonic or primary-output path matches
+     * {@code pattern}, which may contain {@code %}.
+     *
+     * <p>All three parts because they are what the drawn name is composed
+     * from: a Find that could not match "Javac" — the first thing on every
+     * Javac node's label — would report a false absence about the graph.
+     */
     public List<GraphNode> search(String pattern, int limit) throws SQLException {
         List<GraphNode> out = new ArrayList<>();
-        try (PreparedStatement statement = connection.prepareStatement(NODES_BY_LABEL)) {
+        try (PreparedStatement statement = connection.prepareStatement(NODES_BY_NAME)) {
             statement.setString(1, pattern);
-            statement.setInt(2, limit);
+            statement.setString(2, pattern);
+            statement.setString(3, pattern);
+            statement.setInt(4, limit);
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
                     out.add(new GraphNode(
@@ -471,7 +498,8 @@ public final class GraphQueries implements AutoCloseable {
         List<GraphNode> out = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(LABEL_NODES_BY_PATTERN)) {
             statement.setString(1, pattern);
-            statement.setInt(2, limit);
+            statement.setString(2, pattern);
+            statement.setInt(3, limit);
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
                     int index = java.util.Arrays.binarySearch(universe, rows.getLong(1));
