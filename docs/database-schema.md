@@ -9,6 +9,28 @@ Conventions: WAL mode, single writer connection, keyset pagination for all
 UI-facing queries (no OFFSET), indexes created after bulk load rather than
 maintained during it, covering indexes added only against measured query plans.
 
+## Reading the schema of a session you have open
+
+This page is the inventory and the reasoning. It is **not** generated, so the
+authority on what a particular session file contains is the file itself: a
+session written by an older build carries an older schema, and only the file
+knows which.
+
+The application reads it at run time. The **Query** card's schema tree is built
+from `sqlite_master` and `PRAGMA table_info` on the open session — every table,
+every view, every column with its declared type, its NOT NULL constraint and
+its place in the primary key. The same information is reachable as data:
+
+```sql
+SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY 1;
+SELECT * FROM pragma_table_info('actions');
+```
+
+The tree carries no row counts. Counting every table on a five-million-action
+session is a scan per table, and a count shown before it had been taken would
+be a zero standing in for "not known yet" (rule 11); `SELECT COUNT(*)` in the
+editor beside it answers that in one query.
+
 ## Catalog database (`catalog.db`)
 
 | Table | Purpose |

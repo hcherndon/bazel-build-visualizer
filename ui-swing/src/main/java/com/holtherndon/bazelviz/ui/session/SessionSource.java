@@ -63,6 +63,18 @@ public interface SessionSource extends AutoCloseable {
     MetricQueries openMetricQueries();
 
     /**
+     * Opens a reader for user-written SQL over this session.
+     *
+     * <p>A fifth reader, and the only one whose statements this codebase did
+     * not author. Its connection is opened read-only in fact rather than by
+     * convention — {@code SQLITE_OPEN_READONLY} plus {@code query_only} — which
+     * is the difference between "no caller writes through this" and "nothing
+     * can". Every other reader here is trusted; this one is not, and does not
+     * need to be.
+     */
+    QueryReader openQueryReader();
+
+    /**
      * Opens a raw read connection for the timeline's own aggregation.
      *
      * <p>The timeline neither pages rows nor reads entities: it streams every

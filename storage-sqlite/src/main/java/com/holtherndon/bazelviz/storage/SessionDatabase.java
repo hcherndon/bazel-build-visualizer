@@ -7,6 +7,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.sqlite.SQLiteConfig;
 
 /**
  * A session's SQLite database file: one long-lived writer connection plus a
@@ -19,6 +20,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * a time; all writes must go through {@link #writerConnection()}. Read
  * connections from {@link #newReadConnection()} may be used from any thread
  * (one connection per thread — connections themselves are not thread-safe).
+ *
+ * <p>{@link #newReadConnection()} is a <em>convention</em>: nothing about the
+ * connection it returns stops a caller writing through it, and every caller in
+ * this codebase is trusted not to. {@link #newQueryConnection()} is the
+ * connection for statements this codebase did not write — the ad hoc query
+ * view — and it is read-only in fact rather than by agreement: opened with
+ * SQLite's {@code SQLITE_OPEN_READONLY} flag and with
+ * {@code PRAGMA query_only = ON}.
  *
  * <p>Explicit SQL only; there is deliberately no ORM in this codebase.
  */
@@ -67,6 +76,54 @@ public final class SessionDatabase implements AutoCloseable {
         boolean ok = false;
         try {
             applyPragmas(connection);
+            readConnections.add(connection);
+            ok = true;
+        } finally {
+            if (!ok) {
+                connection.close();
+            }
+        }
+        return connection;
+    }
+
+    /**
+     * Opens a connection that is incapable of writing, for statements this
+     * codebase did not author (plan rules 15 and 22.4).
+     *
+     * <p>{@code SQLITE_OPEN_READONLY} at open time is the guarantee: a write
+     * fails in the VFS with {@code SQLITE_READONLY} whatever the statement is,
+     * and the flag is fixed for the life of the connection — no SQL can reach
+     * it.
+     *
+     * <p>{@code PRAGMA query_only = ON} is set as well, and it is a second
+     * refusal rather than a second guarantee. It is connection state, so SQL
+     * <em>can</em> reach it: {@code EXPLAIN PRAGMA query_only = OFF} clears it
+     * at prepare time. It is kept in place by the statement filter in
+     * {@code ReadOnlySql} and re-checked before every execution by
+     * {@code AdHocQueries}; what it buys is that a defect in that filter still
+     * has to get past a second thing, and is noticed when it does.
+     *
+     * <p>A read-only open works against this database even while the writer
+     * holds it and the journal is in WAL mode: SQLite needs write
+     * <em>permission</em> on the {@code -shm} file, which the process has,
+     * rather than a read-write connection.
+     *
+     * <p>The writer-side pragmas are deliberately not applied here.
+     * {@code journal_mode}, {@code synchronous} and {@code wal_autocheckpoint}
+     * describe how writes reach the disk, and this connection performs none.
+     * {@code query_only} is set last, after the settings that are allowed to
+     * change.
+     *
+     * <p>Tracked like any other read connection, so {@link #close()} releases
+     * it even if the caller does not.
+     */
+    public Connection newQueryConnection() throws SQLException {
+        SQLiteConfig config = new SQLiteConfig();
+        config.setReadOnly(true);
+        Connection connection = DriverManager.getConnection(jdbcUrl(file), config.toProperties());
+        boolean ok = false;
+        try {
+            applyQueryPragmas(connection);
             readConnections.add(connection);
             ok = true;
         } finally {
@@ -147,6 +204,17 @@ public final class SessionDatabase implements AutoCloseable {
             // one a pass over the WAL. Sixteen megabytes is still bounded and
             // is a quarter of the checkpoints.
             statement.execute("PRAGMA wal_autocheckpoint=" + WAL_AUTOCHECKPOINT_PAGES);
+        }
+    }
+
+    private static void applyQueryPragmas(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA busy_timeout=" + BUSY_TIMEOUT_MILLIS);
+            statement.execute("PRAGMA cache_size=-" + PAGE_CACHE_KIB);
+            statement.execute("PRAGMA temp_store=MEMORY");
+            // Last. Everything above it changes connection state, which is
+            // exactly what query_only stops.
+            statement.execute("PRAGMA query_only=ON");
         }
     }
 

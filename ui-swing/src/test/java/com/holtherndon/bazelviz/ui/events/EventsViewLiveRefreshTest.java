@@ -290,6 +290,11 @@ final class EventsViewLiveRefreshTest {
         }
 
         @Override
+        public com.holtherndon.bazelviz.ui.session.QueryReader openQueryReader() {
+            throw new UnsupportedOperationException("the events view runs no ad hoc SQL");
+        }
+
+        @Override
         public Connection openTimelineConnection() {
             throw new UnsupportedOperationException("the events view is not the timeline");
         }

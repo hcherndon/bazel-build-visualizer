@@ -54,6 +54,31 @@ final class SessionDatabaseTest {
         assertThat(Files.deleteIfExists(file)).isTrue();
     }
 
+    @Test
+    void theQueryConnectionIsReadOnlyAndStaysTracked() throws Exception {
+        Path file = tempDir.resolve("query.db");
+        SessionDatabase db = SessionDatabase.open(file);
+        try (Statement statement = db.writerConnection().createStatement()) {
+            statement.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+            statement.execute("INSERT INTO t VALUES (1)");
+        }
+
+        Connection query = db.newQueryConnection();
+        assertThat(query.isReadOnly()).isTrue();
+        assertThat(pragma(query, "query_only")).isEqualTo("1");
+        // Reads work while the writer still holds the file in WAL mode.
+        try (Statement statement = query.createStatement();
+                ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM t")) {
+            assertThat(rows.next()).isTrue();
+            assertThat(rows.getLong(1)).isEqualTo(1L);
+        }
+
+        // Not closed by the caller: close() must still release it, exactly as
+        // it does for a read connection.
+        db.close();
+        assertThat(query.isClosed()).isTrue();
+    }
+
     private static void assertPragmas(Connection connection) throws SQLException {
         assertThat(pragma(connection, "journal_mode")).isEqualToIgnoringCase("wal");
         // synchronous=NORMAL reports as 1.
