@@ -56,6 +56,8 @@ public final class TimelineView extends JPanel {
     private static final int HEADER_HEIGHT = 28;
     private static final int LANE_LABEL_WIDTH = 220;
     private static final int LANE_HEIGHT = 18;
+    /** Max zoom: one pixel per microsecond, the same ceiling {@link TimelineCanvas} uses. */
+    private static final double MAX_PIXELS_PER_MICRO = 1.0;
 
     private final CardLayout cards = new CardLayout();
     private final JPanel deck = new JPanel(cards);
@@ -239,6 +241,62 @@ public final class TimelineView extends JPanel {
         }
     }
 
+    /**
+     * Bounds a user-driven pan or zoom to the session's own wall, so dragging or
+     * scrolling past the edge cannot leave the transform to wander arbitrarily
+     * far from it.
+     *
+     * <h2>Why this lives here</h2>
+     *
+     * <p>{@link TimelineTransform} is deliberately pure arithmetic with no idea
+     * what a "wall" is, so it cannot clamp itself. {@link TimelineViewport#navigatedTo}
+     * does not have the wall either — it carries a transform, a selection and a
+     * range, and the wall lives on {@link TimelineModel}. This view is where a
+     * transform and a model are in scope at the same moment, which is exactly
+     * why the earlier bug existed: nothing else in the split had everything it
+     * needed to enforce the bound, so nothing did.
+     *
+     * <p>The floor is ported, not reinvented, from {@code TimelineCanvas}'s own
+     * {@code clamped()} (used only by the benchmark spike, never by this live
+     * view): zoom is floored so the wall can never shrink to less than half
+     * the visible width, and the offset is floored and ceilinged so the wall
+     * can be panned at most half a screen past either edge. That is a bound,
+     * not a hard stop at zero — a build's wall can still be scrolled a little
+     * past its own edge, the same way {@link TimelineCanvas}'s spike allows on
+     * purpose — but it is now a bound. Before this, the canvas's own mouse
+     * handlers fed {@link TimelineTransform#pannedByPixels} and
+     * {@link TimelineTransform#zoomedAround} straight into the viewport with
+     * nothing checking either, so the offset {@link Header#paintComponent}
+     * subtracts {@link TimelineModel#wallStartMicros} from could drift to any
+     * value at all — which is what let the axis print an arbitrarily negative
+     * time. Clamping only the label there would have hidden that the transform
+     * itself had wandered off; this clamps the transform, so the label is
+     * correct because what it is printing is.
+     */
+    private TimelineTransform clamp(TimelineTransform proposed) {
+        if (model == null) {
+            return proposed;
+        }
+        int width = Math.max(1, canvas.getWidth());
+        double wallSpan = model.wallEndMicros() - model.wallStartMicros();
+        if (!(wallSpan > 0)) {
+            // Not reachable while a model exists -- build() never hands out one
+            // whose wall is not a real span -- but a transform this cannot make
+            // sense of is a transform it should not touch.
+            return proposed;
+        }
+        double minPpm = width / (2.0 * wallSpan); // zoom-out floor: wall fills half the width
+        double ppm = Math.clamp(
+                proposed.pixelsPerMicro(), minPpm, Math.max(MAX_PIXELS_PER_MICRO, minPpm));
+        double visible = width / ppm;
+        double offset = Math.clamp(proposed.offsetMicros(),
+                model.wallStartMicros() - 0.5 * visible,
+                model.wallEndMicros() - 0.5 * visible);
+        return ppm == proposed.pixelsPerMicro() && offset == proposed.offsetMicros()
+                ? proposed
+                : new TimelineTransform(offset, ppm);
+    }
+
     private void repaintAll() {
         canvas.repaint();
         header.repaint();
@@ -381,7 +439,7 @@ public final class TimelineView extends JPanel {
                     int dx = event.getX() - lastX;
                     lastX = event.getX();
                     viewport = viewport.navigatedTo(
-                            viewport.transform().pannedByPixels(dx));
+                            clamp(viewport.transform().pannedByPixels(dx)));
                     followBox.setSelected(false);
                     repaintAll();
                     viewportChanged.run();
@@ -436,7 +494,7 @@ public final class TimelineView extends JPanel {
                     }
                     double factor = Math.pow(1.1, -event.getPreciseWheelRotation());
                     viewport = viewport.navigatedTo(
-                            viewport.transform().zoomedAround(event.getX(), factor));
+                            clamp(viewport.transform().zoomedAround(event.getX(), factor)));
                     followBox.setSelected(false);
                     repaintAll();
                     viewportChanged.run();
@@ -599,5 +657,13 @@ public final class TimelineView extends JPanel {
     /** The coverage note, for tests. */
     String coverageText() {
         return coverage.getText();
+    }
+
+    /**
+     * The plot component, for tests that drive its real mouse and wheel
+     * listeners directly rather than re-implementing what they do.
+     */
+    JComponent canvasForTest() {
+        return canvas;
     }
 }
