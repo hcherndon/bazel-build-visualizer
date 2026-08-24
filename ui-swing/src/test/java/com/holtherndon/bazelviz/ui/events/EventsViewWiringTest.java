@@ -76,6 +76,9 @@ class EventsViewWiringTest {
 
         PagedTableModel<EventRow> model = onEdt(events::tableModelForTest);
         assertThat(model.getRowCount()).isEqualTo(EVENT_COUNT);
+        assertThat(onEdt(events::followingForTest))
+                .as("t8: follow tail is checked by default")
+                .isTrue();
 
         // The first page arrives asynchronously; until it does the cells are
         // the loading placeholder, which is the correct thing for them to be.
