@@ -11,6 +11,8 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.Point;
+import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -33,7 +35,10 @@ import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
+import javax.swing.JViewport;
+import javax.swing.Scrollable;
 import javax.swing.SwingConstants;
 
 /**
@@ -78,6 +83,29 @@ import javax.swing.SwingConstants;
  * band that claimed to show running actions would be inventing them. The band
  * grows to the current wall clock, and while "Follow live" is on, so does the
  * right edge of the whole plot.
+ *
+ * <h2>Height is the data's, not the window's</h2>
+ *
+ * <p>Every sub-row is {@link #SUB_ROW_HEIGHT} pixels tall, always. A lane is
+ * as tall as the sub-rows it actually needs — {@link SpanStacking#depthOf} of
+ * its key times that height — so only lanes with real overlap grow, and the
+ * plot's height is a sum of readable rows rather than a division of whatever
+ * space the window happens to have. The earlier model divided the canvas
+ * height by the lane count and then divided again by the lane's stacking
+ * depth, which on any real session produced one- and two-pixel sub-rows: too
+ * thin to see, too thin to click, and silently thinner the more the data had
+ * to say. The in-flight band already used fixed rows; now the lanes agree
+ * with it.
+ *
+ * <p>What absorbs the total height is a {@link JScrollPane}, not the rows.
+ * The canvas reports that height as its preferred size and the lane labels
+ * ride along as the scroll pane's row header, so labels and rows cannot drift
+ * apart; the time axis stays outside the scroll pane, pinned. Horizontally
+ * nothing scrolls — {@link Scrollable#getScrollableTracksViewportWidth} is
+ * true and the horizontal policy is NEVER, because horizontal position is the
+ * pan/zoom transform's business and two mechanisms for one axis would fight.
+ * For the same reason the wheel over the plot zooms and is consumed there: a
+ * zoom gesture never also scrolls.
  */
 public final class TimelineView extends JPanel {
 
@@ -85,13 +113,32 @@ public final class TimelineView extends JPanel {
 
     private static final int HEADER_HEIGHT = 28;
     private static final int LANE_LABEL_WIDTH = 220;
-    private static final int LANE_HEIGHT = 18;
+
+    /**
+     * The height of one sub-row, in pixels — the same for a lane's every
+     * stacked sub-row and for every row of the in-flight band. Fixed on
+     * purpose: a row that shrank to fit the window would become unreadable and
+     * unclickable exactly when the build had the most to show. A lane's own
+     * height is this times its stacking depth, and the total is what the
+     * scroll pane absorbs. Documented in docs/limits.md; LimitsDocTest checks
+     * the value.
+     */
+    static final int SUB_ROW_HEIGHT = 18;
+
+    /** How far one wheel-free scroll step moves, in pixels. */
+    private static final int VERTICAL_SCROLL_UNIT = 16;
+    /** The plot's preferred width; its real width is the viewport's. */
+    private static final int PREFERRED_PLOT_WIDTH = 900;
+    /** How much of the plot the window should try to show at once. */
+    private static final int PREFERRED_PLOT_HEIGHT = 400;
     /** Max zoom: one pixel per microsecond, the same ceiling {@link TimelineCanvas} uses. */
     private static final double MAX_PIXELS_PER_MICRO = 1.0;
     /** How often the live edge and the in-flight band advance, in milliseconds. */
     private static final int LIVE_TICK_MILLIS = 250;
     /** The in-flight band's wash, so its rows cannot pass for lanes. */
     private static final Color BAND_BACKGROUND = new Color(0x42, 0x85, 0xF4, 24);
+    /** The hairline between two lanes in the label column. */
+    private static final Color LANE_SEPARATOR = new Color(0, 0, 0, 28);
 
     private final CardLayout cards = new CardLayout();
     private final JPanel deck = new JPanel(cards);
@@ -111,6 +158,8 @@ public final class TimelineView extends JPanel {
     private final Canvas canvas = new Canvas();
     private final Header header = new Header();
     private final LaneLabels laneLabels = new LaneLabels();
+    /** Vertical scrolling for the plot; the lane labels are its row header. */
+    private final JScrollPane plotScroll = new JScrollPane(canvas);
 
     // ------------------------------------------------------- inline inspector
     private final JPanel inspector = new JPanel(new BorderLayout(8, 2));
@@ -124,6 +173,14 @@ public final class TimelineView extends JPanel {
     private SpanStacking stacking = SpanStacking.EMPTY;
     /** Lane row index by lane key, rebuilt whenever the model is. */
     private Map<String, Integer> laneRowByKey = Map.of();
+    /**
+     * The top of every lane row, relative to the first, with one more entry
+     * than there are rows: the total height. Rows are the model's lanes plus
+     * the extra row that catches spans in no current lane, and each is as tall
+     * as its stacking depth needs, so this is rebuilt whenever the lanes or
+     * the stacking change — {@link #relayoutLanes}.
+     */
+    private int[] laneTops = {0, SUB_ROW_HEIGHT};
     /** Spans whose key is in no current lane — transient while regrouping. */
     private long unmatchedSpans;
     private TimelineViewport viewport;
@@ -188,10 +245,27 @@ public final class TimelineView extends JPanel {
         bar.add(colourChoice);
         bar.add(followBox);
 
+        // The axis is fixed: it stays put while the lanes scroll under it. The
+        // strut is what keeps its x = 0 over the canvas's x = 0 rather than
+        // over the lane labels, which is the coordinate system every tick
+        // position is computed in.
+        JPanel axis = new JPanel(new BorderLayout());
+        axis.add(Box.createHorizontalStrut(LANE_LABEL_WIDTH), BorderLayout.WEST);
+        axis.add(header, BorderLayout.CENTER);
+
+        plotScroll.setRowHeaderView(laneLabels);
+        plotScroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        // Horizontal position belongs to the pan/zoom transform alone.
+        plotScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        plotScroll.getVerticalScrollBar().setUnitIncrement(VERTICAL_SCROLL_UNIT);
+        // The wheel over this plot means zoom. Leaving the scroll pane's own
+        // wheel handling on would make one gesture mean two things at once.
+        plotScroll.setWheelScrollingEnabled(false);
+        plotScroll.setBorder(BorderFactory.createEmptyBorder());
+
         JPanel plot = new JPanel(new BorderLayout());
-        plot.add(header, BorderLayout.NORTH);
-        plot.add(laneLabels, BorderLayout.WEST);
-        plot.add(canvas, BorderLayout.CENTER);
+        plot.add(axis, BorderLayout.NORTH);
+        plot.add(plotScroll, BorderLayout.CENTER);
 
         buildInspector();
 
@@ -282,6 +356,10 @@ public final class TimelineView extends JPanel {
      * remembering to.
      */
     public void setModel(TimelineModel next) {
+        // Read before, reapply after: the model swap is what a live rebuild
+        // does, and a user reading a lane halfway down has not asked to be
+        // returned to the top every two seconds.
+        int scrolledTo = scrollPosition();
         this.model = next;
         Map<String, Integer> rows = new HashMap<>();
         List<TimelineModel.Lane> lanes = next.lanes();
@@ -290,6 +368,8 @@ public final class TimelineView extends JPanel {
         }
         this.laneRowByKey = Map.copyOf(rows);
         recountUnmatched();
+        relayoutLanes();
+        scrollTo(scrolledTo);
         int width = Math.max(1, canvas.getWidth());
         long fitEnd = liveWallEnd(next);
         viewport = viewport == null
@@ -353,9 +433,15 @@ public final class TimelineView extends JPanel {
 
     /** Installs the exact spans for the current range. */
     public void setWindow(SpanWindow next) {
+        int scrolledTo = scrollPosition();
         this.window = next;
         this.stacking = SpanStacking.of(next);
         recountUnmatched();
+        // A refetch can change a lane's depth, and so the plot's total height.
+        // The position is kept where the user put it, clamped to what is now
+        // there rather than left pointing past the end.
+        relayoutLanes();
+        scrollTo(scrolledTo);
         repaintAll();
     }
 
@@ -379,9 +465,58 @@ public final class TimelineView extends JPanel {
         stacking = SpanStacking.EMPTY;
         laneRowByKey = Map.of();
         unmatchedSpans = 0;
+        relayoutLanes();
+        // There is nothing to be scrolled into any more; the next session
+        // starts at its own top rather than at the last one's offset.
+        scrollTo(0);
         liveTicker.stop();
         hideInspector();
         cards.show(deck, "empty");
+    }
+
+    // ---------------------------------------------------------------- scroll
+
+    /** How far down the plot is scrolled, in pixels. */
+    private int scrollPosition() {
+        return plotScroll.getViewport().getViewPosition().y;
+    }
+
+    /**
+     * Scrolls to {@code y}, clamped to what the plot is currently tall enough
+     * to show. Clamping here rather than trusting the viewport is what keeps a
+     * rebuild that shortened the plot — fewer lanes, or a window whose lanes
+     * stack less deeply — from leaving the view parked past the end.
+     */
+    private void scrollTo(int y) {
+        JViewport port = plotScroll.getViewport();
+        int limit = Math.max(0, contentHeight() - port.getExtentSize().height);
+        canvas.revalidate();
+        laneLabels.revalidate();
+        port.setViewPosition(new Point(0, Math.clamp(y, 0, limit)));
+    }
+
+    /**
+     * Scrolls the selected span's lane into view, if that span is in the
+     * current window. The reveal paths' other half: selecting from elsewhere
+     * in the application highlights a span, and a highlight below the fold is
+     * one the user cannot see.
+     */
+    private void scrollSelectionIntoView() {
+        if (viewport == null || viewport.selectedNode().isEmpty()) {
+            return;
+        }
+        long node = viewport.selectedNode().getAsLong();
+        for (int i = 0; i < window.size(); i++) {
+            if (window.nodeId(i) != node) {
+                continue;
+            }
+            int row = rowOfSpan(i);
+            // Width 1 at x 0 on purpose: this may move the view vertically and
+            // must never nudge it horizontally, where the transform rules.
+            canvas.scrollRectToVisible(new Rectangle(
+                    0, bandHeight() + laneTop(row), 1, laneHeight(row)));
+            return;
+        }
     }
 
     /** The range the user is looking at, for the worker that fetches spans. */
@@ -408,10 +543,16 @@ public final class TimelineView extends JPanel {
         return Optional.ofNullable(viewport);
     }
 
-    /** Selects a node from elsewhere in the application, without moving the view. */
+    /**
+     * Selects a node from elsewhere in the application, without moving the
+     * view in time — the pan and the zoom are the user's. Vertically it does
+     * move: a selection scrolled off the bottom of the lanes would be a reveal
+     * that revealed nothing.
+     */
     public void select(long nodeId) {
         if (viewport != null) {
             viewport = viewport.selecting(OptionalLong.of(nodeId));
+            scrollSelectionIntoView();
             repaintAll();
         }
     }
@@ -583,14 +724,64 @@ public final class TimelineView extends JPanel {
 
     /** The band's height in pixels; lanes start below it. */
     int bandHeight() {
-        return bandRows() * LANE_HEIGHT;
+        return bandRows() * SUB_ROW_HEIGHT;
     }
 
-    /** The height of one lane row, shared by the canvas and the labels. */
-    private int laneRowHeight() {
-        int lanes = model == null ? 1 : Math.max(1, model.lanes().size());
-        int available = Math.max(1, canvas.getHeight() - bandHeight());
-        return Math.max(3, Math.min(LANE_HEIGHT, available / lanes));
+    /**
+     * Recomputes every lane row's top and the plot's total height.
+     *
+     * <p>Called whenever the lanes change or the stacking does, which is the
+     * whole of what the geometry depends on: not the canvas's size, which is
+     * the point of the change — a lane is as tall as its content needs and the
+     * scroll pane deals with the sum.
+     */
+    private void relayoutLanes() {
+        int lanes = model == null ? 0 : model.lanes().size();
+        // Every lane, then the extra row for spans in no current lane, then
+        // the total. The extra row is always there so a straggler always has
+        // somewhere real to be drawn rather than being placed past the end.
+        int[] tops = new int[lanes + 2];
+        int y = 0;
+        for (int row = 0; row <= lanes; row++) {
+            tops[row] = y;
+            y += heightOfRow(row);
+        }
+        tops[lanes + 1] = y;
+        laneTops = tops;
+    }
+
+    /** The height of lane row {@code row}: its stacking depth, in sub-rows. */
+    private int heightOfRow(int row) {
+        if (model == null || row >= model.lanes().size()) {
+            return SUB_ROW_HEIGHT;
+        }
+        int depth = stacking.depthOf(model.lanes().get(row).key());
+        return Math.clamp(depth, 1, SpanStacking.MAX_SUB_ROWS) * SUB_ROW_HEIGHT;
+    }
+
+    /** The top of lane row {@code row}, relative to the first lane. */
+    int laneTop(int row) {
+        return laneTops[Math.clamp(row, 0, laneTops.length - 1)];
+    }
+
+    /**
+     * The height of lane row {@code row} — {@link SpanStacking#depthOf} of its
+     * key times {@link #SUB_ROW_HEIGHT}, so a lane with no overlap is one
+     * sub-row tall and only lanes that actually stack take more room.
+     */
+    int laneHeight(int row) {
+        int at = Math.clamp(row, 0, laneTops.length - 2);
+        return laneTops[at + 1] - laneTops[at];
+    }
+
+    /** Every lane row together, in pixels. */
+    int totalLaneHeight() {
+        return laneTops[laneTops.length - 1];
+    }
+
+    /** What the plot is tall enough to need: the band and every lane row. */
+    int contentHeight() {
+        return bandHeight() + totalLaneHeight();
     }
 
     /**
@@ -607,19 +798,24 @@ public final class TimelineView extends JPanel {
                 : row;
     }
 
-    /** The painted bounds of span {@code i}, for painting and hit-testing alike. */
-    private java.awt.Rectangle boundsOfSpan(int i) {
+    /**
+     * The painted bounds of span {@code i}, for painting and hit-testing
+     * alike. Its sub-row is {@link #SUB_ROW_HEIGHT} tall whatever else is on
+     * screen, less one pixel so two stacked sub-rows read as two.
+     */
+    private Rectangle boundsOfSpan(int i) {
         TimelineTransform transform = viewport.transform();
         int x0 = (int) transform.xForMicros(window.startMicros(i));
         int x1 = (int) transform.xForMicros(window.endMicros(i));
         int width = Math.max(1, x1 - x0);
-        int rowHeight = laneRowHeight();
-        Integer laneRow = laneRowByKey.get(window.laneKey(i));
-        int depth = laneRow == null ? 1 : stacking.depthOf(window.laneKey(i));
-        int subRow = laneRow == null ? 0 : Math.min(stacking.subRow(i), depth - 1);
-        int subHeight = Math.max(1, (rowHeight - 1) / depth);
-        int y = bandHeight() + rowOfSpan(i) * rowHeight + subRow * subHeight;
-        return new java.awt.Rectangle(x0, y, width, subHeight);
+        int row = rowOfSpan(i);
+        // The row's own height says how many sub-rows it has, so a span can
+        // never be placed below the lane it belongs to — including a span in
+        // no current lane, whose extra row is one sub-row tall.
+        int depth = laneHeight(row) / SUB_ROW_HEIGHT;
+        int subRow = Math.clamp(stacking.subRow(i), 0, depth - 1);
+        int y = bandHeight() + laneTop(row) + subRow * SUB_ROW_HEIGHT;
+        return new Rectangle(x0, y, width, SUB_ROW_HEIGHT - 1);
     }
 
     /** The span under a point, or -1. Only meaningful while drawing spans. */
@@ -646,8 +842,8 @@ public final class TimelineView extends JPanel {
         int rows = bandRows();
         for (int i = inFlight.size() - 1; i >= 0; i--) {
             int row = Math.min(i, rows - 1);
-            int y0 = row * LANE_HEIGHT;
-            if (y < y0 || y >= y0 + LANE_HEIGHT) {
+            int y0 = row * SUB_ROW_HEIGHT;
+            if (y < y0 || y >= y0 + SUB_ROW_HEIGHT) {
                 continue;
             }
             int x0 = (int) transform.xForMicros(inFlight.get(i).startMicros());
@@ -747,13 +943,49 @@ public final class TimelineView extends JPanel {
         }
     }
 
-    /** Lane names, aligned with the canvas rows, below the band's own label. */
-    private final class LaneLabels extends JComponent {
+    /**
+     * Lane names, aligned with the canvas rows, below the band's own label.
+     *
+     * <p>The scroll pane's row header, so the alignment is not something this
+     * has to maintain: it scrolls with the canvas by construction, and reports
+     * the same height the canvas does.
+     */
+    private final class LaneLabels extends JComponent implements Scrollable {
 
         private static final long serialVersionUID = 1L;
 
-        LaneLabels() {
-            setPreferredSize(new Dimension(LANE_LABEL_WIDTH, 0));
+        @Override
+        public Dimension getPreferredSize() {
+            return new Dimension(LANE_LABEL_WIDTH, Math.max(SUB_ROW_HEIGHT, contentHeight()));
+        }
+
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(Rectangle visible, int orientation, int direction) {
+            return VERTICAL_SCROLL_UNIT;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(Rectangle visible, int orientation, int direction) {
+            return Math.max(VERTICAL_SCROLL_UNIT, visible.height - VERTICAL_SCROLL_UNIT);
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            // The label column is as wide as it says, never as wide as the
+            // window: names are read left to right and truncating them to a
+            // resize would lose the end of every long one.
+            return false;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return getParent() instanceof JViewport port
+                    && port.getHeight() > getPreferredSize().height;
         }
 
         @Override
@@ -770,15 +1002,23 @@ public final class TimelineView extends JPanel {
                     g2.setColor(new Color(0x1A, 0x56, 0xB0));
                     g2.drawString("In-flight targets", 4, Math.min(band - 5, 13));
                 }
-                g2.setColor(Color.DARK_GRAY);
+                Rectangle clip = g2.getClipBounds();
                 List<TimelineModel.Lane> lanes = model.lanes();
-                int rowHeight = laneRowHeight();
                 for (int i = 0; i < lanes.size(); i++) {
-                    int y = band + i * rowHeight + rowHeight - 5;
-                    if (y > getHeight()) {
-                        break;
+                    int top = band + laneTop(i);
+                    int height = laneHeight(i);
+                    if (clip != null
+                            && (top + height < clip.y || top > clip.y + clip.height)) {
+                        continue;
                     }
-                    g2.drawString(lanes.get(i).name(), 4, y);
+                    // The name sits in the lane's first sub-row, so a lane that
+                    // stacks six deep is still labelled where it begins.
+                    g2.setColor(Color.DARK_GRAY);
+                    g2.drawString(lanes.get(i).name(), 4, top + SUB_ROW_HEIGHT - 5);
+                    // Lanes are no longer all the same height, so where one
+                    // ends has to be visible rather than inferred.
+                    g2.setColor(LANE_SEPARATOR);
+                    g2.drawLine(0, top + height - 1, getWidth(), top + height - 1);
                 }
             } finally {
                 g2.dispose();
@@ -787,7 +1027,7 @@ public final class TimelineView extends JPanel {
     }
 
     /** The plot. Reads the model and the window and nothing else. */
-    private final class Canvas extends JComponent {
+    private final class Canvas extends JComponent implements Scrollable {
 
         private static final long serialVersionUID = 1L;
 
@@ -795,7 +1035,6 @@ public final class TimelineView extends JPanel {
         private int dragCurrentX = -1;
 
         Canvas() {
-            setPreferredSize(new Dimension(900, 400));
             MouseAdapter mouse = new MouseAdapter() {
                 private int lastX;
 
@@ -865,6 +1104,12 @@ public final class TimelineView extends JPanel {
 
                 @Override
                 public void mouseWheelMoved(MouseWheelEvent event) {
+                    // The wheel over the plot means zoom, and only zoom. The
+                    // scroll pane's own wheel handling is off as well; both,
+                    // because a gesture that zoomed and scrolled at once would
+                    // be unusable and neither half is obviously the one to
+                    // rely on.
+                    event.consume();
                     if (viewport == null) {
                         return;
                     }
@@ -879,6 +1124,56 @@ public final class TimelineView extends JPanel {
             addMouseListener(mouse);
             addMouseMotionListener(mouse);
             addMouseWheelListener(mouse);
+        }
+
+        /**
+         * As tall as the band and the lanes need, which is what the scroll
+         * pane scrolls. The width is a hint only: {@link
+         * #getScrollableTracksViewportWidth} makes the real width the
+         * viewport's, because horizontal position is the transform's.
+         */
+        @Override
+        public Dimension getPreferredSize() {
+            return new Dimension(
+                    PREFERRED_PLOT_WIDTH, Math.max(SUB_ROW_HEIGHT, contentHeight()));
+        }
+
+        /**
+         * How much of the plot the window should try to show, which is not the
+         * same as how tall the plot is: a session with three hundred lanes asks
+         * for a window of a reasonable size and scrolls, rather than asking for
+         * a window taller than the screen.
+         */
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return new Dimension(PREFERRED_PLOT_WIDTH, PREFERRED_PLOT_HEIGHT);
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(Rectangle visible, int orientation, int direction) {
+            return VERTICAL_SCROLL_UNIT;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(Rectangle visible, int orientation, int direction) {
+            return Math.max(VERTICAL_SCROLL_UNIT, visible.height - VERTICAL_SCROLL_UNIT);
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        /**
+         * When the lanes do not fill the window, the plot stretches to it
+         * instead of leaving a differently coloured band of nothing below —
+         * and the aggregate density, which draws over the whole height, gets
+         * the room it had before there was a scroll pane.
+         */
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return getParent() instanceof JViewport port
+                    && port.getHeight() > getPreferredSize().height;
         }
 
         @Override
@@ -928,8 +1223,8 @@ public final class TimelineView extends JPanel {
                 long start = inFlight.get(i).startMicros();
                 int x0 = (int) transform.xForMicros(start);
                 int x1 = (int) transform.xForMicros(Math.max(start, now));
-                g2.fillRect(x0, row * LANE_HEIGHT + 1,
-                        Math.max(1, x1 - x0), LANE_HEIGHT - 3);
+                g2.fillRect(x0, row * SUB_ROW_HEIGHT + 1,
+                        Math.max(1, x1 - x0), SUB_ROW_HEIGHT - 3);
             }
             g2.setColor(new Color(0x1A, 0x56, 0xB0));
             g2.drawString(bandLabel(model.liveBand()), 4, Math.min(band - 5, 13));
@@ -970,7 +1265,7 @@ public final class TimelineView extends JPanel {
          */
         private void paintSpans(Graphics2D g2) {
             for (int i = 0; i < window.size(); i++) {
-                java.awt.Rectangle bounds = boundsOfSpan(i);
+                Rectangle bounds = boundsOfSpan(i);
                 g2.setColor(TimelineColours.forSpan(colourMode, window.flags(i)));
                 g2.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
                 if (viewport.selectedNode().isPresent()
@@ -1040,6 +1335,9 @@ public final class TimelineView extends JPanel {
                         "Ran %.2fs into the build for %.3fs. Fetching details…",
                         start, duration)),
                 List.of(new EntityRef.ActionId(nodeId))));
+        // A lane the click only caught the edge of comes fully into view, so
+        // the inspector below is describing something the user can see.
+        scrollSelectionIntoView();
         selectionHandler.accept(nodeId);
         actionPickedHandler.accept(nodeId);
         repaintAll();
@@ -1131,5 +1429,15 @@ public final class TimelineView extends JPanel {
      */
     JComponent canvasForTest() {
         return canvas;
+    }
+
+    /** The plot's scroll pane, for tests that drive or read the scroll state. */
+    JScrollPane scrollForTest() {
+        return plotScroll;
+    }
+
+    /** The lane label column, for tests that check it reports the canvas's height. */
+    JComponent laneLabelsForTest() {
+        return laneLabels;
     }
 }
