@@ -1218,3 +1218,24 @@ it is a different tab and was not reported.
   starting a Bazel server, and `RealBazelCaptureTest` proves the workspace lock
   is free after three stops in a row. See `docs/troubleshooting.md`, "A build
   will not stop, or the next Bazel command hangs".
+
+- **The timeline keeps its own clock, and its axis never labels a negative
+  time** (2026-08-23). Two reports, one view. The timeline appeared not to
+  render during a build because `TimelineController` had no clock of its own:
+  `refreshLive()` ran only when `MainWindow.CaptureListener.captureProgress`
+  called it, and that fires only when the BES stream emits, so on a quiet build
+  the view simply stopped updating while `OverviewPanel` — which has always run
+  its own `scheduleWithFixedDelay` — kept going. The controller now runs a
+  daemon ticker of its own at the same 2 s cadence, sharing the existing
+  wall-clock throttle so a timer tick and a progress tick landing together do
+  the work once; it is shut down in `closeSession`, which `openSession` calls
+  first, so reopening a session cannot leak a second one.
+  The axis could show negative seconds because pan and zoom were unclamped and
+  `Header.paintComponent` printed `microsAtX(x) - wallStartMicros` with no
+  lower bound. Pan and zoom are now bounded by the clamp that already existed
+  in `TimelineCanvas` and was reachable only from a benchmark, and — because a
+  bounded negative is still negative — `TimelineView.ticksFor` omits any tick
+  whose time precedes the wall start entirely, mark and label together. The
+  label is deliberately *not* clamped to `0.00s`: that would paint one label at
+  several positions and assert a viewport position the user is not at, which is
+  a worse failure than the one being fixed.
