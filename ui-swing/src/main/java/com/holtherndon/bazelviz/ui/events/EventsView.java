@@ -9,10 +9,12 @@ import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
+import java.awt.Point;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -69,6 +71,19 @@ public final class EventsView extends JPanel {
      */
     private static final int CACHE_PAGES = 24;
 
+    /**
+     * How often a live capture may rebuild the table's row source, and how
+     * often this view's own timer nudges one even if nothing tells it to.
+     *
+     * <p>Shared with {@code TimelineController}'s and {@code OverviewPanel}'s
+     * own two-second intervals, for the same reason: it is short enough that a
+     * running build feels current and long enough that ticking it does not
+     * become the dominant cost of watching one.
+     */
+    private static final long LIVE_REFRESH_INTERVAL_MICROS = 2_000_000;
+
+    private final long liveRefreshIntervalMicros;
+
     private final CardLayout cards = new CardLayout();
     private final JPanel deck = new JPanel(cards);
     private final JLabel emptyLabel = new JLabel(" ", SwingConstants.CENTER);
@@ -76,20 +91,45 @@ public final class EventsView extends JPanel {
     private final EventInspectorPanel inspector = new EventInspectorPanel();
     private final JTable table = new JTable();
     private final JLabel statusLabel = new JLabel(" ");
+    private final JScrollPane tableScroll;
 
     private ExecutorService pageExecutor;
     private ExecutorService detailExecutor;
+    /**
+     * This view's own clock, independent of whatever else might call
+     * {@link #refreshLive}. Mirrors {@code TimelineController}'s ticker and
+     * exists for the same reason: a live view driven only by BES progress
+     * ticks stalls on a quiet build (a long-running action between progress
+     * events), even though the session is still growing underneath it.
+     */
+    private ScheduledExecutorService ticker;
     private SessionSource source;
     private PagedTableModel<EventRow> tableModel;
     private EventInspectorModel inspectorModel;
+    /** The row source currently installed, kept so a live refresh can rebuild over its reader. */
+    private EventRowSource rows;
     private Consumer<String> openFailureHandler = message -> { };
     private LongConsumer rowCountListener = count -> { };
+    private long lastLiveRefreshMicros;
+    private volatile boolean refreshInFlight;
 
     /** Model row whose id could not be resolved yet because its page was still loading. */
     private int pendingSelectionRow = -1;
 
     public EventsView() {
+        this(LIVE_REFRESH_INTERVAL_MICROS);
+    }
+
+    /**
+     * @param liveRefreshIntervalMicros the throttle in {@link #refreshLive} and
+     *     this view's own ticker's period, both at once — a test's hook to
+     *     drive several ticks in a fraction of a second, the same reason
+     *     {@code TimelineController} and {@code OverviewPanel} take theirs as
+     *     a constructor parameter.
+     */
+    EventsView(long liveRefreshIntervalMicros) {
         super(new BorderLayout());
+        this.liveRefreshIntervalMicros = liveRefreshIntervalMicros;
 
         JPanel empty = new JPanel(new BorderLayout());
         emptyLabel.setEnabled(false);
@@ -109,7 +149,7 @@ public final class EventsView extends JPanel {
             }
         });
 
-        JScrollPane tableScroll = new JScrollPane(table);
+        tableScroll = new JScrollPane(table);
         tableScroll.setMinimumSize(new Dimension(320, 160));
         inspector.setMinimumSize(new Dimension(320, 160));
 
@@ -162,20 +202,42 @@ public final class EventsView extends JPanel {
         source = newSource;
         pageExecutor = singleThreadExecutor("bbv-events-pages");
         detailExecutor = singleThreadExecutor("bbv-events-detail");
+        startTicker();
         showEmpty("Opening " + newSource.info().root() + "…");
         ExecutorService opening = pageExecutor;
         opening.execute(() -> {
             try {
                 SessionReader pageReader = newSource.openReader();
                 SessionReader detailReader = newSource.openReader();
-                EventRowSource rows =
+                EventRowSource builtRows =
                         EventRowSource.open(pageReader, EventRowSource.DEFAULT_PAGE_SIZE);
-                SwingUtilities.invokeLater(() -> install(newSource, detailReader, rows));
+                SwingUtilities.invokeLater(() -> install(newSource, detailReader, builtRows));
             } catch (RuntimeException failure) {
                 log.error("could not open session {}", newSource.info().root(), failure);
                 SwingUtilities.invokeLater(() -> onFailure.accept(failure.toString()));
             }
         });
+    }
+
+    /**
+     * Starts this view's own clock, ticking at {@link #liveRefreshIntervalMicros}
+     * for as long as this session is open. Every tick just calls
+     * {@link #refreshLive} back on the EDT — the same call a live capture's
+     * progress tick can make — so a quiet stretch of a build with no progress
+     * event still gets picked up, and the shared throttle inside
+     * {@link #refreshLive} is what keeps two nearly-simultaneous callers from
+     * doing the work twice.
+     */
+    private void startTicker() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "bbv-events-ticker");
+            thread.setDaemon(true);
+            return thread;
+        });
+        ticker = scheduler;
+        long periodMillis = Math.max(1, liveRefreshIntervalMicros / 1_000);
+        scheduler.scheduleWithFixedDelay(() -> SwingUtilities.invokeLater(this::refreshLive),
+                periodMillis, periodMillis, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -196,13 +258,19 @@ public final class EventsView extends JPanel {
         pendingSelectionRow = -1;
         inspectorModel = null;
         tableModel = null;
+        rows = null;
         table.setModel(new javax.swing.table.DefaultTableModel());
         inspector.show(EventInspection.none());
         ExecutorService pages = pageExecutor;
         ExecutorService details = detailExecutor;
+        ScheduledExecutorService tick = ticker;
         source = null;
         pageExecutor = null;
         detailExecutor = null;
+        ticker = null;
+        if (tick != null) {
+            tick.shutdownNow();
+        }
         if (pages == null && details == null) {
             return;
         }
@@ -255,6 +323,21 @@ public final class EventsView extends JPanel {
         return inspectorModel;
     }
 
+    /** Visible for testing: the table itself, for selection and scroll assertions. */
+    JTable tableForTest() {
+        return table;
+    }
+
+    /** Visible for testing: the table's scroll pane, for scroll-position assertions. */
+    JScrollPane scrollForTest() {
+        return tableScroll;
+    }
+
+    /** Visible for testing: the status line's text (rule 11's "at least ... so far" wording). */
+    String statusTextForTest() {
+        return statusLabel.getText();
+    }
+
     // ------------------------------------------------------------------ EDT
 
     private void install(SessionSource opened, SessionReader detailReader, EventRowSource rows) {
@@ -276,6 +359,7 @@ public final class EventsView extends JPanel {
     }
 
     private void buildViews(SessionSource opened, SessionReader detailReader, EventRowSource rows) {
+        this.rows = rows;
         tableModel = new PagedTableModel<>(
                 rows, EventTableColumns.columns(), pageExecutor, rows.pageSize(), CACHE_PAGES);
         tableModel.addTableModelListener(this::rowsUpdated);
@@ -290,6 +374,167 @@ public final class EventsView extends JPanel {
         rowCountListener.accept(rows.rowCount());
         if (rows.rowCount() > 0) {
             table.setRowSelectionInterval(0, 0);
+        }
+    }
+
+    /**
+     * Rebuilds the row source and swaps in a fresh table model if the session
+     * has grown since the last refresh — the Events-tab analogue of
+     * {@code TimelineController.refreshLive}, and called the same two ways:
+     * from this view's own {@link #startTicker() ticker}, and optionally by
+     * whatever else is watching a live capture (today, nothing else calls it,
+     * but the throttle below is shared-safe if that changes).
+     *
+     * <h2>Rebuild-and-swap, chosen over growing the model in place</h2>
+     *
+     * <p>{@link EventRowSource#rowCount()} is captured once at
+     * {@link EventRowSource#open}; {@link EventRowIndex} decides
+     * {@code DENSE} vs {@code SPARSE_ANCHORS} from three queries at open and
+     * never re-queries; {@link PagedTableModel} stores its row count in a
+     * {@code private final int} with no growth API, precisely so that
+     * {@link PagedTableModel#getRowCount} stays the non-blocking field read
+     * the EDT is allowed to do. Giving any of the three a way to grow in
+     * place would mean turning that field read into something that has to
+     * account for a concurrent writer — the one thing {@code PagedTableModel}
+     * exists to avoid.
+     *
+     * <p>{@code TimelineController} already makes the opposite trade for the
+     * same reason: build the next version off the EDT, then swap the
+     * finished object in on it. This view now makes the same trade rather
+     * than inventing a second way for a view to stay live. The swap does
+     * lose whatever pages were cached — the visible cells briefly show
+     * {@link PagedTableModel#PLACEHOLDER} again until they refetch — which is
+     * an acceptable cost at a several-second cadence, and one this method
+     * pays only when the row count or the row-index mode actually changed,
+     * never on an idle tick.
+     *
+     * <h2>Selection, scroll, and column widths, preserved explicitly</h2>
+     *
+     * <p>{@code JTable.setModel} clears the current selection unconditionally
+     * and, because {@code autoCreateColumnsFromModel} is never disabled,
+     * discards the whole {@code TableColumnModel} along with it -- it
+     * delivers a structural {@code TableModelEvent} and {@code JTable} treats
+     * that as "the whole table changed". Losing the row a user is reading,
+     * the scroll position they navigated to, and a column they widened to
+     * read a long event id, on every tick of a background timer, would make
+     * the table nearly unusable to actually read during a build. BEP events
+     * are only ever appended, never reordered or deleted, so a row index or a
+     * pixel offset valid before the swap still names the same event and the
+     * same place in the table afterwards, and column widths do not depend on
+     * row content at all; {@link #swapRows} reapplies all three once the new
+     * model is installed.
+     */
+    public void refreshLive() {
+        if (pageExecutor == null || source == null || rows == null) {
+            return;
+        }
+        long now = System.currentTimeMillis() * 1_000L;
+        if (now - lastLiveRefreshMicros < liveRefreshIntervalMicros) {
+            return;
+        }
+        // One refresh at a time. Without this a session whose ticks outpace
+        // the rebuild queues them up and the page executor never catches up.
+        if (refreshInFlight) {
+            return;
+        }
+        lastLiveRefreshMicros = now;
+        refreshInFlight = true;
+        SessionSource opened = source;
+        SessionReader reader = rows.reader();
+        int pageSize = rows.pageSize();
+        ExecutorService executor = pageExecutor;
+        executor.execute(() -> {
+            EventRowSource freshRows;
+            try {
+                freshRows = EventRowSource.open(reader, pageSize);
+            } catch (RuntimeException failure) {
+                log.debug("live events refresh failed", failure);
+                return;
+            } finally {
+                refreshInFlight = false;
+            }
+            SwingUtilities.invokeLater(() -> {
+                if (source != opened) {
+                    // Superseded while this refresh was running.
+                    return;
+                }
+                if (freshRows.rowCount() == rows.rowCount()
+                        && freshRows.rowIndexMode() == rows.rowIndexMode()) {
+                    return; // nothing new since the last refresh
+                }
+                swapRows(opened, freshRows);
+            });
+        });
+    }
+
+    /**
+     * Installs {@code freshRows} in place of the current row source,
+     * preserving the table's selection, scroll position, and column widths
+     * across the swap. See {@link #refreshLive} for why the swap happens at
+     * all and why that loses all three without this.
+     */
+    private void swapRows(SessionSource opened, EventRowSource freshRows) {
+        int viewRow = table.getSelectedRow();
+        int modelRowToReselect = viewRow >= 0 ? table.convertRowIndexToModel(viewRow) : -1;
+        Point viewPosition = tableScroll.getViewport().getViewPosition();
+        int[] columnWidths = currentColumnWidths();
+
+        rows = freshRows;
+        tableModel = new PagedTableModel<>(freshRows, EventTableColumns.columns(), pageExecutor,
+                freshRows.pageSize(), CACHE_PAGES);
+        tableModel.addTableModelListener(this::rowsUpdated);
+        table.setModel(tableModel);
+        restoreColumnWidths(columnWidths);
+        statusLabel.setText(describe(opened.info(), freshRows));
+        rowCountListener.accept(freshRows.rowCount());
+
+        if (modelRowToReselect >= 0 && modelRowToReselect < tableModel.getRowCount()) {
+            table.setRowSelectionInterval(modelRowToReselect, modelRowToReselect);
+        }
+        tableScroll.getViewport().setViewPosition(viewPosition);
+    }
+
+    /**
+     * The current column widths, in view order, captured just before a live
+     * refresh replaces the table's model. See {@link #restoreColumnWidths}
+     * for why this is captured at all.
+     */
+    private int[] currentColumnWidths() {
+        int count = table.getColumnCount();
+        int[] widths = new int[count];
+        for (int column = 0; column < count; column++) {
+            widths[column] = table.getColumnModel().getColumn(column).getWidth();
+        }
+        return widths;
+    }
+
+    /**
+     * Reapplies widths captured by {@link #currentColumnWidths}, in place of
+     * {@link #sizeColumns}'s hardcoded defaults.
+     *
+     * <h2>Why this instead of {@link #sizeColumns}</h2>
+     *
+     * <p>{@code EventsView} never disables {@code autoCreateColumnsFromModel},
+     * so every {@code JTable.setModel} call -- including the one a live
+     * refresh makes every couple of seconds for the length of a build --
+     * discards the existing {@code TableColumnModel} and builds a fresh one
+     * from scratch, each column back at its default width. Calling
+     * {@link #sizeColumns} there, as {@link #swapRows} used to, would
+     * silently snap a column the user had resized back to its hardcoded
+     * default on the very next tick (rule 12: never silently override) --
+     * so this reads the previous widths back first instead, the same "read
+     * before, reapply after" treatment already given to selection and scroll
+     * a few lines above. Both {@code width} and {@code preferredWidth} are
+     * restored because {@link #sizeColumns} only ever sets the latter and a
+     * user's interactive resize only ever sets the former; a live refresh
+     * should disturb neither kind of sizing.
+     */
+    private void restoreColumnWidths(int[] widths) {
+        int count = Math.min(widths.length, table.getColumnCount());
+        for (int column = 0; column < count; column++) {
+            javax.swing.table.TableColumn tableColumn = table.getColumnModel().getColumn(column);
+            tableColumn.setPreferredWidth(widths[column]);
+            tableColumn.setWidth(widths[column]);
         }
     }
 
@@ -345,7 +590,17 @@ public final class EventsView extends JPanel {
 
     private static String describe(SessionInfo info, EventRowSource rows) {
         StringBuilder text = new StringBuilder();
+        // Rule 11: while a capture is live the row count is a lower bound, not
+        // a total, and this is the one place in the view that states a total
+        // count out loud — so this is the one place that has to say which.
+        boolean stillCapturing = !info.state().isTerminal();
+        if (stillCapturing) {
+            text.append("at least ");
+        }
         text.append(EventValueFormat.count(rows.rowCount())).append(" events");
+        if (stillCapturing) {
+            text.append(" (still capturing)");
+        }
         text.append("  ·  state ").append(info.state());
         text.append("  ·  row index ").append(rows.rowIndexMode());
         List<SessionInfo.SourceInfo> sources = info.sources();

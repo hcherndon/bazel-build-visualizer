@@ -1240,6 +1240,45 @@ it is a different tab and was not reported.
   several positions and assert a viewport position the user is not at, which is
   a worse failure than the one being fixed.
 
+- **The Events tab populates during a build, not just after one** (2026-08-23).
+  `EventsView.openSession` was reachable from exactly one place,
+  `MainWindow.installSession`, which only ran after `captureFinished` — so the
+  table showed nothing at all while a capture was running, even though
+  `EventWriter` commits on a wall-clock timer regardless of pending rows and a
+  second reader connection against the live database already saw those rows,
+  which is exactly what `attachLiveOverview` already relied on for the
+  overview and the timeline. `MainWindow.CaptureListener.attachLiveOverview`
+  now opens the Events tab over the same live `SqliteSessionSource` those two
+  already use, once, the same way.
+  `EventRowSource.rowCount()` is captured once at `open`, `EventRowIndex`
+  decides `DENSE` vs `SPARSE_ANCHORS` from three queries at open and never
+  re-queries, and `PagedTableModel` stores its row count in a
+  `private final int` with no growth API — by design, so `getRowCount()` stays
+  a non-blocking EDT field read. Rather than giving any of the three a mutable,
+  concurrently-read count, `EventsView` now rebuilds and swaps, the same trade
+  `TimelineController` (see above) already makes for the timeline: a row
+  source is rebuilt off the page executor and the finished table model is
+  swapped in on the EDT, only when the row count or row-index mode actually
+  changed. `EventsView` runs its own daemon ticker at the same 2 s cadence for
+  the same reason the timeline's does — a live view driven only by BES
+  progress ticks stalls on a quiet build — shut down in `closeSession`, which
+  `openSession` calls first. `EventRowSource` now exposes its backing reader
+  (package-private) so a refresh reuses the same connection rather than
+  opening a new one every tick, which would otherwise accumulate one reader
+  per tick in `SqliteSessionSource`'s reader list for the life of a long
+  build.
+  `JTable.setModel` clears the selection unconditionally, so the swap
+  explicitly reads back the selected row and the scroll viewport's pixel
+  position beforehand and reapplies both afterwards — safe because BEP events
+  are only ever appended, never reordered or deleted, so a row index or a
+  pixel offset valid before the swap still names the same event and the same
+  place in the table after it. The status line now states a live session's
+  count as "at least N events (still capturing)" rather than a bare number
+  (rule 11: a growing count is a lower bound, not a total, and must say so).
+  `EventsViewLiveRefreshTest` proves the view's own timer grows the table with
+  no external call driving it, proves selection and scroll survive a swap, and
+  proves the lower-bound wording appears for a live session and not for a
+  finished one.
 - **The graph tab works on real sessions, over both graphs** (2026-08-23).
   Four defects and three absences, one change set. The defects: (1)
   `ActionEdgeDeriver.deriveAll` and `GraphIndexBuilder.build` had no production
