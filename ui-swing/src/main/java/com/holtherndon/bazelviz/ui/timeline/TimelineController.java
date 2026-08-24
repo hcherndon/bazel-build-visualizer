@@ -1,5 +1,8 @@
 package com.holtherndon.bazelviz.ui.timeline;
 
+import com.holtherndon.bazelviz.storage.entities.ActionRow;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -8,6 +11,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -78,9 +82,19 @@ public final class TimelineController {
      */
     private ScheduledExecutorService ticker;
     private SessionSource source;
+    /** Whether the open session is a running capture, for the in-flight band. */
+    private boolean live;
     private long generation;
     private long lastLiveRebuildMicros;
     private volatile boolean rebuildInFlight;
+    /**
+     * The grouping and sort the current model was built with. A window fetch
+     * that finds the user has changed either rebuilds the whole model instead:
+     * the window's lane keys and the model's lane list must come from the same
+     * grouping or every span lands in the "no current lane" row.
+     */
+    private LaneGrouping.By builtGrouping;
+    private LaneGrouping.SortBy builtSort;
 
     public TimelineController() {
         this(LIVE_REBUILD_INTERVAL_MICROS);
@@ -95,6 +109,7 @@ public final class TimelineController {
     TimelineController(long liveRebuildIntervalMicros) {
         this.liveRebuildIntervalMicros = liveRebuildIntervalMicros;
         view.onViewportChanged(this::refreshWindow);
+        view.onActionPicked(this::fetchDetails);
     }
 
     /** Called with an action id when the user picks a span on the timeline. */
@@ -119,6 +134,11 @@ public final class TimelineController {
         view.onRangeChanged(listener);
     }
 
+    /** Gives the view's inline inspector the shared navigation vocabulary. */
+    public void installEntityActions(EntityActions actions) {
+        view.installEntityActions(actions);
+    }
+
     /** Told when the timeline's selected time range changes. */
     @FunctionalInterface
     public interface RangeListener {
@@ -130,10 +150,24 @@ public final class TimelineController {
         return view;
     }
 
-    /** Builds the model for a newly opened session, off the EDT. */
+    /** Builds the model for a finished session, off the EDT. */
     public void openSession(SessionSource opened) {
+        openSession(opened, false);
+    }
+
+    /**
+     * Builds the model for a newly opened session, off the EDT.
+     *
+     * @param liveCapture true while this session is a capture still being
+     *     appended to — what turns on the in-flight target band and the
+     *     wall-clock right edge. The finished session that replaces the live
+     *     one arrives through {@link #openSession(SessionSource)} and turns
+     *     both off.
+     */
+    public void openSession(SessionSource opened, boolean liveCapture) {
         closeSession();
         this.source = opened;
+        this.live = liveCapture;
         long wanted = ++generation;
         ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "bbv-timeline");
@@ -141,28 +175,7 @@ public final class TimelineController {
             return thread;
         });
         worker = executor;
-        executor.execute(() -> {
-            Built built;
-            try {
-                built = build(opened);
-            } catch (RuntimeException | SQLException failure) {
-                log.debug("no timeline for this session", failure);
-                SwingUtilities.invokeLater(() -> view.showEmpty(
-                        "This session's timeline could not be built."));
-                return;
-            }
-            SwingUtilities.invokeLater(() -> {
-                if (wanted != generation) {
-                    return;
-                }
-                if (built.model == null) {
-                    view.showEmpty(built.why);
-                } else {
-                    view.setModel(built.model);
-                    refreshWindow();
-                }
-            });
-        });
+        scheduleBuild(executor, opened, wanted, true);
         startTicker();
     }
 
@@ -192,6 +205,9 @@ public final class TimelineController {
         ExecutorService executor = worker;
         worker = null;
         source = null;
+        live = false;
+        builtGrouping = null;
+        builtSort = null;
         if (executor != null) {
             executor.shutdownNow();
         }
@@ -234,19 +250,53 @@ public final class TimelineController {
         if (executor == null) {
             return;
         }
-        long wanted = generation;
+        scheduleBuild(executor, open, generation, false);
+    }
+
+    /**
+     * Schedules one full model build on the worker.
+     *
+     * <p>The grouping and sort are read from the view here, on the EDT, and
+     * carried into the worker as values — the worker never touches a Swing
+     * component. They are remembered as what the model was built with, so
+     * {@link #refreshWindow} can tell a plain pan (window refetch) from a
+     * regroup (full rebuild).
+     *
+     * @param initial whether a failure should blank the view; a failed live
+     *     refresh keeps showing the last good model instead
+     */
+    private void scheduleBuild(
+            ExecutorService executor, SessionSource opened, long wanted, boolean initial) {
+        LaneGrouping.By by = view.grouping();
+        LaneGrouping.SortBy sortBy = view.sortBy();
+        boolean liveNow = live;
+        builtGrouping = by;
+        builtSort = sortBy;
         executor.execute(() -> {
             Built built;
             try {
-                built = build(open);
+                built = build(opened, by, sortBy, liveNow);
             } catch (RuntimeException | SQLException failure) {
-                log.debug("live timeline refresh failed", failure);
+                if (initial) {
+                    log.debug("no timeline for this session", failure);
+                    SwingUtilities.invokeLater(() -> view.showEmpty(
+                            "This session's timeline could not be built."));
+                } else {
+                    log.debug("live timeline refresh failed", failure);
+                }
                 return;
             } finally {
                 rebuildInFlight = false;
             }
             SwingUtilities.invokeLater(() -> {
-                if (wanted == generation && built.model != null) {
+                if (wanted != generation) {
+                    return;
+                }
+                if (built.model == null) {
+                    if (initial) {
+                        view.showEmpty(built.why);
+                    }
+                } else {
                     view.setModel(built.model);
                     refreshWindow();
                 }
@@ -254,11 +304,20 @@ public final class TimelineController {
         });
     }
 
-    /** Fetches the exact spans for whatever range the view is showing. */
+    /**
+     * Fetches the exact spans for whatever range the view is showing — or,
+     * when the user has changed the grouping since the model was built,
+     * rebuilds the whole model first, because a window keyed by one grouping
+     * painted against lanes from another puts every span in no lane at all.
+     */
     private void refreshWindow() {
         ExecutorService executor = worker;
         SessionSource open = source;
         if (executor == null || open == null) {
+            return;
+        }
+        if (builtGrouping != view.grouping() || builtSort != view.sortBy()) {
+            scheduleBuild(executor, open, generation, false);
             return;
         }
         var range = view.visibleRange();
@@ -267,11 +326,12 @@ public final class TimelineController {
         }
         long from = range.get()[0];
         long to = range.get()[1];
+        LaneGrouping.By by = view.grouping();
         long wanted = generation;
         executor.execute(() -> {
             SpanWindow built;
-            try (var reader = open.openEntityReader()) {
-                built = spansIn(open, from, to);
+            try {
+                built = spansIn(open, from, to, by);
             } catch (RuntimeException failure) {
                 log.debug("fetching timeline spans", failure);
                 return;
@@ -284,11 +344,85 @@ public final class TimelineController {
         });
     }
 
+    /**
+     * Fetches one clicked action's details for the inline inspector, off the
+     * EDT, and hands the view a {@link SpanDetails} — plain strings and refs,
+     * nothing that can block.
+     */
+    private void fetchDetails(long actionId) {
+        ExecutorService executor = worker;
+        SessionSource open = source;
+        if (executor == null || open == null) {
+            return;
+        }
+        long wanted = generation;
+        executor.execute(() -> {
+            SpanDetails details;
+            try (var reader = open.openEntityReader()) {
+                Optional<ActionRow> row = reader.action(actionId);
+                if (row.isEmpty()) {
+                    details = new SpanDetails(
+                            "Action " + actionId,
+                            List.of("This action is no longer in the session."),
+                            List.of());
+                } else {
+                    details = detailsOf(row.get());
+                }
+            } catch (Exception failure) {
+                log.debug("fetching action details for the timeline inspector", failure);
+                return;
+            }
+            SpanDetails toShow = details;
+            SwingUtilities.invokeLater(() -> {
+                if (wanted == generation) {
+                    view.showInspector(toShow);
+                }
+            });
+        });
+    }
+
+    /**
+     * One action as the inspector shows it: every fact something reported,
+     * and no line at all for a fact nothing did — a missing duration is a
+     * missing line, never a zero.
+     */
+    static SpanDetails detailsOf(ActionRow row) {
+        List<String> lines = new ArrayList<>();
+        lines.add("Action " + row.id()
+                + row.mnemonic().map(m -> " (" + m + ")").orElse("")
+                + " — " + row.outcome());
+        lines.add("Primary output: " + row.primaryOutput());
+        row.label().ifPresent(label -> lines.add("Target: " + label));
+        if (row.durationMicros().isPresent()) {
+            lines.add(String.format(java.util.Locale.ROOT,
+                    "Duration: %.3f s", row.durationMicros().getAsLong() / 1_000_000.0));
+        } else {
+            row.durationUnknownReason().ifPresent(
+                    why -> lines.add("Duration unknown: " + why));
+        }
+        row.execution().runner().ifPresent(runner -> lines.add("Ran via: " + runner));
+        row.execution().cacheHit().ifPresent(hit ->
+                lines.add(hit ? "Cache hit" : "Executed (cache miss)"));
+        row.spawnExitCode().ifPresent(code -> lines.add("Spawn exit code: " + code));
+        row.failureCategory().ifPresent(category -> lines.add("Failure: " + category));
+        row.failureMessage().ifPresent(message -> lines.add(message));
+
+        List<EntityRef> refs = new ArrayList<>();
+        refs.add(new EntityRef.ActionId(row.id()));
+        row.label().ifPresent(label -> refs.add(new EntityRef.TargetLabel(label)));
+        row.bepEventId().ifPresent(eventId -> refs.add(new EntityRef.EventId(eventId)));
+
+        String title = row.label().orElse(row.primaryOutput());
+        return new SpanDetails(title, lines, refs);
+    }
+
     // ------------------------------------------------------------- the queries
 
     private record Built(TimelineModel model, String why) {}
 
-    private Built build(SessionSource opened) throws SQLException {
+    private static Built build(
+            SessionSource opened, LaneGrouping.By by, LaneGrouping.SortBy sortBy, boolean live)
+            throws SQLException {
         try (Connection connection = opened.openTimelineConnection()) {
             SessionSpanSource spans = new SessionSpanSource(connection, true);
             SessionSpanSource.Wall wall = spans.wall();
@@ -300,18 +434,70 @@ public final class TimelineController {
             spans.spanCount();
 
             TimelineLodIndex index = TimelineLodIndex.build(spans, from, to);
-            List<TimelineModel.Lane> lanes = lanes(connection, view.grouping());
+            List<TimelineModel.Lane> lanes = lanes(connection, by);
             return new Built(new TimelineModel(
                     index,
-                    LaneGrouping.sort(lanes, view.sortBy(), Map.of()),
+                    LaneGrouping.sort(lanes, sortBy, Map.of()),
                     List.of(),
                     spans.categoryNames(),
                     spans.skippedForNoTime(),
                     count(connection, "SELECT count(*) FROM action_attempts"
                             + " WHERE cache_hit IS NOT NULL"),
                     count(connection, "SELECT count(*) FROM action_attempts"
-                            + " WHERE runner IS NOT NULL AND runner <> ''")), null);
+                            + " WHERE runner IS NOT NULL AND runner <> ''"),
+                    live ? liveBand(connection) : TimelineModel.LiveBand.EMPTY), null);
         }
+    }
+
+    /** In-flight means configured, and nothing completed or aborted it yet. */
+    private static final String IN_FLIGHT_WHERE =
+            " WHERE t.outcome = 'CONFIGURED'"
+                    + " AND NOT EXISTS (SELECT 1 FROM configured_targets ct"
+                    + "   WHERE ct.target_id = t.id"
+                    + "   AND ct.outcome IN ('BUILT', 'FAILED', 'ABORTED'))";
+
+    /**
+     * What is in flight right now, for the live band.
+     *
+     * <p>BEP target events carry no timestamp of their own, so a target's
+     * position is the wall-clock instant its {@code TargetConfigured} event
+     * was received — {@code bep_events.receive_micros} through the target's
+     * {@code bep_event_id}, which {@code EntityWriter} already records. The
+     * events layer captured the signal; this only reads it. A target whose
+     * event has no receive time is counted, stated, and drawn nowhere.
+     */
+    private static TimelineModel.LiveBand liveBand(Connection connection) throws SQLException {
+        long total = 0;
+        long withoutTime = 0;
+        try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT count(*), coalesce(sum(CASE WHEN e.receive_micros IS NULL"
+                                + " THEN 1 ELSE 0 END), 0)"
+                                + " FROM targets t"
+                                + " LEFT JOIN bep_events e ON e.id = t.bep_event_id"
+                                + IN_FLIGHT_WHERE);
+                ResultSet rows = statement.executeQuery()) {
+            if (rows.next()) {
+                total = rows.getLong(1);
+                withoutTime = rows.getLong(2);
+            }
+        }
+        List<TimelineModel.LiveBand.InFlight> inFlight = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT l.value, e.receive_micros"
+                                + " FROM targets t"
+                                + " JOIN labels l ON l.id = t.label_id"
+                                + " JOIN bep_events e ON e.id = t.bep_event_id"
+                                + IN_FLIGHT_WHERE
+                                + " AND e.receive_micros IS NOT NULL"
+                                + " ORDER BY e.receive_micros"
+                                + " LIMIT " + SpanWindow.MAX_SPANS);
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                inFlight.add(new TimelineModel.LiveBand.InFlight(
+                        rows.getString(1), rows.getLong(2)));
+            }
+        }
+        return new TimelineModel.LiveBand(true, inFlight, total, withoutTime);
     }
 
     /**
@@ -380,11 +566,50 @@ public final class TimelineController {
                 ? List.of(new TimelineModel.Lane("All actions", "", 0, 0, 0, 0)) : lanes;
     }
 
-    private SpanWindow spansIn(SessionSource opened, long from, long to) {
+    /**
+     * The SQL expression producing a span's lane key under one grouping —
+     * the same value {@link #lanes} groups by, so the window's keys join the
+     * model's lanes exactly. This join is the zoom-shuffle fix: the painter
+     * places a span by this key, never by the span's index in the fetch.
+     *
+     * <p>The attempt-based groupings (runner, cache) key an action by its one
+     * attached attempt; an action with none or several honestly keys to
+     * 'unknown', the same lane {@link #lanes} gives work nothing reported on.
+     */
+    private static String laneKeyExpression(LaneGrouping.By by) {
+        String attemptCount =
+                "(SELECT count(*) FROM action_attempts t WHERE t.action_id = a.id)";
+        return switch (by) {
+            case MNEMONIC -> "coalesce("
+                    + "(SELECT m.value FROM mnemonics m WHERE m.id = a.mnemonic_id), 'unknown')";
+            case TARGET -> "coalesce("
+                    + "(SELECT l.value FROM labels l WHERE l.id = a.label_id), 'unknown')";
+            case PACKAGE -> "coalesce((SELECT substr(l.value, 1,"
+                    + " CASE WHEN instr(l.value, ':') > 0 THEN instr(l.value, ':') - 1"
+                    + " ELSE length(l.value) END)"
+                    + " FROM labels l WHERE l.id = a.label_id), 'unknown')";
+            case EXECUTION_PLATFORM -> "coalesce((SELECT d.execution_platform"
+                    + " FROM declared_actions d WHERE d.action_id = a.id), 'unknown')";
+            case RUNNER, THREAD -> "CASE WHEN " + attemptCount + " = 1"
+                    + " THEN coalesce((SELECT t.runner FROM action_attempts t"
+                    + "   WHERE t.action_id = a.id), 'unknown')"
+                    + " ELSE 'unknown' END";
+            case CACHE_RESULT -> "CASE WHEN " + attemptCount + " = 1"
+                    + " THEN coalesce((SELECT CASE WHEN t.cache_hit = 1 THEN 'cache hit'"
+                    + "   WHEN t.cache_hit = 0 THEN 'executed' END"
+                    + "   FROM action_attempts t WHERE t.action_id = a.id), 'unknown')"
+                    + " ELSE 'unknown' END";
+            case NONE -> "''";
+        };
+    }
+
+    private static SpanWindow spansIn(
+            SessionSource opened, long from, long to, LaneGrouping.By by) {
         try (Connection connection = opened.openTimelineConnection()) {
             SpanWindow.Builder builder = SpanWindow.builder(from, to);
             try (PreparedStatement statement = connection.prepareStatement(
-                    "SELECT a.id, a.start_micros, a.end_micros, a.outcome FROM actions a"
+                    "SELECT a.id, a.start_micros, a.end_micros, a.outcome, "
+                            + laneKeyExpression(by) + " FROM actions a"
                             + " WHERE a.start_micros IS NOT NULL AND a.end_micros IS NOT NULL"
                             + "   AND a.end_micros >= ? AND a.start_micros <= ?"
                             + " ORDER BY a.start_micros"
@@ -395,7 +620,8 @@ public final class TimelineController {
                     while (rows.next()) {
                         int flags = "FAILED".equals(rows.getString(4))
                                 ? SpanSource.FLAG_FAILED : 0;
-                        builder.add(rows.getLong(2), rows.getLong(3), flags, rows.getLong(1));
+                        builder.add(rows.getLong(2), rows.getLong(3), flags,
+                                rows.getLong(1), rows.getString(5));
                     }
                 }
             }

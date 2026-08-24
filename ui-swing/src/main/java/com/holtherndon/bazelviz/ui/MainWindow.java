@@ -336,6 +336,10 @@ public final class MainWindow extends JFrame {
         // menu and inspector, all dispatch into this::navigate.
         actionsView.installEntityActions(entityActions);
         eventsView.installEntityActions(entityActions);
+        // The timeline's inline inspector adopts the same vocabulary: a
+        // clicked span's details offer the same jumps a table row does, and
+        // they land in the same navigate() switch.
+        timeline.installEntityActions(entityActions);
         graphView.onActionSelected(this::followGraphSelection);
         // A finding points at records; these are the two ways it does so.
         // Selecting the evidence opens the action; following a link opens the
@@ -1494,7 +1498,11 @@ public final class MainWindow extends JFrame {
                         // The timeline follows the build too. It is the view
                         // where "live" is most of the point -- watching a build
                         // fill in is the reason to have one open while it runs.
-                        timeline.openSession(opened);
+                        // Live, so it shows the in-flight target band and its
+                        // right edge advances with the wall clock; the finished
+                        // session that replaces this one via installSession()
+                        // opens without the flag and turns both off.
+                        timeline.openSession(opened, true);
                         // So does the Events tab: previously it opened nothing
                         // until installSession() ran after captureFinished, so
                         // it showed nothing at all while a build was running.

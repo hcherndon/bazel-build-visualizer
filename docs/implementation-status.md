@@ -1461,3 +1461,48 @@ it is a different tab and was not reported.
   for the whole build. `InspectorPanel`'s legacy source-event button yields
   to the strip whenever the strip offers the same jump, so no action appears
   twice.
+
+- **The timeline places spans by identity, stacks them honestly, and knows
+  what "live" means** (2026-08-24). Four connected fixes in one overhaul.
+  *Placement:* every `SpanWindow` span now carries the lane key its grouping
+  assigns it — the same value `TimelineController.lanes()` puts in
+  `Lane.key` — and `paintSpans` joins span to lane by that key. The old
+  `i % lanes` placement made a span's row a function of its position in the
+  fetch, so every pan and zoom (each of which refetches the window) shuffled
+  the whole plot vertically; `TimelineSpanPlacementTest` drives the real
+  mouse listeners and requires every span to stay put. A span whose key is in
+  no current lane (transient while a regroup's rebuild lands — the controller
+  now rebuilds the model, not just the window, when the grouping changes)
+  draws in an extra row below the lanes with its exact count on the status
+  line. *Stacking:* overlapping same-lane spans stack top-to-bottom by start
+  time (`SpanStacking`, pure and order-independent), bounded at
+  `SpanStacking.MAX_SUB_ROWS` (6, in docs/limits.md); overflow draws into the
+  last sub-row — never dropped — and the status line states the exact count.
+  *Live:* while a capture is live and follow-live is on, the right edge is
+  the wall clock (a 250 ms EDT timer re-fits a *following* viewport;
+  `TimelineViewport.withWall` still refuses to move a navigated one), and a
+  labelled band above the lanes shows **in-flight targets** — configured, not
+  yet completed — as blue spans growing from their configuration's BEP
+  receive time. Target-level by explicit decision: BEP has no action-start
+  event (`ActionOutcome` documents there is no way to spell RUNNING), so
+  TargetConfigured→TargetCompleted are the only live signals, and the band
+  says "targets" and "BEP receive time" so nobody reads it as running
+  actions. No schema change was needed: `targets.bep_event_id` /
+  `configured_targets.bep_event_id` already point at the events, and
+  `bep_events.receive_micros` already holds the times. A target with no
+  receive timestamp is counted in the band label and drawn nowhere.
+  `TimelineColours` gained green: completed success is `SUCCESS`, failure
+  stays `FAILED` red, and `IN_FLIGHT` blue is reserved for the band — a
+  finished action can no longer wear the colour of one still running.
+  *Click:* a clicked segment opens an inline inspector on the Timeline card
+  (previously the click selected a row in the Actions tab without switching
+  to it — visibly nothing). The inspector shows what is already in hand
+  immediately, the controller fetches the action's details off the EDT
+  (`EntityReader.action`), absent facts are absent lines (an unknown
+  duration is its worded reason, never "0.000 s"), and the actions strip is
+  the shared `EntityActions` facility — same vocabulary, same
+  `MainWindow.navigate` switch, with "show on timeline" omitted because the
+  segment is already there. *Defaults:* group-by Mnemonic and sort-by Name
+  are explicit selections (`TimelineDefaultsTest`); they used to be
+  `values()[0]` accidents — Runner and first-activity — and Runner needs an
+  execution log most sessions lack. Follow-live stays default-on.

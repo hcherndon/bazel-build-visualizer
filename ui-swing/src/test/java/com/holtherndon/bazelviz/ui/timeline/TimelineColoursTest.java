@@ -93,6 +93,30 @@ final class TimelineColoursTest {
     }
 
     @Test
+    @DisplayName("completed success is green, failure red, and blue belongs to in-flight alone")
+    void outcomeColoursAreDistinct() {
+        // A completed action segment is green on success and red on failure.
+        assertThat(TimelineColours.forSpan(TimelineColours.Mode.OUTCOME, 0))
+                .isEqualTo(TimelineColours.SUCCESS);
+        assertThat(TimelineColours.forSpan(
+                        TimelineColours.Mode.OUTCOME, SpanSource.FLAG_FAILED))
+                .isEqualTo(TimelineColours.FAILED);
+        // Blue is reserved for the live band's in-flight targets: nothing the
+        // outcome mode paints may wear it, or a finished action would read as
+        // still running.
+        assertThat(TimelineColours.forSpan(TimelineColours.Mode.OUTCOME, 0))
+                .isNotEqualTo(TimelineColours.IN_FLIGHT);
+        assertThat(TimelineColours.IN_FLIGHT)
+                .isNotEqualTo(TimelineColours.SUCCESS)
+                .isNotEqualTo(TimelineColours.FAILED)
+                .isNotEqualTo(TimelineColours.UNKNOWN);
+        // The bins agree with the spans.
+        assertThat(TimelineColours.forBin(
+                        indexOf(0), TimelineColours.Mode.OUTCOME, 0, 0))
+                .isEqualTo(TimelineColours.SUCCESS);
+    }
+
+    @Test
     @DisplayName("a span with no cache flag is grey, not a miss")
     void unknownSpansAreGrey() {
         assertThat(TimelineColours.forSpan(TimelineColours.Mode.CACHE, 0))

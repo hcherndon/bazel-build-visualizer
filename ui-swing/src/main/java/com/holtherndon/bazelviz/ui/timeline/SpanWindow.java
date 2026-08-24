@@ -9,8 +9,19 @@ import java.util.Arrays;
  *
  * <p>Close zoom draws spans one by one, and a window is refetched every time
  * the user pans. A list of records would allocate one object per span per pan;
- * three parallel arrays allocate three, and the paint loop reads them without
+ * parallel arrays allocate a handful, and the paint loop reads them without
  * a dereference. This is the same reasoning as {@code CsrGraph}'s.
+ *
+ * <h2>Every span knows its lane</h2>
+ *
+ * <p>Each span carries the lane key it belongs to under the grouping the
+ * window was fetched for — the same value {@code TimelineController.lanes()}
+ * puts in {@link TimelineModel.Lane#key}. The painter places a span by looking
+ * its key up in the model's lane list, so where a span is drawn is a fact
+ * about the span, not about its position in the fetch. Before this, the
+ * painter used {@code i % lanes}: the row a span landed in depended on how
+ * many spans happened to precede it in the window, so panning or zooming —
+ * which refetches the window — shuffled every span to a new row.
  *
  * <h2>Bounded, and honest about it</h2>
  *
@@ -34,24 +45,26 @@ public final class SpanWindow {
     public static final int MAX_SPANS = 20_000;
 
     /** A window covering nothing, for a session with no timeline. */
-    public static final SpanWindow EMPTY =
-            new SpanWindow(new long[0], new long[0], new int[0], new long[0], 0, 0, 0, 0);
+    public static final SpanWindow EMPTY = new SpanWindow(
+            new long[0], new long[0], new int[0], new long[0], new String[0], 0, 0, 0, 0);
 
     private final long[] startMicros;
     private final long[] endMicros;
     private final int[] flags;
     private final long[] nodeIds;
+    private final String[] laneKeys;
     private final int size;
     private final long fromMicros;
     private final long toMicros;
     private final long droppedSpans;
 
     private SpanWindow(long[] startMicros, long[] endMicros, int[] flags, long[] nodeIds,
-            int size, long fromMicros, long toMicros, long droppedSpans) {
+            String[] laneKeys, int size, long fromMicros, long toMicros, long droppedSpans) {
         this.startMicros = startMicros;
         this.endMicros = endMicros;
         this.flags = flags;
         this.nodeIds = nodeIds;
+        this.laneKeys = laneKeys;
         this.size = size;
         this.fromMicros = fromMicros;
         this.toMicros = toMicros;
@@ -84,6 +97,14 @@ public final class SpanWindow {
         return nodeIds[i];
     }
 
+    /**
+     * The lane key this span belongs to under the grouping this window was
+     * fetched for — the join to {@link TimelineModel.Lane#key}.
+     */
+    public String laneKey(int i) {
+        return laneKeys[i];
+    }
+
     /** The range this window was built for. */
     public long fromMicros() {
         return fromMicros;
@@ -107,6 +128,7 @@ public final class SpanWindow {
         private long[] ends = new long[1024];
         private int[] flagValues = new int[1024];
         private long[] ids = new long[1024];
+        private String[] keys = new String[1024];
         private int size;
         private long dropped;
 
@@ -116,7 +138,7 @@ public final class SpanWindow {
         }
 
         /** Adds a span, or counts it as dropped once the cap is reached. */
-        public Builder add(long start, long end, int flags, long nodeId) {
+        public Builder add(long start, long end, int flags, long nodeId, String laneKey) {
             if (size == MAX_SPANS) {
                 dropped++;
                 return this;
@@ -127,11 +149,13 @@ public final class SpanWindow {
                 ends = Arrays.copyOf(ends, grown);
                 flagValues = Arrays.copyOf(flagValues, grown);
                 ids = Arrays.copyOf(ids, grown);
+                keys = Arrays.copyOf(keys, grown);
             }
             starts[size] = start;
             ends[size] = end;
             flagValues[size] = flags;
             ids[size] = nodeId;
+            keys[size] = laneKey == null ? "" : laneKey;
             size++;
             return this;
         }
@@ -145,7 +169,7 @@ public final class SpanWindow {
             return new SpanWindow(
                     Arrays.copyOf(starts, size), Arrays.copyOf(ends, size),
                     Arrays.copyOf(flagValues, size), Arrays.copyOf(ids, size),
-                    size, fromMicros, toMicros, dropped);
+                    Arrays.copyOf(keys, size), size, fromMicros, toMicros, dropped);
         }
     }
 

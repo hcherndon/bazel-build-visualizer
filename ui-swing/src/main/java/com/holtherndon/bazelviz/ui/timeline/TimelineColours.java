@@ -25,8 +25,19 @@ public final class TimelineColours {
     /** Spans and bins with nothing said about them. Deliberately unremarkable. */
     public static final Color UNKNOWN = new Color(0x9E, 0x9E, 0x9E);
 
-    /** Work that succeeded, in the mode that says nothing else. */
-    public static final Color PLAIN = new Color(0x42, 0x85, 0xF4);
+    /**
+     * Work that finished and succeeded. Green, so that blue can mean exactly
+     * one thing on this timeline: {@link #IN_FLIGHT}. When success was also
+     * blue, a live view could not tell a target still building from an action
+     * that finished fine — the two most different claims a span can make.
+     */
+    public static final Color SUCCESS = new Color(0x34, 0xA8, 0x53);
+
+    /**
+     * Work still happening: a target configured and not yet completed, in the
+     * live band. Reserved — nothing that has finished may wear this colour.
+     */
+    public static final Color IN_FLIGHT = new Color(0x42, 0x85, 0xF4);
 
     /** Work that failed. Loud in every mode, because it always matters. */
     public static final Color FAILED = new Color(0xD9, 0x3B, 0x3B);
@@ -98,7 +109,7 @@ public final class TimelineColours {
             return FAILED;
         }
         return switch (mode) {
-            case OUTCOME -> PLAIN;
+            case OUTCOME -> SUCCESS;
             case CACHE -> {
                 int hits = index.cacheHitCount(level, bin);
                 int misses = index.cacheMissCount(level, bin);
@@ -124,7 +135,7 @@ public final class TimelineColours {
             return FAILED;
         }
         return switch (mode) {
-            case OUTCOME -> PLAIN;
+            case OUTCOME -> SUCCESS;
             case CACHE -> (flags & SpanSource.FLAG_CACHE_KNOWN) == 0
                     ? UNKNOWN
                     : (flags & SpanSource.FLAG_CACHE_HIT) != 0 ? CACHE_HIT : CACHE_MISS;
