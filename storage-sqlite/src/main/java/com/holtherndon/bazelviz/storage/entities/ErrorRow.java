@@ -18,7 +18,7 @@ import java.util.OptionalLong;
  * @param detail the failure category or the abort reason
  * @param message Bazel's own text, verbatim and never parsed
  */
-public record FailureRow(
+public record ErrorRow(
         Kind kind,
         long id,
         String subject,
@@ -47,7 +47,7 @@ public record FailureRow(
          * <p>For most failures this is the only diagnostic there is. A syntax
          * error produces thirteen events and zero structured messages: the
          * compiler's own text exists solely in {@code progress.stderr}, and a
-         * failures view without these rows shows nothing at all for the most
+         * Errors view without these rows shows nothing at all for the most
          * common kind of failure a build has.
          *
          * <p>The row carries the size, not the text — the bytes stay in the
@@ -67,7 +67,7 @@ public record FailureRow(
         }
     }
 
-    public FailureRow {
+    public ErrorRow {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(subject, "subject");
         Objects.requireNonNull(detail, "detail");

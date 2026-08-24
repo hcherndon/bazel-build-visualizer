@@ -9,7 +9,7 @@ follow this template:
 
 The full catalog grows with Phases 4-8. Three worked examples fix the format,
 and the Phase 3 catalog below covers every number the Overview, Actions, Tests
-and Failures views put on screen.
+and Errors views put on screen.
 
 ---
 
@@ -59,7 +59,7 @@ and Failures views put on screen.
 
 ## Phase 3 catalog
 
-Every number in the Overview, Actions, Tests and Failures views. Where two
+Every number in the Overview, Actions, Tests and Errors views. Where two
 entries look like the same quantity, they are not, and the pair is the point.
 
 ### Counted by this session
@@ -254,7 +254,7 @@ with the counts above.
   own `totalRunDuration`, which excludes failed retries and understated real
   wall time by 13x on a measured six-attempt test.
 
-### Failures
+### Errors
 
 **Failed actions / failed targets / targets not built**
 
