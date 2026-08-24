@@ -53,13 +53,36 @@ public final class GraphSourceSummary {
                     text.append(detail);
                 });
 
+        boolean labelGraph = source.graphKind()
+                .filter(kind -> kind == com.holtherndon.bazelviz.core.graph
+                        .GraphKind.CONFIGURED_TARGETS)
+                .isPresent();
         source.declaredActions().ifPresent(declared -> {
+            if (labelGraph) {
+                // The importer stores its node count in the same column, and
+                // a configured target is not an action; calling it one here
+                // would conflate the two graphs this selector exists to keep
+                // apart.
+                text.append(' ').append(declared).append(" configured targets were analysed.");
+                return;
+            }
             text.append(' ').append(declared).append(" actions were declared");
             source.correlatedActions().ifPresent(correlated -> text
                     .append(", of which ").append(correlated)
                     .append(" also ran in this build"));
             text.append('.');
         });
+        // What a node means, said where the graph is chosen: the two graphs
+        // share vertices' names and nothing else, and rule 13 forbids letting
+        // a user believe one is the other.
+        if (labelGraph) {
+            text.append(" A node is one target label; an edge is a rule input,"
+                    + " collapsed across configurations. Source files and labels the"
+                    + " analysis did not cover are not nodes here.");
+        } else if (source.graphKind().isPresent()) {
+            text.append(" A node is one declared action; an edge is a produced"
+                    + " input, so several actions may serve one target label.");
+        }
         return text.toString();
     }
 

@@ -323,6 +323,69 @@ final class GraphCanvasPanelTest {
     }
 
     @Test
+    @DisplayName("a typed node limit is a real setting, not a hint")
+    void typedNodeLimitIsHonoured() throws Exception {
+        panel.showNode(2);
+        awaitDrawn();
+
+        // Before the spinner existed, the only way to change the budget was
+        // the over-limit bar's doubling button — so the one direction a user
+        // could not go was down, and no exact number was reachable at all.
+        SwingUtilities.invokeAndWait(() -> panel.nodeLimitControlForTesting().setValue(2));
+        awaitCondition(panel::isOverLimitShown, "the smaller budget to be enforced");
+
+        assertThat(panel.nodeLimit()).isEqualTo(2);
+        assertThat(panel.overLimitText()).isNotBlank();
+
+        SwingUtilities.invokeAndWait(() -> panel.nodeLimitControlForTesting().setValue(50));
+        awaitCondition(() -> !panel.isOverLimitShown(), "the raised budget to fit");
+        assertThat(panel.nodeLimit()).isEqualTo(50);
+    }
+
+    @Test
+    @DisplayName("the spinner shows the limit however the limit was raised")
+    void spinnerFollowsProgrammaticRaises() throws Exception {
+        panel.raiseLimits(7, 7);
+
+        // One number, two faces. A bar that raised the limit while the
+        // control still showed the old one would make the control a lie.
+        assertThat((Integer) panel.nodeLimitControlForTesting().getValue()).isEqualTo(7);
+    }
+
+    @Test
+    @DisplayName("focusing a drawn node redraws the graph around it")
+    void focusRecentresTheDrawing() throws Exception {
+        panel.showNode(0);
+        awaitDrawn();
+
+        // The neighbourhood of node 0 at depth 2 along the chain: 0, 1, 2.
+        GraphModel before = panel.canvas().model();
+        assertThat(before.size()).isEqualTo(3);
+        int position = -1;
+        for (int i = 0; i < before.size(); i++) {
+            if (before.nodeAt(i) == 2) {
+                position = i;
+            }
+        }
+        assertThat(position).isNotNegative();
+
+        // Clicking used to move only the trees while the canvas kept drawing
+        // the old root, so there was no way to walk the graph by looking at
+        // it. Double-click and the context menu both land here.
+        java.util.concurrent.atomic.AtomicInteger followed =
+                new java.util.concurrent.atomic.AtomicInteger(-1);
+        panel.onNodeSelected(followed::set);
+        int at = position;
+        SwingUtilities.invokeAndWait(() -> panel.focusOnPosition(at));
+        awaitCondition(() -> panel.canvas().model().size() == 5,
+                "the drawing to recentre on node 2");
+
+        // Node 2's neighbourhood at depth 2 spans the whole six-node chain's
+        // middle: 0..4. And the trees were told, so the two halves agree.
+        assertThat(followed.get()).isEqualTo(2);
+    }
+
+    @Test
     @DisplayName("raising the limit is what makes an over-sized whole graph drawable")
     void raisingTheLimitRedraws() throws Exception {
         panel.raiseLimits(2, 2);

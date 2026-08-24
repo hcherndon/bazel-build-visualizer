@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
-import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import java.awt.Graphics2D;
@@ -68,7 +68,7 @@ final class GraphCanvasScaleTest {
         return GraphModel.of(
                 new GraphLayoutService.Rendered(
                         GraphLayoutService.Request.whole(
-                                EdgeDerivation.DECLARED,
+                                GraphKind.DECLARED_ACTIONS,
                                 GraphExtract.DEFAULT_NODE_LIMIT,
                                 GraphExtract.DEFAULT_EDGE_LIMIT),
                         extract, layout, null, extract.describe()),

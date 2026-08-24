@@ -1279,3 +1279,32 @@ it is a different tab and was not reported.
   no external call driving it, proves selection and scroll survive a swap, and
   proves the lower-bound wording appears for a live session and not for a
   finished one.
+- **The graph tab works on real sessions, over both graphs** (2026-08-23).
+  Four defects and three absences, one change set. The defects: (1)
+  `ActionEdgeDeriver.deriveAll` and `GraphIndexBuilder.build` had no production
+  caller — the capture imported aquery/cquery output and stopped, so every real
+  session opened the graph tab to "no action graph" while the whole Phase 5/7
+  stack passed its tests. Edge derivation and CSR index building now run in
+  `CaptureCoordinator`'s quiet finalization step, and a failure degrades to a
+  named warning rather than failing the capture. (2) The "Depends on" tree and
+  the rooted canvas modes walked the forward (producer-to-consumer) index under
+  the name "dependencies", so they showed the things that *depend on* a node;
+  the direction binding is fixed in `GraphExtract`/`GraphLayoutService`/
+  `GraphView` and pinned by tests in all three. (3) The root rows of both trees
+  never loaded their children — JTree expands a fresh root itself, so the
+  lazy-load expansion listener never fired for it. (4) Clicking a canvas node
+  moved only the trees; the canvas kept drawing the old root's neighbourhood.
+  Double-click and a "Focus here" context menu now recentre the drawing and
+  re-root the trees together.
+  The absences: the configured-target label graph — imported since Phase 5 and
+  read by nothing — has a CSR index (`graph_indexes` kind `CONFIGURED_TARGETS`)
+  and `GraphQueries` accessors keyed on `GraphKind`; the graph-source selector
+  is now a control rather than a caption, switching search, trees, path finder
+  and canvas between the action graph and the label graph, with the sentence
+  under it stating what a node means in each (rule 13); and the node limit is a
+  spinner beside the depth control (`MIN_NODE_LIMIT`/`MAX_NODE_LIMIT` in
+  `docs/limits.md`) instead of only the over-limit bar's doubling button.
+  `GraphQueries.DEFAULT_NODE_BUDGET`, documented and enforced nowhere, is
+  removed. The storage graph package gained its own test classes (37 tests) and
+  `RealBazelGraphTest` now proves, on a real captured build, that the loaded
+  indexes answer label searches and bounded traversals over both graphs.

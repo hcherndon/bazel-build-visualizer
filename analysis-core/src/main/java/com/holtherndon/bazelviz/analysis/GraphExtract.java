@@ -36,20 +36,29 @@ public final class GraphExtract {
     public static final int DEFAULT_EDGE_LIMIT = 200_000;
 
     /**
-     * Every node reachable forward from {@code source}, to a depth and a
-     * budget.
+     * What {@code source} needs: everything reachable over the <em>reverse</em>
+     * index, to a depth and a budget.
      *
-     * <p>Plan 13.5's "dependencies" mode.
+     * <p>Plan 13.5's "dependencies" mode. The forward index is
+     * producer-to-consumer, so the things a node <em>depends on</em> are behind
+     * it, not ahead of it — this used to walk the forward index and answered
+     * "what needs this" under the name "dependencies", which inverted both the
+     * trees and the rooted canvas modes.
      */
     public static Result dependencies(
-            CsrGraph forward, int source, int maxDepth, int nodeLimit) {
-        return traverse(forward, source, maxDepth, nodeLimit, Direction.FORWARD);
+            CsrGraph reverse, int source, int maxDepth, int nodeLimit) {
+        return traverse(reverse, source, maxDepth, nodeLimit,
+                Direction.REVERSE, Mode.DEPENDENCIES);
     }
 
-    /** Plan 13.5's "reverse dependencies" mode; needs the reverse index. */
+    /**
+     * What needs {@code source}: everything reachable over the forward,
+     * producer-to-consumer index. Plan 13.5's "reverse dependencies" mode.
+     */
     public static Result dependents(
-            CsrGraph reverse, int source, int maxDepth, int nodeLimit) {
-        return traverse(reverse, source, maxDepth, nodeLimit, Direction.REVERSE);
+            CsrGraph forward, int source, int maxDepth, int nodeLimit) {
+        return traverse(forward, source, maxDepth, nodeLimit,
+                Direction.FORWARD, Mode.DEPENDENTS);
     }
 
     /**
@@ -61,8 +70,10 @@ public final class GraphExtract {
      */
     public static Result neighbourhood(
             CsrGraph forward, CsrGraph reverse, int source, int maxDepth, int nodeLimit) {
-        Result out = traverse(forward, source, maxDepth, nodeLimit, Direction.FORWARD);
-        Result back = traverse(reverse, source, maxDepth, nodeLimit, Direction.REVERSE);
+        Result out = traverse(
+                forward, source, maxDepth, nodeLimit, Direction.FORWARD, Mode.DEPENDENTS);
+        Result back = traverse(
+                reverse, source, maxDepth, nodeLimit, Direction.REVERSE, Mode.DEPENDENCIES);
 
         List<Integer> merged = new ArrayList<>(out.nodes());
         for (int node : back.nodes()) {
@@ -125,7 +136,8 @@ public final class GraphExtract {
     private enum Direction { FORWARD, REVERSE }
 
     private static Result traverse(
-            CsrGraph graph, int source, int maxDepth, int nodeLimit, Direction direction) {
+            CsrGraph graph, int source, int maxDepth, int nodeLimit,
+            Direction direction, Mode mode) {
         int nodeCount = Math.toIntExact(graph.nodeCount());
         if (source < 0 || source >= nodeCount) {
             throw new IndexOutOfBoundsException(
@@ -153,7 +165,6 @@ public final class GraphExtract {
             });
         }
         boolean hitLimit = reached >= nodeLimit;
-        Mode mode = direction == Direction.FORWARD ? Mode.DEPENDENCIES : Mode.DEPENDENTS;
         return new Result(
                 mode, visited, edges, graph.nodeCount(), graph.edgeCount(), hitLimit, nodeLimit);
     }
@@ -176,6 +187,18 @@ public final class GraphExtract {
 
         public String displayName() {
             return displayName;
+        }
+
+        /**
+         * {@link #displayName()}, naming the nodes for what they are.
+         *
+         * <p>Only {@code PATH} carries a noun; "Path between two actions"
+         * over the label graph would misname both endpoints.
+         *
+         * @param noun what one node is — {@code "action"} or {@code "target"}
+         */
+        public String displayName(String noun) {
+            return this == PATH ? "Path between two " + noun + "s" : displayName;
         }
     }
 
@@ -219,21 +242,36 @@ public final class GraphExtract {
          * different picture from a build with nine actions.
          */
         public String describe() {
+            return describe("action");
+        }
+
+        /**
+         * {@link #describe()}, naming the nodes for what they are.
+         *
+         * <p>The extraction is graph-agnostic but the sentence is not: a
+         * label-graph view that called its nodes "actions" would misstate what
+         * is on screen, which is the kind of small wrong that makes every
+         * other number suspect.
+         *
+         * @param noun what one node is — {@code "action"} or {@code "target"}
+         */
+        public String describe(String noun) {
             if (mode == Mode.WHOLE && hitLimit) {
-                return "This build has " + totalNodes + " actions and " + totalEdges
+                return "This build has " + totalNodes + " " + noun + "s and " + totalEdges
                         + " dependencies, which is more than the " + nodeLimit
-                        + "-action limit for a detailed drawing. Nothing is hidden — raise"
+                        + "-" + noun + " limit for a detailed drawing. Nothing is hidden — raise"
                         + " the limit, narrow the filter, or switch to the cluster view.";
             }
             StringBuilder text = new StringBuilder();
-            text.append(mode.displayName()).append(": ").append(nodes.size())
-                    .append(nodes.size() == 1 ? " action" : " actions")
+            text.append(mode.displayName(noun)).append(": ").append(nodes.size())
+                    .append(nodes.size() == 1 ? " " + noun : " " + noun + "s")
                     .append(" and ").append(edges.size())
                     .append(edges.size() == 1 ? " dependency" : " dependencies");
             text.append(", from a graph of ").append(totalNodes).append('.');
             if (hitLimit) {
                 text.append(" The search stopped at its ").append(nodeLimit)
-                        .append("-action budget, so there is more beyond what is drawn.");
+                        .append("-").append(noun)
+                        .append(" budget, so there is more beyond what is drawn.");
             }
             return text.toString();
         }

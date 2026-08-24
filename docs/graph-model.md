@@ -136,3 +136,52 @@ The default ceiling is plan 13.6's 50,000 nodes and 200,000 edges. Above it the
 view groups itself and offers to raise the limit, narrow the query, or export.
 The export is streamed straight from the CSR index and has no ceiling at all —
 which is what makes the drawing limit acceptable.
+
+## What the graph-tab rework added (2026-08-23)
+
+### The indexes are now actually built
+
+Phase 5 built the machinery and Phase 7 drew from it, but nothing in
+production ever *ran* it: `CaptureCoordinator` imported the query output and
+stopped, so `graph_indexes` stayed empty on every real session and the canvas
+reported "no action graph". The capture's finalization now derives the action
+edges and builds the CSR indexes — declared, observed, and the
+configured-target label graph — into the session's `indexes/` directory,
+quietly: a failure costs the graph view and is named in the capture warnings,
+never the capture. Sessions imported from a BEP file alone have no graph to
+index, and say so; that is a property of the source, not a failure.
+
+### The configured-target label graph has an index
+
+The third indexed graph, registered in `graph_indexes` under kind
+`CONFIGURED_TARGETS`. Its node is a **label**, not a `(label, configuration)`
+pair: a label analysed in several configurations is one node, and identical
+dependencies seen through several configurations collapse to one edge. This is
+the graph closest to `bazel query 'deps(//foo)'`, and the source selector says
+exactly that when it is shown.
+
+**Node numbering is derived, not stored.** A label's dense node id is its
+position in the sorted list of distinct `label_id`s in
+`configured_target_nodes` — a pure function of the imported rows, computed
+identically by `GraphIndexBuilder.configuredLabelUniverse` at build time and by
+`GraphQueries` at query time, so there is no persisted mapping to go stale and
+no schema change. Labels are interned append-only, so an id never moves under
+a session.
+
+**Edges that cannot land are counted, not dropped.** `rule_input` names source
+files and labels outside the analysed universe; those have no node, exactly as
+the action graph excludes source artifacts with no producer. The build result
+carries the excluded-edge count, and the selector's description states the
+exclusion.
+
+Forward remains producer-to-consumer for all three indexes: the forward
+neighbours of a node are the things that need it, in both graphs, so every
+traversal answers the same question the same way round.
+
+### Direction, corrected
+
+"Dependencies" now walks the reverse index and "reverse dependencies" the
+forward one. The previous binding was inverted end to end — the "Depends on"
+tree and the Dependencies canvas mode listed *dependents* — and is pinned
+against regression by `GraphExtractTest`, `GraphQueriesTest` and
+`GraphViewSourceTest`.

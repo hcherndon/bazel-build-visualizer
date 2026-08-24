@@ -6,6 +6,7 @@ import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.graph.GraphIndexBuilder;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
@@ -117,7 +118,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("a neighbourhood comes back extracted, laid out and described")
     void neighbourhoodIsRendered() throws Exception {
         GraphLayoutService.Rendered rendered =
-                await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 2, 1));
+                await(GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 2, 1));
 
         assertThat(rendered.extract().nodes()).contains(1, 2, 3);
         assertThat(rendered.layout().kind()).isEqualTo(GraphLayout.Kind.RADIAL);
@@ -133,7 +134,7 @@ final class GraphLayoutServiceTest {
         CountDownLatch done = new CountDownLatch(1);
 
         service.submit(
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2),
+                GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2),
                 rendered -> {
                     // Rule 8 is about not blocking the EDT, but a callback that
                     // touched Swing from the worker would be the same class of
@@ -151,7 +152,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("the same request twice is computed once")
     void repeatedRequestsAreCached() throws Exception {
         GraphLayoutService.Request request =
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2);
+                GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2);
 
         GraphLayoutService.Rendered first = await(request);
         GraphLayoutService.Rendered second = await(request);
@@ -166,7 +167,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("changing only the layout is a different cache entry")
     void settingsArePartOfTheKey() throws Exception {
         GraphLayoutService.Request radial =
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2);
+                GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2);
 
         GraphLayoutService.Rendered ringed = await(radial);
         GraphLayoutService.Rendered layered = await(radial.withLayout(GraphLayout.Kind.LAYERED));
@@ -183,7 +184,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("the cache does not grow without bound")
     void cacheIsBounded() throws Exception {
         for (int depth = 1; depth <= GraphLayoutService.CACHE_ENTRIES + 5; depth++) {
-            await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, depth));
+            await(GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, depth));
         }
 
         assertThat(service.cachedCount()).isEqualTo(GraphLayoutService.CACHE_ENTRIES);
@@ -192,7 +193,7 @@ final class GraphLayoutServiceTest {
     @Test
     @DisplayName("invalidating drops everything, for when the indexes are rebuilt")
     void invalidateClears() throws Exception {
-        await(GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2));
+        await(GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2));
         service.invalidate();
 
         assertThat(service.cachedCount()).isZero();
@@ -203,7 +204,7 @@ final class GraphLayoutServiceTest {
     void clusteringByPackage() throws Exception {
         GraphLayoutService.Rendered rendered = await(
                 GraphLayoutService.Request.clustered(
-                        EdgeDerivation.DECLARED, GraphClustering.By.PACKAGE));
+                        GraphKind.DECLARED_ACTIONS, GraphClustering.By.PACKAGE));
 
         assertThat(rendered.isCluster()).isTrue();
         assertThat(rendered.clustering().clusters())
@@ -221,7 +222,7 @@ final class GraphLayoutServiceTest {
     void clusteringByMnemonic() throws Exception {
         GraphLayoutService.Rendered rendered = await(
                 GraphLayoutService.Request.clustered(
-                        EdgeDerivation.DECLARED, GraphClustering.By.MNEMONIC));
+                        GraphKind.DECLARED_ACTIONS, GraphClustering.By.MNEMONIC));
 
         assertThat(rendered.clustering().clusters())
                 .extracting(GraphClustering.Cluster::key)
@@ -232,7 +233,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("a whole graph that does not fit is refused, with its exact size")
     void wholeGraphRefusal() throws Exception {
         GraphLayoutService.Rendered rendered =
-                await(GraphLayoutService.Request.whole(EdgeDerivation.DECLARED, 2, 2));
+                await(GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 2, 2));
 
         assertThat(rendered.refused()).isTrue();
         assertThat(rendered.description()).contains("6 actions").contains("Nothing is hidden");
@@ -242,7 +243,7 @@ final class GraphLayoutServiceTest {
     @DisplayName("raising the limit is what makes the same graph drawable")
     void raisingTheLimitWorks() throws Exception {
         GraphLayoutService.Request tight =
-                GraphLayoutService.Request.whole(EdgeDerivation.DECLARED, 2, 2);
+                GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 2, 2);
 
         assertThat(await(tight).refused()).isTrue();
         // Plan 13.6: raising the limit is explicit, and it is the same query.
@@ -260,7 +261,7 @@ final class GraphLayoutServiceTest {
                             new GraphQueries(empty.writerConnection(), tempDir.resolve("none"));
                     GraphLayoutService bare = new GraphLayoutService(none)) {
                 GraphLayoutService.Rendered rendered = await(
-                        bare, GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 1));
+                        bare, GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 1));
 
                 // Rule 11: an absent graph is not an empty graph, and the
                 // difference has to reach the user.
@@ -277,11 +278,11 @@ final class GraphLayoutServiceTest {
         CountDownLatch second = new CountDownLatch(1);
 
         service.submit(
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 1),
+                GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 1),
                 rendered -> callbacks.add("first"),
                 error -> callbacks.add("first-error"));
         service.submit(
-                GraphLayoutService.Request.around(EdgeDerivation.DECLARED, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2),
+                GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2),
                 rendered -> {
                     callbacks.add("second");
                     second.countDown();
@@ -307,7 +308,7 @@ final class GraphLayoutServiceTest {
 
         service.submit(
                 new GraphLayoutService.Request(
-                        EdgeDerivation.DECLARED, GraphExtract.Mode.CRITICAL_PATH, 0, 1,
+                        GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.CRITICAL_PATH, 0, 1,
                         100, 100, GraphLayout.Kind.LINEAR, GraphClustering.By.PACKAGE, 100),
                 rendered -> done.countDown(),
                 error -> {

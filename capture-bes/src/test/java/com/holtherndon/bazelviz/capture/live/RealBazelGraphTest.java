@@ -94,6 +94,61 @@ class RealBazelGraphTest {
                     ResultSet rows = s.executeQuery("PRAGMA foreign_key_check")) {
                 assertThat(rows.next()).describedAs("a foreign key violation exists").isFalse();
             }
+
+            // The capture derived edges and built the CSR indexes without
+            // being asked. Before this was wired, every real session had
+            // declared_actions rows and no index, so the graph view opened to
+            // "no action graph" forever — the whole Phase 5/7 stack was only
+            // reachable from tests.
+            assertThat(scalar(c, "SELECT count(*) FROM action_edges"
+                    + " WHERE derivation = 'DECLARED'")).isPositive();
+            assertThat(scalar(c, "SELECT count(*) FROM graph_indexes"
+                    + " WHERE kind = 'DECLARED'")).isEqualTo(2);
+            // The configured-target label graph got its index too — the graph
+            // closest to `bazel query deps(//foo)`, and a dead end until now.
+            assertThat(scalar(c, "SELECT count(*) FROM graph_indexes"
+                    + " WHERE kind = 'CONFIGURED_TARGETS'")).isEqualTo(2);
+        }
+
+        // And the indexes a reopened session loads really answer: the exact
+        // path the graph view takes, from label search to bounded traversal.
+        try (SessionDatabase database = open(result)) {
+            var queries = new com.holtherndon.bazelviz.storage.graph.GraphQueries(
+                    database.newReadConnection(),
+                    ManagedSessionLayout.at(result.sessionRoot()).indexesDirectory());
+            var forward = queries.forwardIndex(
+                    com.holtherndon.bazelviz.core.graph.EdgeDerivation.DECLARED);
+            assertThat(forward).describedAs("the forward CSR index is loadable").isPresent();
+            assertThat(forward.orElseThrow().nodeCount()).isPositive();
+            assertThat(queries.reverseIndex(
+                            com.holtherndon.bazelviz.core.graph.EdgeDerivation.DECLARED))
+                    .isPresent();
+
+            var found = queries.search("%:t1%", 1);
+            assertThat(found).describedAs("a target label seeds a graph node").isNotEmpty();
+            // t1 consumes t0's output: the reverse index answers "what
+            // does this need" with at least t0.
+            var producers = queries.neighbours(
+                    com.holtherndon.bazelviz.core.graph.EdgeDerivation.DECLARED,
+                    found.getFirst().nodeIndex(), false, 10);
+            assertThat(producers)
+                    .describedAs("the fixture chain has a producer for t1")
+                    .isNotEmpty();
+
+            // The label graph answers the same questions over labels: a label
+            // seeds a node, and t1's rule inputs include t0.
+            var labelKind = com.holtherndon.bazelviz.core.graph.GraphKind.CONFIGURED_TARGETS;
+            assertThat(queries.forwardIndex(labelKind))
+                    .describedAs("the configured-target label index is loadable")
+                    .isPresent();
+            var t1 = queries.search(labelKind, "%:t1", 1);
+            assertThat(t1).describedAs("a label seeds a label-graph node").isNotEmpty();
+            var labelProducers = queries.neighbours(
+                    labelKind, t1.getFirst().nodeIndex(), false, 10);
+            assertThat(labelProducers)
+                    .describedAs("t1 names t0 as a rule input")
+                    .anySatisfy(node ->
+                            assertThat(node.label().orElse("")).endsWith(":t0"));
         }
     }
 
