@@ -908,6 +908,9 @@ public final class CaptureCoordinator implements AutoCloseable {
      */
     private void buildGraphIndexesQuietly(
             SessionDatabase database, ManagedSessionLayout layout, List<String> warnings) {
+        // Two graphs, two independent failures: a broken aquery import must
+        // not cost the user the label graph the cquery delivered, or the
+        // other way round — the same independence the enrichment tasks have.
         try {
             java.sql.Connection connection = database.writerConnection();
             ActionEdgeDeriver.Result derived = new ActionEdgeDeriver(connection).deriveAll();
@@ -915,16 +918,26 @@ public final class CaptureCoordinator implements AutoCloseable {
                     new GraphIndexBuilder(connection, layout.indexesDirectory());
             var declared = builder.build(EdgeDerivation.DECLARED);
             var observed = builder.build(EdgeDerivation.OBSERVED);
-            var labels = builder.buildConfiguredTargets();
-            log.info("derived {} declared and {} observed action edges; indexed {} / {} / {}",
+            log.info("derived {} declared and {} observed action edges; indexed {} / {}",
                     derived.declaredEdges(), derived.observedEdges(),
                     declared.map(Object::toString).orElse("no declared graph"),
-                    observed.map(Object::toString).orElse("no observed graph"),
-                    labels.map(Object::toString).orElse("no configured-target graph"));
+                    observed.map(Object::toString).orElse("no observed graph"));
         } catch (SQLException | IOException | RuntimeException failure) {
             log.warn("could not build the action graph index", failure);
             warnings.add("The action dependency graph could not be indexed: " + failure
-                    + ". The graph view will report the graph as unavailable;"
+                    + ". The graph view will report the action graph as unavailable;"
+                    + " everything else in this session is unaffected.");
+        }
+        try {
+            GraphIndexBuilder builder = new GraphIndexBuilder(
+                    database.writerConnection(), layout.indexesDirectory());
+            var labels = builder.buildConfiguredTargets();
+            log.info("indexed {}",
+                    labels.map(Object::toString).orElse("no configured-target graph"));
+        } catch (SQLException | IOException | RuntimeException failure) {
+            log.warn("could not build the configured-target graph index", failure);
+            warnings.add("The configured-target graph could not be indexed: " + failure
+                    + ". The graph view will report the target graph as unavailable;"
                     + " everything else in this session is unaffected.");
         }
     }
