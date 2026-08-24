@@ -45,6 +45,8 @@ import com.holtherndon.bazelviz.storage.export.TableExport;
 import com.holtherndon.bazelviz.ui.export.ExportController;
 import com.holtherndon.bazelviz.ui.session.CatalogEntries;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.ArchiveImport;
 import com.holtherndon.bazelviz.ui.session.OpenRequest;
@@ -148,6 +150,28 @@ public final class MainWindow extends JFrame {
      */
     private final QueryView queryView = new QueryView();
     private final TimelineController timeline = new TimelineController();
+
+    /**
+     * The shared cross-view navigation actions — the navigation half of the
+     * plan's {@code SelectionService} (product-plan section 7). Views build
+     * refs for their rows; this is the one place a command becomes a card
+     * switch, so the planned Graph/Tree split re-points one switch arm in
+     * {@link #navigate} rather than hunting through the views.
+     *
+     * <p>Two commands are deliberately absent from the wired set and
+     * therefore never offered anywhere: {@code OPEN_IN_TREE} until the
+     * Graph/Tree split lands, and {@code SHOW_EVENTS_FOR_LABEL} until an
+     * events-by-label read path exists.
+     */
+    private final EntityActions entityActions = new EntityActions(
+            java.util.EnumSet.of(
+                    EntityActions.Command.OPEN_TARGET,
+                    EntityActions.Command.OPEN_IN_GRAPH,
+                    EntityActions.Command.SHOW_ACTIONS_FOR_LABEL,
+                    EntityActions.Command.REVEAL_ACTION,
+                    EntityActions.Command.SHOW_ON_TIMELINE,
+                    EntityActions.Command.SHOW_SOURCE_EVENT),
+            this::navigate);
 
     /**
      * The Overview card: the build's own summary above, what is known about it
@@ -306,15 +330,12 @@ public final class MainWindow extends JFrame {
 
         eventsView.progressPanel().setCancelAction(importController::cancel);
 
-        // Every entity view's inspector can jump to the bytes its row came
-        // from. One handler, so the behaviour is the same from all five.
-        actionsView.onShowSourceEvent(this::revealEvent);
-        actionsView.onShowInGraph(this::revealInGraph);
-        // Selection synchronisation, both ways (plan 17.8). Neither direction
-        // moves the other's viewport: a row selected in the table highlights
-        // its span where it is, and a span picked on the timeline reveals its
-        // row without scrolling the timeline.
-        actionsView.onShowOnTimeline(this::revealOnTimeline);
+        // The shared navigation actions, adopted where the copy-pasted
+        // LongConsumer wiring used to be: the Actions tab's row menu,
+        // inspector actions and bespoke buttons, and the Events tab's row
+        // menu and inspector, all dispatch into this::navigate.
+        actionsView.installEntityActions(entityActions);
+        eventsView.installEntityActions(entityActions);
         graphView.onActionSelected(this::followGraphSelection);
         // A finding points at records; these are the two ways it does so.
         // Selecting the evidence opens the action; following a link opens the
@@ -1242,6 +1263,39 @@ public final class MainWindow extends JFrame {
             return;
         }
         showCard(entry);
+    }
+
+    /**
+     * The one place a shared navigation command becomes a card switch.
+     *
+     * <p>Exhaustive over {@link EntityActions.Command}, so a command added to
+     * the vocabulary fails to compile here rather than silently going
+     * nowhere. The ref casts are safe by construction:
+     * {@code Command.appliesTo} only ever pairs a command with the ref kind
+     * its arm expects.
+     */
+    private void navigate(EntityActions.Command command, EntityRef ref) {
+        switch (command) {
+            case OPEN_TARGET -> {
+                showCard(NavEntry.TARGETS);
+                targetsView.revealLabel(((EntityRef.TargetLabel) ref).label());
+            }
+            case SHOW_ACTIONS_FOR_LABEL -> {
+                showCard(NavEntry.ACTIONS);
+                actionsView.filterToLabel(((EntityRef.TargetLabel) ref).label());
+            }
+            case REVEAL_ACTION -> revealAction(((EntityRef.ActionId) ref).id());
+            // Today's Graph card. The planned Graph/Tree split re-points this
+            // arm at the new Graph card and wires OPEN_IN_TREE at the renamed
+            // Tree card — one arm each, nothing else moves.
+            case OPEN_IN_GRAPH -> revealInGraph(((EntityRef.ActionId) ref).id());
+            case SHOW_ON_TIMELINE -> revealOnTimeline(((EntityRef.ActionId) ref).id());
+            case SHOW_SOURCE_EVENT -> revealEvent(((EntityRef.EventId) ref).id());
+            // Not in the wired set, so nothing can offer them and nothing can
+            // arrive here; the arm exists so the switch stays exhaustive.
+            case OPEN_IN_TREE, SHOW_EVENTS_FOR_LABEL ->
+                    log.warn("{} arrived unwired; nothing offers it", command);
+        }
     }
 
     /** Shows one action in the actions table, selected. */

@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.events;
 
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.holtherndon.bazelviz.bepcodec.BepEventDecoder;
+import com.holtherndon.bazelviz.bepcodec.EventIdDisplay;
 import com.holtherndon.bazelviz.bepcodec.BesEnvelope;
 import com.holtherndon.bazelviz.bepcodec.BesEnvelopeDecoder;
 import com.holtherndon.bazelviz.bepcodec.DecodeResult;
@@ -57,13 +58,28 @@ public final class RawPayloadRenderer {
      * @param decodeFailure why the bytes could not be read, when they could not
      * @param notices display limits and discrepancies the user must be told
      *     about; empty when there is nothing to disclose
+     * @param targetLabel the target label the decoded event's id carries, read
+     *     structurally from the proto ({@code EventIdDisplay.label}) — the
+     *     accessor the navigation actions prefer over parsing any rendered
+     *     sentence. Empty when the record did not decode here, carries no
+     *     label, or (JSON records) is never re-decoded by this renderer.
      */
-    public record Rendered(String text, Optional<String> decodeFailure, List<String> notices) {
+    public record Rendered(
+            String text,
+            Optional<String> decodeFailure,
+            List<String> notices,
+            Optional<String> targetLabel) {
 
         public Rendered {
             Objects.requireNonNull(text, "text");
             Objects.requireNonNull(decodeFailure, "decodeFailure");
             notices = List.copyOf(notices);
+            Objects.requireNonNull(targetLabel, "targetLabel");
+        }
+
+        /** A rendering with no structurally known label. */
+        public Rendered(String text, Optional<String> decodeFailure, List<String> notices) {
+            this(text, decodeFailure, notices, Optional.empty());
         }
     }
 
@@ -148,7 +164,10 @@ public final class RawPayloadRenderer {
                     + " from the text below and present in the raw bytes.");
         }
         return new Rendered(
-                cap(header + decoded.requireEvent(), notices, "decoded text"), Optional.empty(), notices);
+                cap(header + decoded.requireEvent(), notices, "decoded text"),
+                Optional.empty(),
+                notices,
+                EventIdDisplay.label(decoded.requireEvent().getId()));
     }
 
     private static Rendered renderBinary(
@@ -179,7 +198,8 @@ public final class RawPayloadRenderer {
             notices.add("This record carried fields this build does not know. They are absent"
                     + " from the text below and present in the raw bytes.");
         }
-        return new Rendered(cap(event.toString(), notices, "decoded text"), Optional.empty(), notices);
+        return new Rendered(cap(event.toString(), notices, "decoded text"), Optional.empty(),
+                notices, EventIdDisplay.label(event.getId()));
     }
 
     private static Rendered renderJson(

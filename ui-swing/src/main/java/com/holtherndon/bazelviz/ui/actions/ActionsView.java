@@ -8,6 +8,8 @@ import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
@@ -23,7 +25,6 @@ import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.function.LongConsumer;
 import javax.swing.BorderFactory;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
@@ -125,21 +126,30 @@ public final class ActionsView extends JPanel {
     private EntityReader pageReader;
     private PagedTableModel<ActionRow> tableModel;
     private ActionRowSource rowSource;
-    private LongConsumer showEventHandler = eventId -> { };
 
     /**
-     * Where "show this action's dependencies" goes.
-     *
-     * <p>The bridge for plan 24's selected-action neighbourhood: a user
-     * reading a row here asks what it depended on, and the graph card answers.
+     * The shared cross-view navigation actions, once {@link
+     * #installEntityActions} has run. They replace what used to be three
+     * per-destination {@code LongConsumer} setters wired one line each in
+     * {@code MainWindow}: the row menu, the inspector's actions and the two
+     * bespoke toolbar buttons all dispatch through this one facility.
      */
-    private LongConsumer showInGraphHandler = actionId -> { };
-
-    /** Where "show this action on the timeline" goes. */
-    private LongConsumer showOnTimelineHandler = actionId -> { };
+    private EntityActions entityActions;
 
     /** A time range from the timeline, applied on top of the toolbar's filter. */
     private java.util.Optional<long[]> rangeFilter = java.util.Optional.empty();
+
+    /**
+     * A label filter arriving from another view's "show actions for this
+     * target". Substring semantics ({@code ActionFilter.labelContains}) —
+     * the closest match the query layer offers — and always visible as the
+     * chip beside the toolbar while it is on, so the narrowed table can
+     * never pass for the whole build.
+     */
+    private Optional<String> labelFilter = Optional.empty();
+
+    /** The visible face of {@link #labelFilter}; clicking it clears the filter. */
+    private final javax.swing.JButton labelChip = new javax.swing.JButton();
 
     /** Bumped on every reload so a slow one cannot overwrite a newer one. */
     private long reloadGeneration;
@@ -184,13 +194,12 @@ public final class ActionsView extends JPanel {
             }
         });
 
-        inspector.onShowSourceEvent(eventId -> showEventHandler.accept(eventId));
         graphButton.setEnabled(false);
         graphButton.addActionListener(event -> {
-            int row = table.getSelectedRow();
-            ActionRow selected = row < 0 || tableModel == null ? null : tableModel.rowAt(row);
-            if (selected != null) {
-                showInGraphHandler.accept(selected.id());
+            ActionRow selected = selectedRow();
+            if (selected != null && entityActions != null) {
+                entityActions.navigate(EntityActions.Command.OPEN_IN_GRAPH,
+                        new EntityRef.ActionId(selected.id()));
             }
         });
 
@@ -266,20 +275,63 @@ public final class ActionsView extends JPanel {
         timelineButton.setToolTipText(PlainText.tooltip(
                 "Show this action on the timeline"));
         timelineButton.addActionListener(event -> {
-            int row = table.getSelectedRow();
-            ActionRow selected = row < 0 || tableModel == null ? null : tableModel.rowAt(row);
-            if (selected != null) {
-                showOnTimelineHandler.accept(selected.id());
+            ActionRow selected = selectedRow();
+            if (selected != null && entityActions != null) {
+                entityActions.navigate(EntityActions.Command.SHOW_ON_TIMELINE,
+                        new EntityRef.ActionId(selected.id()));
             }
         });
         bar.add(timelineButton);
+        // The label filter's visible face. It exists only while a filter
+        // another view sent over is active, and clicking it is how the
+        // filter is cleared — a narrowing nobody can see or undo would be
+        // rule 12's silent override.
+        labelChip.setVisible(false);
+        labelChip.addActionListener(event -> clearLabelFilter());
+        bar.add(labelChip);
         return bar;
     }
 
-    /** Called on the EDT with an event id when the user asks to see the source. */
-    /** Called with an action id when the user asks to see it in the graph. */
-    public void onShowInGraph(LongConsumer handler) {
-        this.showInGraphHandler = Objects.requireNonNull(handler, "handler");
+    /** The selected row, or null while none is or its page has not arrived. */
+    private ActionRow selectedRow() {
+        int row = table.getSelectedRow();
+        return row < 0 || tableModel == null ? null : tableModel.rowAt(row);
+    }
+
+    /**
+     * Adopts the shared cross-view navigation actions. Call once, at wiring
+     * time. This replaces the view's former {@code onShowSourceEvent} /
+     * {@code onShowInGraph} / {@code onShowOnTimeline} setters: rows grow a
+     * context menu over the same commands, the inspector's header offers
+     * them for the selected action, and the two bespoke toolbar buttons
+     * dispatch through the same handler.
+     */
+    public void installEntityActions(EntityActions actions) {
+        this.entityActions = Objects.requireNonNull(actions, "actions");
+        // The inspector never offers "reveal action": the action it would
+        // reveal is the one already selected under it.
+        inspector.installEntityActions(actions,
+                java.util.Set.of(EntityActions.Command.REVEAL_ACTION));
+        actions.installRowMenu(table, this::refsAtRow,
+                java.util.Set.of(EntityActions.Command.REVEAL_ACTION));
+    }
+
+    /**
+     * The refs for one model row: the action itself, its target label when
+     * it has one, and the event it was normalized from. A row whose page has
+     * not arrived has no refs and offers nothing.
+     */
+    List<EntityRef> refsAtRow(int modelRow) {
+        PagedTableModel<ActionRow> model = tableModel;
+        ActionRow row = model == null ? null : model.rowAt(modelRow);
+        if (row == null) {
+            return List.of();
+        }
+        List<EntityRef> refs = new ArrayList<>();
+        refs.add(new EntityRef.ActionId(row.id()));
+        row.label().ifPresent(label -> refs.add(new EntityRef.TargetLabel(label)));
+        row.bepEventId().ifPresent(eventId -> refs.add(new EntityRef.EventId(eventId)));
+        return refs;
     }
 
     /**
@@ -296,9 +348,33 @@ public final class ActionsView extends JPanel {
         reload();
     }
 
-    /** Called with an action id when the user asks to see it on the timeline. */
-    public void onShowOnTimeline(LongConsumer handler) {
-        this.showOnTimelineHandler = Objects.requireNonNull(handler, "handler");
+    /**
+     * Narrows the table to actions whose target label contains {@code label}
+     * — the shared "show actions for this target" command's landing point.
+     *
+     * <p>Substring, because {@code ActionFilter.labelContains} is what the
+     * query layer offers; the chip states the label so the reader can see
+     * what the narrowing was. Applied on top of the toolbar's own filter,
+     * like the timeline's range, and cleared by clicking the chip.
+     */
+    public void filterToLabel(String label) {
+        Objects.requireNonNull(label, "label");
+        labelFilter = Optional.of(label);
+        labelChip.setText("Label: " + label + "  ✕");
+        labelChip.setToolTipText(PlainText.tooltip(
+                "Showing only actions whose target label contains " + label
+                        + ". Click to clear."));
+        labelChip.setVisible(true);
+        reload();
+    }
+
+    private void clearLabelFilter() {
+        if (labelFilter.isEmpty()) {
+            return;
+        }
+        labelFilter = Optional.empty();
+        labelChip.setVisible(false);
+        reload();
     }
 
     /**
@@ -321,10 +397,6 @@ public final class ActionsView extends JPanel {
                 return;
             }
         }
-    }
-
-    public void onShowSourceEvent(LongConsumer handler) {
-        this.showEventHandler = Objects.requireNonNull(handler, "handler");
     }
 
     public void showEmpty(String message) {
@@ -380,6 +452,10 @@ public final class ActionsView extends JPanel {
     /** Closes the session and stops the executors, off the EDT. */
     public void closeSession() {
         filterDebounce.stop();
+        // A label filter belongs to the session it was sent from; the next
+        // session must not open pre-narrowed by an invisible leftover.
+        labelFilter = Optional.empty();
+        labelChip.setVisible(false);
         tableModel = null;
         rowSource = null;
         table.setModel(new DefaultTableModel());
@@ -456,6 +532,16 @@ public final class ActionsView extends JPanel {
     /** Visible for testing: drives the toolbar as a user would. */
     public void applyForTest(String mnemonic, ActionSort sort, boolean descending) {
         applyFilter(mnemonic, sort, descending);
+    }
+
+    /** Visible for testing: the label chip's text, or null while it is hidden. */
+    public String labelChipForTest() {
+        return labelChip.isVisible() ? labelChip.getText() : null;
+    }
+
+    /** Visible for testing: exactly what clicking the chip does. */
+    public void clearLabelFilterForTest() {
+        clearLabelFilter();
     }
 
     /** Visible for testing: the mnemonic entries the filter offers. */
@@ -575,7 +661,7 @@ public final class ActionsView extends JPanel {
         ActionFilter filter = new ActionFilter(
                 mnemonic,
                 outcome,
-                Optional.empty(),
+                labelFilter,
                 text.isEmpty() ? Optional.empty() : Optional.of(text),
                 java.util.OptionalLong.empty(),
                 java.util.OptionalLong.empty());

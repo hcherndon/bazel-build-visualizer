@@ -42,6 +42,15 @@ public final class ActionInspection {
                 .subtitle(row.mnemonic().orElse("action") + " · " + row.outcome().name())
                 .sourceEvent(row.bepEventId());
 
+        // The identities the shared navigation actions act on: the action,
+        // the label when the action has one — an unlabelled action honestly
+        // offers no label actions — and the event the row came from.
+        builder.ref(new com.holtherndon.bazelviz.ui.nav.EntityRef.ActionId(row.id()));
+        row.label().ifPresent(label -> builder.ref(
+                new com.holtherndon.bazelviz.ui.nav.EntityRef.TargetLabel(label)));
+        row.bepEventId().ifPresent(eventId -> builder.ref(
+                new com.holtherndon.bazelviz.ui.nav.EntityRef.EventId(eventId)));
+
         builder.section("Identity")
                 .field("Primary output", row.primaryOutput())
                 .field(EntityFormat.field("Target", row.label()))

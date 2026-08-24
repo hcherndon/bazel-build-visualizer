@@ -3,6 +3,8 @@ package com.holtherndon.bazelviz.bepcodec;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Short, human-readable renderings of a {@code BuildEventId} for the events
@@ -44,6 +46,97 @@ public final class EventIdDisplay {
     /** Renders {@code id}. Never returns null, empty, or blank. */
     public static String of(BuildEventId id) {
         return cap(render(id));
+    }
+
+    /**
+     * The target label an id carries, when it carries one.
+     *
+     * <p>This is the structured accessor the cross-view navigation actions are
+     * built on: given a decoded {@code BuildEventId}, it answers "which target
+     * is this event about" from the proto's own fields rather than from any
+     * rendered sentence. Nine of the id kinds carry a label; every other kind
+     * — and a label-carrying kind whose label field is empty — answers empty,
+     * never a placeholder.
+     */
+    public static Optional<String> label(BuildEventId id) {
+        String label = switch (id.getIdCase()) {
+            case TARGET_CONFIGURED -> id.getTargetConfigured().getLabel();
+            case TARGET_COMPLETED -> id.getTargetCompleted().getLabel();
+            case ACTION_COMPLETED -> id.getActionCompleted().getLabel();
+            case UNCONFIGURED_LABEL -> id.getUnconfiguredLabel().getLabel();
+            case CONFIGURED_LABEL -> id.getConfiguredLabel().getLabel();
+            case TEST_RESULT -> id.getTestResult().getLabel();
+            case TEST_PROGRESS -> id.getTestProgress().getLabel();
+            case TEST_SUMMARY -> id.getTestSummary().getLabel();
+            case TARGET_SUMMARY -> id.getTargetSummary().getLabel();
+            default -> "";
+        };
+        return label.isEmpty() ? Optional.empty() : Optional.of(label);
+    }
+
+    /**
+     * The kind words whose display puts a target label in the first slot after
+     * the kind, mapped to whether that slot can also hold something that is
+     * <em>not</em> a label. Only {@code ActionCompleted} renders a primary
+     * output path there when the id declares no label, which is why the parse
+     * below additionally requires the label shape.
+     */
+    private static final Map<String, Boolean> LABEL_KINDS = Map.of(
+            "TargetConfigured", false,
+            "TargetCompleted", false,
+            "ActionCompleted", true,
+            "UnconfiguredLabel", false,
+            "ConfiguredLabel", false,
+            "TestResult", false,
+            "TestProgress", false,
+            "TestSummary", false,
+            "TargetSummary", false);
+
+    /**
+     * Recovers the target label from a display string {@link #of} produced.
+     *
+     * <p>This exists for the one place that has the sentence and not the proto:
+     * a stored event row carries {@code bep_event_ids.display} and nothing
+     * else, and the navigation actions parse the label out of it at render
+     * time (an explicit decision — no schema or capture-path change). The
+     * grammar lives here, next to the renderer that defines it, so the two
+     * cannot drift apart unnoticed; wherever a decoded id or payload is in
+     * hand, {@link #label(BuildEventId)} is the accessor to prefer.
+     *
+     * <p>It never guesses. A token that does not look like a label (Bazel
+     * labels start with {@code //} or {@code @}), an absent-value marker such
+     * as {@value #ABSENT_LABEL}, and a label that may have been cut by
+     * {@link #MAX_DISPLAY_CHARS} all answer empty rather than a fragment.
+     */
+    public static Optional<String> labelOfDisplay(String display) {
+        int space = display.indexOf(' ');
+        if (space <= 0) {
+            return Optional.empty();
+        }
+        if (!LABEL_KINDS.containsKey(display.substring(0, space))) {
+            return Optional.empty();
+        }
+        int start = space + 1;
+        int end = display.indexOf(' ', start);
+        if (end < 0) {
+            end = display.length();
+        }
+        String token = display.substring(start, end);
+        // A label never begins with '<' (the absent markers do) and always
+        // begins with "//" or "@"; anything else in the slot is not a label —
+        // for ActionCompleted it is a primary output path, elsewhere it would
+        // mean the renderer changed and this parser must not pretend otherwise.
+        if (!(token.startsWith("//") || token.startsWith("@"))) {
+            return Optional.empty();
+        }
+        // The display cap can cut a very long label and append its marker
+        // right where the label stopped. A token that runs into the cap and is
+        // followed by the marker is a fragment, and a fragment is not a label.
+        if (end >= MAX_DISPLAY_CHARS - 1
+                && display.substring(end).matches(" \\(\\+\\d+ chars\\)")) {
+            return Optional.empty();
+        }
+        return Optional.of(token);
     }
 
     private static String render(BuildEventId id) {
