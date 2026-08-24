@@ -10,6 +10,7 @@ import com.holtherndon.bazelviz.format.session.SessionManifest;
 import com.holtherndon.bazelviz.runner.caps.BazelCapabilityDetector;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.events.EventQueries;
 import com.holtherndon.bazelviz.testsupport.bazel.BazelBinary;
@@ -17,7 +18,10 @@ import com.holtherndon.bazelviz.testsupport.bazel.BazelWorkspaceFixture;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.DisplayName;
@@ -295,6 +299,93 @@ class RealBazelCaptureTest {
         // The session still exists and still opens: a cancelled capture is a
         // capture, even one that captured nothing.
         assertThat(Files.isDirectory(result.sessionRoot())).isTrue();
+    }
+
+    @Test
+    @DisplayName("three stops in a row leave one cancelled session and a workspace that is not locked")
+    void repeatedStopsReleaseTheWorkspaceLock(@TempDir Path directory) throws Exception {
+        Optional<Path> bazel = BazelBinary.find();
+        assumeTrue(bazel.isPresent(), BazelBinary::whyUnavailable);
+
+        BazelWorkspaceFixture workspace =
+                BazelWorkspaceFixture.slow(directory.resolve("ws"), 6, 3);
+        Path sessionsRoot = directory.resolve("sessions");
+
+        CaptureResult result;
+        try (CaptureCoordinator coordinator = coordinatorFor(
+                CaptureRequest.of(
+                                sessionsRoot, "test", bazel.orElseThrow().toString(),
+                                workspace.root(), hermetic("build", "//..."))
+                        .withPreset(CapturePreset.LIVE_ESSENTIALS),
+                sessionsRoot)) {
+            coordinator.preflight();
+
+            // What a user does when the first click appears to do nothing: they
+            // click the next button, and then the last one. Each used to start
+            // its own escalation ladder against the same client, three threads
+            // deep, each timing its own grace period.
+            Thread clicker = new Thread(() -> {
+                try {
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+                    while (!coordinator.isRunning() && System.nanoTime() < deadline) {
+                        Thread.sleep(20);
+                    }
+                    Thread.sleep(4_000);
+                    coordinator.cancel(CancellationMode.CANCEL);
+                    Thread.sleep(300);
+                    coordinator.cancel(CancellationMode.TERMINATE);
+                    Thread.sleep(300);
+                    coordinator.cancel(CancellationMode.FORCE_KILL);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "three-clicks");
+            clicker.setDaemon(true);
+            clicker.start();
+
+            result = coordinator.run();
+            clicker.join(TimeUnit.SECONDS.toMillis(30));
+        }
+
+        assertThat(result.wasCancelled())
+                .describedAs("state was %s; warnings: %s", result.state(), result.warnings())
+                .isTrue();
+        assertThat(result.state()).isEqualTo(SessionState.CANCELLED);
+
+        // t3, stated as a measurement rather than as an assumption. A Bazel
+        // client holds its workspace's command lock for the whole of its life,
+        // so a client that outlived its cancellation would make this block for
+        // ever — and it is the same lock that makes 'bazel clean' hang, which
+        // is how the two halves of this bug are one bug.
+        Subprocess.Result info = Subprocess.run(
+                lockProbe(bazel.orElseThrow()),
+                workspace.root(),
+                Map.of(),
+                Duration.ofSeconds(90));
+        assertThat(info.timedOut())
+                .describedAs("the workspace lock was still held after the capture ended:"
+                        + " %s", info.failureDetail())
+                .isFalse();
+        assertThat(info.isSuccess())
+                .describedAs("%s", info.failureDetail())
+                .isTrue();
+    }
+
+    /**
+     * A Bazel command that can only finish once the command lock is free.
+     *
+     * <p>{@code info} is the cheapest one there is: it starts no actions and
+     * reuses the server the capture already started, so it measures the lock
+     * and nothing else. Bazel waits for the lock rather than failing on it, so
+     * a held lock shows up here as a timeout.
+     */
+    private static List<String> lockProbe(Path bazel) {
+        List<String> argv = new ArrayList<>();
+        argv.add(bazel.toString());
+        argv.addAll(BazelWorkspaceFixture.hermeticStartupOptions());
+        argv.add("info");
+        argv.add("workspace");
+        return List.copyOf(argv);
     }
 
     /**

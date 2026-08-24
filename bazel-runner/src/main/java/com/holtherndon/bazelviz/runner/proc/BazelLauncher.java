@@ -146,13 +146,50 @@ public final class BazelLauncher {
         private final Thread stdout;
         private final Thread stderr;
         private final long startedNanos = System.nanoTime();
+        private final StopSignals signals;
+        private final long signalReadyMillis;
+
+        /**
+         * Serializes the delivery of rungs, and nothing else.
+         *
+         * <p>Held only for as long as a signal takes to send, never across a
+         * grace period. Two threads may legitimately be stopping the same
+         * client at once — the user clicks Cancel and then Terminate — and they
+         * must not interleave signals or send the same rung twice, but a lock
+         * held across the thirty-second Cancel grace would make Terminate do
+         * nothing for thirty seconds, which is the complaint this whole class
+         * exists to answer.
+         */
+        private final Object stopLock = new Object();
+
+        /** The harshest rung actually delivered. Guarded by {@link #stopLock}. */
+        private CancellationMode delivered;
 
         private volatile CancellationMode cancelledWith;
 
         BazelProcess(Process process, LaunchRequest request, List<String> argv) {
+            this(process, request, argv, OsStopSignals.INSTANCE, SIGNAL_READY_MILLIS);
+        }
+
+        /**
+         * For tests: a scripted process, a recording signal sink and no
+         * readiness delay.
+         *
+         * @param signals where the rungs are delivered
+         * @param signalReadyMillis how old the client must be before a signal is
+         *     sent; zero to send at once
+         */
+        BazelProcess(
+                Process process,
+                LaunchRequest request,
+                List<String> argv,
+                StopSignals signals,
+                long signalReadyMillis) {
             this.process = process;
             this.request = request;
             this.argv = List.copyOf(argv);
+            this.signals = signals;
+            this.signalReadyMillis = signalReadyMillis;
             this.stdout = pump(process.getInputStream(), ConsoleSink.ConsoleStream.STDOUT);
             this.stderr = pump(process.getErrorStream(), ConsoleSink.ConsoleStream.STDERR);
         }
@@ -188,6 +225,13 @@ public final class BazelLauncher {
                     : ProcessOutcome.cancelled(java.util.OptionalInt.of(exitCode), mode, elapsed);
         }
 
+        /** The harshest stop actually delivered to this client, if any. */
+        public Optional<CancellationMode> stoppedBy() {
+            synchronized (stopLock) {
+                return Optional.ofNullable(delivered);
+            }
+        }
+
         /**
          * Stops the process, escalating through the ladder if it does not go.
          *
@@ -198,20 +242,47 @@ public final class BazelLauncher {
          * so the interrupt is sent with {@code kill} rather than through the
          * Java API that looks like it would do it.
          *
+         * <h2>What {@code escalate} decides, and why the caller that matters
+         * asks for it</h2>
+         *
+         * <p>{@code escalate=false} sends one rung and reports what happened.
+         * It is for a caller that owns its own ladder — a user interface with a
+         * Terminate button, or a test — and it makes no promise that the client
+         * is dead when it returns.
+         *
+         * <p>{@code escalate=true} promises the opposite: the client will be
+         * gone within the sum of the grace periods, because the last rung is
+         * {@code SIGKILL} and a process cannot ignore that. That promise is not
+         * a nicety. A Bazel client holds its workspace's command lock for the
+         * whole of its life, so a client that survives a cancellation blocks
+         * every later Bazel command in that workspace — including
+         * {@code bazel clean}, which is the first thing a user reaches for.
+         * Every caller that has nobody to click a second button therefore asks
+         * to escalate, and the escalation is <em>reported</em> rather than
+         * silent: {@link #stoppedBy()} says which rung it took, so a session can
+         * tell the user that its gentle stop was not enough.
+         *
+         * <p>Rungs already delivered are never re-sent, and a harsher rung
+         * delivered by another thread is picked up here rather than fought
+         * with, so a second click during a grace period shortens the ladder
+         * instead of starting a second one.
+         *
          * @param mode the gentlest stop to try
          * @param escalate whether to continue to harsher stops when the grace
-         *     period passes. False means "try this and report", which is what a
-         *     first click of Cancel should do
+         *     period passes
          */
         public ProcessOutcome cancel(CancellationMode mode, boolean escalate) throws InterruptedException {
             Objects.requireNonNull(mode, "mode");
             awaitSignalReadiness();
             CancellationMode current = mode;
             while (true) {
-                cancelledWith = current;
-                apply(current);
+                // deliver() returns the harshest rung sent so far, which may be
+                // harsher than the one asked for here: another thread's click
+                // has already overtaken this ladder, and its grace period is the
+                // one that now applies.
+                current = deliver(current);
                 Duration grace = request.gracePeriodFor(current);
-                if (process.waitFor(grace.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                if (waitForExit(grace, escalate)) {
                     drain();
                     return ProcessOutcome.cancelled(
                             java.util.OptionalInt.of(process.exitValue()),
@@ -235,6 +306,74 @@ public final class BazelLauncher {
         }
 
         /**
+         * Delivers one stop and returns immediately.
+         *
+         * <p>For a caller that is not the one waiting: the capture thread is
+         * already blocked in {@link #await()}, so a second thread that only
+         * needs the signal to go out has no reason to sit through a grace
+         * period it will do nothing with. Waiting there is worse than useless —
+         * it is what makes a Terminate click appear to do nothing until the
+         * Cancel grace expires.
+         */
+        public void requestStop(CancellationMode mode) throws InterruptedException {
+            Objects.requireNonNull(mode, "mode");
+            awaitSignalReadiness();
+            deliver(mode);
+        }
+
+        /**
+         * Sends {@code mode} unless something at least as harsh has already
+         * gone out, and returns the harshest rung delivered.
+         *
+         * <p>A rung is sent at most once. Repeating one that has already failed
+         * to land achieves nothing and, for {@code SIGINT}, races the pid reuse
+         * that {@link OsStopSignals} guards against.
+         */
+        private CancellationMode deliver(CancellationMode mode) {
+            synchronized (stopLock) {
+                if (delivered == null && !process.isAlive()) {
+                    // Nothing to stop: it ended on its own between the click and
+                    // this call. Recording a cancellation here would relabel a
+                    // finished build as one the user stopped, and a session that
+                    // says CANCELLED about a build that completed is a lie about
+                    // what happened.
+                    return mode;
+                }
+                if (delivered == null || mode.ordinal() > delivered.ordinal()) {
+                    delivered = mode;
+                    cancelledWith = mode;
+                    signals.deliver(mode, process);
+                }
+                return delivered;
+            }
+        }
+
+        /**
+         * Waits out one grace period, force-stopping rather than abandoning the
+         * client if the wait is interrupted.
+         *
+         * <p>An interrupt used to end the ladder where it stood. The thread died
+         * with its interrupt flag set and the client — which had just been sent
+         * a signal it was demonstrably ignoring — was left running, holding the
+         * workspace lock, with nothing left in the process that would ever come
+         * back to it. Interrupting the thread that is stopping a build is a
+         * request to stop <em>sooner</em>, so it takes the last rung
+         * immediately.
+         */
+        private boolean waitForExit(Duration grace, boolean escalate) throws InterruptedException {
+            try {
+                return process.waitFor(grace.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException interrupted) {
+                if (escalate && process.isAlive()) {
+                    log.info("the stop of {} was interrupted; force-killing rather than leaving it"
+                            + " holding the workspace lock", pid());
+                    deliver(CancellationMode.FORCE_KILL);
+                }
+                throw interrupted;
+            }
+        }
+
+        /**
          * Waits until the client is old enough to have installed its signal
          * handler.
          *
@@ -252,71 +391,13 @@ public final class BazelLauncher {
          */
         private void awaitSignalReadiness() throws InterruptedException {
             long ageMillis = (System.nanoTime() - startedNanos) / 1_000_000;
-            long remaining = SIGNAL_READY_MILLIS - ageMillis;
+            long remaining = signalReadyMillis - ageMillis;
             if (remaining <= 0 || !process.isAlive()) {
                 return;
             }
             log.debug("holding the cancel signal for {}ms: the client is only {}ms old",
                     remaining, ageMillis);
             process.waitFor(remaining, java.util.concurrent.TimeUnit.MILLISECONDS);
-        }
-
-        private void apply(CancellationMode mode) {
-            switch (mode) {
-                case CANCEL -> sendInterrupt();
-                case TERMINATE -> {
-                    if (process.isAlive()) {
-                        process.destroy();
-                    }
-                }
-                case FORCE_KILL -> {
-                    // The descendant sweep is kept for launchers that do have
-                    // children — a corporate wrapper script, or shell mode. It
-                    // is deliberately not how the Bazel server is reached,
-                    // because the server is not a descendant of the client: it
-                    // runs with PPID 1 in its own session from the first
-                    // millisecond, so this walk finds it neither during a cold
-                    // start nor mid-build. That is the intended outcome. The
-                    // server is shared with every other terminal using the same
-                    // output base, and killing it would throw away their state.
-                    process.descendants().forEach(ProcessHandle::destroyForcibly);
-                    process.destroyForcibly();
-                }
-            }
-        }
-
-        /**
-         * Sends {@code SIGINT}, which the JDK has no API for.
-         *
-         * <p>Falls back to {@code SIGTERM} when {@code kill} is unavailable —
-         * on a platform without it, a slightly harsher stop is better than a
-         * cancel button that does nothing.
-         */
-        private void sendInterrupt() {
-            if (!process.isAlive()) {
-                // The client exits within about 25 ms of the first signal, so
-                // by the time an escalation rung fires it is usually already
-                // gone. Signalling a bare pid then is at best a no-op and at
-                // worst reaches whatever the operating system has since given
-                // that number to.
-                return;
-            }
-            try {
-                Process kill = new ProcessBuilder("/bin/kill", "-INT", Long.toString(process.pid()))
-                        .redirectErrorStream(true)
-                        .start();
-                if (!kill.waitFor(5, java.util.concurrent.TimeUnit.SECONDS) || kill.exitValue() != 0) {
-                    log.info("could not interrupt {}; falling back to terminate", process.pid());
-                    process.destroy();
-                }
-            } catch (IOException | InterruptedException failure) {
-                if (failure instanceof InterruptedException) {
-                    Thread.currentThread().interrupt();
-                }
-                log.info("could not interrupt {} ({}); falling back to terminate",
-                        process.pid(), failure.toString());
-                process.destroy();
-            }
         }
 
         /** Waits out the configured post-exit drain window. */

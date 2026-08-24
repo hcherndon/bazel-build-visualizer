@@ -143,6 +143,59 @@ Pinned sessions are never removed, and the plan shown before the sweep says how
 many it spared. A session pinned between seeing the plan and confirming it is
 also spared: your decision is newer than the plan.
 
+### A build will not stop, or the next Bazel command hangs
+
+These are one problem. A Bazel client holds its workspace's command lock for the
+whole of its life, so a client that outlives its cancellation blocks every later
+Bazel command in that workspace — the next build, and the `bazel clean` you
+reach for when the next build will not start. "Cancel does nothing" and "clean
+never finishes" are the same client, seen twice.
+
+The Stop control has three rungs, and they are not three names for one thing:
+
+- **Cancel** sends `SIGINT`, the same signal Ctrl-C sends. Bazel interrupts the
+  build *and still flushes its event stream*, so the session is complete up to
+  the moment you stopped it. This is the one to press.
+- **Terminate** sends `SIGTERM`. Measurably the same outcome as Cancel for the
+  Bazel client; kept so that "stop harder" sends a different signal rather than
+  repeating one that has already failed to land.
+- **Force kill** sends `SIGKILL`. It does not stop the build any faster — the
+  Bazel *server* is a separate process that notices the client is gone after
+  about two and a half seconds and cancels the build itself — and it costs the
+  ability to know the event stream is complete.
+
+Whichever you press, the stop escalates on its own if the client does not go:
+thirty seconds, then ten, then five, and the last rung is `SIGKILL`, which
+cannot be ignored. So a stop always ends the client, and the workspace lock is
+always released. When escalation was needed, the session says so in its
+warnings — press Cancel and read "escalated from CANCEL to FORCE_KILL" and you
+know why your stream is short.
+
+If you have a wedged workspace from an older build, or from a client this
+application did not launch:
+
+```
+bazel info server_pid          # blocks if the lock is held; the message names the pid holding it
+ps -p <pid> -o command=        # confirm it is the client you think it is
+kill -INT <pid>                # then -TERM, then -KILL
+```
+
+Bazel prints `Another command (pid=…) is running. Waiting for it to complete on
+the server (server_pid=…)` while it waits, so the pid is on screen. Do not kill
+the *server* pid: it is shared with every other terminal using the same output
+base, and killing it discards analysis state belonging to work you are not
+looking at.
+
+One cause worth knowing, because it produces a hang with no error at all:
+Bazel's `--bes_timeout` defaults to `0s`, which means wait for ever. A build
+whose Build Event Service backend stops acknowledging then waits indefinitely at
+the end of an otherwise successful build — with the workspace lock held the
+whole time. Every plan this application produces injects `--bes_timeout=60s`,
+including the one that keeps your own `--bes_backend` and reads a local event
+file instead. If you set your own `--bes_timeout`, yours is left alone and the
+plan shows the flag as not applied; if you veto ours, the plan says what that
+costs.
+
 ### The packaged application will not open
 
 An unsigned build is refused by Gatekeeper on a machine other than the one that
