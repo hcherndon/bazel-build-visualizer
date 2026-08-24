@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
+import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -56,6 +57,23 @@ public final class TestsView extends JPanel {
     private final InspectorPanel inspector = new InspectorPanel();
     private final JLabel statusLabel = new JLabel(" ");
 
+    /**
+     * Why the test table's headers do not sort: the worst-first ordering is
+     * the product ({@link TestRowSource}'s fixed failures-first order), not
+     * an arbitrary default a header click should overwrite.
+     */
+    static final String ORDER_IS_FIXED =
+            "This table is deliberately ordered worst-first — failures, then"
+                    + " timeouts and build failures, then flakes, then passes"
+                    + " — so what went wrong is at the top without asking."
+                    + " That ordering is the product, and it is fixed.";
+
+    /**
+     * The shared header behaviour: no sorting (see {@link #ORDER_IS_FIXED}),
+     * but the column menu and the persisted column state.
+     */
+    private final TableHeaderInteractions headerInteractions;
+
     private ExecutorService pageExecutor;
     private ExecutorService detailExecutor;
     private EntityReader pageReader;
@@ -84,6 +102,8 @@ public final class TestsView extends JPanel {
             }
         });
         inspector.onShowSourceEvent(eventId -> showEventHandler.accept(eventId));
+        headerInteractions = TableHeaderInteractions.install(
+                table, TableHeaderInteractions.Adapter.unsortable(ORDER_IS_FIXED));
 
         JScrollPane scroll = new JScrollPane(table);
         scroll.setMinimumSize(new Dimension(320, 160));
@@ -176,6 +196,20 @@ public final class TestsView extends JPanel {
         closer.start();
     }
 
+    /**
+     * Persists this table's column state (widths, visibility, order) under
+     * the application settings directory. Called once at wiring time; the
+     * load and every save run on the store's I/O thread, never the EDT.
+     */
+    public void attachColumnState(java.nio.file.Path settingsDirectory) {
+        headerInteractions.attachPersistence(settingsDirectory, "tests");
+    }
+
+    /** Visible for testing: the shared header behaviour on this table. */
+    public TableHeaderInteractions headerInteractionsForTest() {
+        return headerInteractions;
+    }
+
     /** Visible for testing. */
     PagedTableModel<TestRow> tableModelForTest() {
         return tableModel;
@@ -208,6 +242,9 @@ public final class TestsView extends JPanel {
             TableColumn column = table.getColumnModel().getColumn(i);
             column.setPreferredWidth(widths[i]);
         }
+        // setModel rebuilt the column model with default widths and every
+        // column visible; reapply what the user arranged.
+        headerInteractions.modelInstalled();
         statusLabel.setText(EntityFormat.count(rows.rowCount())
                 + (rows.rowCount() == 1 ? " test" : " tests"));
         cards.show(deck, CARD_TABLE);
