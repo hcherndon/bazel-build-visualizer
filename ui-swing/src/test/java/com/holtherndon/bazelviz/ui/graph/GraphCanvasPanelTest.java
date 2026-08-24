@@ -107,6 +107,41 @@ final class GraphCanvasPanelTest {
     }
 
     @Test
+    @DisplayName("attached display labels are what the canvas names actions with")
+    void displayLabelsReachTheCanvas() throws Exception {
+        // The per-action names — "Mnemonic — output basename" — arrive
+        // separately from the target labels, because the complete export's
+        // label column must keep meaning the target.
+        String[] display = new String[6];
+        for (int i = 0; i < 6; i++) {
+            display[i] = "Javac — t" + i + ".o";
+        }
+        panel.attachActionDisplayLabels(display);
+
+        panel.showNode(2);
+        awaitDrawn();
+
+        GraphModel model = panel.canvas().model();
+        for (int i = 0; i < model.size(); i++) {
+            assertThat(model.displayLabelAt(i)).startsWith("Javac — t");
+        }
+        // Two actions no longer read as the same string.
+        assertThat(model.displayLabelAt(0)).isNotEqualTo(model.displayLabelAt(1));
+    }
+
+    @Test
+    @DisplayName("without display labels the canvas falls back to target labels, never blanks")
+    void displayLabelsFallBackToTargetLabels() throws Exception {
+        panel.showNode(2);
+        awaitDrawn();
+
+        GraphModel model = panel.canvas().model();
+        for (int i = 0; i < model.size(); i++) {
+            assertThat(model.displayLabelAt(i)).startsWith("//a:target");
+        }
+    }
+
+    @Test
     @DisplayName("a drawn neighbourhood names the totals it came from")
     void totalsAreShown() throws Exception {
         panel.showNode(2);

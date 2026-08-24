@@ -222,6 +222,78 @@ public final class GraphQueries implements AutoCloseable {
                         + " WHERE da.node_index IS NOT NULL");
     }
 
+    /**
+     * A display name per action-graph node: "Mnemonic — output basename".
+     *
+     * <p>{@link #labelsByNodeIndex()} names a node by its owning target, and a
+     * target owns many actions — so on the canvas every action under one
+     * target read as the same string. This is the per-action name: the
+     * mnemonic and the primary output's basename, which together distinguish
+     * the {@code Javac} from the {@code JavaSourceJar} of the same label.
+     *
+     * <p>Absent pieces degrade honestly rather than being invented: no output
+     * leaves the mnemonic alone, no mnemonic falls back to the target label
+     * (then to the basename), and a node with none of the three stays null so
+     * the canvas can say "(name not recorded)" instead of showing a blank.
+     */
+    public String[] displayLabelsByNodeIndex() throws SQLException {
+        int nodes = Math.toIntExact(scalar(
+                "SELECT coalesce(max(node_index), -1) + 1 FROM declared_actions"));
+        String[] names = new String[nodes];
+        if (nodes == 0) {
+            return names;
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT da.node_index, m.value, art.path, l.value"
+                                + " FROM declared_actions da"
+                                + " LEFT JOIN mnemonics m ON m.id = da.mnemonic_id"
+                                + " LEFT JOIN artifacts art ON art.id = da.primary_output_id"
+                                + " LEFT JOIN labels l ON l.id = da.label_id"
+                                + " WHERE da.node_index IS NOT NULL");
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                int index = rows.getInt(1);
+                if (index >= 0 && index < nodes) {
+                    names[index] = composeDisplayLabel(
+                            rows.getString(2), rows.getString(3), rows.getString(4));
+                }
+            }
+        }
+        return names;
+    }
+
+    /**
+     * "Mnemonic — output basename", degrading honestly when pieces are absent.
+     *
+     * <p>Static and public so the views composing search results can name a
+     * found node exactly as the canvas will draw it, rather than keeping a
+     * second, drifting copy of this grammar.
+     *
+     * @return the composed name, or null when there is nothing to compose —
+     *     never an empty string, which would draw as a blank that reads as
+     *     "this action has no identity"
+     */
+    public static String composeDisplayLabel(
+            String mnemonic, String primaryOutputPath, String label) {
+        String basename = basenameOf(primaryOutputPath);
+        if (mnemonic != null && !mnemonic.isBlank()) {
+            return basename == null ? mnemonic : mnemonic + " — " + basename;
+        }
+        if (label != null && !label.isBlank()) {
+            return label;
+        }
+        return basename;
+    }
+
+    private static String basenameOf(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        int slash = path.lastIndexOf('/');
+        String basename = slash < 0 ? path : path.substring(slash + 1);
+        return basename.isBlank() ? null : basename;
+    }
+
     /** The mnemonic behind each graph node; the coarsest useful clustering. */
     public String[] mnemonicsByNodeIndex() throws SQLException {
         return keysByNodeIndex(

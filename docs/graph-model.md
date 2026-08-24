@@ -225,3 +225,51 @@ Unknown weights draw grey at base size — never the smallest, coldest node —
 and every scale sentence under the drawing names what the colours mean and
 how many nodes have no value (`GraphWeightEncodingTest`,
 `GraphCanvasPanelTest`).
+
+## What the Graph-card canvas polish added (2026-08-24)
+
+Six rendering and navigation refinements; no schema change, no new graph
+kinds, and the deterministic layouts are untouched.
+
+**Per-action display labels.** The canvas used to name an action-graph node by
+its owning target's label, so every action under one target read as the same
+string. `GraphQueries.displayLabelsByNodeIndex()` composes "Mnemonic — output
+basename" (`mnemonics` joined through `declared_actions.mnemonic_id`,
+`artifacts.path` through `primary_output_id`), degrading honestly: no output
+leaves the mnemonic alone; no mnemonic falls back to the target label, then
+the basename; nothing at all stays null so the canvas says "(name not
+recorded)". Label-graph nodes keep their target labels — a label *is* the node
+there — and the complete export keeps target labels too, because its `label`
+column must keep meaning the target.
+
+**Label declutter and label-aware Fit.** Within a zoom band, a label that
+would paint over an already-painted label is skipped under a deterministic
+priority (selected, hovered, heavier, lower node index); the count is
+inspectable and a selected label always paints. Fit reserves room for the
+label text visible at the resulting zoom — all labels in the near band, the
+selection's in the medium band — capped at `MAX_LABEL_FIT_FRACTION` of the
+window and clamped so the reservation can never drop the view into a coarser
+band where the reserved-for labels would not paint; both caps are stated on
+screen when hit (see `docs/limits.md`).
+
+**Node dragging is a view-layer overlay.** Dragging a node moves a world-space
+offset held by the canvas alone; `GraphLayout.Result`, `GraphSpatialIndex` and
+the cached `Rendered` are shared with the layout cache and are never written.
+Hit testing and marquee selection consult the overlay, edges follow their
+nodes, offsets survive a weight restyle (same layout, by design), reset on any
+new layout, and "Reset positions" — toolbar and context menu — clears them
+explicitly. A press on empty canvas still pans.
+
+**Direction arrowheads.** Edges are stored producer→consumer, and at the near
+band — where an edge is individually distinguishable — each drawn edge gets an
+arrowhead at its consumer end, pulled back to the node's rim. Coarser bands
+and mid-drag frames draw none, exactly like the other detail the canvas
+suspends, so the 50,000-node paint budget holds.
+
+**Find and Browse.** The Graph card's Find field lists up to `FIND_LIMIT`
+as-you-type matches (queried off the EDT), each named exactly as the canvas
+draws it, and choosing one lands on that exact node — replacing the old silent
+first-substring-match jump. A Browse toggle opens a filter-plus-tree listing
+(the schema-browser pattern) of up to `BROWSE_LIMIT` nodes grouped by package,
+its root naming the graph's total so a truncated listing cannot read as
+complete.

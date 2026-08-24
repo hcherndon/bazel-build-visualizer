@@ -46,21 +46,47 @@ public record GraphTransform(double offsetX, double offsetY, double scale) {
      */
     public static GraphTransform fit(
             double[] bounds, int widthPixels, int heightPixels, double marginPixels) {
+        return fit(bounds, widthPixels, heightPixels, marginPixels, 0, 0);
+    }
+
+    /**
+     * {@link #fit(double[], int, int, double)} with screen-space reservations
+     * for text that does not scale with the world.
+     *
+     * <p>Labels are drawn at a fixed pixel size to the right of their nodes,
+     * so a fit computed from node geometry alone pushes the right-most
+     * column's text off the window. The reservation is subtracted from the
+     * usable viewport before the scale is chosen, and the drawing plus its
+     * right-hand reservation is centred as one block — the vertical
+     * reservation is split evenly, which plain centring already does.
+     *
+     * @param reserveRightPixels screen pixels kept free to the right of the
+     *     fitted drawing, where labels extend
+     * @param reserveVerticalPixels screen pixels kept free vertically, split
+     *     between top and bottom, so the outermost rows' text is not clipped
+     */
+    public static GraphTransform fit(
+            double[] bounds, int widthPixels, int heightPixels, double marginPixels,
+            double reserveRightPixels, double reserveVerticalPixels) {
         if (widthPixels <= 0 || heightPixels <= 0) {
             return identity();
         }
-        double usableWidth = Math.max(1, widthPixels - 2 * marginPixels);
-        double usableHeight = Math.max(1, heightPixels - 2 * marginPixels);
+        double reserveRight = Math.max(0, reserveRightPixels);
+        double reserveVertical = Math.max(0, reserveVerticalPixels);
+        double usableWidth = Math.max(1, widthPixels - 2 * marginPixels - reserveRight);
+        double usableHeight = Math.max(1, heightPixels - 2 * marginPixels - reserveVertical);
         double worldWidth = Math.max(1e-6, bounds[2] - bounds[0]);
         double worldHeight = Math.max(1e-6, bounds[3] - bounds[1]);
 
         double scale = clampScale(Math.min(usableWidth / worldWidth, usableHeight / worldHeight));
         // Centre what is left over, so a wide graph in a tall window does not
-        // sit against the top edge.
+        // sit against the top edge. The right reservation is part of the
+        // centred block: the drawing sits left of centre by half of it, and
+        // its labels fill the space that made.
         double centreX = (bounds[0] + bounds[2]) / 2;
         double centreY = (bounds[1] + bounds[3]) / 2;
         return new GraphTransform(
-                centreX - widthPixels / (2 * scale),
+                centreX - (widthPixels - reserveRight) / (2 * scale),
                 centreY - heightPixels / (2 * scale),
                 scale);
     }

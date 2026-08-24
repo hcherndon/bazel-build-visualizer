@@ -25,6 +25,9 @@ reached, and the first two can be raised from the graph toolbar.
 | Node-limit spinner floor | `com.holtherndon.bazelviz.ui.graph.GraphCanvasPanel.MIN_NODE_LIMIT` | 1 | The spinner will not go lower: a limit of zero draws nothing and would read as "the graph is empty", which is a claim about the build rather than the setting. |
 | Node-limit spinner ceiling | `com.holtherndon.bazelviz.ui.graph.GraphCanvasPanel.MAX_NODE_LIMIT` | 5000000 | The spinner will not go higher. Matches the largest planned graph (Tier 3, five million nodes); an unbounded control would read as "no limit", which is a claim plan 13.6 forbids. |
 | Cluster boxes | `com.holtherndon.bazelviz.analysis.GraphClustering.DEFAULT_CLUSTER_LIMIT` | 2000 | Grouping refuses with the exact group count and suggests a coarser dimension. Nothing is truncated. |
+| Find dropdown matches | `com.holtherndon.bazelviz.ui.graph.GraphExplorerView.FIND_LIMIT` | 12 | The Graph card's Find field lists at most this many as-you-type matches; when there are more, the dropdown's last row says only the first N are listed and typing narrows. Choosing an entry lands on that exact node — nothing is chosen silently. |
+| Browse listing entries | `com.holtherndon.bazelviz.ui.graph.GraphExplorerView.BROWSE_LIMIT` | 500 | The Graph card's Browse panel lists at most this many nodes per filter. The summary states "only the first N matches are listed" and the tree root names the graph's total, so a truncated listing cannot read as a complete one. |
+| Fit label reservation | `com.holtherndon.bazelviz.ui.graph.GraphCanvas.MAX_LABEL_FIT_FRACTION` | 0.5 | Fit reserves room for the label text visible at the resulting zoom, up to this fraction of the window width. Past the cap — a dense graph of long names — the reservation stops growing and the canvas states that some labels run past the right edge, rather than zooming the nodes to nothing or pretending the text fits. |
 | Timeline spans in one viewport | `com.holtherndon.bazelviz.ui.timeline.SpanWindow.MAX_SPANS` | 20000 | The window reports that it is capped and the aggregate bins remain exact; zooming in returns individual spans. Also bounds how many in-flight targets the live band fetches per rebuild; the band's label states "drawing the earliest N of M" when it bites. |
 | Timeline sub-rows per lane | `com.holtherndon.bazelviz.ui.timeline.SpanStacking.MAX_SUB_ROWS` | 6 | Overlapping spans in one lane stack top-to-bottom by start time into at most this many sub-rows. Beyond it, further overlapping spans draw into the last sub-row — never dropped — and the status line states the exact overflow count with a suggestion to zoom in. |
 | Console lines retained | `com.holtherndon.bazelviz.ui.capture.ConsoleModel.DEFAULT_MAX_LINES` | 20000 | The oldest lines are dropped from the *view*; the full text is on disk in `raw/stdout.log`, which the panel says. |
@@ -37,6 +40,14 @@ for that reason: `GraphCanvas` stops drawing individual edges above 30,000 at
 far zoom and above 20,000 while a drag is in progress. Both reverse on the next
 frame, and `hiddenDetail()` names the omission on screen — a blank area that
 looked edgeless would be a claim about the build, and a false one.
+
+**Label decluttering is a rendering-density decision, not a limit**: within a
+zoom band the canvas skips a label that would paint over one already painted,
+under a deterministic priority (selected, then hovered, then higher weight,
+then lower node index), so text never paints over text and the same labels
+survive every frame. A selected node's label always paints — nothing outranks
+it. The skipped count is `GraphCanvas.declutteredLabelCount()`, and zooming in
+gives every label more room, exactly as with the semantic-zoom bands.
 
 ## Query and traversal limits
 

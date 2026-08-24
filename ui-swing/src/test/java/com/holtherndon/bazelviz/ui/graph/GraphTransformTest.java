@@ -103,6 +103,43 @@ final class GraphTransformTest {
     }
 
     @Test
+    @DisplayName("a fit with a label reservation keeps that many pixels free on the right")
+    void fitWithReservation() {
+        double[] bounds = {0, 0, 1_000, 500};
+
+        GraphTransform plain = GraphTransform.fit(bounds, 800, 600, 40);
+        GraphTransform reserved = GraphTransform.fit(bounds, 800, 600, 40, 200, 20);
+
+        // Text does not scale with the world, so making room for it means a
+        // smaller world scale, never a lie about the text fitting.
+        assertThat(reserved.scale()).isLessThan(plain.scale());
+        // The drawing starts at the margin and ends a reservation short of
+        // the far margin, which is exactly where its labels will paint.
+        assertThat(reserved.screenX(0)).isCloseTo(40, within(1e-6));
+        assertThat(reserved.screenX(1_000)).isCloseTo(800 - 40 - 200, within(1e-6));
+    }
+
+    @Test
+    @DisplayName("a zero reservation is exactly the plain fit")
+    void zeroReservationIsThePlainFit() {
+        double[] bounds = {-5, 12, 990, 480};
+
+        assertThat(GraphTransform.fit(bounds, 800, 600, 40, 0, 0))
+                .isEqualTo(GraphTransform.fit(bounds, 800, 600, 40));
+    }
+
+    @Test
+    @DisplayName("a reservation wider than the window still produces a usable view")
+    void absurdReservationDoesNotDegenerate() {
+        GraphTransform fitted =
+                GraphTransform.fit(new double[] {0, 0, 100, 100}, 800, 600, 40, 5_000, 5_000);
+
+        // The caller caps reservations; the transform still refuses to hand
+        // back a zero or negative scale if one gets through.
+        assertThat(fitted.scale()).isBetween(GraphTransform.MIN_SCALE, GraphTransform.MAX_SCALE);
+    }
+
+    @Test
     @DisplayName("an impossible transform is rejected at construction")
     void invalidTransforms() {
         assertThatThrownBy(() -> new GraphTransform(0, 0, 0))

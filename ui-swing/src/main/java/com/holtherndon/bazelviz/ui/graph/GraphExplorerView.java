@@ -44,10 +44,32 @@ public final class GraphExplorerView extends JPanel {
 
     private static final Logger log = LoggerFactory.getLogger(GraphExplorerView.class);
 
+    /**
+     * The most matches the Find field's dropdown lists.
+     *
+     * <p>The dropdown is for choosing between near-misses, not for browsing;
+     * more matches than this means the pattern is not yet a choice, and the
+     * dropdown's last row says so instead of listing on.
+     */
+    static final int FIND_LIMIT = 12;
+
+    /**
+     * The most nodes the Browse panel lists at once.
+     *
+     * <p>A build has tens of thousands of actions and a tree of all of them
+     * answers nothing; the panel lists this many, states that it stopped, and
+     * the filter narrows. The limit bounds a per-keystroke query, so it is
+     * also what keeps browsing responsive.
+     */
+    static final int BROWSE_LIMIT = 500;
+
     private final JComboBox<GraphQueries.GraphSource> sourceChoice = new JComboBox<>();
     private final JLabel sourceDetail = new JLabel(" ");
     private final JLabel warning = new JLabel(" ");
     private final javax.swing.JTextField search = new javax.swing.JTextField(24);
+    private final javax.swing.JPopupMenu findPopup = new javax.swing.JPopupMenu();
+    private final javax.swing.JToggleButton browse = new javax.swing.JToggleButton("Browse…");
+    private final GraphNodeBrowser browser = new GraphNodeBrowser();
     private final JLabel status = new JLabel(" ");
     private final JLabel empty =
             new JLabel("No dependency graph has been imported.", SwingConstants.CENTER);
@@ -59,6 +81,18 @@ public final class GraphExplorerView extends JPanel {
     private GraphQueries queries;
     private GraphLayoutService layouts;
     private long generation;
+
+    /** Guards stale find answers; read and written on the EDT only. */
+    private long findGeneration;
+
+    /** Guards stale browse answers; read and written on the EDT only. */
+    private long browseGeneration;
+
+    /** The last find's matches, in the dropdown's order. */
+    private List<GraphQueries.GraphNode> findResults = List.of();
+
+    /** True when the last find had more matches than the dropdown lists. */
+    private boolean findTruncated;
 
     public GraphExplorerView() {
         super(new BorderLayout());
@@ -72,16 +106,42 @@ public final class GraphExplorerView extends JPanel {
         sourceChoice.setRenderer(new SourceRenderer());
         sourceChoice.addActionListener(event -> sourceChanged());
 
+        // The dropdown must not steal focus: the user is mid-word, and a menu
+        // that grabbed the keyboard would end the typing it exists to help.
+        findPopup.setFocusable(false);
+        search.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override
+            public void insertUpdate(javax.swing.event.DocumentEvent event) {
+                findTextChanged();
+            }
+
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent event) {
+                findTextChanged();
+            }
+
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent event) {
+                findTextChanged();
+            }
+        });
+        browse.addActionListener(event -> browserToggled());
+        browser.setVisible(false);
+        browser.onNodeChosen(this::browseChosen);
+        browser.onFilterChanged(text -> refreshBrowser());
+
         JPanel top = new JPanel();
         top.setLayout(new javax.swing.BoxLayout(top, javax.swing.BoxLayout.Y_AXIS));
         top.setBorder(BorderFactory.createEmptyBorder(8, 8, 4, 8));
         top.add(row(new JLabel("Graph:"), sourceChoice));
         top.add(sourceDetail);
         top.add(warning);
-        top.add(row(new JLabel("Find:"), search, button("Show", this::showSearched), status));
+        top.add(row(new JLabel("Find:"), search,
+                button("Show", this::showSearched), browse, status));
 
         JPanel body = new JPanel(new BorderLayout());
         body.add(top, BorderLayout.NORTH);
+        body.add(browser, BorderLayout.WEST);
         body.add(canvasPanel, BorderLayout.CENTER);
 
         deck.add(empty, "empty");
@@ -116,6 +176,7 @@ public final class GraphExplorerView extends JPanel {
             GraphQueries opened;
             List<GraphQueries.GraphSource> sources;
             String[] labels;
+            String[] displayLabels;
             long[] durations;
             java.util.Map<Integer, Long> actionIds;
             String[] targetLabels;
@@ -124,8 +185,11 @@ public final class GraphExplorerView extends JPanel {
                 sources = opened.sources();
                 // Fetched here, once, because the canvas must never need a name
                 // or a duration during a paint (plan 17.7). A few queries for
-                // the whole session, not one per frame.
+                // the whole session, not one per frame. The display labels —
+                // "Mnemonic — output basename" per action — are composed here
+                // too, off the event thread, for the same reason.
                 labels = opened.labelsByNodeIndex();
+                displayLabels = opened.displayLabelsByNodeIndex();
                 durations = opened.durationsByNodeIndex(false, GraphModel.UNKNOWN_DURATION);
                 actionIds = opened.actionIdsByNodeIndex();
                 targetLabels = opened.labelsByNodeIndex(GraphKind.CONFIGURED_TARGETS);
@@ -143,6 +207,7 @@ public final class GraphExplorerView extends JPanel {
                 queries = opened;
                 layouts = service;
                 canvasPanel.attach(service, labels, durations, actionIds);
+                canvasPanel.attachActionDisplayLabels(displayLabels);
                 canvasPanel.attachLabelGraph(targetLabels);
                 installSources(sources);
             });
@@ -168,6 +233,12 @@ public final class GraphExplorerView extends JPanel {
         closeQuietly(open);
         sourceChoice.setModel(new DefaultComboBoxModel<>());
         status.setText(" ");
+        findGeneration++;
+        browseGeneration++;
+        findResults = List.of();
+        findTruncated = false;
+        findPopup.setVisible(false);
+        browser.clear();
         showCard("empty");
     }
 
@@ -202,6 +273,13 @@ public final class GraphExplorerView extends JPanel {
         // reinterpreting it in the other graph's numbering.
         canvasPanel.setShownGraph(source.graphKind().orElse(shownGraph()));
         status.setText(" ");
+        // Find matches and the browse listing are answers in the old graph's
+        // numbering; both restate themselves against the new one.
+        findGeneration++;
+        findResults = List.of();
+        findTruncated = false;
+        findPopup.setVisible(false);
+        refreshBrowser();
     }
 
     /**
@@ -242,6 +320,145 @@ public final class GraphExplorerView extends JPanel {
                 canvasPanel.showNode(found.getFirst().nodeIndex());
             });
         });
+    }
+
+    /**
+     * The as-you-type half of Find.
+     *
+     * <p>Every keystroke schedules a bounded search on the worker — never on
+     * the event thread — and the answer comes back as a dropdown of up to
+     * {@link #FIND_LIMIT} matches under the field. Each entry names its node
+     * exactly as the canvas will, and choosing one lands on that exact node —
+     * the old behaviour of silently taking the first substring match is what
+     * this replaces. A stale answer (the user kept typing) is dropped by
+     * generation.
+     */
+    private void findTextChanged() {
+        String pattern = search.getText().trim();
+        long wanted = ++findGeneration;
+        if (pattern.isEmpty() || queries == null) {
+            findResults = List.of();
+            findTruncated = false;
+            findPopup.setVisible(false);
+            setStatus(" ");
+            return;
+        }
+        GraphKind kind = shownGraph();
+        onWorker(work -> {
+            // One more than the dropdown shows, so "there are more" is a fact
+            // rather than a guess.
+            List<GraphQueries.GraphNode> found =
+                    work.search(kind, "%" + pattern + "%", FIND_LIMIT + 1);
+            SwingUtilities.invokeLater(() -> {
+                if (wanted != findGeneration) {
+                    return;
+                }
+                findTruncated = found.size() > FIND_LIMIT;
+                findResults = findTruncated ? found.subList(0, FIND_LIMIT) : found;
+                showFindDropdown(kind, pattern);
+            });
+        });
+    }
+
+    /** Rebuilds and, when the field is on screen, shows the dropdown. */
+    private void showFindDropdown(GraphKind kind, String pattern) {
+        findPopup.setVisible(false);
+        findPopup.removeAll();
+        if (findResults.isEmpty()) {
+            setStatus("Nothing in the " + kind.displayName() + " matches " + pattern + ".");
+            return;
+        }
+        setStatus(" ");
+        for (GraphQueries.GraphNode found : findResults) {
+            javax.swing.JMenuItem item = new javax.swing.JMenuItem(describeMatch(found));
+            item.addActionListener(event -> chooseFindResult(found));
+            findPopup.add(item);
+        }
+        if (findTruncated) {
+            javax.swing.JMenuItem more = new javax.swing.JMenuItem(
+                    "Only the first " + FIND_LIMIT + " matches are listed. Keep typing.");
+            more.setEnabled(false);
+            findPopup.add(more);
+        }
+        // A component that is not on screen cannot anchor a popup; headless
+        // tests read findResultsForTesting instead.
+        if (search.isShowing()) {
+            findPopup.show(search, 0, search.getHeight());
+        }
+    }
+
+    /** A dropdown row: the label, then what tells this node from its siblings. */
+    private String describeMatch(GraphQueries.GraphNode found) {
+        String distinct = GraphQueries.composeDisplayLabel(
+                found.mnemonic().orElse(null), found.primaryOutput().orElse(null), null);
+        String label = found.label().orElse(null);
+        if (label == null) {
+            return distinct == null ? "(name not recorded)" : distinct;
+        }
+        return distinct == null ? label : label + "  (" + distinct + ")";
+    }
+
+    /** Lands on the chosen match's exact node. */
+    private void chooseFindResult(GraphQueries.GraphNode found) {
+        findPopup.setVisible(false);
+        setStatus(" ");
+        canvasPanel.showNode(found.nodeIndex());
+    }
+
+    // -------------------------------------------------------------- browsing
+
+    /** Shows or hides the browse panel; showing fetches a listing. */
+    private void browserToggled() {
+        browser.setVisible(browse.isSelected());
+        if (browse.isSelected()) {
+            refreshBrowser();
+        }
+        revalidate();
+        repaint();
+    }
+
+    /**
+     * Re-lists the browsable nodes for the shown graph and current filter.
+     *
+     * <p>On the worker, bounded by {@link #BROWSE_LIMIT}, and guarded by
+     * generation like the find — the browser itself holds no connection and
+     * is only ever handed a finished list.
+     */
+    private void refreshBrowser() {
+        if (!browser.isVisible() || queries == null) {
+            return;
+        }
+        long wanted = ++browseGeneration;
+        GraphKind kind = shownGraph();
+        String filter = browser.filterText();
+        java.util.OptionalLong total = graphTotal();
+        onWorker(work -> {
+            List<GraphQueries.GraphNode> found =
+                    work.search(kind, "%" + filter + "%", BROWSE_LIMIT + 1);
+            SwingUtilities.invokeLater(() -> {
+                if (wanted != browseGeneration) {
+                    return;
+                }
+                boolean truncated = found.size() > BROWSE_LIMIT;
+                browser.show(
+                        truncated ? found.subList(0, BROWSE_LIMIT) : found,
+                        GraphLayoutService.nounFor(kind), BROWSE_LIMIT, truncated, total);
+            });
+        });
+    }
+
+    /** The shown graph's node count, when the selected source states one. */
+    private java.util.OptionalLong graphTotal() {
+        GraphQueries.GraphSource source =
+                (GraphQueries.GraphSource) sourceChoice.getSelectedItem();
+        return source == null
+                ? java.util.OptionalLong.empty() : source.declaredActions();
+    }
+
+    /** A browsed entry lands exactly like a found one. */
+    private void browseChosen(int nodeIndex) {
+        setStatus(" ");
+        canvasPanel.showNode(nodeIndex);
     }
 
     /**
@@ -456,6 +673,37 @@ public final class GraphExplorerView extends JPanel {
     void searchForTesting(String pattern) {
         search.setText(pattern);
         showSearched();
+    }
+
+    /** Types into the Find field exactly as a user would, for tests. */
+    void typeFindForTesting(String pattern) {
+        search.setText(pattern);
+    }
+
+    /** The dropdown's current matches, for tests; headless popups cannot show. */
+    List<GraphQueries.GraphNode> findResultsForTesting() {
+        return List.copyOf(findResults);
+    }
+
+    /** True when the last find listed only the first {@link #FIND_LIMIT}. */
+    boolean findTruncatedForTesting() {
+        return findTruncated;
+    }
+
+    /** Chooses the {@code index}th dropdown match, for tests. */
+    void chooseFindResultForTesting(int index) {
+        chooseFindResult(findResults.get(index));
+    }
+
+    /** The browse panel, for tests. */
+    GraphNodeBrowser browserForTesting() {
+        return browser;
+    }
+
+    /** Opens the browse panel exactly as the toggle would, for tests. */
+    void openBrowserForTesting() {
+        browse.setSelected(true);
+        browserToggled();
     }
 
     /** The status sentence beside the search, for tests. */

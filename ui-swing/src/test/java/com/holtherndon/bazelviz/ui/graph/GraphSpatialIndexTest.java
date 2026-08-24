@@ -89,6 +89,28 @@ final class GraphSpatialIndexTest {
     }
 
     @Test
+    @DisplayName("a filtered hit test skips the excluded and finds the next nearest")
+    void filteredHitTesting() {
+        GraphLayout.Result layout = gridOf(100);
+        GraphSpatialIndex index = GraphSpatialIndex.of(layout);
+
+        int nearest = index.nearest(layout.xAt(0) + 3, layout.yAt(0) + 3, 1_000)
+                .orElseThrow();
+
+        // The canvas's drag overlay excludes dragged positions here and tests
+        // them at their displaced coordinates; the filter must therefore hand
+        // back the next candidate, not an empty answer.
+        java.util.OptionalInt second = index.nearest(
+                layout.xAt(0) + 3, layout.yAt(0) + 3, 1_000,
+                position -> position != nearest);
+        assertThat(second).isPresent();
+        assertThat(second.getAsInt()).isNotEqualTo(nearest);
+        // And a filter that accepts everything is the unfiltered answer.
+        assertThat(index.nearest(layout.xAt(0) + 3, layout.yAt(0) + 3, 1_000,
+                position -> true)).hasValue(nearest);
+    }
+
+    @Test
     @DisplayName("hit testing is deterministic when several nodes are equidistant")
     void tiesAreBrokenTheSameWayEveryTime() {
         // A layered chain puts nodes on an exact lattice, so equidistant

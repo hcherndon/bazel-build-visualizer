@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
@@ -300,5 +301,301 @@ final class GraphCanvasTest {
         // A selection carried across models would point at a node in a graph
         // that is no longer on screen.
         assertThat(canvas.selectedPositions()).isEmpty();
+    }
+
+    // ------------------------------------------------------------- plumbing
+
+    private static void paintOnce(GraphCanvas canvas) {
+        BufferedImage image = new BufferedImage(
+                Math.max(1, canvas.getWidth()), Math.max(1, canvas.getHeight()),
+                BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = image.createGraphics();
+        try {
+            canvas.paint(g);
+        } finally {
+            g.dispose();
+        }
+    }
+
+    private static void mouse(GraphCanvas canvas, int id, int x, int y) {
+        canvas.dispatchEvent(new java.awt.event.MouseEvent(
+                canvas, id, System.currentTimeMillis(), 0, x, y, 1, false,
+                java.awt.event.MouseEvent.BUTTON1));
+    }
+
+    private static int screenXOf(GraphCanvas canvas, int position) {
+        return (int) Math.round(
+                canvas.transform().screenX(canvas.model().layout().xAt(position)));
+    }
+
+    private static int screenYOf(GraphCanvas canvas, int position) {
+        return (int) Math.round(
+                canvas.transform().screenY(canvas.model().layout().yAt(position)));
+    }
+
+    // ------------------------------------------------------- label declutter
+
+    /** Labels wide enough that neighbours at the near band must collide. */
+    private static GraphModel longLabelled(int nodes) {
+        String[] labels = new String[nodes];
+        for (int i = 0; i < nodes; i++) {
+            labels[i] = "//declutter/averylongpackagename:target_number_" + i;
+        }
+        return GraphModel.of(rendered(nodes), labels, allTimed(nodes));
+    }
+
+    @Test
+    @DisplayName("labels never paint over labels, and the skipped ones are counted")
+    void labelsAreDecluttered() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(longLabelled(6));
+        assertThat(canvas.detail()).isEqualTo(GraphCanvas.Detail.NEAR);
+
+        paintOnce(canvas);
+
+        // Labels far wider than the gap between nodes cannot all fit; some
+        // must be skipped, and the skip is counted rather than silent.
+        assertThat(canvas.paintedLabelPositionsForTesting()).isNotEmpty();
+        assertThat(canvas.declutteredLabelCount()).isPositive();
+        assertThat(canvas.paintedLabelPositionsForTesting().size()
+                + canvas.declutteredLabelCount()).isEqualTo(6);
+    }
+
+    @Test
+    @DisplayName("the declutter keeps the same labels every frame")
+    void declutterIsDeterministic() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(longLabelled(6));
+
+        paintOnce(canvas);
+        java.util.List<Integer> first = canvas.paintedLabelPositionsForTesting();
+        int skipped = canvas.declutteredLabelCount();
+        assertThat(skipped).isPositive();
+        for (int frame = 0; frame < 5; frame++) {
+            paintOnce(canvas);
+            assertThat(canvas.paintedLabelPositionsForTesting()).isEqualTo(first);
+            assertThat(canvas.declutteredLabelCount()).isEqualTo(skipped);
+        }
+    }
+
+    @Test
+    @DisplayName("a selected node's label always paints, and paints first")
+    void selectionOutranksTheDeclutter() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(longLabelled(6));
+
+        paintOnce(canvas);
+        // Pick a node whose label the declutter skipped, then select it: the
+        // selection must win its space back.
+        int skippedPosition = -1;
+        for (int position = 0; position < 6; position++) {
+            if (!canvas.paintedLabelPositionsForTesting().contains(position)) {
+                skippedPosition = position;
+                break;
+            }
+        }
+        assertThat(skippedPosition).isNotNegative();
+
+        canvas.select(skippedPosition);
+        paintOnce(canvas);
+
+        assertThat(canvas.paintedLabelPositionsForTesting().get(0))
+                .isEqualTo(skippedPosition);
+    }
+
+    @Test
+    @DisplayName("the medium band labels the selection and nothing else")
+    void mediumBandLabelsOnlyTheSelection() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(modelOf(15, allTimed(15)));
+        assertThat(canvas.detail()).isEqualTo(GraphCanvas.Detail.MEDIUM);
+
+        paintOnce(canvas);
+        assertThat(canvas.paintedLabelPositionsForTesting()).isEmpty();
+
+        canvas.select(7);
+        paintOnce(canvas);
+        assertThat(canvas.paintedLabelPositionsForTesting()).containsExactly(7);
+    }
+
+    // ------------------------------------------------------ label-aware fit
+
+    @Test
+    @DisplayName("fit leaves room for the labels visible at the fitted zoom")
+    void fitReservesLabelRoom() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(modelOf(5, allTimed(5)));
+        assertThat(canvas.detail()).isEqualTo(GraphCanvas.Detail.NEAR);
+
+        java.awt.FontMetrics metrics = canvas.getFontMetrics(canvas.labelFont());
+        double radius = Math.max(2.5, 9 * canvas.transform().scale());
+        GraphModel model = canvas.model();
+        for (int i = 0; i < model.size(); i++) {
+            double labelRight = canvas.transform().screenX(model.layout().xAt(i))
+                    + radius + 4 + metrics.stringWidth(model.displayLabelAt(i));
+            // Node geometry alone would push the last column's text off the
+            // window; the label-aware fit must not.
+            assertThat(labelRight)
+                    .as("label %d ends on screen", i)
+                    .isLessThanOrEqualTo(800);
+        }
+        assertThat(canvas.hiddenDetail()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a label wider than the reservation cap is admitted, not absorbed")
+    void fitLabelCapIsReported() {
+        String[] labels = new String[3];
+        labels[0] = "//very:long" + "x".repeat(400);
+        labels[1] = "//pkg:b";
+        labels[2] = "//pkg:c";
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(GraphModel.of(rendered(3), labels, allTimed(3)));
+
+        // The cap kept the drawing usable...
+        assertThat(canvas.transform().scale()).isGreaterThan(0.6);
+        // ...and the canvas says the text does not all fit, rather than
+        // either zooming to nothing or silently clipping.
+        assertThat(canvas.hiddenDetail())
+                .isPresent()
+                .get(org.assertj.core.api.InstanceOfAssertFactories.STRING)
+                .contains("capped at half the window");
+    }
+
+    // --------------------------------------------------------- node dragging
+
+    @Test
+    @DisplayName("dragging a node moves it, in the view only, and hit testing follows")
+    void draggingMovesANode() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(modelOf(10, allTimed(10)));
+        GraphTransform before = canvas.transform();
+        int sx = screenXOf(canvas, 4);
+        int sy = screenYOf(canvas, 4);
+
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_PRESSED, sx, sy);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_DRAGGED, sx + 30, sy + 18);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_RELEASED, sx + 30, sy + 18);
+
+        // The camera did not move: this was a node drag, not a pan.
+        assertThat(canvas.transform()).isEqualTo(before);
+        double[] offset = canvas.dragOffsetForTesting(4);
+        assertThat(offset).isNotNull();
+        assertThat(offset[0]).isCloseTo(30 / before.scale(), within(1e-6));
+        assertThat(offset[1]).isCloseTo(18 / before.scale(), within(1e-6));
+        // Hit testing respects the overlay: the node is where the user put
+        // it, and its old spot is empty canvas.
+        assertThat(canvas.positionAt(sx + 30, sy + 18)).hasValue(4);
+        assertThat(canvas.positionAt(sx, sy)).isEmpty();
+        // The layout and the spatial index never moved; only the view-layer
+        // overlay did. The shared index still answers with the laid-out
+        // position, which is exactly why positionAt must filter it.
+        assertThat(canvas.model().index().nearest(
+                before.worldX(sx), before.worldY(sy), 12 / before.scale()))
+                .hasValue(4);
+    }
+
+    @Test
+    @DisplayName("a press on empty canvas still pans")
+    void emptyPressStillPans() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(modelOf(10, allTimed(10)));
+        GraphTransform before = canvas.transform();
+
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_PRESSED, 780, 580);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_DRAGGED, 700, 500);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_RELEASED, 700, 500);
+
+        assertThat(canvas.transform()).isNotEqualTo(before);
+        assertThat(canvas.hasDragOffsets()).isFalse();
+    }
+
+    @Test
+    @DisplayName("dragged positions survive a restyle and reset on a new layout")
+    void dragOffsetsSurviveRestyleAndResetOnRelayout() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(modelOf(10, allTimed(10)));
+        int sx = screenXOf(canvas, 4);
+        int sy = screenYOf(canvas, 4);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_PRESSED, sx, sy);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_DRAGGED, sx + 30, sy + 18);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_RELEASED, sx + 30, sy + 18);
+        assertThat(canvas.hasDragOffsets()).isTrue();
+
+        // A weight change restyles the same layout: positions are shared by
+        // design, so the user's arrangement stays.
+        canvas.restyle(canvas.model().withDurationWeight());
+        assertThat(canvas.dragOffsetForTesting(4)).isNotNull();
+
+        // A new model is a new layout: offsets against the old positions
+        // would displace unrelated nodes.
+        canvas.setModel(modelOf(10, allTimed(10)));
+        assertThat(canvas.hasDragOffsets()).isFalse();
+    }
+
+    @Test
+    @DisplayName("the reset action puts every dragged node back explicitly")
+    void resetPositionsClearsTheOverlay() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(modelOf(10, allTimed(10)));
+        int sx = screenXOf(canvas, 4);
+        int sy = screenYOf(canvas, 4);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_PRESSED, sx, sy);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_DRAGGED, sx + 40, sy);
+        mouse(canvas, java.awt.event.MouseEvent.MOUSE_RELEASED, sx + 40, sy);
+        assertThat(canvas.positionAt(sx, sy)).isEmpty();
+
+        canvas.resetDragOffsets();
+
+        assertThat(canvas.hasDragOffsets()).isFalse();
+        assertThat(canvas.positionAt(sx, sy)).hasValue(4);
+    }
+
+    // ------------------------------------------------------ direction arrows
+
+    @Test
+    @DisplayName("arrowheads point producer to consumer, and only where edges are distinct")
+    void arrowsFollowTheStoredDirection() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(modelOf(5, allTimed(5)));
+        assertThat(canvas.detail()).isEqualTo(GraphCanvas.Detail.NEAR);
+
+        paintOnce(canvas);
+        // A five-node chain has four edges; each visible, distinct edge gets
+        // its head.
+        assertThat(canvas.arrowsDrawnForTesting()).isEqualTo(4);
+
+        // Zoomed out, edges stop being individually distinguishable and the
+        // heads go away rather than smearing.
+        canvas.zoomForTesting(0.3);
+        assertThat(canvas.detail()).isNotEqualTo(GraphCanvas.Detail.NEAR);
+        paintOnce(canvas);
+        assertThat(canvas.arrowsDrawnForTesting()).isZero();
+    }
+
+    @Test
+    @DisplayName("the arrow tip sits at the consumer end, pulled back to the node's rim")
+    void arrowTipGeometry() {
+        double[] tip = GraphCanvas.arrowTip(0, 0, 100, 0, 10);
+
+        assertThat(tip).isNotNull();
+        // The edge is stored producer to consumer, so the head belongs at
+        // (100, 0), the consumer, ten pixels short of its centre.
+        assertThat(tip[0]).isEqualTo(90);
+        assertThat(tip[1]).isEqualTo(0);
+
+        // An edge too short on screen for a legible head gets none.
+        assertThat(GraphCanvas.arrowTip(0, 0, 10, 0, 5)).isNull();
     }
 }

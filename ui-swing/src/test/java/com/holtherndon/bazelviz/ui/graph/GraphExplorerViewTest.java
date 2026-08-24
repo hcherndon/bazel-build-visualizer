@@ -155,6 +155,100 @@ final class GraphExplorerViewTest {
                 .contains("Some actions run without being declared by analysis");
     }
 
+    @Test
+    @DisplayName("typing in Find lists the matches, and choosing one lands on that exact node")
+    void findListsMatchesAndLandsExactly() throws Exception {
+        SwingUtilities.invokeAndWait(() -> view.typeFindForTesting("t"));
+        awaitCondition(() -> view.findResultsForTesting().size() == 3, "the find matches");
+
+        assertThat(view.findTruncatedForTesting()).isFalse();
+        // Built off the EDT and answered in order, so the user chooses
+        // between near-misses instead of silently getting the first.
+        int chosen = view.findResultsForTesting().get(1).nodeIndex();
+        SwingUtilities.invokeAndWait(() -> view.chooseFindResultForTesting(1));
+        awaitCondition(
+                () -> view.canvasPanel().descriptionText().contains("from a graph of 3"),
+                "the chosen node's neighbourhood");
+
+        assertThat(view.canvasPanel().descriptionText()).contains("Neighbourhood");
+        assertThat(view.canvasPanel().canvas().model().extract().nodes()).contains(chosen);
+    }
+
+    @Test
+    @DisplayName("a pattern nothing matches says so instead of listing nothing silently")
+    void findAdmitsNoMatches() throws Exception {
+        SwingUtilities.invokeAndWait(() -> view.typeFindForTesting("zzz"));
+        awaitCondition(
+                () -> view.statusForTesting().contains("matches zzz"),
+                "the honest no-match sentence");
+
+        assertThat(view.findResultsForTesting()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("find lists at most its limit and admits there is more")
+    void findAdmitsTruncation() throws Exception {
+        // Enough extra actions that the pattern has more matches than the
+        // dropdown lists. Search reads the table live, so no re-index needed.
+        Connection connection = database.writerConnection();
+        for (int i = 3; i < 3 + GraphExplorerView.FIND_LIMIT + 4; i++) {
+            exec(connection, "INSERT INTO labels (id, value) VALUES ("
+                    + (i + 10) + ", '//pkg:extra_t" + i + "')");
+            exec(connection, "INSERT INTO declared_actions"
+                    + " (id, source_id, graph_id, label_id, mnemonic_id, node_index)"
+                    + " VALUES (" + (i + 10) + ", 1, " + i + ", " + (i + 10) + ", 1, "
+                    + i + ")");
+        }
+
+        SwingUtilities.invokeAndWait(() -> view.typeFindForTesting("t"));
+        awaitCondition(
+                () -> view.findTruncatedForTesting()
+                        && view.findResultsForTesting().size() == GraphExplorerView.FIND_LIMIT,
+                "the truncated find");
+
+        assertThat(view.findResultsForTesting()).hasSize(GraphExplorerView.FIND_LIMIT);
+        assertThat(view.findTruncatedForTesting()).isTrue();
+    }
+
+    @Test
+    @DisplayName("browse lists the graph's nodes and a double-click lands on one")
+    void browseListsAndLands() throws Exception {
+        SwingUtilities.invokeAndWait(view::openBrowserForTesting);
+        awaitCondition(
+                () -> view.browserForTesting().listedEntriesForTesting().size() == 3,
+                "the browse listing");
+
+        // The root states the totals, so three rows cannot read as a
+        // three-action build if the graph held more.
+        assertThat(view.browserForTesting().rootLabelForTesting())
+                .contains("3 action").contains("of 3 in this graph");
+        assertThat(view.browserForTesting().summaryForTesting()).contains("Double-click");
+
+        SwingUtilities.invokeAndWait(() -> view.browserForTesting().chooseForTesting(1));
+        awaitCondition(
+                () -> view.canvasPanel().descriptionText().contains("from a graph of 3"),
+                "the browsed node's neighbourhood");
+        assertThat(view.canvasPanel().descriptionText()).contains("Neighbourhood");
+    }
+
+    @Test
+    @DisplayName("the browse filter narrows the listing as you type")
+    void browseFilterNarrows() throws Exception {
+        SwingUtilities.invokeAndWait(view::openBrowserForTesting);
+        awaitCondition(
+                () -> view.browserForTesting().listedEntriesForTesting().size() == 3,
+                "the full browse listing");
+
+        SwingUtilities.invokeAndWait(
+                () -> view.browserForTesting().filterForTesting("t1"));
+        awaitCondition(
+                () -> view.browserForTesting().listedEntriesForTesting().size() == 1,
+                "the filtered browse listing");
+
+        assertThat(view.browserForTesting().listedEntriesForTesting().getFirst())
+                .contains("t1");
+    }
+
     // ------------------------------------------------------------- plumbing
 
     private void selectConfiguredTargets() throws Exception {
