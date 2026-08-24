@@ -12,6 +12,7 @@ import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import java.awt.GraphicsEnvironment;
 import java.awt.Point;
+import java.awt.Rectangle;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.util.ArrayList;
@@ -97,6 +98,16 @@ final class EventsViewLiveRefreshTest {
 
     @Test
     @Timeout(30)
+    @DisplayName("follow tail is checked by default")
+    void followTailIsOnByDefault() throws Exception {
+        events = onEdt(EventsView::new);
+        assertThat(onEdt(events::followingForTest))
+                .as("follow tail starts checked, with no session even open")
+                .isTrue();
+    }
+
+    @Test
+    @Timeout(30)
     @DisplayName("a live refresh preserves the selected row and the scroll position")
     void refreshPreservesSelectionAndScroll() throws Exception {
         FakeSessionReader reader = FakeSessionReader.dense(400);
@@ -119,12 +130,19 @@ final class EventsViewLiveRefreshTest {
 
         // Select a row deep in the table and set a scroll position, so that
         // install()'s row-0 default, or any reset of the viewport, would show
-        // up as a failure below.
+        // up as a failure below. This scroll is also a move away from the
+        // tail, which t8's auto-pause must catch on its own -- nothing here
+        // touches the follow-tail checkbox directly.
         onEdt(() -> {
             events.tableForTest().setRowSelectionInterval(120, 120);
             events.scrollForTest().getViewport().setViewPosition(new Point(0, 4_321));
             return null;
         });
+
+        assertThat(onEdt(events::followingForTest))
+                .as("scrolling away from the tail auto-pauses follow, so the refresh below"
+                        + " must not jump the view back to the bottom")
+                .isFalse();
 
         reader.add(401, 400, DecodeStatus.OK);
 
@@ -134,8 +152,11 @@ final class EventsViewLiveRefreshTest {
                 .as("the selected row survives the model swap")
                 .isEqualTo(120);
         assertThat(onEdt(() -> events.scrollForTest().getViewport().getViewPosition()))
-                .as("the scroll position survives the model swap")
+                .as("the scroll position survives the model swap while follow stays paused")
                 .isEqualTo(new Point(0, 4_321));
+        assertThat(onEdt(events::followingForTest))
+                .as("the swap itself must not re-enable follow tail")
+                .isFalse();
         assertThat(failures).isEmpty();
     }
 
@@ -193,6 +214,114 @@ final class EventsViewLiveRefreshTest {
 
     @Test
     @Timeout(30)
+    @DisplayName("a live refresh scrolls to the tail while follow is on")
+    void refreshFollowsTheTailWhileFollowing() throws Exception {
+        FakeSessionReader reader = FakeSessionReader.dense(200);
+        FakeSource source = new FakeSource(reader, SessionState.CAPTURING);
+        List<String> failures = new ArrayList<>();
+
+        long tickIntervalMicros = 40_000; // 40 ms, same as the tests above
+        events = onEdt(() -> new EventsView(tickIntervalMicros));
+
+        onEdt(() -> {
+            events.openSession(source, failures::add);
+            return null;
+        });
+        await(() -> onEdt(() -> events.tableModelForTest() != null));
+        assertThat(failures).isEmpty();
+        assertThat(onEdt(events::followingForTest))
+                .as("follow tail is on by default")
+                .isTrue();
+
+        // Nothing here touches the checkbox or the viewport by hand -- the
+        // ticker's own refresh, seeing follow still checked, must do the
+        // scrolling on its own.
+        reader.add(201, 200, DecodeStatus.OK);
+
+        await(() -> onEdt(() -> events.tableModelForTest().getRowCount()) == 201);
+
+        assertThat(onEdt(events::followingForTest))
+                .as("a refresh made while following must not itself pause")
+                .isTrue();
+        assertThat(onEdt(() -> isScrolledToBottom(events)))
+                .as("the viewport tracks the new last row")
+                .isTrue();
+        assertThat(failures).isEmpty();
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("scrolling away from the bottom pauses follow tail")
+    void scrollingAwayFromBottomPausesFollow() throws Exception {
+        FakeSessionReader reader = FakeSessionReader.dense(400);
+        FakeSource source = new FakeSource(reader, SessionState.CAPTURING);
+        List<String> failures = new ArrayList<>();
+
+        events = onEdt(EventsView::new);
+        onEdt(() -> {
+            events.openSession(source, failures::add);
+            return null;
+        });
+        await(() -> onEdt(() -> events.tableModelForTest() != null));
+        assertThat(onEdt(events::followingForTest)).isTrue();
+
+        // A user's scroll and this harness's programmatic setViewPosition
+        // calls above (in refreshPreservesSelectionAndScroll) reach the same
+        // real JViewport -- there is no separate "user scroll" API to call.
+        // A nonzero y is required: the viewport starts at (0, 0), and setting
+        // that same point again is a no-op the viewport does not fire an
+        // event for.
+        onEdt(() -> {
+            events.scrollForTest().getViewport().setViewPosition(new Point(0, 50));
+            return null;
+        });
+
+        assertThat(onEdt(events::followingForTest))
+                .as("scrolling away from the bottom auto-pauses follow tail")
+                .isFalse();
+        assertThat(failures).isEmpty();
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("scrolling back to the bottom resumes follow tail")
+    void scrollingBackToBottomResumesFollow() throws Exception {
+        FakeSessionReader reader = FakeSessionReader.dense(400);
+        FakeSource source = new FakeSource(reader, SessionState.CAPTURING);
+        List<String> failures = new ArrayList<>();
+
+        events = onEdt(EventsView::new);
+        onEdt(() -> {
+            events.openSession(source, failures::add);
+            return null;
+        });
+        await(() -> onEdt(() -> events.tableModelForTest() != null));
+
+        // See scrollingAwayFromBottomPausesFollow: a nonzero y, since the
+        // viewport starts at (0, 0) and re-setting that exact point fires no
+        // event.
+        onEdt(() -> {
+            events.scrollForTest().getViewport().setViewPosition(new Point(0, 50));
+            return null;
+        });
+        assertThat(onEdt(events::followingForTest))
+                .as("scrolled away from the bottom, follow tail is paused first")
+                .isFalse();
+
+        int contentHeight = onEdt(() -> events.tableForTest().getPreferredSize().height);
+        onEdt(() -> {
+            events.scrollForTest().getViewport().setViewPosition(new Point(0, contentHeight));
+            return null;
+        });
+
+        assertThat(onEdt(events::followingForTest))
+                .as("scrolling back to the bottom resumes follow tail")
+                .isTrue();
+        assertThat(failures).isEmpty();
+    }
+
+    @Test
+    @Timeout(30)
     @DisplayName("rule 11: a live session's count is stated as a lower bound, a finished one is not")
     void liveCountIsStatedAsALowerBound() throws Exception {
         FakeSessionReader liveReader = FakeSessionReader.dense(10);
@@ -224,6 +353,19 @@ final class EventsViewLiveRefreshTest {
                 .doesNotContain("at least")
                 .contains("10 events");
         assertThat(failures).isEmpty();
+    }
+
+    /**
+     * Mirrors {@code EventsView.isScrolledToBottom}'s formula exactly, from
+     * the public geometry a test can reach: the viewport's visible rectangle
+     * against the table's real preferred height (rows × row height, computed
+     * without any layout pass), with the same row-or-two tolerance.
+     */
+    private static boolean isScrolledToBottom(EventsView events) {
+        Rectangle visible = events.scrollForTest().getViewport().getViewRect();
+        int contentHeight = events.tableForTest().getPreferredSize().height;
+        int tolerance = Math.max(1, events.tableForTest().getRowHeight()) * 2;
+        return visible.y + visible.height >= contentHeight - tolerance;
     }
 
     private static void await(Callable<Boolean> condition) throws Exception {

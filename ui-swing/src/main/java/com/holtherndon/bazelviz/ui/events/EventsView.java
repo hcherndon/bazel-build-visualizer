@@ -12,6 +12,7 @@ import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
 import java.awt.Point;
+import java.awt.Rectangle;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
@@ -22,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import javax.swing.BorderFactory;
+import javax.swing.JCheckBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -55,6 +57,24 @@ import org.slf4j.LoggerFactory;
  * arranged so that its {@code rowCount()} call is a field read: the row source
  * is opened on the page executor, where the counting query runs, and only the
  * finished object crosses to the EDT.
+ *
+ * <h2>Follow tail</h2>
+ *
+ * <p>{@code followBox} is checked by default. While checked, a live refresh
+ * (see {@link #swapRows}) scrolls the table to its last row instead of
+ * restoring the position it held before the swap — the events analogue of
+ * {@code TimelineView}'s "Follow live" and {@code ConsoleView}'s "Follow
+ * output".
+ *
+ * <p>Unlike either of those, this view auto-pauses: scrolling away from the
+ * bottom by hand unchecks the box, so a live refresh a moment later cannot
+ * yank a user back to the tail while they are reading something further up.
+ * Scrolling back down to the bottom re-checks it, and the box is directly
+ * toggleable too, in which case it jumps to the tail immediately rather than
+ * waiting for the next refresh. {@link #adjustingViewportProgrammatically}
+ * distinguishes that hand-scrolling from the view's own programmatic
+ * scrolls — the tail-jump above and the position restore it replaces —
+ * which must never themselves be mistaken for the user scrolling away.
  */
 public final class EventsView extends JPanel {
 
@@ -93,6 +113,7 @@ public final class EventsView extends JPanel {
     private final EventInspectorPanel inspector = new EventInspectorPanel();
     private final JTable table = new JTable();
     private final JLabel statusLabel = new JLabel(" ");
+    private final JCheckBox followBox = new JCheckBox("Follow tail", true);
     private final JScrollPane tableScroll;
 
     private ExecutorService pageExecutor;
@@ -114,6 +135,13 @@ public final class EventsView extends JPanel {
     private LongConsumer rowCountListener = count -> { };
     private long lastLiveRefreshMicros;
     private volatile boolean refreshInFlight;
+    /**
+     * Set around every programmatic scroll this view makes to the table —
+     * {@link #scrollToTail} and the position restore it replaces in
+     * {@link #swapRows} — so the viewport listener that drives auto-pause
+     * does not mistake the view's own scrolling for the user's.
+     */
+    private boolean adjustingViewportProgrammatically;
 
     /** Model row whose id could not be resolved yet because its page was still loading. */
     private int pendingSelectionRow = -1;
@@ -154,6 +182,23 @@ public final class EventsView extends JPanel {
         tableScroll = new JScrollPane(table);
         tableScroll.setMinimumSize(new Dimension(320, 160));
         inspector.setMinimumSize(new Dimension(320, 160));
+        // Auto-pause: any viewport movement not made by this view's own
+        // programmatic scrolls is the user's, and decides whether follow
+        // tail should switch off (scrolled away from the bottom) or back on
+        // (scrolled back to it).
+        tableScroll.getViewport().addChangeListener(event -> {
+            if (!adjustingViewportProgrammatically) {
+                onViewportScrolled();
+            }
+        });
+        // Checking the box by hand jumps to the tail immediately, rather than
+        // waiting for the next live refresh — the same immediacy
+        // TimelineView's own followBox gives its "Follow live" toggle.
+        followBox.addActionListener(event -> {
+            if (followBox.isSelected()) {
+                withProgrammaticScroll(this::scrollToTail);
+            }
+        });
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, inspector);
         split.setResizeWeight(0.6);
@@ -161,6 +206,7 @@ public final class EventsView extends JPanel {
         JPanel status = new JPanel(new BorderLayout());
         status.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
         status.add(statusLabel, BorderLayout.WEST);
+        status.add(followBox, BorderLayout.EAST);
 
         JPanel session = new JPanel(new BorderLayout());
         session.add(status, BorderLayout.NORTH);
@@ -298,7 +344,7 @@ public final class EventsView extends JPanel {
         inspectorModel = null;
         tableModel = null;
         rows = null;
-        table.setModel(new javax.swing.table.DefaultTableModel());
+        withProgrammaticScroll(() -> table.setModel(new javax.swing.table.DefaultTableModel()));
         inspector.show(EventInspection.none());
         ExecutorService pages = pageExecutor;
         ExecutorService details = detailExecutor;
@@ -377,6 +423,11 @@ public final class EventsView extends JPanel {
         return statusLabel.getText();
     }
 
+    /** Visible for testing: whether the follow-tail toggle is on. */
+    boolean followingForTest() {
+        return followBox.isSelected();
+    }
+
     // ------------------------------------------------------------------ EDT
 
     private void install(SessionSource opened, SessionReader detailReader, EventRowSource rows) {
@@ -402,8 +453,18 @@ public final class EventsView extends JPanel {
         tableModel = new PagedTableModel<>(
                 rows, EventTableColumns.columns(), pageExecutor, rows.pageSize(), CACHE_PAGES);
         tableModel.addTableModelListener(this::rowsUpdated);
-        table.setModel(tableModel);
-        sizeColumns();
+        // Guarded like swapRows: installing a model can move a realized
+        // viewport's real geometry, which must not itself be read as the
+        // user scrolling away and auto-pause a toggle nobody has touched yet.
+        // The initial selection below stays outside this block and after
+        // inspectorModel is assigned -- selectionChanged() no-ops while
+        // inspectorModel is still null, and it does not touch the viewport,
+        // so it needs neither the guard nor this ordering for auto-pause's
+        // sake, only for the inspector's.
+        withProgrammaticScroll(() -> {
+            table.setModel(tableModel);
+            sizeColumns();
+        });
         inspectorModel = new EventInspectorModel(
                 detailReader, detailExecutor, SwingUtilities::invokeLater);
         inspectorModel.addListener(inspector::show);
@@ -508,11 +569,13 @@ public final class EventsView extends JPanel {
 
     /**
      * Installs {@code freshRows} in place of the current row source,
-     * preserving the table's selection, scroll position, and column widths
-     * across the swap. See {@link #refreshLive} for why the swap happens at
-     * all and why that loses all three without this.
+     * preserving the table's selection and column widths across the swap,
+     * and either the scroll position or the tail, depending on
+     * {@link #followBox}. See {@link #refreshLive} for why the swap happens
+     * at all and why that loses all three without this.
      */
     private void swapRows(SessionSource opened, EventRowSource freshRows) {
+        boolean following = followBox.isSelected();
         int viewRow = table.getSelectedRow();
         int modelRowToReselect = viewRow >= 0 ? table.convertRowIndexToModel(viewRow) : -1;
         Point viewPosition = tableScroll.getViewport().getViewPosition();
@@ -522,15 +585,78 @@ public final class EventsView extends JPanel {
         tableModel = new PagedTableModel<>(freshRows, EventTableColumns.columns(), pageExecutor,
                 freshRows.pageSize(), CACHE_PAGES);
         tableModel.addTableModelListener(this::rowsUpdated);
-        table.setModel(tableModel);
-        restoreColumnWidths(columnWidths);
-        statusLabel.setText(describe(opened.info(), freshRows));
-        rowCountListener.accept(freshRows.rowCount());
 
-        if (modelRowToReselect >= 0 && modelRowToReselect < tableModel.getRowCount()) {
-            table.setRowSelectionInterval(modelRowToReselect, modelRowToReselect);
+        withProgrammaticScroll(() -> {
+            table.setModel(tableModel);
+            restoreColumnWidths(columnWidths);
+            statusLabel.setText(describe(opened.info(), freshRows));
+            rowCountListener.accept(freshRows.rowCount());
+
+            if (modelRowToReselect >= 0 && modelRowToReselect < tableModel.getRowCount()) {
+                table.setRowSelectionInterval(modelRowToReselect, modelRowToReselect);
+            }
+            if (following) {
+                scrollToTail();
+            } else {
+                tableScroll.getViewport().setViewPosition(viewPosition);
+            }
+        });
+    }
+
+    /**
+     * Scrolls so the table's last row is visible — the tail-follow jump,
+     * made from {@link #swapRows} when {@link #followBox} is checked and
+     * from its own {@code ActionListener} when the user checks it by hand.
+     * Mirrors {@code ActionsView.selectAction}'s use of
+     * {@code scrollRectToVisible} over a raw {@code setViewPosition}: it
+     * accounts for the row's real height, rather than assuming one.
+     */
+    private void scrollToTail() {
+        int rowCount = tableModel == null ? 0 : tableModel.getRowCount();
+        if (rowCount > 0) {
+            table.scrollRectToVisible(table.getCellRect(rowCount - 1, 0, true));
         }
-        tableScroll.getViewport().setViewPosition(viewPosition);
+    }
+
+    /**
+     * Runs {@code action} with {@link #adjustingViewportProgrammatically} set,
+     * so any viewport change it causes is not mistaken for the user
+     * scrolling — see {@link #onViewportScrolled}.
+     */
+    private void withProgrammaticScroll(Runnable action) {
+        adjustingViewportProgrammatically = true;
+        try {
+            action.run();
+        } finally {
+            adjustingViewportProgrammatically = false;
+        }
+    }
+
+    /**
+     * Auto-pause / auto-resume: called for every viewport movement this view
+     * did not itself make, i.e. the user's. Scrolling away from the bottom
+     * unchecks {@link #followBox} so the next live refresh cannot yank the
+     * user back to the tail; scrolling back down to the bottom re-checks it.
+     */
+    private void onViewportScrolled() {
+        boolean atBottom = isScrolledToBottom();
+        if (followBox.isSelected() && !atBottom) {
+            followBox.setSelected(false);
+        } else if (!followBox.isSelected() && atBottom) {
+            followBox.setSelected(true);
+        }
+    }
+
+    /**
+     * Whether the viewport's visible area already reaches the table's last
+     * row, within a tolerance of a row or two — exact pixel equality would
+     * flap on trivial anti-aliasing- or scrollbar-arithmetic-sized gaps.
+     */
+    private boolean isScrolledToBottom() {
+        Rectangle visible = tableScroll.getViewport().getViewRect();
+        int contentHeight = table.getPreferredSize().height;
+        int tolerance = Math.max(1, table.getRowHeight()) * 2;
+        return visible.y + visible.height >= contentHeight - tolerance;
     }
 
     /**

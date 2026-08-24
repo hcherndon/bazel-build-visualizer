@@ -1666,3 +1666,35 @@ it is a different tab and was not reported.
   actions, and the two graphs' different numbering for one label), a wiring
   case in `EntityActionsTest`, and a target-label case in
   `MainWindowNavWiringTest`.
+
+- **The Events tab follows a live build's tail, and auto-pauses when a user
+  scrolls away from it** (2026-08-24). `EventsView` gains a "Follow tail"
+  checkbox, checked by default, next to the status line — the events analogue
+  of `TimelineView`'s "Follow live" and `ConsoleView`'s "Follow output".
+  `swapRows`, the read-before/reapply seam a live refresh already uses to
+  carry the selection, scroll position, and column widths across each
+  rebuild-and-swap of the table model, now reads the checkbox too: checked, it
+  scrolls to the table's last row instead of restoring the captured position
+  (`table.scrollRectToVisible(table.getCellRect(rowCount - 1, 0, true))`, the
+  same call `ActionsView.selectAction` already makes, chosen over a raw
+  `setViewPosition` because it accounts for the row's real height rather than
+  assuming one); unchecked, the old restore behaviour is unchanged.
+  **Auto-pause is the hybrid this task adds over either precedent:** any
+  vertical-viewport movement the view did not itself make is the user's, and
+  is read against the table's real content height (`rows × getRowHeight()`,
+  a field computation `JTable` can answer with no layout pass) with a
+  two-row tolerance. Scrolling away from the bottom by hand unchecks the box
+  so the next tick cannot yank the user back to what they were reading;
+  scrolling back down to the bottom re-checks it; checking it by hand jumps
+  to the tail immediately. A single `adjustingViewportProgrammatically` flag,
+  set around every scroll the view makes to itself — the tail-jump, the
+  position restore, and the two `JTable.setModel` calls (`buildViews` and
+  `closeSession`) that could otherwise move a *realized* window's viewport
+  as a side effect of layout — keeps those from being misread as the user
+  scrolling. New tests in `EventsViewLiveRefreshTest`: default-on with no
+  session even open, a refresh scrolling to the tail while following (and
+  not pausing itself), auto-pause on a scroll away from the bottom, resume on
+  a scroll back to it, and `refreshPreservesSelectionAndScroll` now also
+  asserts the paused state holds across the swap it already exercised. A
+  default-checked assertion was added to `EventsViewWiringTest`'s real-session
+  wiring test.
