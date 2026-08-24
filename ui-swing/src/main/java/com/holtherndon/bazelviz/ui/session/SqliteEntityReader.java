@@ -123,6 +123,11 @@ final class SqliteEntityReader implements EntityReader {
     }
 
     @Override
+    public List<TargetRow> targetsByLabel(String label) {
+        return call("reading targets labelled " + label, () -> targets.byLabel(label));
+    }
+
+    @Override
     public Optional<TargetRow> target(long id) {
         return call("reading target " + id, () -> targets.byId(id));
     }

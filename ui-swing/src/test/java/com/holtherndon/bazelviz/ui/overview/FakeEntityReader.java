@@ -122,6 +122,11 @@ final class FakeEntityReader implements EntityReader {
     }
 
     @Override
+    public List<TargetRow> targetsByLabel(String label) {
+        return List.of();
+    }
+
+    @Override
     public Optional<TargetRow> target(long id) {
         return Optional.empty();
     }

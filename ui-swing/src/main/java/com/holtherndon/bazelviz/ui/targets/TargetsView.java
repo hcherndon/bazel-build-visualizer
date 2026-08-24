@@ -79,6 +79,19 @@ public final class TargetsView extends JPanel {
     private LongConsumer showEventHandler = eventId -> { };
     private long selectionGeneration;
 
+    /**
+     * The target a {@link #revealLabel} is waiting to select, once its
+     * package's children have loaded. Null when no reveal is pending. Only
+     * ever touched on the EDT.
+     */
+    private Long pendingRevealTargetId;
+
+    /** The package the pending reveal lives in, so another package's load cannot resolve it. */
+    private String pendingRevealPackagePath;
+
+    /** Bumped per reveal so a slow lookup cannot land after a newer one. */
+    private long revealGeneration;
+
     public TargetsView() {
         super(new BorderLayout());
 
@@ -168,6 +181,9 @@ public final class TargetsView extends JPanel {
     }
 
     public void closeSession() {
+        pendingRevealTargetId = null;
+        pendingRevealPackagePath = null;
+        revealGeneration++;
         root.removeAllChildren();
         treeModel.reload();
         inspector.show(Inspection.NONE);
@@ -194,9 +210,139 @@ public final class TargetsView extends JPanel {
         closer.start();
     }
 
+    /**
+     * Shows one target by its label: the package path expanded, the target's
+     * row selected and inspected — random access by label, where the tree is
+     * otherwise browsed top-down.
+     *
+     * <p>The label is looked up off the EDT ({@code targetsByLabel}), because
+     * the package path shown in the tree is the one the database derived and
+     * deriving it here again would be a second definition that could drift.
+     * A label this session never declared changes nothing but the status
+     * line, which says so — cross-view navigation arrives here with labels
+     * parsed out of events, and an event can name a label no target row
+     * carries.
+     *
+     * <p>Must be called on the EDT. Does nothing when no session is open.
+     */
+    public void revealLabel(String label) {
+        Objects.requireNonNull(label, "label");
+        ExecutorService running = executor;
+        EntityReader current = reader;
+        if (running == null || current == null) {
+            return;
+        }
+        long generation = ++revealGeneration;
+        running.execute(() -> {
+            try {
+                List<TargetRow> rows = current.targetsByLabel(label);
+                SwingUtilities.invokeLater(() -> {
+                    if (generation != revealGeneration) {
+                        return;
+                    }
+                    if (rows.isEmpty()) {
+                        statusLabel.setText("No target named " + label
+                                + " in this session.");
+                        return;
+                    }
+                    revealRow(rows.getFirst());
+                });
+            } catch (RuntimeException failure) {
+                log.warn("could not look up {}", label, failure);
+                SwingUtilities.invokeLater(() -> {
+                    if (generation == revealGeneration) {
+                        statusLabel.setText("Could not look up " + label + ": "
+                                + failure.getMessage());
+                    }
+                });
+            }
+        });
+    }
+
+    /** EDT: expands the row's package and selects the row, loading it first if needed. */
+    private void revealRow(TargetRow row) {
+        DefaultMutableTreeNode packageNode = null;
+        for (int i = 0; i < root.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
+            if (child.getUserObject() instanceof PackageNode candidate
+                    && candidate.summary.path().equals(row.packagePath())) {
+                packageNode = child;
+                break;
+            }
+        }
+        if (packageNode == null) {
+            // The row exists and its package is not in the tree: the two
+            // reads disagree, most plausibly because the session grew between
+            // them. Saying so beats selecting nothing silently.
+            statusLabel.setText("The package " + row.packagePath()
+                    + " is not in the tree; reopen the session to refresh it.");
+            return;
+        }
+        pendingRevealTargetId = row.id();
+        pendingRevealPackagePath = row.packagePath();
+        PackageNode node = (PackageNode) packageNode.getUserObject();
+        if (node.loaded && !hasPendingPlaceholder(packageNode)) {
+            // Already populated; select right away.
+            selectPendingIn(packageNode);
+        } else {
+            // Expanding triggers loadChildren, whose arrival completes the
+            // reveal. Expanding an already-expanding node is harmless.
+            tree.expandPath(new TreePath(packageNode.getPath()));
+        }
+    }
+
+    private static boolean hasPendingPlaceholder(DefaultMutableTreeNode packageNode) {
+        return packageNode.getChildCount() == 1
+                && PENDING.equals(
+                        ((DefaultMutableTreeNode) packageNode.getChildAt(0)).getUserObject());
+    }
+
+    /** EDT: selects the pending reveal's target under {@code packageNode}, if both exist. */
+    private void selectPendingIn(DefaultMutableTreeNode packageNode) {
+        Long wanted = pendingRevealTargetId;
+        if (wanted == null) {
+            return;
+        }
+        // Another package loading — a user browsing while a reveal is in
+        // flight — must not resolve, or fail, a reveal that lives elsewhere.
+        if (!(packageNode.getUserObject() instanceof PackageNode loaded)
+                || !loaded.summary.path().equals(pendingRevealPackagePath)) {
+            return;
+        }
+        for (int i = 0; i < packageNode.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) packageNode.getChildAt(i);
+            if (child.getUserObject() instanceof TargetNode targetNode
+                    && targetNode.row.id() == wanted) {
+                pendingRevealTargetId = null;
+                pendingRevealPackagePath = null;
+                TreePath path = new TreePath(child.getPath());
+                tree.expandPath(new TreePath(packageNode.getPath()));
+                tree.setSelectionPath(path);
+                tree.scrollPathToVisible(path);
+                return;
+            }
+        }
+        // The package loaded and the row is not among its children: the reads
+        // disagree (a live session can grow between them). Say so.
+        pendingRevealTargetId = null;
+        pendingRevealPackagePath = null;
+        statusLabel.setText("The target is no longer in its package's rows;"
+                + " reopen the session to refresh it.");
+    }
+
     /** Visible for testing: the package nodes currently in the tree. */
     int packageCountForTest() {
         return root.getChildCount();
+    }
+
+    /** Visible for testing: the selected target row's label, or null. */
+    String selectedLabelForTest() {
+        TreePath path = tree.getSelectionPath();
+        if (path == null) {
+            return null;
+        }
+        Object selected = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+        return selected instanceof TargetNode targetNode ? targetNode.row.label() : null;
     }
 
     /** Visible for testing. */
@@ -265,6 +411,9 @@ public final class TargetsView extends JPanel {
                         node.add(new DefaultMutableTreeNode(new TargetNode(row)));
                     }
                     treeModel.nodeStructureChanged(node);
+                    // A reveal that expanded this package is waiting for
+                    // exactly this arrival.
+                    selectPendingIn(node);
                 });
             } catch (RuntimeException failure) {
                 log.warn("could not read targets in {}", packageNode.summary.path(), failure);

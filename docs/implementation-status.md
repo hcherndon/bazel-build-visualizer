@@ -1418,3 +1418,46 @@ it is a different tab and was not reported.
   `INSERT` are still refused and the rows are unchanged — the guarantee
   outliving the refusal — before asserting that the per-execution guard notices,
   says so, and puts `query_only` back.
+
+- **Cross-view navigation is one vocabulary, not a pile of callbacks**
+  (2026-08-24). The navigation half of the plan's `SelectionService` (section
+  7), as `ui/nav`: `EntityRef` (a sealed value — target label, action id, or
+  event id) and `EntityActions` (context-menu builder, button strip, and
+  inspector region over one command vocabulary, dispatching into a single
+  handler). `MainWindow.navigate` is that handler and the only place a command
+  becomes a card switch, replacing the per-view `onShowSourceEvent` /
+  `onShowInGraph` / `onShowOnTimeline` `LongConsumer` wiring for the views
+  that adopted it (Actions, Events); Targets/Tests/Errors keep the old setter
+  until they adopt. `OPEN_IN_GRAPH` points at today's Graph card; the planned
+  Graph/Tree split re-points that one switch arm and wires `OPEN_IN_TREE` —
+  which, with `SHOW_EVENTS_FOR_LABEL` (no events-by-label read path exists
+  yet), is in the vocabulary but deliberately **not** in the wired set, so
+  nothing offers it: absent commands are honestly absent, never disabled
+  stubs. The Timeline's planned inline inspector adopts by calling
+  `buttonStripFor` — no facility change needed.
+  The Events tab parses the target label **at render time** — an explicit
+  decision over any schema or capture-path change. Where the payload is
+  decoded (the inspector), the label comes structurally from the proto via
+  the new `EventIdDisplay.label(BuildEventId)`; where only the stored
+  sentence exists (table rows, JSON records), `EventIdDisplay.labelOfDisplay`
+  inverts the display grammar next to the renderer that defines it, refuses
+  anything that does not look like a label (absent markers, an
+  `ActionCompleted` output path in the label slot, a label cut by the display
+  cap), and is round-trip-tested against the structured accessor for every
+  label-carrying id kind. A labelled row offers "Open target" and "Show
+  actions for this target" in a right-click menu and in the inspector; an
+  event with no parseable label offers nothing.
+  `EntityReader.targetsByLabel` now exposes the `TargetQueries.byLabel` that
+  already existed, and `TargetsView.revealLabel` gives the tree random access
+  by label — look up the row off the EDT, expand its package (which triggers
+  the lazy child load), select the target when the load lands, and say so in
+  the status line when the session never declared the label. The Actions tab
+  adopts fully: rows and the shared inspector carry (action, label, event)
+  refs, the bespoke Dependencies / On-timeline buttons stay in place but
+  dispatch through the facility, and "show actions for this target" lands as
+  `filterToLabel` — substring semantics, because `ActionFilter.labelContains`
+  is what the query layer offers, made visible as a chip naming the label
+  that clears the filter when clicked, so the narrowed table can never pass
+  for the whole build. `InspectorPanel`'s legacy source-event button yields
+  to the strip whenever the strip offers the same jump, so no action appears
+  twice.

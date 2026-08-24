@@ -1,11 +1,15 @@
 package com.holtherndon.bazelviz.ui.events;
 
 import com.holtherndon.bazelviz.storage.events.RawLocation;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.awt.BorderLayout;
+import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridLayout;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import javax.swing.BorderFactory;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -42,6 +46,16 @@ public final class EventInspectorPanel extends JPanel {
     private final JTextArea hex = monospaced();
     private final JScrollPane noticesScroll;
 
+    /**
+     * Where the shared navigation actions for the inspected event's target
+     * label appear, once {@link #installEntityActions} has run. Empty — and
+     * invisible in effect — for an event that names no parseable label:
+     * honestly absent, not a strip of dead buttons.
+     */
+    private final JPanel actionsRegion = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+    private EntityActions entityActions;
+    private EventInspection shown = EventInspection.none();
+
     public EventInspectorPanel() {
         super(new BorderLayout());
         setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
@@ -63,6 +77,8 @@ public final class EventInspectorPanel extends JPanel {
         JPanel header = new JPanel(new BorderLayout(0, 6));
         header.add(headline, BorderLayout.NORTH);
         header.add(fields, BorderLayout.CENTER);
+        actionsRegion.setOpaque(false);
+        header.add(actionsRegion, BorderLayout.SOUTH);
 
         noticesScroll = new JScrollPane(notices);
         noticesScroll.setVisible(false);
@@ -81,9 +97,21 @@ public final class EventInspectorPanel extends JPanel {
         show(EventInspection.none());
     }
 
+    /**
+     * Installs the shared cross-view actions. Until this runs the panel shows
+     * no navigation affordances at all, which is how the tests and any host
+     * without the facility keep the panel's old behaviour exactly.
+     */
+    public void installEntityActions(EntityActions actions) {
+        this.entityActions = Objects.requireNonNull(actions, "actions");
+        rebuildActions();
+    }
+
     /** Renders one inspector state. */
     public void show(EventInspection inspection) {
         Objects.requireNonNull(inspection, "inspection");
+        shown = inspection;
+        rebuildActions();
         switch (inspection.state()) {
             case NONE -> {
                 headline.setText("Select an event to inspect its raw bytes.");
@@ -136,6 +164,27 @@ public final class EventInspectorPanel extends JPanel {
         decoded.setText(text.toString());
         hex.setText(inspection.hexDump().orElse(""));
         setNotices(rendered.notices());
+    }
+
+    /**
+     * Rebuilds the label-actions strip for what is shown right now: the
+     * shared component's buttons for the inspected event's target label, or
+     * nothing when there is no facility, no loaded event, or no label.
+     */
+    private void rebuildActions() {
+        actionsRegion.removeAll();
+        if (entityActions != null && shown.state() == EventInspection.State.LOADED) {
+            shown.targetLabel().ifPresent(label -> actionsRegion.add(
+                    entityActions.buttonStripFor(
+                            List.of(new EntityRef.TargetLabel(label)), Set.of())));
+        }
+        actionsRegion.revalidate();
+        actionsRegion.repaint();
+    }
+
+    /** Visible for testing: the strip the shared actions render into. */
+    JPanel actionsRegionForTest() {
+        return actionsRegion;
     }
 
     private void setNotices(List<String> messages) {
