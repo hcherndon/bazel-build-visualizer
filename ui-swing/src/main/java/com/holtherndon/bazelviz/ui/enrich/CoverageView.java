@@ -7,6 +7,8 @@ import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
+import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
 import java.awt.Font;
 import java.util.ArrayList;
@@ -18,6 +20,7 @@ import javax.swing.BoxLayout;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import javax.swing.SwingConstants;
@@ -51,7 +54,12 @@ public final class CoverageView extends JPanel {
 
     private static final Logger log = LoggerFactory.getLogger(CoverageView.class);
 
-    private final JPanel body = new JPanel();
+    // ScrollableViewport, not a plain JPanel: without it the JScrollPane below
+    // hands this panel its own preferred width unconditionally, so one long
+    // note (several run past 800px at the default font -- see WrappingLabel's
+    // javadoc) makes the whole view wider than the window instead of the
+    // window narrowing it. See ScrollableViewport's javadoc for the mechanism.
+    private final ScrollableViewport body = new ScrollableViewport();
     private ExecutorService executor;
     private long generation;
     private final JLabel empty =
@@ -294,11 +302,17 @@ public final class CoverageView extends JPanel {
     }
 
     private void addNote(String text) {
-        JLabel label = PlainText.disableHtml(new JLabel(text));
+        // WrappingLabel, not JLabel: several of these notes measure over
+        // 800px wide at the default font, well past the narrowest width the
+        // scrollable body above is ever given. A JLabel does not wrap, so it
+        // would simply not paint whatever did not fit -- the silent
+        // truncation plan rule 12 forbids.
+        JTextArea label = WrappingLabel.create(text);
         label.setFont(label.getFont().deriveFont(Font.ITALIC));
         label.setAlignmentX(LEFT_ALIGNMENT);
-        // A tooltip carries the whole sentence when the label is clipped; the
-        // text came from a build and goes through the tooltip guard.
+        // A tooltip carries the whole sentence on the rare window too narrow
+        // even for a wrapped line; the text came from a build and goes
+        // through the tooltip guard.
         label.setToolTipText(PlainText.tooltip(text));
         body.add(label);
     }
@@ -318,6 +332,12 @@ public final class CoverageView extends JPanel {
         for (java.awt.Component child : container.getComponents()) {
             if (child instanceof JLabel label && label.getText() != null) {
                 into.add(label.getText());
+            }
+            // Notes render as a WrappingLabel (a JTextArea) rather than a
+            // JLabel -- see addNote -- so this must be checked too, or every
+            // assertion about a note's wording would silently stop seeing it.
+            if (child instanceof JTextArea area && area.getText() != null) {
+                into.add(area.getText());
             }
             if (child instanceof java.awt.Container nested) {
                 collect(nested, into);

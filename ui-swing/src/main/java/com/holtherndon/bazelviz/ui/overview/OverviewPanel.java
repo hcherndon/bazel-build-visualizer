@@ -9,11 +9,13 @@ import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
+import com.holtherndon.bazelviz.ui.theme.WrapLayout;
 import java.awt.BorderLayout;
+import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
-import java.awt.GridLayout;
 import java.awt.Insets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -71,7 +73,13 @@ public final class OverviewPanel extends JPanel {
 
     private final JLabel headline = new JLabel(" ");
     private final JLabel subhead = new JLabel(" ");
-    private final JPanel tiles = new JPanel(new GridLayout(0, 4, 12, 12));
+    // WrapLayout, not GridLayout: a fixed 4-column grid sizes every column to
+    // its widest cell's preferred width, so one tile with a long note (a
+    // findings caveat, a "not reported by this build") sets the width of all
+    // four columns no matter how narrow the window is. WrapLayout keeps each
+    // tile at its own width and wraps to another row instead — see its
+    // javadoc, and ScrollableViewport below, for why both halves are needed.
+    private final JPanel tiles = new JPanel(new WrapLayout(FlowLayout.LEFT, 12, 12));
     private final JPanel details = new JPanel();
     private final JLabel emptyLabel =
             new JLabel("No session is open.", SwingConstants.CENTER);
@@ -101,8 +109,19 @@ public final class OverviewPanel extends JPanel {
     private volatile java.util.concurrent.ScheduledFuture<?> scheduled;
     private java.util.function.Consumer<OverviewSnapshot> snapshotListener = snapshot -> { };
     private java.util.function.Consumer<NavEntry> navigate = entry -> { };
-    private final JPanel metricTiles = new JPanel(new GridLayout(0, 4, 12, 12));
+    private final JPanel metricTiles = new JPanel(new WrapLayout(FlowLayout.LEFT, 12, 12));
     private final JPanel metricDetail = new JPanel();
+
+    /**
+     * The scroll pane's view. A plain {@code JPanel} here would hand the
+     * scroll pane its own preferred width, which is exactly what let the
+     * overview grow wider than the window; see {@link ScrollableViewport}'s
+     * javadoc for why. Exposed to tests via {@link #contentForTest()}, which
+     * confirms both properties without a session: that it tracks the
+     * viewport's width, and that its preferred width shrinks to match once it
+     * is actually given one.
+     */
+    private final ScrollableViewport body = new ScrollableViewport(new BorderLayout());
 
     public OverviewPanel() {
         this(REFRESH_INTERVAL);
@@ -144,7 +163,6 @@ public final class OverviewPanel extends JPanel {
         stacked.add(metricTiles);
         stacked.add(metricDetail);
 
-        JPanel body = new JPanel(new BorderLayout());
         body.add(stacked, BorderLayout.NORTH);
         body.add(details, BorderLayout.CENTER);
 
@@ -603,5 +621,15 @@ public final class OverviewPanel extends JPanel {
     /** Visible for testing: whether a session is attached. */
     public Optional<SessionSource> attachedSession() {
         return Optional.ofNullable(source);
+    }
+
+    /**
+     * Visible for testing: the scroll pane's view, to confirm it tracks the
+     * viewport's width instead of overflowing it (plan 26 rule 12 — reflowing
+     * must not clip or drop a tile, so the fix is that the content narrows,
+     * never that a tile becomes unreadable).
+     */
+    public ScrollableViewport contentForTest() {
+        return body;
     }
 }

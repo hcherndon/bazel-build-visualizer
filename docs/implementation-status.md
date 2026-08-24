@@ -1134,3 +1134,38 @@ at five million actions, without loading the build into memory, and without
 claiming a number it does not have.
 
 Plan section 28's deferred roadmap starts here.
+
+## Post-v1 fixes
+
+**2026-08-23 — the Overview tab no longer overflows the window.** Two
+compounding causes in `OverviewPanel`: the tile rows used a fixed
+`GridLayout(0, 4, …)`, which sizes every column to its widest cell's preferred
+width regardless of window width, so one tile with a long note set all four
+columns that wide; and the scroll pane's content was a plain `JPanel`, which
+is not `Scrollable`, so the scroll pane honoured that oversized preferred
+width instead of narrowing the content to fit. `CoverageView` — shown in the
+same tab, stacked below the overview in a `JSplitPane` — had the identical
+missing-`Scrollable` weakness.
+
+Fixed with two new reusable pieces in `ui/theme`: `WrapLayout` (a
+`FlowLayout` that reflows a row's cells to the available width instead of
+demanding one unbroken row, replacing the tile grid's `GridLayout`) and
+`ScrollableViewport` (a `JPanel` implementing `Scrollable`, so a
+`JScrollPane`'s view tracks the viewport's width instead of overflowing it —
+now the view in both `OverviewPanel` and `CoverageView`). Because forcing the
+content narrower exposed a second problem — several of `CoverageView`'s
+explanatory notes measure over 800px wide at the default font and would have
+been silently clipped once actually confined to the window's width — its
+notes now render through a third new helper, `WrappingLabel`, a
+non-editable `JTextArea` styled to look like a label, which wraps instead of
+using `<html>` (deliberately unavailable here; see `PlainText`'s javadoc for
+why HTML rendering is off).
+
+Not touched: the `GridBagLayout` name/value rows inside `OverviewPanel`'s own
+detail sections, and `CoverageView`'s paired name/value rows, are unchanged
+and still do not wrap. Their content today is short enough not to be at
+practical risk, but an exceptionally long single value in either could still
+be clipped at the narrowest supported window width — a smaller instance of
+the same class of problem, left for whoever hits it. `ui/metrics/FindingsView`
+has the same latent `GridLayout`/non-`Scrollable` shape and was not touched:
+it is a different tab and was not reported.

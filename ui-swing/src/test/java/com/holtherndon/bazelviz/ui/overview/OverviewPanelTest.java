@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
 import java.awt.GraphicsEnvironment;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -57,6 +58,46 @@ class OverviewPanelTest {
         // at the wrong place is missing the whole failed-target list. The
         // subhead is where that gets said.
         assertThat(panel.subheadForTest()).contains("did not reach its end marker");
+    }
+
+    @Test
+    @DisplayName("the tile grid tracks the viewport's width instead of overflowing it")
+    void contentTracksViewportWidth() throws Exception {
+        OverviewPanel panel = onEdt(OverviewPanel::new);
+        onEdt(() -> {
+            panel.show(snapshot(Optional.of(true), true));
+            return null;
+        });
+
+        ScrollableViewport content = onEdt(panel::contentForTest);
+        // The scroll pane only narrows its view when the view says to. Without
+        // this, the view keeps its own preferred width and the scroll pane
+        // grows a horizontal scrollbar instead of shrinking the content --
+        // which is the bug: the tab reads as wider than the app, not merely
+        // scrollable within it.
+        assertThat(content.getScrollableTracksViewportWidth())
+                .as("a JScrollPane must be told to size this view to its own width, or it hands"
+                        + " the view its preferred width unconditionally")
+                .isTrue();
+
+        // Four tiles under the old GridLayout(0, 4, 12, 12) preferred 580px
+        // wide even with these short, un-embellished values (measured
+        // directly): every column is sized to the widest cell, times four,
+        // regardless of how narrow the window actually is. 360px is
+        // comfortably narrower than that, so a container that still demands
+        // more than 360px here has not actually started reflowing.
+        int narrowWidth = 360;
+        onEdt(() -> {
+            content.setSize(narrowWidth, 2000);
+            content.validate();
+            return null;
+        });
+
+        int preferredWidth = onEdt(() -> content.getPreferredSize().width);
+        assertThat(preferredWidth)
+                .as("once actually given a narrow width, the tile grid must reflow to fit it"
+                        + " instead of continuing to demand a wider one")
+                .isLessThanOrEqualTo(narrowWidth);
     }
 
     @Test
