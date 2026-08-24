@@ -200,7 +200,7 @@ public final class InstrumentationPlanner {
         addPublishAllActions(request, capabilities, added, conflicts, availability, userFlags);
         addExecutionLog(request, capabilities, added, outputs, availability, warnings, userFlags);
         addProfile(request, capabilities, added, outputs, availability, warnings, userFlags);
-        reportUnimplemented(request, availability, warnings);
+        recordAuxiliaryQueryAvailability(availability);
 
         // --- destinations ----------------------------------------------------
         for (Path output : outputs) {
@@ -480,15 +480,6 @@ public final class InstrumentationPlanner {
     }
 
     /**
-     * States the sources this phase does not capture yet.
-     *
-     * <p>The presets name them, so leaving them out of the availability map
-     * would let a later view render nothing with no explanation. Saying
-     * "not implemented in this version" is a worse answer than capturing them
-     * and a much better one than silence.
-     */
-
-    /**
      * The execution log: which format, and the flags that make it usable.
      *
      * <h2>Format choice</h2>
@@ -708,31 +699,47 @@ public final class InstrumentationPlanner {
                 true));
     }
 
-    private void reportUnimplemented(
-            PlanRequest request,
-            Map<DataSource, SourceAvailability.Entry> availability,
-            List<String> warnings) {
-        Map<DataSource, Capability> pending = new LinkedHashMap<>();
-        pending.put(DataSource.AQUERY, Capability.AQUERY_PROTO_OUTPUT);
-        pending.put(DataSource.CQUERY, Capability.CQUERY_PROTO_OUTPUT);
-
-        List<String> requested = new ArrayList<>();
-        pending.forEach((source, capability) -> {
-            if (!request.preset().requestedCapabilities().contains(capability)) {
-                return;
-            }
-            requested.add(source.name().toLowerCase(java.util.Locale.ROOT));
-            availability.put(source, new SourceAvailability.Entry(
-                    SourceAvailability.Availability.UNAVAILABLE,
-                    "this version of the application does not capture it yet",
-                    Optional.empty()));
-        });
-        if (!requested.isEmpty()) {
-            warnings.add("The " + request.preset().displayName() + " preset asks for "
-                    + String.join(", ", requested)
-                    + ", which this version does not capture yet. Everything else in the preset is"
-                    + " unaffected.");
-        }
+    /**
+     * Records that the action graph and the configured-target graph will be
+     * captured.
+     *
+     * <p>Unlike every other entry in this class, this one is not gated on
+     * {@link CapturePreset#requestedCapabilities()}. {@code
+     * CaptureCoordinator.queryGraphsQuietly} (capture-bes) runs {@code bazel
+     * aquery} and {@code bazel cquery} from the {@code finally} block of
+     * every live capture, unconditionally — it never consults this
+     * availability map and never checks which capabilities the chosen
+     * preset named. Gating this entry on {@link Capability#AQUERY_PROTO_OUTPUT}
+     * / {@link Capability#CQUERY_PROTO_OUTPUT} the way the old {@code
+     * reportUnimplemented} gated its (false) UNAVAILABLE claim would leave
+     * the map silent — defaulting to UNKNOWN — for every preset that does
+     * not name them, even though both queries run anyway. Plan rule 11
+     * forbids exactly that: a source this application knows it will capture
+     * must not be left unrecorded. So this runs for every plan, and the
+     * verdict is {@link SourceAvailability.Availability#PLANNED}, the same
+     * verdict {@link #addProfile} and {@link #addExecutionLog} give a source
+     * that is captured after the build rather than during it.
+     *
+     * <p>This used to be {@code reportUnimplemented}, which put both sources
+     * in as UNAVAILABLE with the reason "this version of the application
+     * does not capture it yet." That was true when it was written (Phase 2,
+     * commit d8dcf89) and false from the moment the auxiliary-query capture
+     * landed (Phase 5, commit 99610e1) onward: nobody removed the stub when
+     * the feature it described shipped, so the launch dialog went on warning
+     * users away from a graph the application was already capturing. See
+     * docs/implementation-status.md for the fix.
+     */
+    private void recordAuxiliaryQueryAvailability(Map<DataSource, SourceAvailability.Entry> availability) {
+        availability.put(DataSource.AQUERY, new SourceAvailability.Entry(
+                SourceAvailability.Availability.PLANNED,
+                "captured after the build, by running bazel aquery separately over the same"
+                        + " targets",
+                Optional.empty()));
+        availability.put(DataSource.CQUERY, new SourceAvailability.Entry(
+                SourceAvailability.Availability.PLANNED,
+                "captured after the build, by running bazel cquery separately over the same"
+                        + " targets",
+                Optional.empty()));
     }
 
     // ------------------------------------------------------------- conflicts

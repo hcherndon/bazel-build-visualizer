@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-08-23. This file states what exists in the tree, not what
+Last updated: 2026-08-24. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## Phases
@@ -1308,6 +1308,44 @@ it is a different tab and was not reported.
   removed. The storage graph package gained its own test classes (37 tests) and
   `RealBazelGraphTest` now proves, on a real captured build, that the loaded
   indexes answer label searches and bounded traversals over both graphs.
+- **The launch dialog no longer claims aquery/cquery go uncaptured**
+  (2026-08-24). `InstrumentationPlanner.reportUnimplemented` put
+  `DataSource.AQUERY` / `DataSource.CQUERY` into the source-availability map
+  as `UNAVAILABLE`, reason "this version of the application does not capture
+  it yet," and warned "The Full Graph Diagnostics preset asks for aquery,
+  cquery, which this version does not capture yet" whenever a preset
+  requested `Capability.AQUERY_PROTO_OUTPUT` / `CQUERY_PROTO_OUTPUT`. That was
+  a Phase 2 placeholder (commit d8dcf89) that outlived the phase which made it
+  true: Phase 5 (commit 99610e1) landed `CaptureCoordinator
+  .queryGraphsQuietly`, which runs `bazel aquery` and `bazel cquery` from
+  every live capture's `finally` block and imports both through
+  `ActionGraphImporter` / `ConfiguredTargetImporter` — unconditionally, never
+  consulting the availability map or the chosen preset. Nobody deleted the
+  stub when the capability shipped, so the dialog went on warning users away
+  from a graph the application was already producing (rule 11: never say a
+  thing is unavailable when it is not; rule 13: do not claim a source is
+  missing when it was captured).
+  `reportUnimplemented` existed solely to make this false claim — no other
+  `DataSource` was reported through it — so it is deleted outright, along
+  with an orphaned javadoc block above `addExecutionLog` that described the
+  same stub. It is replaced by
+  `recordAuxiliaryQueryAvailability`, which marks both sources `PLANNED`
+  unconditionally, for every preset, not only the ones naming those
+  capabilities: since `queryGraphsQuietly` does not check the preset either,
+  gating the availability entry on `requestedCapabilities()` (as the old
+  method did, and as `addProfile`/`addExecutionLog` correctly do for sources
+  that *are* flag-gated) would leave the map silently `UNKNOWN` for presets
+  like Live Essentials that never name `AQUERY_PROTO_OUTPUT` /
+  `CQUERY_PROTO_OUTPUT`, even though both queries run anyway. `PLANNED` was
+  chosen over inventing a new verdict because it already means exactly this
+  elsewhere in the same file: a source captured after the build rather than
+  during it (`DataSource.PROFILE`, `DataSource.EXECUTION_LOG`).
+  `InstrumentationPlannerTest` no longer pins the false warning in place;
+  `auxiliaryQueryGraphsAreDeclaredPlanned` asserts the Full Graph Diagnostics
+  preset — the exact preset named in the stale warning — launches with both
+  sources `PLANNED` and no "does not capture" warning, and
+  `auxiliaryQueryGraphsArePlannedRegardlessOfPreset` pins the unconditional
+  behavior against Live Essentials.
 
 - **A session can be asked a question nobody built a view for** (2026-08-24).
   Perfetto's query page is the one thing it does that nothing here replaced —
