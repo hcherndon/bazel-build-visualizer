@@ -90,16 +90,18 @@ public final class SessionDatabase implements AutoCloseable {
      * Opens a connection that is incapable of writing, for statements this
      * codebase did not author (plan rules 15 and 22.4).
      *
-     * <p>Two independent refusals, because either alone is one mistake away
-     * from being undone:
+     * <p>{@code SQLITE_OPEN_READONLY} at open time is the guarantee: a write
+     * fails in the VFS with {@code SQLITE_READONLY} whatever the statement is,
+     * and the flag is fixed for the life of the connection — no SQL can reach
+     * it.
      *
-     * <ul>
-     *   <li>{@code SQLITE_OPEN_READONLY} at open time, so a write fails in the
-     *       VFS with {@code SQLITE_READONLY} whatever the statement is;
-     *   <li>{@code PRAGMA query_only = ON}, which refuses a write when the
-     *       statement is prepared, and which survives being handed to code that
-     *       only has the {@link Connection}.
-     * </ul>
+     * <p>{@code PRAGMA query_only = ON} is set as well, and it is a second
+     * refusal rather than a second guarantee. It is connection state, so SQL
+     * <em>can</em> reach it: {@code EXPLAIN PRAGMA query_only = OFF} clears it
+     * at prepare time. It is kept in place by the statement filter in
+     * {@code ReadOnlySql} and re-checked before every execution by
+     * {@code AdHocQueries}; what it buys is that a defect in that filter still
+     * has to get past a second thing, and is noticed when it does.
      *
      * <p>A read-only open works against this database even while the writer
      * holds it and the journal is in WAL mode: SQLite needs write

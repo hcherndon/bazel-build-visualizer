@@ -54,13 +54,22 @@ import org.slf4j.LoggerFactory;
  * the actions and events tables use serves a result of any size, a page at a
  * time.
  *
- * <h2>Nothing typed here can damage the session</h2>
+ * <h2>Nothing typed here can write to the session</h2>
  *
- * <p>Three independent refusals, none of which trusts the others:
- * {@code SQLITE_OPEN_READONLY} at open time, {@code PRAGMA query_only = ON} on
- * the connection, and {@code ReadOnlySql} refusing text that is not a single
- * read-only statement. The third is not redundant — the first two would happily
- * run a second statement out of a semicolon-joined string.
+ * <p>That is a guarantee and not a hope: the connection is opened
+ * {@code SQLITE_OPEN_READONLY}, the flag is fixed at open time, and no SQL
+ * reaches it. Every write fails in SQLite's VFS whatever the statement says.
+ *
+ * <p>{@code PRAGMA query_only = ON} and {@code ReadOnlySql}'s single-read-only-
+ * statement filter sit in front of that, and they are refusals rather than
+ * guarantees — {@code query_only} is connection state and
+ * {@code EXPLAIN PRAGMA query_only = OFF} clears it at prepare time, which is
+ * why the filter treats {@code EXPLAIN} as transparent and why
+ * {@code AdHocQueries} re-reads the flag before every execution. What they buy
+ * is the things the open mode does not cover: a second statement out of a
+ * semicolon-joined string, an {@code ATTACH} of somebody else's database, and
+ * process-global settings such as {@code soft_heap_limit} that would reach the
+ * writer connection ingesting a build.
  *
  * <h2>Threads</h2>
  *

@@ -141,6 +141,61 @@ final class AdHocQueriesTest {
                 .isInstanceOf(SqlNotAllowedException.class);
     }
 
+    @Test
+    @DisplayName("EXPLAIN cannot smuggle a pragma past the allowlist, and query_only survives")
+    void explainCannotClearQueryOnly() throws Exception {
+        assertThatThrownBy(() -> queries.describe("EXPLAIN PRAGMA query_only=OFF", 100))
+                .isInstanceOf(SqlNotAllowedException.class);
+        assertThatThrownBy(() ->
+                queries.describe("EXPLAIN QUERY PLAN PRAGMA soft_heap_limit=1", 100))
+                .isInstanceOf(SqlNotAllowedException.class);
+        assertThat(queryOnly()).as("still on, because nothing was sent").isEqualTo("1");
+        // And an EXPLAIN of something allowed still works.
+        assertThat(queries.describe("EXPLAIN QUERY PLAN SELECT * FROM actions", 100).shape())
+                .isEqualTo(ReadOnlySql.Shape.DIRECT);
+    }
+
+    @Test
+    @DisplayName("the pragma bypass is real; the write guarantee survives it and the guard catches it")
+    void theWriteGuaranteeOutlivesQueryOnly() throws Exception {
+        // Deliberately going round the statement filter, because the point is
+        // what the *connection* does. SQLite applies flag pragmas in
+        // sqlite3Pragma() at prepare time, and EXPLAIN does not suppress that.
+        assertThat(queryOnly()).isEqualTo("1");
+        try (Statement statement = queryConnection.createStatement()) {
+            statement.execute("EXPLAIN PRAGMA query_only=OFF");
+        }
+        assertThat(queryOnly())
+                .as("EXPLAIN really does clear it -- which is why the filter must treat"
+                        + " EXPLAIN as transparent rather than terminal")
+                .isEqualTo("0");
+
+        // The guarantee is the open mode, and it is not reachable from SQL.
+        try (Statement statement = queryConnection.createStatement()) {
+            assertThatThrownBy(() -> statement.execute("CREATE TABLE zz (x)"))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("readonly");
+        }
+        try (Statement statement = queryConnection.createStatement()) {
+            assertThatThrownBy(() ->
+                    statement.execute("INSERT INTO actions VALUES (999,'Evil',1,NULL,NULL)"))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("readonly");
+        }
+        assertThat(scalar("SELECT COUNT(*) FROM actions")).isEqualTo(20L);
+
+        // The per-execution guard refuses to keep going, says so, and puts the
+        // second refusal back rather than leaving the connection weakened.
+        assertThatThrownBy(() -> queries.describe("SELECT id FROM actions", 100))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("stopped refusing writes between statements")
+                .hasMessageContaining("Nothing was run");
+        assertThat(queryOnly()).as("restored by the guard").isEqualTo("1");
+        // And having restored it, the reader works again.
+        assertThat(queries.describe("SELECT id FROM actions", 100).matchedRows())
+                .isEqualTo(OptionalLong.of(20L));
+    }
+
     // ---------------------------------------------------------------- describing
 
     @Test
@@ -354,6 +409,13 @@ final class AdHocQueriesTest {
     }
 
     // ------------------------------------------------------------------- helpers
+
+    private String queryOnly() throws SQLException {
+        try (Statement statement = queryConnection.createStatement();
+                ResultSet rows = statement.executeQuery("PRAGMA query_only")) {
+            return rows.next() ? rows.getString(1) : null;
+        }
+    }
 
     private static List<Long> first(List<QueryRow> rows) {
         return rows.stream().map(row -> ((Number) row.value(0)).longValue()).toList();

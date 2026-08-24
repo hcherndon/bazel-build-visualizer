@@ -104,12 +104,12 @@ final class ReadOnlySqlTest {
     void replaceTheFunctionIsAllowed() {
         assertThat(ReadOnlySql.check("SELECT replace(label, 'a', 'b') FROM targets").shape())
                 .isEqualTo(ReadOnlySql.Shape.TABULAR);
-        // Leading REPLACE never reaches the two-word rule: it is not one of the
-        // allowed opening keywords in the first place.
+        // The writing-word scan runs before the statement is classified, so
+        // REPLACE INTO is named as what it is rather than as an unrecognised
+        // opening keyword -- wherever in the statement it appears.
         assertThatThrownBy(() -> ReadOnlySql.check("REPLACE INTO targets VALUES (1)"))
                 .isInstanceOf(SqlNotAllowedException.class)
-                .hasMessageContaining("\"REPLACE\" is not one");
-        // Behind a WITH it does, which is the case the two-word rule exists for.
+                .hasMessageContaining("REPLACE INTO");
         assertThatThrownBy(() ->
                 ReadOnlySql.check("WITH c AS (SELECT 1 AS x) REPLACE INTO targets SELECT x FROM c"))
                 .isInstanceOf(SqlNotAllowedException.class)
@@ -146,6 +146,82 @@ final class ReadOnlySqlTest {
         assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA journal_mode = DELETE"))
                 .isInstanceOf(SqlNotAllowedException.class);
         assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA writable_schema(1)"))
+                .isInstanceOf(SqlNotAllowedException.class);
+    }
+
+    @Test
+    @DisplayName("EXPLAIN is transparent, so it cannot smuggle a pragma past the allowlist")
+    void explainCannotRouteAroundThePragmaAllowlist() {
+        // The bypass this test exists for: EXPLAIN used to be terminal, so the
+        // allowlist was never consulted for what came after it. SQLite applies
+        // flag pragmas in sqlite3Pragma() at PREPARE time and EXPLAIN does not
+        // suppress that, so `EXPLAIN PRAGMA query_only=OFF` really does clear
+        // query_only on a SQLITE_OPEN_READONLY connection -- turning the second
+        // refusal off for the life of the connection with four extra
+        // characters typed in front of a statement this class already refused.
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN PRAGMA query_only=OFF"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("PRAGMA query_only is not one of the introspection pragmas");
+        // A prefix rule on "EXPLAIN " alone would not have been enough.
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN QUERY PLAN PRAGMA query_only=OFF"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("PRAGMA query_only is not one of the introspection pragmas");
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN PRAGMA writable_schema=ON"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("PRAGMA writable_schema is not one");
+        // sqlite3_soft_heap_limit64 is process-global: this one would degrade
+        // the writer connection ingesting a build, from the query card.
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN PRAGMA soft_heap_limit=1"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("PRAGMA soft_heap_limit is not one");
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN PRAGMA journal_mode=DELETE"))
+                .isInstanceOf(SqlNotAllowedException.class);
+        // Nesting does not help either.
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN EXPLAIN PRAGMA query_only=OFF"))
+                .isInstanceOf(SqlNotAllowedException.class);
+        assertThatThrownBy(() ->
+                ReadOnlySql.check("EXPLAIN QUERY PLAN EXPLAIN PRAGMA writable_schema(1)"))
+                .isInstanceOf(SqlNotAllowedException.class);
+    }
+
+    @Test
+    @DisplayName("EXPLAIN still works over everything it is meant to")
+    void explainStillExplainsWhatIsAllowed() {
+        // Transparent, not banned: what EXPLAIN is put in front of is checked
+        // by the same rules that would apply without it.
+        assertThat(ReadOnlySql.check("EXPLAIN PRAGMA table_info(actions)").shape())
+                .isEqualTo(ReadOnlySql.Shape.DIRECT);
+        assertThat(ReadOnlySql.check("EXPLAIN QUERY PLAN PRAGMA index_list(actions)").shape())
+                .isEqualTo(ReadOnlySql.Shape.DIRECT);
+        assertThat(ReadOnlySql.check("EXPLAIN SELECT * FROM actions").shape())
+                .as("an explained SELECT yields the plan, not the rows, so it cannot be wrapped")
+                .isEqualTo(ReadOnlySql.Shape.DIRECT);
+        assertThat(ReadOnlySql.check("EXPLAIN QUERY PLAN SELECT * FROM actions").sql())
+                .isEqualTo("EXPLAIN QUERY PLAN SELECT * FROM actions");
+        assertThat(ReadOnlySql.check("EXPLAIN WITH c AS (SELECT 1 AS x) SELECT * FROM c").shape())
+                .isEqualTo(ReadOnlySql.Shape.DIRECT);
+    }
+
+    @Test
+    @DisplayName("EXPLAIN in front of a write is still a write")
+    void explainDoesNotLaunderAWrite() {
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN DELETE FROM actions"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("DELETE");
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN QUERY PLAN DROP TABLE actions"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("DROP");
+    }
+
+    @Test
+    @DisplayName("EXPLAIN with nothing after it is refused rather than run")
+    void explainAloneIsRefused() {
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("nothing at all");
+        // QUERY is consumed only when PLAN follows; anything else fails the
+        // classification, which is the safe direction.
+        assertThatThrownBy(() -> ReadOnlySql.check("EXPLAIN QUERY SELECT 1"))
                 .isInstanceOf(SqlNotAllowedException.class);
     }
 

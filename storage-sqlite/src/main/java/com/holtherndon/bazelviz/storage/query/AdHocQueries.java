@@ -22,24 +22,37 @@ import java.util.concurrent.TimeUnit;
  * and pages its results — the query surface Perfetto's query page provides for
  * traces, over the 59 tables a captured build normalizes into.
  *
- * <h2>The connection cannot write, three ways</h2>
+ * <h2>One guarantee, and the guards that keep the rest true</h2>
+ *
+ * <p><b>The guarantee.</b> The connection is opened with SQLite's
+ * {@code SQLITE_OPEN_READONLY} flag ({@link SessionDatabase#newQueryConnection()}),
+ * so every write is refused by the VFS with {@code SQLITE_READONLY} whatever
+ * the statement is. That flag is fixed at open time and is not reachable from
+ * SQL: nothing typed into the query card can change a byte of the session.
+ *
+ * <p><b>The guards.</b> {@code PRAGMA query_only = ON} is also set, and it is
+ * a genuinely useful second refusal — but it is <em>connection state</em>, and
+ * connection state is reachable from SQL. {@code EXPLAIN PRAGMA query_only =
+ * OFF} clears it, because SQLite applies flag pragmas in
+ * {@code sqlite3Pragma()} at prepare time and {@code EXPLAIN} does not
+ * suppress that. So {@code query_only} is only as durable as the statement
+ * filter in front of it, and two things follow:
  *
  * <ol>
- *   <li>The connection is opened with SQLite's {@code SQLITE_OPEN_READONLY}
- *       flag ({@link SessionDatabase#newQueryConnection()}), so a write is
- *       refused by the VFS with {@code SQLITE_READONLY} before the statement
- *       ever runs.
- *   <li>{@code PRAGMA query_only = ON} is set on it, which refuses a write at
- *       statement-prepare time even if the open mode were ever relaxed.
- *   <li>{@link ReadOnlySql} refuses text that is not a single read-only
- *       statement, because neither of the first two stops
- *       {@code Statement.execute} from running a second statement out of a
- *       semicolon-joined string.
- *   </ol>
+ *   <li>{@link ReadOnlySql} treats {@code EXPLAIN} as transparent and checks
+ *       what follows it against the pragma allowlist. It also refuses text
+ *       that is not a <em>single</em> statement, which neither the open mode
+ *       nor the pragma would have done — {@code Statement.execute} runs
+ *       everything in a semicolon-joined string.
+ *   <li>{@link #requireStillReadOnly()} re-reads {@code query_only} before
+ *       <em>every</em> execution rather than once at construction. A one-time
+ *       assertion about a value a later statement can change is not a
+ *       refusal; a per-execution one is.
+ * </ol>
  *
- * <p>The constructor <em>verifies</em> the first two rather than assuming them:
- * handed the writer connection, it throws. Rule 22.4 asks for incapable, not
- * trusted.
+ * <p>The constructor still refuses a connection that can write at all — handed
+ * the writer, or a plain {@link SessionDatabase#newReadConnection()}, it
+ * throws. Rule 22.4 asks for incapable, not trusted.
  *
  * <h2>Paging: LIMIT/OFFSET, deliberately</h2>
  *
@@ -173,6 +186,55 @@ public final class AdHocQueries implements AutoCloseable {
                     + " this connection reports " + queryOnly
                     + ". Use SessionDatabase.newQueryConnection().");
         }
+    }
+
+    /**
+     * Re-establishes, before every execution, that this connection is still
+     * refusing writes.
+     *
+     * <p>The constructor's check is an assertion about a moment.
+     * {@code query_only} is connection state and a prepared statement can
+     * clear it — {@code EXPLAIN PRAGMA query_only = OFF} does, at prepare
+     * time — so a check made once is a claim about the past. This makes it a
+     * claim about now.
+     *
+     * <p>It does not <em>prevent</em> the clearing; {@link ReadOnlySql} does
+     * that. What it does is refuse to keep running on a connection whose
+     * second refusal has gone missing, and put the refusal back before it
+     * throws, so a defect in the filter surfaces as a loud failure on the next
+     * statement instead of a quietly weakened connection. The write guarantee
+     * is unaffected either way: the open mode is not reachable from SQL.
+     *
+     * <p>Costs one flag read per execution — no I/O, no page cache traffic.
+     */
+    private void requireStillReadOnly() {
+        boolean openedReadOnly;
+        String queryOnly;
+        try {
+            openedReadOnly = connection.isReadOnly();
+            queryOnly = scalarText(connection, "PRAGMA query_only");
+        } catch (SQLException e) {
+            throw new IllegalStateException(
+                    "cannot establish that this connection is still read-only", e);
+        }
+        if (openedReadOnly && "1".equals(queryOnly)) {
+            return;
+        }
+        String restored = "not attempted";
+        if (openedReadOnly) {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("PRAGMA query_only=ON");
+                restored = "it has been switched back on";
+            } catch (SQLException e) {
+                restored = "and it could not be switched back on: " + e.getMessage();
+            }
+        }
+        throw new IllegalStateException("this connection stopped refusing writes between"
+                + " statements: opened read-only = " + openedReadOnly
+                + ", PRAGMA query_only = " + queryOnly + " (" + restored + "). Nothing was run."
+                + " The session file itself was never at risk -- it is open"
+                + " SQLITE_OPEN_READONLY -- but some statement got past the read-only"
+                + " statement filter, which is a defect worth reporting.");
     }
 
     private static String scalarText(Connection connection, String sql) throws SQLException {
@@ -417,6 +479,7 @@ public final class AdHocQueries implements AutoCloseable {
         if (closed) {
             throw new IllegalStateException("these queries are closed");
         }
+        requireStillReadOnly();
         cancelRequested = false;
         deadlineFired = false;
         try (Statement statement = connection.createStatement()) {

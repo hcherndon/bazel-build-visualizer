@@ -32,9 +32,15 @@ import java.util.Objects;
  * <p>{@link #rowCount()} is whatever {@code SELECT COUNT(*)} returned when the
  * query was described, capped at the row limit, and it never changes — the same
  * contract every other row source here has, because {@code PagedTableModel}
- * reads it on the EDT and must not query. Against a session that is still being
- * captured the count is therefore a lower bound taken at a moment, which the
- * panel says rather than implies.
+ * reads it on the EDT and must not query.
+ *
+ * <p>Against a session that is <em>still being captured</em> that makes the
+ * count a lower bound taken at a moment, and <b>the panel does not currently
+ * say so</b>: its status line reads "N rows" for a live session exactly as it
+ * does for a finished one. {@code EventsView} learned to write "at least N
+ * events (still capturing)" for this reason and this card has not; the gap is
+ * recorded here rather than papered over. Re-running the query is what picks up
+ * the rows that arrived since.
  */
 public final class QueryRowSource implements RowSource<QueryRow> {
 

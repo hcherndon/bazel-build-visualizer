@@ -1320,17 +1320,29 @@ it is a different tab and was not reported.
   editor, a schema tree read from `sqlite_master` and `PRAGMA table_info` at run
   time — the 59 tables across five schema versions had no reachable description
   at all before this — and a paged result grid.
-  Nothing typed there can damage the session, three ways that do not trust each
-  other. `SessionDatabase.newQueryConnection()` opens with
-  `SQLITE_OPEN_READONLY`, so a write fails in the VFS; it sets
-  `PRAGMA query_only = ON`, so a write fails again at prepare time; and
-  `ReadOnlySql` refuses text that is not a single read-only statement, which
-  neither of the others would have done — `Statement.execute` runs every
+  Nothing typed there can **write** to the session, and that part is a
+  guarantee: `SessionDatabase.newQueryConnection()` opens with
+  `SQLITE_OPEN_READONLY`, the flag is fixed at open time, and no SQL reaches
+  it. In front of it sit two refusals that are not guarantees and are described
+  as such. `PRAGMA query_only = ON` is connection state, and connection state
+  is reachable from SQL — `EXPLAIN PRAGMA query_only = OFF` clears it, because
+  SQLite applies flag pragmas in `sqlite3Pragma()` at *prepare* time and
+  `EXPLAIN` does not suppress that. So `ReadOnlySql` treats `EXPLAIN` as
+  **transparent**, classifying whatever it was put in front of (repeatedly, so
+  `EXPLAIN EXPLAIN PRAGMA …` is covered), and `AdHocQueries` re-reads
+  `query_only` before *every* execution rather than once at construction — a
+  one-time assertion about a value a later statement can change is not a
+  refusal. `ReadOnlySql` also refuses text that is not a single statement,
+  which neither of the others would have done: `Statement.execute` runs every
   statement in a semicolon-joined string, so `SELECT 1; DROP TABLE actions` is
-  refused by the app layer before any of it is sent. `AdHocQueries` refuses a
-  connection that can write rather than trusting one, which is what makes the
-  distinction between `newReadConnection()` (a convention) and
-  `newQueryConnection()` (a fact) load-bearing.
+  refused before any of it is sent. The pragma allowlist earns its keep beyond
+  tidiness — `sqlite3_soft_heap_limit64` is process-global, so
+  `PRAGMA soft_heap_limit = 1` typed into a text box would degrade the writer
+  connection ingesting a build, which neither the row cap nor the deadline
+  touches. `AdHocQueries` refuses a connection that can write rather than
+  trusting one, which is what makes the distinction between
+  `newReadConnection()` (a convention) and `newQueryConnection()` (a fact)
+  load-bearing.
   Paging is `SELECT * FROM (…) LIMIT ? OFFSET ?`, the one place in this
   codebase that uses OFFSET, because keyset paging needs a sort key and a
   unique tiebreaker that an arbitrary user query does not expose — its
@@ -1349,6 +1361,12 @@ it is a different tab and was not reported.
   watching, and both report themselves as *stopped* rather than as failed. JDBC
   `setQueryTimeout` is deliberately unused — in sqlite-jdbc 3.53.2.1 it only
   sets the busy timeout and does nothing to a statement that is running.
+  The status line does **not** yet distinguish a live session: the row count is
+  a `SELECT COUNT(*)` snapshot taken when the query was described, and against
+  a capture still in progress that is a lower bound the panel reports as a
+  plain number. `EventsView` learned to write "at least N events (still
+  capturing)" for this reason and this card has not; the gap is stated in
+  `QueryRowSource`'s javadoc rather than papered over.
   `EdtDisciplineTest` now counts `QueryReader` among the field types that mean
   a component can block, so the new card is held to the same rule as every
   other. `AdHocQueriesTest` proves the refusal at run time by attempting an
@@ -1356,3 +1374,9 @@ it is a different tab and was not reported.
   rejects all three with the rows unchanged; `QueryViewWiringTest` proves the
   same through the card, over a real imported session, and proves that Cancel
   returns in milliseconds and leaves the connection usable.
+  `AdHocQueriesTest.theWriteGuaranteeOutlivesQueryOnly` is the uncomfortable
+  one and is kept deliberately: it goes *round* the statement filter, clears
+  `query_only` through `EXPLAIN`, and then asserts that a `CREATE TABLE` and an
+  `INSERT` are still refused and the rows are unchanged — the guarantee
+  outliving the refusal — before asserting that the per-execution guard notices,
+  says so, and puts `query_only` back.
