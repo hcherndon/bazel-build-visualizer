@@ -256,4 +256,166 @@ final class ReadOnlySqlTest {
         assertThat(ReadOnlySql.check("SELECT * FROM deleted_rows").shape())
                 .isEqualTo(ReadOnlySql.Shape.TABULAR);
     }
+
+    // ------------------------------------------------------ quoted pragma names
+
+    @Test
+    @DisplayName("a quoted pragma name is refused by rule, not by accident")
+    void quotedPragmaNamesAreRefusedExplicitly() {
+        // The hole the explicit rule closes: PRAGMA "query_only" = table_info
+        // is legal SQLite — the quotes name the pragma and the bare word is its
+        // VALUE. A check that read the name out of the skeleton (where quoted
+        // identifiers are blanked) would have judged this statement by its
+        // value, and a value that happens to be an allowlisted name would have
+        // sailed through to clear query_only.
+        assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA \"query_only\" = table_info"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("quoted pragma name");
+        assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA `query_only` = table_info"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("quoted pragma name");
+        assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA [query_only] = table_info"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("quoted pragma name");
+        // And through EXPLAIN, which is where clearing query_only would land.
+        assertThatThrownBy(() ->
+                ReadOnlySql.check("EXPLAIN PRAGMA \"query_only\" = table_info"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("quoted pragma name");
+        // A quoted spelling of an ALLOWED pragma is refused too: the allowlist
+        // admits bare names only, so there is no spelling to reason about.
+        assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA \"table_info\"(actions)"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("quoted pragma name");
+        assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA main.\"table_info\"(actions)"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("quoted pragma name");
+        assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA \"main\".table_info(actions)"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("quoted pragma name");
+    }
+
+    @Test
+    @DisplayName("bare pragma spellings still work exactly as before")
+    void barePragmasAreUnchanged() {
+        assertThat(ReadOnlySql.check("PRAGMA table_info(actions)").shape())
+                .isEqualTo(ReadOnlySql.Shape.DIRECT);
+        assertThat(ReadOnlySql.check("PRAGMA main.index_list(actions)").shape())
+                .isEqualTo(ReadOnlySql.Shape.DIRECT);
+        assertThatThrownBy(() -> ReadOnlySql.check("PRAGMA soft_heap_limit=1"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("soft_heap_limit is not one");
+    }
+
+    // ------------------------------------------------------- CREATE TEMP VIEW
+
+    @Test
+    @DisplayName("CREATE TEMP VIEW name AS SELECT is the one admitted CREATE")
+    void createTempViewIsAdmitted() {
+        ReadOnlySql.Statement checked =
+                ReadOnlySql.check("CREATE TEMP VIEW slow AS SELECT * FROM actions");
+        assertThat(checked.shape()).isEqualTo(ReadOnlySql.Shape.DEFINE);
+        assertThat(checked.sql()).isEqualTo("CREATE TEMP VIEW slow AS SELECT * FROM actions");
+        assertThat(checked.tempViewName()).isEqualTo("slow");
+        assertThat(checked.tempViewSelect()).isEqualTo("SELECT * FROM actions");
+
+        assertThat(ReadOnlySql.check(
+                "CREATE TEMPORARY VIEW v AS WITH c AS (SELECT 1 AS x) SELECT * FROM c").shape())
+                .isEqualTo(ReadOnlySql.Shape.DEFINE);
+        assertThat(ReadOnlySql.check("create temp view v as values (1), (2)").shape())
+                .isEqualTo(ReadOnlySql.Shape.DEFINE);
+    }
+
+    @Test
+    @DisplayName("a quoted or bracketed view name round-trips unquoted")
+    void quotedViewNamesAreParsed() {
+        assertThat(ReadOnlySql.check(
+                "CREATE TEMP VIEW \"my view\" AS SELECT 1").tempViewName())
+                .isEqualTo("my view");
+        assertThat(ReadOnlySql.check(
+                "CREATE TEMP VIEW [my view] AS SELECT 1").tempViewName())
+                .isEqualTo("my view");
+        assertThat(ReadOnlySql.check(
+                "CREATE TEMP VIEW `my view` AS SELECT 1").tempViewName())
+                .isEqualTo("my view");
+        // A doubled quote inside a quoted name is one literal quote.
+        assertThat(ReadOnlySql.check(
+                "CREATE TEMP VIEW \"say \"\"hi\"\"\" AS SELECT 1").tempViewName())
+                .isEqualTo("say \"hi\"");
+        // A quoted name cannot smuggle the statement's meaning: the body is
+        // still checked, whatever the name looks like.
+        assertThatThrownBy(() -> ReadOnlySql.check(
+                "CREATE TEMP VIEW \"v\" AS DELETE FROM actions"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("DELETE");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "CREATE TABLE evil (x)",
+        "CREATE VIEW v AS SELECT * FROM actions",
+        "CREATE INDEX idx ON actions (id)",
+        "CREATE UNIQUE INDEX idx ON actions (id)",
+        "CREATE TRIGGER trg AFTER INSERT ON actions BEGIN SELECT 1; END",
+        "CREATE VIRTUAL TABLE ft USING fts5(content)",
+        "CREATE TEMP TABLE evil (x)",
+        "CREATE TEMPORARY TABLE evil (x)",
+        "CREATE TEMP TRIGGER trg AFTER INSERT ON actions BEGIN SELECT 1; END",
+        "CREATE TEMP VIRTUAL TABLE ft USING fts5(content)",
+    })
+    @DisplayName("every other CREATE stays banned, temp spellings included")
+    void everyOtherCreateIsRefused(String sql) {
+        assertThatThrownBy(() -> ReadOnlySql.check(sql))
+                .isInstanceOf(SqlNotAllowedException.class);
+    }
+
+    @Test
+    @DisplayName("the view definition's edges are all refusals, not skips")
+    void tempViewEdgesAreRefused() {
+        // EXPLAIN in front of a definition: EXPLAIN is transparent for reads,
+        // and a definition is not a read.
+        assertThatThrownBy(() ->
+                ReadOnlySql.check("EXPLAIN CREATE TEMP VIEW v AS SELECT 1"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("CREATE");
+        // A schema qualifier: temp views always land in the temp schema.
+        assertThatThrownBy(() ->
+                ReadOnlySql.check("CREATE TEMP VIEW temp.v AS SELECT 1"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("schema qualifier");
+        // IF NOT EXISTS: redefinition is what running the statement again does.
+        assertThatThrownBy(() ->
+                ReadOnlySql.check("CREATE TEMP VIEW IF NOT EXISTS v AS SELECT 1"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("IF NOT EXISTS");
+        // A column list; the SELECT is where columns get named.
+        assertThatThrownBy(() ->
+                ReadOnlySql.check("CREATE TEMP VIEW v (a, b) AS SELECT 1, 2"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("column list");
+        // No name, no AS, no body.
+        assertThatThrownBy(() -> ReadOnlySql.check("CREATE TEMP VIEW"))
+                .isInstanceOf(SqlNotAllowedException.class);
+        assertThatThrownBy(() -> ReadOnlySql.check("CREATE TEMP VIEW v"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("Expected AS");
+        assertThatThrownBy(() -> ReadOnlySql.check("CREATE TEMP VIEW v AS"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("no body");
+        // A body that is not tabular.
+        assertThatThrownBy(() ->
+                ReadOnlySql.check("CREATE TEMP VIEW v AS PRAGMA table_info(actions)"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("SELECT, WITH or VALUES");
+        // A second statement after the definition.
+        assertThatThrownBy(() ->
+                ReadOnlySql.check("CREATE TEMP VIEW v AS SELECT 1; DROP TABLE actions"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("Run one statement at a time");
+        // A writing word buried in the body via a CTE.
+        assertThatThrownBy(() -> ReadOnlySql.check(
+                "CREATE TEMP VIEW v AS WITH c AS (SELECT 1) DELETE FROM actions"))
+                .isInstanceOf(SqlNotAllowedException.class)
+                .hasMessageContaining("DELETE");
+    }
 }

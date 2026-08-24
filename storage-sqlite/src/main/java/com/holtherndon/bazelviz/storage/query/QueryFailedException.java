@@ -29,7 +29,9 @@ public final class QueryFailedException extends RuntimeException {
         /** One page of rows. */
         PAGE("fetching a page of rows"),
         /** Reading {@code sqlite_master} / {@code PRAGMA table_info}. */
-        SCHEMA("reading the schema");
+        SCHEMA("reading the schema"),
+        /** Defining a temporary view in the connection's temp schema. */
+        DEFINE("defining a temporary view");
 
         private final String description;
 

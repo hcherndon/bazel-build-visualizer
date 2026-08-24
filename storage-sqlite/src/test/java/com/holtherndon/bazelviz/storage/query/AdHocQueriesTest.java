@@ -341,6 +341,178 @@ final class AdHocQueriesTest {
         });
     }
 
+    // ---------------------------------------------------------- temp views
+
+    @Test
+    @DisplayName("a temp view can be defined, queried, redefined, and never touches the file")
+    void aTempViewIsDefinedOnTheConnectionAlone() throws Exception {
+        long masterRowsBefore = scalar("SELECT COUNT(*) FROM sqlite_master");
+
+        QueryOutline defined = queries.describe(
+                "CREATE TEMP VIEW slow AS SELECT * FROM actions WHERE duration_micros > 100",
+                100);
+        assertThat(defined.shape()).isEqualTo(ReadOnlySql.Shape.DEFINE);
+        assertThat(defined.columns()).isEmpty();
+
+        // Queryable on this connection.
+        assertThat(queryValue("SELECT COUNT(*) FROM slow")).isEqualTo(10L);
+        // Redefinable by running another CREATE, not an error.
+        queries.describe("CREATE TEMP VIEW slow AS SELECT * FROM actions", 100);
+        assertThat(queryValue("SELECT COUNT(*) FROM slow")).isEqualTo(20L);
+
+        // query_only survives the definition: it was lifted for the statement
+        // pair and put back.
+        assertThat(queryOnly()).isEqualTo("1");
+
+        // The session file is untouched: nothing landed in the main schema.
+        assertThat(scalar("SELECT COUNT(*) FROM sqlite_master")).isEqualTo(masterRowsBefore);
+        // And another query connection does not see the view — it is this
+        // connection's alone.
+        try (Connection other = database.newQueryConnection();
+                AdHocQueries otherQueries = new AdHocQueries(other)) {
+            assertThatThrownBy(() -> otherQueries.describe("SELECT * FROM slow", 100))
+                    .isInstanceOf(QueryFailedException.class)
+                    .hasMessageContaining("no such table");
+        }
+    }
+
+    @Test
+    @DisplayName("the schema listing names the connection's temp views as temp")
+    void tempViewsAppearInTheSchemaListing() {
+        queries.describe("CREATE TEMP VIEW mine AS SELECT id FROM actions", 100);
+
+        List<SchemaTable> schema = queries.schema();
+        SchemaTable mine = schema.stream()
+                .filter(SchemaTable::isTemp)
+                .filter(table -> table.name().equals("mine"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(mine.isView()).isTrue();
+        assertThat(mine.columns()).extracting(SchemaColumn::name).containsExactly("id");
+        // The session's own objects still say main.
+        assertThat(schema).anySatisfy(table -> {
+            assertThat(table.name()).isEqualTo("actions");
+            assertThat(table.isTemp()).isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("a temp view that shadows a main table is harmless and local")
+    void aShadowingTempViewIsHarmless() throws Exception {
+        queries.describe("CREATE TEMP VIEW actions AS SELECT 1 AS shadow", 100);
+
+        // On this connection the unqualified name now resolves to the shadow …
+        assertThat(queries.describe("SELECT * FROM actions", 100).columns())
+                .containsExactly("shadow");
+        // … the qualified name still reaches the real table …
+        assertThat(queryValue("SELECT COUNT(*) FROM main.actions")).isEqualTo(20L);
+        // … the schema listing describes the real table's columns for main and
+        // the shadow's for temp, because table_info is schema-qualified …
+        List<SchemaTable> schema = queries.schema();
+        assertThat(schema.stream()
+                .filter(t -> t.name().equals("actions") && !t.isTemp())
+                .findFirst().orElseThrow().columns())
+                .extracting(SchemaColumn::name)
+                .contains("id", "mnemonic");
+        assertThat(schema.stream()
+                .filter(t -> t.name().equals("actions") && t.isTemp())
+                .findFirst().orElseThrow().columns())
+                .extracting(SchemaColumn::name)
+                .containsExactly("shadow");
+        // … and the table itself, on the writer, never changed.
+        assertThat(scalar("SELECT COUNT(*) FROM actions")).isEqualTo(20L);
+    }
+
+    @Test
+    @DisplayName("writing through or around a temp view is refused at every layer")
+    void aTempViewCannotBeWrittenThrough() throws Exception {
+        queries.describe("CREATE TEMP VIEW mine AS SELECT id FROM actions", 100);
+
+        // The filter refuses the statement before anything runs.
+        assertThatThrownBy(() -> queries.describe("INSERT INTO mine VALUES (1)", 100))
+                .isInstanceOf(SqlNotAllowedException.class);
+        assertThatThrownBy(() -> queries.describe("DROP VIEW mine", 100))
+                .isInstanceOf(SqlNotAllowedException.class);
+        // And straight at the connection, SQLite refuses too: query_only is ON
+        // between statements, and a plain view cannot be written through.
+        try (Statement statement = queryConnection.createStatement()) {
+            assertThatThrownBy(() -> statement.execute("INSERT INTO mine VALUES (1)"))
+                    .isInstanceOf(SQLException.class);
+        }
+        // The main schema stays out of reach even while the temp schema is
+        // writable: this is the open-mode guarantee, re-proved at the moment
+        // query_only is down.
+        try (Statement statement = queryConnection.createStatement()) {
+            statement.execute("PRAGMA query_only=OFF");
+            try {
+                assertThatThrownBy(() -> statement.execute("CREATE TABLE zz (x)"))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("readonly");
+                assertThatThrownBy(() ->
+                        statement.execute("CREATE VIEW zz AS SELECT 1"))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("readonly");
+                assertThatThrownBy(() ->
+                        statement.execute("CREATE INDEX zz ON actions (id)"))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("readonly");
+                assertThatThrownBy(() -> statement.execute(
+                        "CREATE TRIGGER zz AFTER INSERT ON actions BEGIN SELECT 1; END"))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("readonly");
+                assertThatThrownBy(() -> statement.execute(
+                        "CREATE VIRTUAL TABLE zz USING fts5(content)"))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("readonly");
+            } finally {
+                statement.execute("PRAGMA query_only=ON");
+            }
+        }
+        assertThat(scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'zz'")).isZero();
+    }
+
+    @Test
+    @DisplayName("saved view definitions replay onto the connection, and replace cleanly")
+    void savedViewsReplayAndReplace() {
+        List<String> problems = queries.applyTempViews(List.of(
+                new TempViewDefinition("fast", "SELECT * FROM actions WHERE duration_micros <= 100"),
+                new TempViewDefinition("all_ids", "SELECT id FROM actions")));
+        assertThat(problems).isEmpty();
+        assertThat(queryValue("SELECT COUNT(*) FROM fast")).isEqualTo(10L);
+
+        // Reapplying with a renamed set drops what the replay created before.
+        problems = queries.applyTempViews(List.of(
+                new TempViewDefinition("quick", "SELECT * FROM actions WHERE duration_micros <= 100")));
+        assertThat(problems).isEmpty();
+        assertThat(queryValue("SELECT COUNT(*) FROM quick")).isEqualTo(10L);
+        assertThatThrownBy(() -> queries.describe("SELECT * FROM fast", 100))
+                .isInstanceOf(QueryFailedException.class)
+                .hasMessageContaining("no such table");
+    }
+
+    @Test
+    @DisplayName("a broken saved view is reported and skipped, not fatal")
+    void aBrokenSavedViewIsReportedNotFatal() {
+        List<String> problems = queries.applyTempViews(List.of(
+                new TempViewDefinition("bad", "DELETE FROM actions"),
+                new TempViewDefinition("hollow", "SELECT * FROM no_such_table"),
+                new TempViewDefinition("good", "SELECT id FROM actions")));
+
+        // The DELETE body is refused before anything runs. The body over a
+        // missing table is NOT caught here — SQLite resolves a view's tables
+        // at use, not at definition — so it applies and fails at first query,
+        // with SQLite's own message.
+        assertThat(problems)
+                .hasSize(1)
+                .anySatisfy(p -> assertThat(p).contains("bad").contains("DELETE"));
+        assertThatThrownBy(() -> queries.describe("SELECT * FROM hollow", 100))
+                .isInstanceOf(QueryFailedException.class)
+                .hasMessageContaining("no_such_table");
+        assertThat(queryValue("SELECT COUNT(*) FROM good")).isEqualTo(20L);
+        // Nothing was executed for the DELETE body: the rows are all there.
+        assertThat(queryValue("SELECT COUNT(*) FROM actions")).isEqualTo(20L);
+    }
+
     // -------------------------------------------------------------------- cancel
 
     @Test
@@ -409,6 +581,12 @@ final class AdHocQueriesTest {
     }
 
     // ------------------------------------------------------------------- helpers
+
+    /** The single value a one-row, one-column query produces, through the reader. */
+    private long queryValue(String sql) {
+        QueryOutline outline = queries.describe(sql, 100);
+        return ((Number) queries.page(outline, 0, 1).get(0).value(0)).longValue();
+    }
 
     private String queryOnly() throws SQLException {
         try (Statement statement = queryConnection.createStatement();

@@ -19,11 +19,16 @@ import java.util.List;
  *
  * @param name table or view name
  * @param kind {@code "table"} or {@code "view"}, exactly as sqlite_master spells it
+ * @param schema {@code "main"} for the session file's own objects, or
+ *     {@code "temp"} for this connection's temporary views — which exist on
+ *     this connection alone and vanish when it closes, so the browser has to
+ *     say which is which or a temp view reads as part of the session
  * @param columns its columns in declaration order
  * @param ddl the CREATE statement sqlite_master stores, or empty when SQLite
  *     stores none (it does not for some internal tables)
  */
-public record SchemaTable(String name, String kind, List<SchemaColumn> columns, String ddl) {
+public record SchemaTable(
+        String name, String kind, String schema, List<SchemaColumn> columns, String ddl) {
 
     public SchemaTable {
         columns = List.copyOf(columns);
@@ -31,5 +36,10 @@ public record SchemaTable(String name, String kind, List<SchemaColumn> columns, 
 
     public boolean isView() {
         return "view".equalsIgnoreCase(kind);
+    }
+
+    /** True for a temporary view: per-connection, and never in the session file. */
+    public boolean isTemp() {
+        return "temp".equalsIgnoreCase(schema);
     }
 }
