@@ -11,6 +11,7 @@ import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.RawPayload;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -34,10 +35,13 @@ import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTable;
 import javax.swing.ListSelectionModel;
+import javax.swing.RowSorter;
+import javax.swing.SortOrder;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.TableColumn;
+import javax.swing.table.TableRowSorter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -113,6 +117,18 @@ public final class ErrorsView extends JPanel {
     private final JLabel emptyLabel = new JLabel(" ", SwingConstants.CENTER);
     private final ErrorTableModel tableModel = new ErrorTableModel();
     private final JTable table = new JTable(tableModel);
+
+    /**
+     * Client-side sorting over the in-memory rows — legitimate here and only
+     * here among the entity tables, because every loaded row is already in
+     * memory. Every column is {@code setSortable(false)} so the L&amp;F's own
+     * header-click toggle (a two-state asc/desc cycle with no way back to
+     * the load order) stays out of the way; {@link #headerInteractions}
+     * drives {@code setSortKeys} through the shared 3-state cycle instead,
+     * whose third state is the deliberate kind-priority load order.
+     */
+    private final TableRowSorter<ErrorTableModel> sorter = new TableRowSorter<>(tableModel);
+    private final TableHeaderInteractions headerInteractions;
     private final InspectorPanel inspector = new InspectorPanel();
     private final JLabel statusLabel = new JLabel(" ");
     private final JLabel abortSummary = new JLabel(" ");
@@ -162,6 +178,30 @@ public final class ErrorsView extends JPanel {
                 selectionChanged();
             }
         });
+        for (int column = 0; column < tableModel.getColumnCount(); column++) {
+            sorter.setSortable(column, false);
+        }
+        table.setRowSorter(sorter);
+        headerInteractions = TableHeaderInteractions.install(
+                table, new TableHeaderInteractions.Adapter() {
+                    @Override
+                    public boolean isSortable(String columnId) {
+                        return ErrorTableModel.columnIndexOf(columnId) >= 0;
+                    }
+
+                    @Override
+                    public void applySort(java.util.Optional<String> sortKey,
+                            boolean descending) {
+                        applyRowSort(sortKey, descending);
+                    }
+
+                    @Override
+                    public String sortUnavailableExplanation(String columnId) {
+                        // Unreached: every column here sorts. Kept honest for
+                        // a column this model does not know.
+                        return "This column is not one this table can sort.";
+                    }
+                });
         inspector.onShowSourceEvent(eventId -> showEventHandler.accept(eventId));
 
         loadMore.setVisible(false);
@@ -201,6 +241,46 @@ public final class ErrorsView extends JPanel {
 
     public void onShowSourceEvent(LongConsumer handler) {
         this.showEventHandler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /**
+     * The shared 3-state cycle landing on the client-side sorter: a column
+     * and direction, or — empty, the third click — no sort keys at all,
+     * which is the deliberate kind-priority load order the pages arrived in.
+     */
+    private void applyRowSort(java.util.Optional<String> sortKey, boolean descending) {
+        if (sortKey.isEmpty()) {
+            sorter.setSortKeys(null);
+            return;
+        }
+        int column = ErrorTableModel.columnIndexOf(sortKey.get());
+        if (column < 0) {
+            // A persisted key from some other shape of this table: the
+            // default order, not an exception over a preference file.
+            sorter.setSortKeys(null);
+            return;
+        }
+        sorter.setSortKeys(List.of(new RowSorter.SortKey(
+                column, descending ? SortOrder.DESCENDING : SortOrder.ASCENDING)));
+    }
+
+    /**
+     * Persists this table's column state (widths, visibility, order, sort)
+     * under the application settings directory. Called once at wiring time;
+     * the load and every save run on the store's I/O thread, never the EDT.
+     */
+    public void attachColumnState(java.nio.file.Path settingsDirectory) {
+        headerInteractions.attachPersistence(settingsDirectory, "errors");
+    }
+
+    /** Visible for testing: the shared header behaviour on this table. */
+    public TableHeaderInteractions headerInteractionsForTest() {
+        return headerInteractions;
+    }
+
+    /** Visible for testing: the sorter the header cycle drives. */
+    TableRowSorter<?> sorterForTest() {
+        return sorter;
     }
 
     public void showEmpty(String message) {
@@ -364,7 +444,11 @@ public final class ErrorsView extends JPanel {
             abortSummary.setText(" ");
         }
         cards.show(deck, CARD_TABLE);
-        sizeColumns();
+        // The defaults go on without being captured as the user's doing —
+        // this table keeps one model for its whole life, so its sizing would
+        // otherwise arrive as ordinary column events — and anything the user
+        // arranged or a previous run persisted goes back on top.
+        headerInteractions.installDefaults(this::sizeColumns);
         loadNextPage();
     }
 
@@ -470,7 +554,10 @@ public final class ErrorsView extends JPanel {
             inspector.show(Inspection.NONE);
             return;
         }
-        ErrorRow selected = tableModel.rowAt(row);
+        // View to model: with a sort active the row on screen is not the row
+        // in load order, and inspecting the wrong error would be worse than
+        // no sort at all.
+        ErrorRow selected = tableModel.rowAt(table.convertRowIndexToModel(row));
         Optional<RawLocation> location = selected.rawLocation();
         if (location.isEmpty()) {
             // Everything but a console row: its text is in the row already, so
@@ -559,6 +646,16 @@ public final class ErrorsView extends JPanel {
         private static final String[] COLUMNS = {"Kind", "Subject", "Detail", "Message"};
 
         private final List<ErrorRow> rows = new ArrayList<>();
+
+        /** The model index of a column name, or -1 for a name not here. */
+        static int columnIndexOf(String columnId) {
+            for (int i = 0; i < COLUMNS.length; i++) {
+                if (COLUMNS[i].equals(columnId)) {
+                    return i;
+                }
+            }
+            return -1;
+        }
 
         @Override
         public int getRowCount() {

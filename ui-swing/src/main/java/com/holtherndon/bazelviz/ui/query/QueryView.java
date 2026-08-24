@@ -150,6 +150,12 @@ public final class QueryView extends JPanel {
 
     private SessionSource source;
     private QueryLibrary library;
+
+    /**
+     * Where the tabs' shared column state lives once {@link #attachColumnState}
+     * has run, kept so a tab opened later is attached the same way.
+     */
+    private java.nio.file.Path columnStateDirectory;
     private int nextTabNumber = 1;
 
     private final QueryTab.Host tabHost = new QueryTab.Host() {
@@ -248,6 +254,20 @@ public final class QueryView extends JPanel {
         });
     }
 
+    /**
+     * Persists the result grids' column state under the application settings
+     * directory — one shared state for every tab, present and future, since
+     * the tabs are one surface over changing queries. Called once by the
+     * application shell, beside {@link #attachLibrary}.
+     */
+    public void attachColumnState(Path settingsDirectory) {
+        Objects.requireNonNull(settingsDirectory, "settingsDirectory");
+        this.columnStateDirectory = settingsDirectory;
+        for (QueryTab tab : allTabs()) {
+            tab.attachColumnState(settingsDirectory);
+        }
+    }
+
     // ------------------------------------------------------------ session hooks
 
     /** Opens a session in every tab. Returns immediately. */
@@ -279,6 +299,9 @@ public final class QueryView extends JPanel {
         }
         tabNotice.setText(" ");
         QueryTab tab = new QueryTab(tabHost, STARTER_SQL);
+        if (columnStateDirectory != null) {
+            tab.attachColumnState(columnStateDirectory);
+        }
         tabs.addTab("Query " + nextTabNumber++, tab);
         tabs.setSelectedComponent(tab);
         if (source != null) {

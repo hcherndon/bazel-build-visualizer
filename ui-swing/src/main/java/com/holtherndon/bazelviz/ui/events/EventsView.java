@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
+import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -116,6 +117,27 @@ public final class EventsView extends JPanel {
     private final JCheckBox followBox = new JCheckBox("Follow tail", true);
     private final JScrollPane tableScroll;
 
+    /**
+     * Why the event table's headers do not sort. This is design, not a gap:
+     * the table is chronological by identity — {@link EventRowIndex} keyset-
+     * pages over arrival order and nothing else — and every claim the status
+     * line makes ("at least N events", follow tail) is a claim about that
+     * order.
+     */
+    static final String ORDER_IS_FIXED =
+            "This table is always in arrival order — the chronological record is"
+                    + " the point of the Events tab, and the paged row index"
+                    + " (EventRowIndex) is built over that order. There is no"
+                    + " re-sorted view of a million-event stream to offer.";
+
+    /**
+     * The shared header behaviour: no sorting (see {@link #ORDER_IS_FIXED}),
+     * but the column menu and the persisted column state — which also
+     * subsumes this view's old private read-before-reapply width
+     * preservation across live-refresh model swaps.
+     */
+    private final TableHeaderInteractions headerInteractions;
+
     private ExecutorService pageExecutor;
     private ExecutorService detailExecutor;
     /**
@@ -178,6 +200,9 @@ public final class EventsView extends JPanel {
                 selectionChanged();
             }
         });
+
+        headerInteractions = TableHeaderInteractions.install(
+                table, TableHeaderInteractions.Adapter.unsortable(ORDER_IS_FIXED));
 
         tableScroll = new JScrollPane(table);
         tableScroll.setMinimumSize(new Dimension(320, 160));
@@ -464,6 +489,9 @@ public final class EventsView extends JPanel {
         withProgrammaticScroll(() -> {
             table.setModel(tableModel);
             sizeColumns();
+            // Reapply what the user (or a previous run) arranged over the
+            // defaults sizeColumns just set.
+            headerInteractions.modelInstalled();
         });
         inspectorModel = new EventInspectorModel(
                 detailReader, detailExecutor, SwingUtilities::invokeLater);
@@ -579,7 +607,11 @@ public final class EventsView extends JPanel {
         int viewRow = table.getSelectedRow();
         int modelRowToReselect = viewRow >= 0 ? table.convertRowIndexToModel(viewRow) : -1;
         Point viewPosition = tableScroll.getViewport().getViewPosition();
-        int[] columnWidths = currentColumnWidths();
+        // Read before the swap discards it, reapply after: the same
+        // treatment given to selection and scroll below, now through the
+        // shared column state so it also covers order and hidden columns —
+        // and, once persistence is attached, survives a restart too.
+        headerInteractions.captureNow();
 
         rows = freshRows;
         tableModel = new PagedTableModel<>(freshRows, EventTableColumns.columns(), pageExecutor,
@@ -588,7 +620,7 @@ public final class EventsView extends JPanel {
 
         withProgrammaticScroll(() -> {
             table.setModel(tableModel);
-            restoreColumnWidths(columnWidths);
+            headerInteractions.modelInstalled();
             statusLabel.setText(describe(opened.info(), freshRows));
             rowCountListener.accept(freshRows.rowCount());
 
@@ -660,47 +692,27 @@ public final class EventsView extends JPanel {
     }
 
     /**
-     * The current column widths, in view order, captured just before a live
-     * refresh replaces the table's model. See {@link #restoreColumnWidths}
-     * for why this is captured at all.
+     * Persists this table's column state (widths, visibility, order) under
+     * the application settings directory. Called once at wiring time; the
+     * load and every save run on the store's I/O thread, never the EDT.
+     *
+     * <p>This replaces the private width capture/restore this view used to
+     * carry for its live refresh: {@code JTable.setModel} — which the
+     * refresh calls every couple of seconds for the length of a build —
+     * discards the whole {@code TableColumnModel}, and silently snapping a
+     * column the user resized back to its default on the next tick would be
+     * rule 12's silent override. {@link #swapRows} now reads the state back
+     * through {@link TableHeaderInteractions#captureNow()} and reapplies it
+     * after the swap, which preserves exactly what the old pair did (both
+     * {@code width} and {@code preferredWidth}) plus order and visibility.
      */
-    private int[] currentColumnWidths() {
-        int count = table.getColumnCount();
-        int[] widths = new int[count];
-        for (int column = 0; column < count; column++) {
-            widths[column] = table.getColumnModel().getColumn(column).getWidth();
-        }
-        return widths;
+    public void attachColumnState(java.nio.file.Path settingsDirectory) {
+        headerInteractions.attachPersistence(settingsDirectory, "events");
     }
 
-    /**
-     * Reapplies widths captured by {@link #currentColumnWidths}, in place of
-     * {@link #sizeColumns}'s hardcoded defaults.
-     *
-     * <h2>Why this instead of {@link #sizeColumns}</h2>
-     *
-     * <p>{@code EventsView} never disables {@code autoCreateColumnsFromModel},
-     * so every {@code JTable.setModel} call -- including the one a live
-     * refresh makes every couple of seconds for the length of a build --
-     * discards the existing {@code TableColumnModel} and builds a fresh one
-     * from scratch, each column back at its default width. Calling
-     * {@link #sizeColumns} there, as {@link #swapRows} used to, would
-     * silently snap a column the user had resized back to its hardcoded
-     * default on the very next tick (rule 12: never silently override) --
-     * so this reads the previous widths back first instead, the same "read
-     * before, reapply after" treatment already given to selection and scroll
-     * a few lines above. Both {@code width} and {@code preferredWidth} are
-     * restored because {@link #sizeColumns} only ever sets the latter and a
-     * user's interactive resize only ever sets the former; a live refresh
-     * should disturb neither kind of sizing.
-     */
-    private void restoreColumnWidths(int[] widths) {
-        int count = Math.min(widths.length, table.getColumnCount());
-        for (int column = 0; column < count; column++) {
-            javax.swing.table.TableColumn tableColumn = table.getColumnModel().getColumn(column);
-            tableColumn.setPreferredWidth(widths[column]);
-            tableColumn.setWidth(widths[column]);
-        }
+    /** Visible for testing: the shared header behaviour on this table. */
+    public TableHeaderInteractions headerInteractionsForTest() {
+        return headerInteractions;
     }
 
     /**

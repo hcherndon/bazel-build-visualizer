@@ -1942,3 +1942,58 @@ it is a different tab and was not reported.
   (`TimelineSpanPlacementTest`, `TimelineViewTest`, `TimelineLiveBandTest`,
   `TimelineInspectorTest`) pass unchanged: their clicks were already inside
   the first sub-row, which is now taller rather than shorter.
+
+- **Table headers grew up: 3-state sort where honest, a column menu
+  everywhere, and column state that survives restarts** (2026-08-24). New
+  shared machinery in `ui/table`: `TableHeaderInteractions` (a
+  `MouseAdapter`-on-`getTableHeader()` installer mirroring
+  `EntityActions.installRowMenu`'s shape — the header is a distinct component
+  from the body, so the two menus never collide) drives a left-click cycle of
+  ascending → descending → default order against a small per-view `Adapter`
+  (is this column sortable; apply this sort or the default; why not, for the
+  headers that cannot), plus a right-click menu with per-column visibility
+  checkboxes (the last visible column cannot be hidden) and an explicit Sort
+  submenu — or, on views whose order is fixed, a disabled item naming why.
+  `ColumnState`/`ColumnStateStore` generalize `EventsView`'s private
+  read-before-reapply width preservation into one value — widths, visibility,
+  order, sort — reapplied after every `setModel` swap and persisted as
+  per-view JSON under `settings/columns/<view>.json` (the `QueryLibrary`
+  pattern: load on attach, save debounced, both on a shared I/O thread, a
+  corrupt or absent file degrading silently to defaults). Hidden ≠ dropped:
+  a hidden column leaves the `TableColumnModel` only, keeps its remembered
+  width and position, and the table model never changes shape. **Sort scope
+  is deliberately pragmatic.** Actions: headers drive the *existing* backend
+  `ActionSort` orderings (Target→LABEL, Mnemonic→MNEMONIC, Outcome→OUTCOME,
+  Duration→DURATION), and the toolbar combo and headers are one synced state
+  — a header click updates the combo and reloads, a combo change moves the
+  indicator, the third click is ARRIVAL ascending, and toolbar-only orderings
+  (start time) persist by enum name with no indicator; Exit/Runner/Cached/
+  Output headers explain that no index orders actions by them at
+  five-million-action scale. Never a client `RowSorter` on `PagedTableModel`.
+  Errors: a `TableRowSorter` over the in-memory model — legitimate there
+  because every loaded row is in memory — behind the same cycle, with every
+  column `setSortable(false)` so the L&F's own two-state toggle stays out,
+  the third state being the deliberate kind-priority load order, and
+  selection converting view→model so a sorted click inspects the row on
+  screen. Events/Tests/Query stay unsorted by design and their header
+  tooltips say exactly why (chronological identity per `EventRowIndex`;
+  `TestRowSource`'s documented worst-first order; result order belonging to
+  the user's SQL — add ORDER BY). Wiring: each view gains
+  `attachColumnState(Path)` and `MainWindow` hands all five the settings
+  directory beside `queryView.attachLibrary` (six lines, the unavoidable
+  wiring); `QueryView` forwards to every tab, future tabs included, all
+  sharing one `query.json` matched by column name. No new limit constants —
+  the save debounce is a cadence like the live-refresh interval, not a bound
+  on data — so `docs/limits.md` is unchanged. New tests: the cycle, adapter
+  honesty, hidden-column width memory across swaps, order restore,
+  last-column protection, menu content, tooltip text, persistence round-trip/
+  corrupt-file/no-op-save (`TableHeaderInteractionsTest`,
+  `ColumnStateStoreTest`), header↔combo sync in both directions with the
+  reloads they trigger and unsortable-header honesty on a real imported
+  session (`ActionsViewHeaderSortTest`), sorter attach/cycle/detach and
+  sorted-selection correctness (`ErrorsViewSortTest`), hidden columns
+  surviving a live refresh and the chronological tooltip
+  (`EventsViewColumnStateTest`), and the fixed-order explanations on Tests
+  and Query (`TestsViewColumnStateTest`, `QueryTabColumnStateTest`);
+  `EventsViewLiveRefreshTest`'s width-preservation test now passes through
+  the shared store unchanged.

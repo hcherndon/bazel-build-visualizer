@@ -335,7 +335,16 @@ public final class MainWindow extends JFrame {
         // directory, resolved as a sibling the same way the single-argument
         // constructor resolves the catalog. Path arithmetic only; the library
         // creates directories lazily on its own I/O thread.
-        queryView.attachLibrary(sessionsRoot.resolveSibling("settings"));
+        Path settingsDirectory = sessionsRoot.resolveSibling("settings");
+        queryView.attachLibrary(settingsDirectory);
+        // The entity tables' per-view column state (widths, visibility,
+        // order, sort) lives in the same settings directory, one JSON file
+        // per view, loaded and saved on the shared column-state I/O thread.
+        actionsView.attachColumnState(settingsDirectory);
+        errorsView.attachColumnState(settingsDirectory);
+        eventsView.attachColumnState(settingsDirectory);
+        testsView.attachColumnState(settingsDirectory);
+        queryView.attachColumnState(settingsDirectory);
 
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setMinimumSize(new Dimension(960, 640));

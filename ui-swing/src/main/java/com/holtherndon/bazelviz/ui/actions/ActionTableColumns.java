@@ -1,9 +1,12 @@
 package com.holtherndon.bazelviz.ui.actions;
 
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
+import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.table.ColumnSpec;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * The actions table's columns.
@@ -74,5 +77,51 @@ public final class ActionTableColumns {
     /** Preferred pixel widths, in column order. */
     public static int[] widths() {
         return new int[] {320, 120, 100, 100, 60, 130, 70, 520};
+    }
+
+    /**
+     * The columns with a backend ordering behind them: header name → the
+     * {@link ActionSort} the storage layer pages under. Exactly these four,
+     * because these are the orderings {@code SchemaV2} indexes for keyset
+     * paging — a header that sorted anything else would have to either scan
+     * the table or sort only the rows already fetched, and both would lie.
+     */
+    private static final Map<String, ActionSort> SORTABLE = Map.of(
+            "Target", ActionSort.LABEL,
+            "Mnemonic", ActionSort.MNEMONIC,
+            "Outcome", ActionSort.OUTCOME,
+            "Duration", ActionSort.DURATION);
+
+    /** The backend ordering behind a column header, when it has one. */
+    public static Optional<ActionSort> sortFor(String columnId) {
+        return Optional.ofNullable(SORTABLE.get(columnId));
+    }
+
+    /**
+     * The header id that stands for {@code sort} — the column name when a
+     * column carries that ordering, else the enum's own name, so a toolbar
+     * choice with no column of its own (start time, arrival descending)
+     * still round-trips through the persisted column state.
+     */
+    public static String sortKeyFor(ActionSort sort) {
+        for (Map.Entry<String, ActionSort> entry : SORTABLE.entrySet()) {
+            if (entry.getValue() == sort) {
+                return entry.getKey();
+            }
+        }
+        return sort.name();
+    }
+
+    /**
+     * Why a column without a backend ordering does not sort — the header
+     * tooltip's text. Honest about the reason: the table is keyset-paged
+     * over up to five million actions, so any ordering must come from a
+     * database index, and no index orders these.
+     */
+    public static String sortUnavailableExplanation(String columnId) {
+        return "This column does not sort: the table is paged straight from the"
+                + " database at up-to-five-million-action scale, and no index orders"
+                + " actions by " + columnId + ". Sorting only the rows already"
+                + " fetched would misrepresent the rest.";
     }
 }

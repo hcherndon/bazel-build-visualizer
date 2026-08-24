@@ -12,6 +12,7 @@ import com.holtherndon.bazelviz.storage.query.TempViewDefinition;
 import com.holtherndon.bazelviz.ui.session.QueryReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
+import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
@@ -109,6 +110,27 @@ final class QueryTab extends JPanel {
             AdHocQueries.DEFAULT_ROW_LIMIT, QueryView.MIN_ROW_LIMIT,
             QueryView.MAX_ROW_LIMIT, 100_000));
     private final JTable results = new JTable();
+
+    /**
+     * Why the result grid's headers do not sort: the order is the query's
+     * business, and pretending otherwise would either re-run SQL the user
+     * did not write or sort only the fetched pages of a paged result.
+     */
+    static final String ORDER_BELONGS_TO_THE_SQL =
+            "Result order belongs to the query — add ORDER BY to the SQL to"
+                    + " change it. The grid pages rows straight from the"
+                    + " database in the order SQLite returned them, and"
+                    + " re-sorting only the pages already fetched would"
+                    + " misrepresent the rest.";
+
+    /**
+     * The shared header behaviour: no sorting (see
+     * {@link #ORDER_BELONGS_TO_THE_SQL}), but the column menu and the
+     * persisted column state, matched to result columns by name — every
+     * query tab shares the one {@code query} state file.
+     */
+    private final TableHeaderInteractions headerInteractions;
+
     private final JLabel status = new JLabel(" ");
     private final JLabel legend = new JLabel(" ");
     private final JLabel capNotice = new JLabel(" ");
@@ -143,6 +165,8 @@ final class QueryTab extends JPanel {
         results.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         results.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         results.setFillsViewportHeight(true);
+        headerInteractions = TableHeaderInteractions.install(
+                results, TableHeaderInteractions.Adapter.unsortable(ORDER_BELONGS_TO_THE_SQL));
 
         errorArea.setEditable(false);
         errorArea.setLineWrap(true);
@@ -507,6 +531,10 @@ final class QueryTab extends JPanel {
                 built, built.columns(), executor, QueryRowSource.PAGE_SIZE, CACHE_PAGES);
         results.setModel(tableModel);
         sizeColumns();
+        // Reapply remembered widths and visibility to whatever result
+        // columns match by name; columns this state has never seen keep
+        // sizeColumns' default.
+        headerInteractions.modelInstalled();
         status.setText(describe(outline));
         showCapNotice(outline);
     }
@@ -700,7 +728,21 @@ final class QueryTab extends JPanel {
         }
     }
 
+    /**
+     * Persists the result grid's column state (widths, visibility) under the
+     * application settings directory, matched by column name across queries.
+     * Called by {@code QueryView} for each tab; the load and every save run
+     * on the store's I/O thread, never the EDT.
+     */
+    void attachColumnState(java.nio.file.Path settingsDirectory) {
+        headerInteractions.attachPersistence(settingsDirectory, "query");
+    }
+
     // -------------------------------------------------------- visible for tests
+
+    TableHeaderInteractions headerInteractionsForTest() {
+        return headerInteractions;
+    }
 
     void setRowCapForTest(int cap) {
         rowCap.setValue(cap);

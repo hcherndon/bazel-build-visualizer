@@ -13,6 +13,7 @@ import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
+import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -109,6 +110,14 @@ public final class ActionsView extends JPanel {
     private final javax.swing.JButton graphButton = new javax.swing.JButton("Dependencies");
     private final javax.swing.JButton timelineButton = new javax.swing.JButton("On timeline");
 
+    /**
+     * The shared header behaviour: sortable headers over the same backend
+     * orderings the toolbar combo drives, the column menu, and the persisted
+     * column state. The combo and the headers are one synced sort state —
+     * see {@link #sortControlsChanged()} and the adapter in the constructor.
+     */
+    private final TableHeaderInteractions headerInteractions;
+
     private ExecutorService pageExecutor;
     private ExecutorService detailExecutor;
     private SessionSource source;
@@ -204,6 +213,31 @@ public final class ActionsView extends JPanel {
             }
         });
 
+        // Headers drive the same backend sort the toolbar combo does. The
+        // adapter maps a column id to its ActionSort (or back to ARRIVAL
+        // ascending for the cycle's third, default state) and pushes it
+        // through the toolbar, so the combo, the checkbox and the header
+        // indicator can never disagree. Columns with no backend ordering are
+        // not sortable and their tooltip says why.
+        headerInteractions = TableHeaderInteractions.install(
+                table, new TableHeaderInteractions.Adapter() {
+                    @Override
+                    public boolean isSortable(String columnId) {
+                        return ActionTableColumns.sortFor(columnId).isPresent();
+                    }
+
+                    @Override
+                    public void applySort(java.util.Optional<String> sortKey,
+                            boolean descending) {
+                        applySortFromHeader(sortKey, descending);
+                    }
+
+                    @Override
+                    public String sortUnavailableExplanation(String columnId) {
+                        return ActionTableColumns.sortUnavailableExplanation(columnId);
+                    }
+                });
+
         graphButton.setEnabled(false);
         graphButton.addActionListener(event -> {
             ActionRow selected = selectedRow();
@@ -249,8 +283,8 @@ public final class ActionsView extends JPanel {
 
         mnemonicChoice.addActionListener(event -> reloadUnlessPopulating());
         outcomeChoice.addActionListener(event -> reloadUnlessPopulating());
-        sortChoice.addActionListener(event -> reloadUnlessPopulating());
-        descendingBox.addActionListener(event -> reloadUnlessPopulating());
+        sortChoice.addActionListener(event -> sortControlsChanged());
+        descendingBox.addActionListener(event -> sortControlsChanged());
         filterDebounce.setRepeats(false);
         textFilter.getDocument().addDocumentListener(new DocumentListener() {
             @Override
@@ -543,7 +577,84 @@ public final class ActionsView extends JPanel {
         } finally {
             populating = false;
         }
+        syncHeaderToToolbar();
         reload();
+    }
+
+    /**
+     * Persists this table's column state (widths, visibility, order, sort)
+     * under the application settings directory. Called once at wiring time;
+     * the load and every save run on the store's I/O thread, never the EDT.
+     */
+    public void attachColumnState(java.nio.file.Path settingsDirectory) {
+        headerInteractions.attachPersistence(settingsDirectory, "actions");
+    }
+
+    /** Visible for testing: the shared header behaviour on this table. */
+    public TableHeaderInteractions headerInteractionsForTest() {
+        return headerInteractions;
+    }
+
+    /**
+     * A toolbar sort change made by the user (or {@link #applyFilter}):
+     * mirror it onto the header indicator and the persisted state, then
+     * reload. The mirror call never loops back — {@code setSortFromView}
+     * does not invoke the adapter.
+     */
+    private void sortControlsChanged() {
+        if (populating) {
+            return;
+        }
+        syncHeaderToToolbar();
+        reload();
+    }
+
+    private void syncHeaderToToolbar() {
+        ActionSort sort = (ActionSort) sortChoice.getSelectedItem();
+        boolean descending = descendingBox.isSelected();
+        if (sort == null || (sort == ActionSort.ARRIVAL && !descending)) {
+            // Arrival ascending is the default order — the cycle's third
+            // state, shown as no sort at all rather than as a sort choice.
+            headerInteractions.setSortFromView(Optional.empty(), false);
+        } else {
+            headerInteractions.setSortFromView(
+                    Optional.of(ActionTableColumns.sortKeyFor(sort)), descending);
+        }
+    }
+
+    /**
+     * A header click (or a persisted sort being restored): translate the key
+     * back to an {@link ActionSort} and drive the toolbar exactly as a user
+     * would, so there is one sort state and the toolbar is its face. The
+     * default (empty key) is arrival order ascending.
+     */
+    private void applySortFromHeader(Optional<String> sortKey, boolean descending) {
+        ActionSort sort = sortKey.map(ActionsView::sortForKey).orElse(ActionSort.ARRIVAL);
+        boolean effectiveDescending = sortKey.isPresent() && descending;
+        populating = true;
+        try {
+            sortChoice.setSelectedItem(sort);
+            descendingBox.setSelected(effectiveDescending);
+        } finally {
+            populating = false;
+        }
+        reload();
+    }
+
+    /**
+     * A persisted sort key back to its ordering: a column id first, then an
+     * {@link ActionSort} name for the toolbar-only orderings (start time,
+     * arrival descending), and arrival order for anything unrecognized — a
+     * stale file must degrade to the default, not throw.
+     */
+    private static ActionSort sortForKey(String key) {
+        return ActionTableColumns.sortFor(key).orElseGet(() -> {
+            try {
+                return ActionSort.valueOf(key);
+            } catch (IllegalArgumentException unknown) {
+                return ActionSort.ARRIVAL;
+            }
+        });
     }
 
     /** Visible for testing: drives the toolbar as a user would. */
@@ -643,6 +754,9 @@ public final class ActionsView extends JPanel {
         });
         table.setModel(tableModel);
         sizeColumns();
+        // setModel rebuilt the column model with default widths and every
+        // column visible; reapply what the user arranged.
+        headerInteractions.modelInstalled();
         inspector.show(Inspection.NONE);
         statusLabel.setText(describe(built));
         cards.show(deck, CARD_TABLE);
