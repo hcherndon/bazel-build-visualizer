@@ -242,6 +242,119 @@ final class EventIdDisplayTest {
                 .isLessThanOrEqualTo(EventIdDisplay.MAX_DISPLAY_CHARS + 24);
     }
 
+    // ---------------------------------------------------------------- labels
+
+    /** Every label-carrying id kind, with a distinctive label in each. */
+    private static java.util.List<BuildEventId> labelCarryingIds(String label) {
+        return java.util.List.of(
+                id(b -> b.setTargetConfigured(
+                        BuildEventId.TargetConfiguredId.newBuilder()
+                                .setLabel(label).setAspect("MyAspect"))),
+                id(b -> b.setTargetCompleted(
+                        BuildEventId.TargetCompletedId.newBuilder()
+                                .setLabel(label).setConfiguration(config("k8-fastbuild")))),
+                id(b -> b.setActionCompleted(
+                        BuildEventId.ActionCompletedId.newBuilder()
+                                .setLabel(label)
+                                .setPrimaryOutput("bazel-out/k8/bin/foo.o")
+                                .setConfiguration(config("k8")))),
+                id(b -> b.setUnconfiguredLabel(
+                        BuildEventId.UnconfiguredLabelId.newBuilder().setLabel(label))),
+                id(b -> b.setConfiguredLabel(
+                        BuildEventId.ConfiguredLabelId.newBuilder()
+                                .setLabel(label).setConfiguration(config("k8")))),
+                id(b -> b.setTestResult(
+                        BuildEventId.TestResultId.newBuilder()
+                                .setLabel(label).setRun(1).setShard(2).setAttempt(3)
+                                .setConfiguration(config("k8")))),
+                id(b -> b.setTestProgress(
+                        BuildEventId.TestProgressId.newBuilder()
+                                .setLabel(label).setRun(1).setShard(2).setAttempt(3)
+                                .setOpaqueCount(4))),
+                id(b -> b.setTestSummary(
+                        BuildEventId.TestSummaryId.newBuilder().setLabel(label))),
+                id(b -> b.setTargetSummary(
+                        BuildEventId.TargetSummaryId.newBuilder()
+                                .setLabel(label).setConfiguration(config("k8")))));
+    }
+
+    @Test
+    void theStructuredAccessorReadsTheLabelFromEveryLabelCarryingKind() {
+        for (BuildEventId id : labelCarryingIds("//pkg/sub:target")) {
+            assertThat(EventIdDisplay.label(id))
+                    .as("label of %s", id.getIdCase())
+                    .hasValue("//pkg/sub:target");
+        }
+    }
+
+    @Test
+    void theStructuredAccessorAnswersEmptyWhereThereIsNoLabel() {
+        assertThat(EventIdDisplay.label(id(b -> b.setProgress(
+                        BuildEventId.ProgressId.newBuilder().setOpaqueCount(1)))))
+                .isEmpty();
+        assertThat(EventIdDisplay.label(id(b -> b.setStarted(
+                        BuildEventId.BuildStartedId.getDefaultInstance()))))
+                .isEmpty();
+        // A label-carrying kind whose label field is empty is empty, not "".
+        assertThat(EventIdDisplay.label(id(b -> b.setTargetCompleted(
+                        BuildEventId.TargetCompletedId.getDefaultInstance()))))
+                .isEmpty();
+        assertThat(EventIdDisplay.label(id(b -> b.setActionCompleted(
+                        BuildEventId.ActionCompletedId.newBuilder()
+                                .setPrimaryOutput("bazel-out/k8/bin/foo.o")))))
+                .isEmpty();
+        assertThat(EventIdDisplay.label(BuildEventId.getDefaultInstance())).isEmpty();
+    }
+
+    @Test
+    void theDisplayParseAgreesWithTheStructuredAccessor() {
+        // The round trip that keeps the renderer and its inverse honest: for
+        // every label-carrying kind, parsing of(id) recovers label(id) exactly.
+        for (String label : java.util.List.of(
+                "//pkg/sub:target", "@repo//pkg:name", "@@canonical~repo//pkg:name")) {
+            for (BuildEventId id : labelCarryingIds(label)) {
+                assertThat(EventIdDisplay.labelOfDisplay(EventIdDisplay.of(id)))
+                        .as("label parsed back from %s of %s",
+                                EventIdDisplay.of(id), id.getIdCase())
+                        .isEqualTo(EventIdDisplay.label(id));
+            }
+        }
+    }
+
+    @Test
+    void theDisplayParseDoesNotInventLabels() {
+        // Kinds with no label slot.
+        assertThat(EventIdDisplay.labelOfDisplay("Progress #12")).isEmpty();
+        assertThat(EventIdDisplay.labelOfDisplay("BuildStarted")).isEmpty();
+        assertThat(EventIdDisplay.labelOfDisplay("PatternExpanded //foo/...")).isEmpty();
+        assertThat(EventIdDisplay.labelOfDisplay("Fetch https://example.test/x")).isEmpty();
+        // The absent marker is a marker, not a label.
+        assertThat(EventIdDisplay.labelOfDisplay(
+                        "TargetCompleted " + EventIdDisplay.ABSENT_LABEL))
+                .isEmpty();
+        // An ActionCompleted with only a primary output has no label, and the
+        // output path must not be promoted into one.
+        assertThat(EventIdDisplay.labelOfDisplay(
+                        EventIdDisplay.of(id(b -> b.setActionCompleted(
+                                BuildEventId.ActionCompletedId.newBuilder()
+                                        .setPrimaryOutput("bazel-out/k8/bin/foo.o"))))))
+                .isEmpty();
+        // Not a display sentence at all.
+        assertThat(EventIdDisplay.labelOfDisplay("//bare:label")).isEmpty();
+        assertThat(EventIdDisplay.labelOfDisplay("")).isEmpty();
+    }
+
+    @Test
+    void aLabelCutByTheDisplayCapIsRefusedRatherThanReturnedAsAFragment() {
+        String longLabel = "//" + "b".repeat(1000) + ":target";
+        String display = EventIdDisplay.of(id(b -> b.setTargetCompleted(
+                BuildEventId.TargetCompletedId.newBuilder().setLabel(longLabel))));
+
+        // The display is capped mid-label; a fragment is not a label.
+        assertThat(display).contains(" chars)");
+        assertThat(EventIdDisplay.labelOfDisplay(display)).isEmpty();
+    }
+
     @Test
     void hugeIdsStillProduceAKeyAndADisplayTogether() {
         // The display is capped; the identity is not. They are independent, and

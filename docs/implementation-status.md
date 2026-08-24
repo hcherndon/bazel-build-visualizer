@@ -1419,6 +1419,94 @@ it is a different tab and was not reported.
   outliving the refusal — before asserting that the per-execution guard notices,
   says so, and puts `query_only` back.
 
+- **Cross-view navigation is one vocabulary, not a pile of callbacks**
+  (2026-08-24). The navigation half of the plan's `SelectionService` (section
+  7), as `ui/nav`: `EntityRef` (a sealed value — target label, action id, or
+  event id) and `EntityActions` (context-menu builder, button strip, and
+  inspector region over one command vocabulary, dispatching into a single
+  handler). `MainWindow.navigate` is that handler and the only place a command
+  becomes a card switch, replacing the per-view `onShowSourceEvent` /
+  `onShowInGraph` / `onShowOnTimeline` `LongConsumer` wiring for the views
+  that adopted it (Actions, Events); Targets/Tests/Errors keep the old setter
+  until they adopt. `OPEN_IN_GRAPH` points at today's Graph card; the planned
+  Graph/Tree split re-points that one switch arm and wires `OPEN_IN_TREE` —
+  which, with `SHOW_EVENTS_FOR_LABEL` (no events-by-label read path exists
+  yet), is in the vocabulary but deliberately **not** in the wired set, so
+  nothing offers it: absent commands are honestly absent, never disabled
+  stubs. The Timeline's planned inline inspector adopts by calling
+  `buttonStripFor` — no facility change needed.
+  The Events tab parses the target label **at render time** — an explicit
+  decision over any schema or capture-path change. Where the payload is
+  decoded (the inspector), the label comes structurally from the proto via
+  the new `EventIdDisplay.label(BuildEventId)`; where only the stored
+  sentence exists (table rows, JSON records), `EventIdDisplay.labelOfDisplay`
+  inverts the display grammar next to the renderer that defines it, refuses
+  anything that does not look like a label (absent markers, an
+  `ActionCompleted` output path in the label slot, a label cut by the display
+  cap), and is round-trip-tested against the structured accessor for every
+  label-carrying id kind. A labelled row offers "Open target" and "Show
+  actions for this target" in a right-click menu and in the inspector; an
+  event with no parseable label offers nothing.
+  `EntityReader.targetsByLabel` now exposes the `TargetQueries.byLabel` that
+  already existed, and `TargetsView.revealLabel` gives the tree random access
+  by label — look up the row off the EDT, expand its package (which triggers
+  the lazy child load), select the target when the load lands, and say so in
+  the status line when the session never declared the label. The Actions tab
+  adopts fully: rows and the shared inspector carry (action, label, event)
+  refs, the bespoke Dependencies / On-timeline buttons stay in place but
+  dispatch through the facility, and "show actions for this target" lands as
+  `filterToLabel` — substring semantics, because `ActionFilter.labelContains`
+  is what the query layer offers, made visible as a chip naming the label
+  that clears the filter when clicked, so the narrowed table can never pass
+  for the whole build. `InspectorPanel`'s legacy source-event button yields
+  to the strip whenever the strip offers the same jump, so no action appears
+  twice.
+
+- **The timeline places spans by identity, stacks them honestly, and knows
+  what "live" means** (2026-08-24). Four connected fixes in one overhaul.
+  *Placement:* every `SpanWindow` span now carries the lane key its grouping
+  assigns it — the same value `TimelineController.lanes()` puts in
+  `Lane.key` — and `paintSpans` joins span to lane by that key. The old
+  `i % lanes` placement made a span's row a function of its position in the
+  fetch, so every pan and zoom (each of which refetches the window) shuffled
+  the whole plot vertically; `TimelineSpanPlacementTest` drives the real
+  mouse listeners and requires every span to stay put. A span whose key is in
+  no current lane (transient while a regroup's rebuild lands — the controller
+  now rebuilds the model, not just the window, when the grouping changes)
+  draws in an extra row below the lanes with its exact count on the status
+  line. *Stacking:* overlapping same-lane spans stack top-to-bottom by start
+  time (`SpanStacking`, pure and order-independent), bounded at
+  `SpanStacking.MAX_SUB_ROWS` (6, in docs/limits.md); overflow draws into the
+  last sub-row — never dropped — and the status line states the exact count.
+  *Live:* while a capture is live and follow-live is on, the right edge is
+  the wall clock (a 250 ms EDT timer re-fits a *following* viewport;
+  `TimelineViewport.withWall` still refuses to move a navigated one), and a
+  labelled band above the lanes shows **in-flight targets** — configured, not
+  yet completed — as blue spans growing from their configuration's BEP
+  receive time. Target-level by explicit decision: BEP has no action-start
+  event (`ActionOutcome` documents there is no way to spell RUNNING), so
+  TargetConfigured→TargetCompleted are the only live signals, and the band
+  says "targets" and "BEP receive time" so nobody reads it as running
+  actions. No schema change was needed: `targets.bep_event_id` /
+  `configured_targets.bep_event_id` already point at the events, and
+  `bep_events.receive_micros` already holds the times. A target with no
+  receive timestamp is counted in the band label and drawn nowhere.
+  `TimelineColours` gained green: completed success is `SUCCESS`, failure
+  stays `FAILED` red, and `IN_FLIGHT` blue is reserved for the band — a
+  finished action can no longer wear the colour of one still running.
+  *Click:* a clicked segment opens an inline inspector on the Timeline card
+  (previously the click selected a row in the Actions tab without switching
+  to it — visibly nothing). The inspector shows what is already in hand
+  immediately, the controller fetches the action's details off the EDT
+  (`EntityReader.action`), absent facts are absent lines (an unknown
+  duration is its worded reason, never "0.000 s"), and the actions strip is
+  the shared `EntityActions` facility — same vocabulary, same
+  `MainWindow.navigate` switch, with "show on timeline" omitted because the
+  segment is already there. *Defaults:* group-by Mnemonic and sort-by Name
+  are explicit selections (`TimelineDefaultsTest`); they used to be
+  `values()[0]` accidents — Runner and first-activity — and Runner needs an
+  execution log most sessions lack. Follow-live stays default-on.
+
 - **The Query card grew into a suite: tabs, saved queries, saved views, a real
   editor** (2026-08-24). Four things the first cut shipped without, and one
   bug it shipped with.

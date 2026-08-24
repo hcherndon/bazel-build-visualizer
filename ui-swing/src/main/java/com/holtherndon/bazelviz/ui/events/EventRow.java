@@ -89,4 +89,20 @@ public record EventRow(
     public int rawLength() {
         return rawLocation.length();
     }
+
+    /**
+     * The target label this event's id names, parsed at render time from the
+     * stored id display — an explicit decision over widening the schema or
+     * the capture path. The grammar lives in {@code EventIdDisplay}, next to
+     * the renderer that produced the string, so the two cannot drift apart.
+     *
+     * <p>Empty for the many events that are not about a target, and for a
+     * label the parse cannot vouch for (cut by the display cap, or an absent
+     * marker) — the navigation actions built on this show nothing rather
+     * than a fragment.
+     */
+    public Optional<String> targetLabel() {
+        return idDisplay.flatMap(
+                com.holtherndon.bazelviz.bepcodec.EventIdDisplay::labelOfDisplay);
+    }
 }

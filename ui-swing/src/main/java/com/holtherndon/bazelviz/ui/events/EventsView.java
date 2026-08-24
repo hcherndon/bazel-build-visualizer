@@ -1,5 +1,7 @@
 package com.holtherndon.bazelviz.ui.events;
 
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.ImportProgressPanel;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
@@ -174,6 +176,43 @@ public final class EventsView extends JPanel {
     /** The progress view the import controller drives. */
     public ImportProgressPanel progressPanel() {
         return progressPanel;
+    }
+
+    /**
+     * Adopts the shared cross-view navigation actions: a right-click menu on
+     * every row whose event id names a parseable target label, and the same
+     * actions in the inspector below. Call once, at wiring time.
+     *
+     * <p>The label is parsed at render time from the row's stored id display
+     * ({@link EventRow#targetLabel()}) — a field read, never a query, which is
+     * what lets the menu be built on the EDT at popup time. A row with no
+     * parseable label offers no menu at all.
+     */
+    public void installEntityActions(EntityActions actions) {
+        Objects.requireNonNull(actions, "actions");
+        inspector.installEntityActions(actions);
+        actions.installRowMenu(table, this::refsAtRow, java.util.Set.of());
+    }
+
+    /**
+     * The refs for one model row: its target label when the id display parses
+     * to one, else nothing. Deliberately no {@code EventId} ref — this view
+     * <em>is</em> the events view, and "show source event" pointing at the row
+     * the user is already on would be an action that goes nowhere.
+     */
+    List<EntityRef> refsAtRow(int modelRow) {
+        PagedTableModel<EventRow> model = tableModel;
+        if (model == null) {
+            return List.of();
+        }
+        EventRow row = model.rowAt(modelRow);
+        if (row == null) {
+            // The page has not arrived; there is nothing to act on yet.
+            return List.of();
+        }
+        return row.targetLabel()
+                .<List<EntityRef>>map(label -> List.of(new EntityRef.TargetLabel(label)))
+                .orElse(List.of());
     }
 
     /** Shows an explanatory message in place of any session. */

@@ -87,6 +87,15 @@ public interface EntityReader extends AutoCloseable {
     /** The targets in one package, with one row per configuration. */
     List<TargetRow> targetsInPackage(String packagePath);
 
+    /**
+     * Every row carrying exactly this label — one per (aspect, configuration),
+     * like {@link #targetsInPackage}. Empty when the session never saw the
+     * label, which is an answer, not an error: cross-view navigation lands
+     * here with labels parsed out of events, and a label the build did not
+     * declare must say so rather than fail.
+     */
+    List<TargetRow> targetsByLabel(String label);
+
     Optional<TargetRow> target(long id);
 
     /** A target's tags, each carrying the event that supplied it. */

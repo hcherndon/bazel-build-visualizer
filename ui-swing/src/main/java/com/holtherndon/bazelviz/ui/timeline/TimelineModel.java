@@ -31,6 +31,8 @@ import java.util.Optional;
  *     therefore appear nowhere on this timeline
  * @param cacheResultsKnown how many spans anything reported a cache result for;
  *     zero means the cache colour mode has nothing to say and must say so
+ * @param liveBand what is in flight right now, for the band a live capture
+ *     draws above the lanes; {@link LiveBand#EMPTY} for a finished session
  */
 public record TimelineModel(
         TimelineLodIndex index,
@@ -39,12 +41,27 @@ public record TimelineModel(
         Map<Integer, String> categoryNames,
         long spansWithoutTime,
         long cacheResultsKnown,
-        long runnersKnown) {
+        long runnersKnown,
+        LiveBand liveBand) {
 
     public TimelineModel {
         lanes = List.copyOf(lanes);
         criticalPathNodes = List.copyOf(criticalPathNodes);
         categoryNames = Map.copyOf(categoryNames);
+        liveBand = liveBand == null ? LiveBand.EMPTY : liveBand;
+    }
+
+    /** A model with no live band — every finished session's shape. */
+    public TimelineModel(
+            TimelineLodIndex index,
+            List<Lane> lanes,
+            List<Integer> criticalPathNodes,
+            Map<Integer, String> categoryNames,
+            long spansWithoutTime,
+            long cacheResultsKnown,
+            long runnersKnown) {
+        this(index, lanes, criticalPathNodes, categoryNames, spansWithoutTime,
+                cacheResultsKnown, runnersKnown, LiveBand.EMPTY);
     }
 
     /** The wall this timeline covers. */
@@ -91,6 +108,54 @@ public record TimelineModel(
                 + " have no timestamps and are not on this timeline. Bazel 6.5.0 and 7.6.1"
                 + " report no action times at all; importing an execution log supplies them"
                 + " for the actions that spawned a subprocess.");
+    }
+
+    /**
+     * The targets a live capture has configured and not yet completed.
+     *
+     * <h2>Why targets and not actions</h2>
+     *
+     * <p>BEP has no action-start event: {@code ActionExecuted} fires once, at
+     * completion, so "this action is running" is not a fact the stream can
+     * supply and this band never claims it. {@code TargetConfigured} and
+     * {@code TargetCompleted} are real live signals, so in-flight is
+     * target-level — the band is labelled as targets so nobody reads its
+     * spans as actions.
+     *
+     * <h2>Where the times come from</h2>
+     *
+     * <p>A target's start is the wall-clock instant its {@code
+     * TargetConfigured} event was received ({@code bep_events.receive_micros}
+     * via the target's {@code bep_event_id}) — BEP target events carry no
+     * timestamp of their own. Receive time is a different measurement from
+     * execution time and the band says so in its label. A configured target
+     * whose event row has no receive time is counted in
+     * {@link #withoutTimestamps} and drawn nowhere: absent, never zero-length.
+     *
+     * @param live whether the session is a running capture; a finished
+     *     session's band is {@link #EMPTY} and never drawn
+     * @param inFlight the earliest-configured in-flight targets, at most
+     *     {@link SpanWindow#MAX_SPANS} of them
+     * @param totalInFlight how many targets are in flight in all, so a capped
+     *     list is stated with exact numbers rather than passing for the whole
+     * @param withoutTimestamps in-flight targets with no receive time, which
+     *     appear in the count but not in the band
+     */
+    public record LiveBand(
+            boolean live,
+            List<InFlight> inFlight,
+            long totalInFlight,
+            long withoutTimestamps) {
+
+        /** No band at all: every finished or imported session. */
+        public static final LiveBand EMPTY = new LiveBand(false, List.of(), 0, 0);
+
+        public LiveBand {
+            inFlight = List.copyOf(inFlight);
+        }
+
+        /** One target configured and not yet completed. */
+        public record InFlight(String label, long startMicros) {}
     }
 
     /**

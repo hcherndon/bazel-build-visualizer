@@ -1,15 +1,18 @@
 package com.holtherndon.bazelviz.ui.inspect;
 
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
+import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.LongConsumer;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -57,6 +60,15 @@ public final class InspectorPanel extends JPanel {
     private LongConsumer sourceEventHandler = eventId -> { };
     private Inspection current = Inspection.NONE;
 
+    /**
+     * The shared navigation actions, once a host installs them. The panel
+     * keeps its legacy "Show source event" button for hosts that have not:
+     * every view renders exactly as it did until it adopts the facility.
+     */
+    private EntityActions entityActions;
+    private Set<EntityActions.Command> entityActionsOmit = Set.of();
+    private final JPanel actionsRegion = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+
     public InspectorPanel() {
         super(new BorderLayout());
 
@@ -79,7 +91,12 @@ public final class InspectorPanel extends JPanel {
         JPanel header = new JPanel(new BorderLayout(8, 0));
         header.setBorder(BorderFactory.createEmptyBorder(8, 8, 4, 8));
         header.add(titles, BorderLayout.CENTER);
-        header.add(sourceButton, BorderLayout.EAST);
+        actionsRegion.setOpaque(false);
+        JPanel east = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        east.setOpaque(false);
+        east.add(actionsRegion);
+        east.add(sourceButton);
+        header.add(east, BorderLayout.EAST);
 
         body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
         body.setBorder(BorderFactory.createEmptyBorder(0, 8, 8, 8));
@@ -101,11 +118,28 @@ public final class InspectorPanel extends JPanel {
         this.sourceEventHandler = Objects.requireNonNull(handler, "handler");
     }
 
+    /**
+     * Adopts the shared cross-view actions: inspections carrying
+     * {@linkplain Inspection#refs() refs} grow a button strip in the header,
+     * and the legacy source-event button yields to the strip's own
+     * "Show source event" whenever the strip offers one — the same action
+     * must not appear twice.
+     *
+     * @param omit commands never offered here — a host passes the one that
+     *     would navigate to itself
+     */
+    public void installEntityActions(EntityActions actions, Set<EntityActions.Command> omit) {
+        this.entityActions = Objects.requireNonNull(actions, "actions");
+        this.entityActionsOmit = Set.copyOf(Objects.requireNonNull(omit, "omit"));
+        show(current);
+    }
+
     /** Replaces what is displayed. Must be called on the EDT. */
     public void show(Inspection inspection) {
         current = Objects.requireNonNull(inspection, "inspection");
         body.removeAll();
 
+        actionsRegion.removeAll();
         if (inspection.isEmpty()) {
             titleLabel.setText(" ");
             subtitleLabel.setText(" ");
@@ -117,7 +151,20 @@ public final class InspectorPanel extends JPanel {
             titleLabel.setText(inspection.title());
             titleLabel.setToolTipText(PlainText.tooltip(inspection.title()));
             subtitleLabel.setText(inspection.subtitle().orElse(" "));
-            sourceButton.setVisible(inspection.sourceEventId().isPresent());
+            boolean stripShowsSource = false;
+            if (entityActions != null && !inspection.refs().isEmpty()) {
+                stripShowsSource = entityActions
+                        .offersFor(inspection.refs(), entityActionsOmit)
+                        .stream()
+                        .anyMatch(offer -> offer.command()
+                                == EntityActions.Command.SHOW_SOURCE_EVENT);
+                actionsRegion.add(entityActions.buttonStripFor(
+                        inspection.refs(), entityActionsOmit));
+            }
+            // The legacy button stays for hosts without the facility, and
+            // yields when the strip already offers the same jump.
+            sourceButton.setVisible(
+                    inspection.sourceEventId().isPresent() && !stripShowsSource);
             inspection.sourceEventId().ifPresent(id ->
                     sourceButton.setToolTipText("Open event " + id + " in the Events view"));
             for (Inspection.Section section : inspection.sections()) {
@@ -125,8 +172,15 @@ public final class InspectorPanel extends JPanel {
                 body.add(Box.createVerticalStrut(8));
             }
         }
+        actionsRegion.revalidate();
+        actionsRegion.repaint();
         body.revalidate();
         body.repaint();
+    }
+
+    /** Visible for testing: the strip the shared actions render into. */
+    public JPanel actionsRegionForTest() {
+        return actionsRegion;
     }
 
     /** Visible for testing: what is on screen right now. */

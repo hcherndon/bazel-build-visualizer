@@ -88,6 +88,79 @@ class InspectorPanelTest {
     }
 
     @Test
+    @DisplayName("with the shared actions installed, the strip takes over and nothing appears twice")
+    void sharedActionsReplaceTheLegacyButton() throws Exception {
+        List<com.holtherndon.bazelviz.ui.nav.EntityActions.Command> dispatched =
+                new ArrayList<>();
+        List<com.holtherndon.bazelviz.ui.nav.EntityRef> receivedRefs = new ArrayList<>();
+        com.holtherndon.bazelviz.ui.nav.EntityActions actions =
+                new com.holtherndon.bazelviz.ui.nav.EntityActions(
+                        java.util.EnumSet.of(
+                                com.holtherndon.bazelviz.ui.nav.EntityActions.Command
+                                        .SHOW_SOURCE_EVENT,
+                                com.holtherndon.bazelviz.ui.nav.EntityActions.Command
+                                        .OPEN_TARGET),
+                        (command, ref) -> {
+                            dispatched.add(command);
+                            receivedRefs.add(ref);
+                        });
+
+        InspectorPanel panel = onEdt(InspectorPanel::new);
+        onEdt(() -> {
+            panel.installEntityActions(actions, java.util.Set.of());
+            panel.show(new Inspection.Builder("//pkg:target")
+                    .sourceEvent(OptionalLong.of(4_812L))
+                    .ref(new com.holtherndon.bazelviz.ui.nav.EntityRef.EventId(4_812L))
+                    .ref(new com.holtherndon.bazelviz.ui.nav.EntityRef.TargetLabel("//pkg:target"))
+                    .section("Target")
+                    .field("Label", "//pkg:target")
+                    .build());
+            return null;
+        });
+
+        // Exactly one "Show source event" on screen: the strip's. The legacy
+        // button yields rather than doubling it. (Scrollbar arrow buttons
+        // have no text and are not part of the offering.)
+        assertThat(onEdt(() -> titledButtonsOf(panel)))
+                .containsExactlyInAnyOrder("Open target", "Show source event");
+
+        onEdt(() -> {
+            buttonsOf(panel).forEach(button -> button.doClick());
+            return null;
+        });
+        assertThat(dispatched).containsExactlyInAnyOrder(
+                com.holtherndon.bazelviz.ui.nav.EntityActions.Command.OPEN_TARGET,
+                com.holtherndon.bazelviz.ui.nav.EntityActions.Command.SHOW_SOURCE_EVENT);
+        assertThat(receivedRefs).contains(
+                new com.holtherndon.bazelviz.ui.nav.EntityRef.EventId(4_812L),
+                new com.holtherndon.bazelviz.ui.nav.EntityRef.TargetLabel("//pkg:target"));
+
+        // An inspection with no refs — a view that has not adopted the
+        // facility — falls back to the legacy button, exactly as before.
+        onEdt(() -> {
+            panel.show(new Inspection.Builder("//pkg:other")
+                    .sourceEvent(OptionalLong.of(7L))
+                    .section("Target")
+                    .field("Label", "//pkg:other")
+                    .build());
+            return null;
+        });
+        assertThat(onEdt(() -> titledButtonsOf(panel)))
+                .containsExactly("Show source event");
+    }
+
+    /** The visible, titled buttons — the offering, without scrollbar arrows. */
+    private static List<String> titledButtonsOf(Container container) {
+        List<String> texts = new ArrayList<>();
+        buttonsOf(container).forEach(button -> {
+            if (button.getText() != null && !button.getText().isEmpty()) {
+                texts.add(button.getText());
+            }
+        });
+        return texts;
+    }
+
+    @Test
     @DisplayName("a field cannot claim both a value and a reason for having none")
     void aFieldIsOneThingOrTheOther() {
         assertThatThrownBy(() -> new Inspection.Field(

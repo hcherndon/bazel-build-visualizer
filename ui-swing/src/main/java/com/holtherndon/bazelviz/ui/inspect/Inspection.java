@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.inspect;
 
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -28,22 +29,28 @@ import java.util.OptionalLong;
  * @param sourceEventId the {@code bep_events} row this entity was normalized
  *     from, which the panel offers to open. Absent when the entity has no
  *     single source event.
+ * @param refs the cross-view identities this entity answers to — its label,
+ *     its action, its source event — for the shared navigation actions.
+ *     Empty for an inspection built by a view that has not adopted them,
+ *     which renders exactly as before.
  */
 public record Inspection(
         String title,
         Optional<String> subtitle,
         List<Section> sections,
-        OptionalLong sourceEventId) {
+        OptionalLong sourceEventId,
+        List<EntityRef> refs) {
 
     /** Nothing selected. */
     public static final Inspection NONE =
-            new Inspection("", Optional.empty(), List.of(), OptionalLong.empty());
+            new Inspection("", Optional.empty(), List.of(), OptionalLong.empty(), List.of());
 
     public Inspection {
         Objects.requireNonNull(title, "title");
         Objects.requireNonNull(subtitle, "subtitle");
         sections = List.copyOf(sections);
         Objects.requireNonNull(sourceEventId, "sourceEventId");
+        refs = List.copyOf(refs);
     }
 
     public boolean isEmpty() {
@@ -102,6 +109,7 @@ public record Inspection(
         private Optional<String> subtitle = Optional.empty();
         private final List<Section> sections = new ArrayList<>();
         private OptionalLong sourceEventId = OptionalLong.empty();
+        private final List<EntityRef> refs = new ArrayList<>();
         private String heading;
         private List<Field> fields = new ArrayList<>();
 
@@ -116,6 +124,12 @@ public record Inspection(
 
         public Builder sourceEvent(OptionalLong eventId) {
             this.sourceEventId = eventId;
+            return this;
+        }
+
+        /** Adds one cross-view identity for the shared navigation actions. */
+        public Builder ref(EntityRef ref) {
+            refs.add(Objects.requireNonNull(ref, "ref"));
             return this;
         }
 
@@ -140,7 +154,7 @@ public record Inspection(
 
         public Inspection build() {
             flush();
-            return new Inspection(title, subtitle, sections, sourceEventId);
+            return new Inspection(title, subtitle, sections, sourceEventId, refs);
         }
 
         private void flush() {

@@ -112,6 +112,25 @@ public record EventInspection(
     }
 
     /**
+     * The target label the inspected event is about, when that is known.
+     *
+     * <p>Preferred source first: the label read structurally from the decoded
+     * payload's id ({@link RawPayloadRenderer.Rendered#targetLabel}). When
+     * the renderer had nothing structural — a JSON record it does not
+     * re-decode — the stored id display is parsed instead. Empty whenever
+     * neither can vouch for a label, which is what makes the inspector's
+     * label actions honestly absent rather than blank.
+     */
+    public Optional<String> targetLabel() {
+        Optional<String> structured =
+                rendered.flatMap(RawPayloadRenderer.Rendered::targetLabel);
+        if (structured.isPresent()) {
+            return structured;
+        }
+        return row.flatMap(EventRow::targetLabel);
+    }
+
+    /**
      * True when the record's own bytes are on screen even though they could not
      * be interpreted — the case plan 21.5 exists for.
      */
