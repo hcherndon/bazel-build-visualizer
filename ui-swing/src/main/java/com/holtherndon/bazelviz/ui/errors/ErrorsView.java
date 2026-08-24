@@ -1,7 +1,7 @@
-package com.holtherndon.bazelviz.ui.failures;
+package com.holtherndon.bazelviz.ui.errors;
 
-import com.holtherndon.bazelviz.storage.entities.FailureQueries;
-import com.holtherndon.bazelviz.storage.entities.FailureRow;
+import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
+import com.holtherndon.bazelviz.storage.entities.ErrorRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
@@ -37,9 +37,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The Failures card: what broke, and what merely did not get built.
+ * The Errors card: what broke, what Bazel said about it, and what merely did
+ * not get built.
  *
- * <h2>Three kinds, and only two of them are failures</h2>
+ * <h2>Why "Errors" and not "Failures"</h2>
+ *
+ * <p>Because {@link ErrorRow.Kind#OUTPUT} rows are here. Those carry whatever
+ * Bazel wrote to stderr, which for most builds is the only diagnostic there is
+ * — and a compiler warning printed on the way to a successful action is not a
+ * failure. The card was named for two of its four kinds and showed all four.
+ *
+ * <h2>Aborted targets are summarized, not listed</h2>
  *
  * <p>A failed action and a failed target are things that went wrong. An aborted
  * target usually is not: under {@code --nokeep_going} a single broken target
@@ -54,11 +62,11 @@ import org.slf4j.LoggerFactory;
  * many are shown. A view that displayed the first five hundred and said nothing
  * would be indistinguishable from a build with five hundred failures.
  */
-public final class FailuresView extends JPanel {
+public final class ErrorsView extends JPanel {
 
     private static final long serialVersionUID = 1L;
 
-    private static final Logger log = LoggerFactory.getLogger(FailuresView.class);
+    private static final Logger log = LoggerFactory.getLogger(ErrorsView.class);
 
     private static final String CARD_EMPTY = "empty";
     private static final String CARD_TABLE = "table";
@@ -79,7 +87,7 @@ public final class FailuresView extends JPanel {
     private final CardLayout cards = new CardLayout();
     private final JPanel deck = new JPanel(cards);
     private final JLabel emptyLabel = new JLabel(" ", SwingConstants.CENTER);
-    private final FailureTableModel tableModel = new FailureTableModel();
+    private final ErrorTableModel tableModel = new ErrorTableModel();
     private final JTable table = new JTable(tableModel);
     private final InspectorPanel inspector = new InspectorPanel();
     private final JLabel statusLabel = new JLabel(" ");
@@ -91,10 +99,10 @@ public final class FailuresView extends JPanel {
     private EntityReader reader;
     private SessionSource source;
     private LongConsumer showEventHandler = eventId -> { };
-    private EntityReader.FailureCounts counts = new EntityReader.FailureCounts(0, 0, 0);
+    private EntityReader.ErrorCounts counts = new EntityReader.ErrorCounts(0, 0, 0);
     private boolean abortsListed;
 
-    public FailuresView() {
+    public ErrorsView() {
         super(new BorderLayout());
 
         emptyLabel.setEnabled(false);
@@ -166,17 +174,17 @@ public final class FailuresView extends JPanel {
         source = newSource;
         abortsListed = false;
         executor = Executors.newSingleThreadExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "bbv-failures");
+            Thread thread = new Thread(runnable, "bbv-errors");
             thread.setDaemon(true);
             return thread;
         });
-        showEmpty("Reading failures…");
+        showEmpty("Reading errors…");
         ExecutorService opening = executor;
         opening.execute(() -> {
             try {
                 EntityReader opened = newSource.openEntityReader();
-                EntityReader.FailureCounts read = opened.failureCounts();
-                List<FailureQueries.ReasonCount> reasons =
+                EntityReader.ErrorCounts read = opened.errorCounts();
+                List<ErrorQueries.ReasonCount> reasons =
                         read.aborted() > 0 ? opened.abortReasons() : List.of();
                 SwingUtilities.invokeLater(() -> {
                     if (source != newSource) {
@@ -188,7 +196,7 @@ public final class FailuresView extends JPanel {
                     installCounts(reasons);
                 });
             } catch (RuntimeException failure) {
-                log.error("could not read failures", failure);
+                log.error("could not read errors", failure);
                 SwingUtilities.invokeLater(() -> showEmpty(failure.getMessage()));
             }
         });
@@ -217,7 +225,7 @@ public final class FailuresView extends JPanel {
             if (closing != null) {
                 closing.close();
             }
-        }, "bbv-failures-close");
+        }, "bbv-errors-close");
         closer.setDaemon(true);
         closer.start();
     }
@@ -232,12 +240,12 @@ public final class FailuresView extends JPanel {
         return tableModel.getRowCount();
     }
 
-    private void installCounts(List<FailureQueries.ReasonCount> reasons) {
+    private void installCounts(List<ErrorQueries.ReasonCount> reasons) {
         if (counts.isEmpty()) {
             // A statement about this session, not about the build. Aborted
             // events arrive after buildFinished, so a stream that stopped early
             // has no failures recorded whether or not the build had any.
-            showEmpty("This session recorded no failures and no skipped targets.");
+            showEmpty("This session recorded no errors and no skipped targets.");
             return;
         }
         // When aborts are all there is, listing them is the only thing to
@@ -252,7 +260,7 @@ public final class FailuresView extends JPanel {
                     .append(" abort event(s) recorded");
             if (!reasons.isEmpty()) {
                 List<String> parts = new ArrayList<>();
-                for (FailureQueries.ReasonCount reason : reasons) {
+                for (ErrorQueries.ReasonCount reason : reasons) {
                     parts.add(reason.reason() + " ×" + reason.events());
                 }
                 text.append(": ").append(String.join(", ", parts));
@@ -278,14 +286,14 @@ public final class FailuresView extends JPanel {
             return;
         }
         loadMore.setEnabled(false);
-        FailureRow last = tableModel.lastRow();
-        FailureRow.Kind kind = nextKind(last);
+        ErrorRow last = tableModel.lastRow();
+        ErrorRow.Kind kind = nextKind(last);
         OptionalLong after = last != null && last.kind() == kind
                 ? OptionalLong.of(last.id())
                 : OptionalLong.empty();
         running.execute(() -> {
             try {
-                List<FailureRow> rows = switch (kind) {
+                List<ErrorRow> rows = switch (kind) {
                     case ACTION -> current.failedActions(after, PAGE);
                     case TARGET -> current.failedTargets(after, PAGE);
                     case OUTPUT -> outputRows(current);
@@ -297,7 +305,7 @@ public final class FailuresView extends JPanel {
                     loadMore.setEnabled(true);
                 });
             } catch (RuntimeException failure) {
-                log.warn("could not read a page of failures", failure);
+                log.warn("could not read a page of errors", failure);
                 SwingUtilities.invokeLater(() -> loadMore.setEnabled(true));
             }
         });
@@ -312,11 +320,11 @@ public final class FailuresView extends JPanel {
      * button, because the bytes live in the journal and copying them here would
      * duplicate the largest thing in the stream.
      */
-    private static List<FailureRow> outputRows(EntityReader reader) {
-        List<FailureRow> rows = new ArrayList<>();
-        for (FailureQueries.ProgressRef ref : reader.progressOutputEvents(OUTPUT_EVENTS)) {
-            rows.add(new FailureRow(
-                    FailureRow.Kind.OUTPUT,
+    private static List<ErrorRow> outputRows(EntityReader reader) {
+        List<ErrorRow> rows = new ArrayList<>();
+        for (ErrorQueries.ProgressRef ref : reader.progressOutputEvents(OUTPUT_EVENTS)) {
+            rows.add(new ErrorRow(
+                    ErrorRow.Kind.OUTPUT,
                     ref.bepEventId(),
                     "console output at event " + ref.sequence(),
                     Optional.of(EntityFormat.count(ref.stderrBytes()) + " bytes on stderr"),
@@ -327,31 +335,31 @@ public final class FailuresView extends JPanel {
     }
 
     /** Which kind the next page comes from, given what is already loaded. */
-    private FailureRow.Kind nextKind(FailureRow last) {
+    private ErrorRow.Kind nextKind(ErrorRow last) {
         if (last == null) {
-            return counts.failedActions() > 0 ? FailureRow.Kind.ACTION
-                    : counts.failedTargets() > 0 ? FailureRow.Kind.TARGET
-                    : FailureRow.Kind.OUTPUT;
+            return counts.failedActions() > 0 ? ErrorRow.Kind.ACTION
+                    : counts.failedTargets() > 0 ? ErrorRow.Kind.TARGET
+                    : ErrorRow.Kind.OUTPUT;
         }
         long loadedOfKind = tableModel.countOf(last.kind());
         return switch (last.kind()) {
             case ACTION -> loadedOfKind < counts.failedActions()
-                    ? FailureRow.Kind.ACTION
-                    : counts.failedTargets() > 0 ? FailureRow.Kind.TARGET : FailureRow.Kind.OUTPUT;
+                    ? ErrorRow.Kind.ACTION
+                    : counts.failedTargets() > 0 ? ErrorRow.Kind.TARGET : ErrorRow.Kind.OUTPUT;
             case TARGET -> loadedOfKind < counts.failedTargets()
-                    ? FailureRow.Kind.TARGET
-                    : FailureRow.Kind.OUTPUT;
+                    ? ErrorRow.Kind.TARGET
+                    : ErrorRow.Kind.OUTPUT;
             // Output rows arrive in one batch, so the next kind after them is
             // always the aborts.
-            case OUTPUT -> FailureRow.Kind.NOT_BUILT;
-            case NOT_BUILT -> FailureRow.Kind.NOT_BUILT;
+            case OUTPUT -> ErrorRow.Kind.NOT_BUILT;
+            case NOT_BUILT -> ErrorRow.Kind.NOT_BUILT;
         };
     }
 
     private void updateStatus() {
         long shown = tableModel.getRowCount();
         long available = counts.failedActions() + counts.failedTargets()
-                + tableModel.countOf(FailureRow.Kind.OUTPUT)
+                + tableModel.countOf(ErrorRow.Kind.OUTPUT)
                 + (abortsListed ? counts.aborted() : 0);
         statusLabel.setText(EntityFormat.count(shown) + " of " + EntityFormat.count(available)
                 + " shown  ·  " + EntityFormat.count(counts.failedActions()) + " failed action(s), "
@@ -366,7 +374,7 @@ public final class FailuresView extends JPanel {
             inspector.show(Inspection.NONE);
             return;
         }
-        inspector.show(FailureInspection.of(tableModel.rowAt(row)));
+        inspector.show(ErrorInspection.of(tableModel.rowAt(row)));
     }
 
     private void sizeColumns() {
@@ -378,12 +386,12 @@ public final class FailuresView extends JPanel {
     }
 
     /** A plain accumulating model: the rows here are bounded by what is loaded. */
-    private static final class FailureTableModel extends AbstractTableModel {
+    private static final class ErrorTableModel extends AbstractTableModel {
 
         private static final long serialVersionUID = 1L;
         private static final String[] COLUMNS = {"Kind", "Subject", "Detail", "Message"};
 
-        private final List<FailureRow> rows = new ArrayList<>();
+        private final List<ErrorRow> rows = new ArrayList<>();
 
         @Override
         public int getRowCount() {
@@ -402,7 +410,7 @@ public final class FailuresView extends JPanel {
 
         @Override
         public Object getValueAt(int rowIndex, int columnIndex) {
-            FailureRow row = rows.get(rowIndex);
+            ErrorRow row = rows.get(rowIndex);
             return switch (columnIndex) {
                 case 0 -> row.kind().title();
                 case 1 -> row.subject();
@@ -411,7 +419,7 @@ public final class FailuresView extends JPanel {
             };
         }
 
-        void append(List<FailureRow> more) {
+        void append(List<ErrorRow> more) {
             if (more.isEmpty()) {
                 return;
             }
@@ -425,15 +433,15 @@ public final class FailuresView extends JPanel {
             fireTableDataChanged();
         }
 
-        FailureRow rowAt(int index) {
+        ErrorRow rowAt(int index) {
             return rows.get(index);
         }
 
-        FailureRow lastRow() {
+        ErrorRow lastRow() {
             return rows.isEmpty() ? null : rows.getLast();
         }
 
-        long countOf(FailureRow.Kind kind) {
+        long countOf(ErrorRow.Kind kind) {
             return rows.stream().filter(row -> row.kind() == kind).count();
         }
     }

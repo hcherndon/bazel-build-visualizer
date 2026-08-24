@@ -9,8 +9,8 @@ import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
-import com.holtherndon.bazelviz.storage.entities.FailureQueries;
-import com.holtherndon.bazelviz.storage.entities.FailureRow;
+import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
+import com.holtherndon.bazelviz.storage.entities.ErrorRow;
 import com.holtherndon.bazelviz.storage.entities.OverviewQueries;
 import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
@@ -47,7 +47,7 @@ final class SqliteEntityReader implements EntityReader {
     private final ActionQueries actions;
     private final TargetQueries targets;
     private final TestQueries tests;
-    private final FailureQueries failures;
+    private final ErrorQueries errors;
     private final EnrichmentQueries enrichment;
     private boolean closed;
 
@@ -58,7 +58,7 @@ final class SqliteEntityReader implements EntityReader {
         this.actions = new ActionQueries(connection);
         this.targets = new TargetQueries(connection);
         this.tests = new TestQueries(connection);
-        this.failures = new FailureQueries(connection);
+        this.errors = new ErrorQueries(connection);
         this.enrichment = new EnrichmentQueries(connection);
     }
 
@@ -174,36 +174,36 @@ final class SqliteEntityReader implements EntityReader {
     }
 
     @Override
-    public FailureCounts failureCounts() {
-        return call("counting failures", () -> new FailureCounts(
-                failures.failedActionCount(),
-                failures.failedTargetCount(),
-                failures.abortedCount()));
+    public ErrorCounts errorCounts() {
+        return call("counting errors", () -> new ErrorCounts(
+                errors.failedActionCount(),
+                errors.failedTargetCount(),
+                errors.abortedCount()));
     }
 
     @Override
-    public List<FailureRow> failedActions(OptionalLong afterId, int limit) {
-        return call("reading failed actions", () -> failures.failedActions(afterId, limit));
+    public List<ErrorRow> failedActions(OptionalLong afterId, int limit) {
+        return call("reading failed actions", () -> errors.failedActions(afterId, limit));
     }
 
     @Override
-    public List<FailureRow> failedTargets(OptionalLong afterId, int limit) {
-        return call("reading failed targets", () -> failures.failedTargets(afterId, limit));
+    public List<ErrorRow> failedTargets(OptionalLong afterId, int limit) {
+        return call("reading failed targets", () -> errors.failedTargets(afterId, limit));
     }
 
     @Override
-    public List<FailureRow> abortedTargets(OptionalLong afterId, int limit) {
-        return call("reading aborted targets", () -> failures.abortedTargets(afterId, limit));
+    public List<ErrorRow> abortedTargets(OptionalLong afterId, int limit) {
+        return call("reading aborted targets", () -> errors.abortedTargets(afterId, limit));
     }
 
     @Override
-    public List<FailureQueries.ReasonCount> abortReasons() {
-        return call("reading abort reasons", failures::abortReasons);
+    public List<ErrorQueries.ReasonCount> abortReasons() {
+        return call("reading abort reasons", errors::abortReasons);
     }
 
     @Override
-    public List<FailureQueries.ProgressRef> progressOutputEvents(int limit) {
-        return call("reading progress output events", () -> failures.progressOutputEvents(limit));
+    public List<ErrorQueries.ProgressRef> progressOutputEvents(int limit) {
+        return call("reading progress output events", () -> errors.progressOutputEvents(limit));
     }
 
     /**
