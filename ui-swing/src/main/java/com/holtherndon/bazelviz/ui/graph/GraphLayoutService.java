@@ -3,6 +3,7 @@ package com.holtherndon.bazelviz.ui.graph;
 import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
+import com.holtherndon.bazelviz.analysis.GraphWeights;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
@@ -182,6 +183,140 @@ public final class GraphLayoutService implements AutoCloseable {
             } catch (Exception failure) {
                 log.warn("graph work failed", failure);
                 SwingUtilities.invokeLater(() -> onError.accept(failure));
+            }
+        });
+    }
+
+    /**
+     * A weight's values for the drawn nodes, keyed by graph node index.
+     *
+     * @param valueByNode absent keys mean unknown — never zero
+     * @param truncated true when a budget stopped the computation early
+     * @param note the computation's own sentence for the legend, or empty
+     */
+    public record WeightSet(
+            GraphWeight weight,
+            java.util.Map<Integer, Long> valueByNode,
+            boolean truncated,
+            String note) {}
+
+    /**
+     * Computes the selected weight for an extraction, off the event thread.
+     *
+     * <p>Degrees read the CSR offsets; transitive counts run
+     * {@code GraphWeights}' exact-over-the-subgraph pass under its work
+     * budget; sizes run the primary-output join. A weight this graph cannot
+     * answer — sizes over the label graph, counts with no index on disk —
+     * comes back with every node unknown and a note saying why, because an
+     * empty map that looked like "all zero" would be the exact lie rule 11
+     * forbids.
+     */
+    public void weights(
+            GraphKind graph, GraphWeight weight, GraphExtract.Result extract,
+            Consumer<WeightSet> onDone, Consumer<Throwable> onError) {
+        worker.execute(() -> {
+            try {
+                GraphWeights.Result computed = computeWeights(graph, weight, extract);
+                java.util.Map<Integer, Long> byNode = new java.util.HashMap<>();
+                java.util.List<Integer> nodes = extract.nodes();
+                for (int i = 0; i < nodes.size(); i++) {
+                    long value = computed.values()[i];
+                    if (value >= 0) {
+                        byNode.put(nodes.get(i), value);
+                    }
+                }
+                WeightSet set = new WeightSet(
+                        weight, byNode, computed.truncated(), computed.note());
+                SwingUtilities.invokeLater(() -> onDone.accept(set));
+            } catch (RuntimeException | java.io.IOException | java.sql.SQLException failure) {
+                log.warn("weight computation failed for {} over {}", weight, graph, failure);
+                SwingUtilities.invokeLater(() -> onError.accept(failure));
+            }
+        });
+    }
+
+    private GraphWeights.Result computeWeights(
+            GraphKind graph, GraphWeight weight, GraphExtract.Result extract)
+            throws java.io.IOException, java.sql.SQLException {
+        int size = extract.nodes().size();
+        switch (weight) {
+            case IMMEDIATE_DEPS, INPUT_COUNT: {
+                Optional<CsrGraph> reverse = queries.reverseIndex(graph);
+                if (reverse.isEmpty()) {
+                    return GraphWeights.unavailable(
+                            size, "This session has no reverse index for this graph,"
+                                    + " so dependency counts are unavailable.");
+                }
+                GraphWeights.Result counted =
+                        GraphWeights.immediateDegrees(reverse.get(), extract.nodes());
+                return weight == GraphWeight.INPUT_COUNT
+                        ? new GraphWeights.Result(
+                                counted.values(), counted.truncated(),
+                                "Inputs are counted as immediate dependencies;"
+                                        + " the session records no distinct raw-input"
+                                        + " count.")
+                        : counted;
+            }
+            case IMMEDIATE_RDEPS: {
+                Optional<CsrGraph> forward = queries.forwardIndex(graph);
+                if (forward.isEmpty()) {
+                    return GraphWeights.unavailable(
+                            size, "This session has no index for this graph,"
+                                    + " so dependent counts are unavailable.");
+                }
+                return GraphWeights.immediateDegrees(forward.get(), extract.nodes());
+            }
+            case TRANSITIVE_DEPS, TRANSITIVE_RDEPS:
+                return GraphWeights.subgraphTransitiveCounts(
+                        extract.nodes(), extract.edges(), weight.countsForwards(),
+                        GraphWeights.SUBGRAPH_TRANSITIVE_WORK_BUDGET);
+            case OUTPUT_SIZE: {
+                if (graph == GraphKind.CONFIGURED_TARGETS) {
+                    return GraphWeights.unavailable(
+                            size, "A target label has no output, so nothing here"
+                                    + " has an output size.");
+                }
+                long[] sizes = queries.outputSizesByNodeIndex(GraphWeights.UNKNOWN);
+                long[] values = new long[size];
+                for (int i = 0; i < size; i++) {
+                    int node = extract.nodes().get(i);
+                    values[i] = node >= 0 && node < sizes.length
+                            ? sizes[node] : GraphWeights.UNKNOWN;
+                }
+                return new GraphWeights.Result(values, false, "");
+            }
+            case DURATION:
+            default:
+                throw new IllegalArgumentException(
+                        weight + " is not computed here; the panel already holds it");
+        }
+    }
+
+    /**
+     * A budgeted whole-graph transitive count for one node, off the event
+     * thread.
+     *
+     * <p>The one place the weights machinery touches the full CSR index, and
+     * it is budgeted because plan 13.3 forbids a transitive closure. The
+     * caller renders {@code BudgetedCount.describe()}, which says
+     * "≥N (budget reached)" when the traversal gave up. A graph with no index
+     * calls back with nothing at all rather than a zero.
+     */
+    public void globalTransitiveCount(
+            GraphKind graph, int node, boolean forwards,
+            Consumer<GraphWeights.BudgetedCount> onDone) {
+        worker.execute(() -> {
+            try {
+                Optional<CsrGraph> index = forwards
+                        ? queries.forwardIndex(graph) : queries.reverseIndex(graph);
+                if (index.isEmpty()) {
+                    return;
+                }
+                GraphWeights.BudgetedCount counted = GraphWeights.globalTransitiveCount(
+                        index.get(), node, GraphWeights.GLOBAL_TRANSITIVE_NODE_BUDGET);
+                SwingUtilities.invokeLater(() -> onDone.accept(counted));
+            } catch (RuntimeException | java.io.IOException | java.sql.SQLException failure) {
+                log.debug("whole-graph transitive count failed", failure);
             }
         });
     }

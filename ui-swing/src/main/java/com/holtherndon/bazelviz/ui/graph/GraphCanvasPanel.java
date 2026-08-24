@@ -66,6 +66,16 @@ public final class GraphCanvasPanel extends JPanel {
     private final JComboBox<GraphLayout.Kind> layout = new JComboBox<>(GraphLayout.Kind.values());
     private final JComboBox<GraphClustering.By> groupBy =
             new JComboBox<>(GraphClustering.By.values());
+
+    /**
+     * What node size, edge thickness and colour mean.
+     *
+     * <p>The weight changes visual encoding only: positions belong to the
+     * layouts, so switching weights restyles the current drawing without
+     * re-extracting or re-laying-out — and without moving the camera.
+     */
+    private final JComboBox<GraphWeight> weightChoice =
+            new JComboBox<>(GraphWeight.values());
     private final JSpinner depth = new JSpinner(new SpinnerNumberModel(2, 1, MAX_DEPTH, 1));
 
     /**
@@ -124,7 +134,13 @@ public final class GraphCanvasPanel extends JPanel {
     private boolean aggregatedAutomatically;
     private java.util.Map<Integer, Long> actionIdByNodeIndex = java.util.Map.of();
     private java.util.function.LongConsumer actionListener = actionId -> {};
-    private java.util.function.IntConsumer nodeListener = nodeIndex -> {};
+
+    /**
+     * Bumped whenever what is on screen changes, so a weight computation or a
+     * whole-graph count that finishes late restyles nothing. Read and written
+     * on the EDT only.
+     */
+    private long weightGeneration;
 
     public GraphCanvasPanel() {
         super(new BorderLayout());
@@ -148,10 +164,12 @@ public final class GraphCanvasPanel extends JPanel {
         mode.setRenderer(new Renderer<>(value -> ((GraphExtract.Mode) value).displayName(noun())));
         layout.setRenderer(new Renderer<>(value -> ((GraphLayout.Kind) value).displayName()));
         groupBy.setRenderer(new Renderer<>(value -> ((GraphClustering.By) value).displayName()));
+        weightChoice.setRenderer(new Renderer<>(value -> ((GraphWeight) value).displayName()));
 
         mode.addActionListener(event -> modeChanged());
         layout.addActionListener(event -> refresh());
         groupBy.addActionListener(event -> refresh());
+        weightChoice.addActionListener(event -> weightChanged());
         depth.addChangeListener(event -> refresh());
         nodeLimitControl.addChangeListener(event -> nodeLimitTyped());
 
@@ -172,6 +190,9 @@ public final class GraphCanvasPanel extends JPanel {
         controls.add(Box.createHorizontalStrut(8));
         controls.add(new JLabel("Group by:"));
         controls.add(groupBy);
+        controls.add(Box.createHorizontalStrut(8));
+        controls.add(new JLabel("Weight:"));
+        controls.add(weightChoice);
         controls.add(Box.createHorizontalStrut(8));
         JButton fit = new JButton("Fit");
         fit.addActionListener(event -> canvas.fitToView());
@@ -420,10 +441,10 @@ public final class GraphCanvasPanel extends JPanel {
     /**
      * Recentres the drawing on the node at a layout position.
      *
-     * <p>The missing half of exploration: clicking used to move only the two
-     * tree views while the canvas kept drawing the old root's neighbourhood,
-     * so there was no way to walk the graph by looking at it. Reached by
-     * double-click and by the context menu's "Focus here".
+     * <p>The missing half of exploration: before this, clicking selected a
+     * node but the canvas kept drawing the old root's neighbourhood, so there
+     * was no way to walk the graph by looking at it. Reached by double-click
+     * and by the context menu's "Focus here".
      */
     void focusOnPosition(int position) {
         GraphModel model = canvas.model();
@@ -437,11 +458,7 @@ public final class GraphCanvasPanel extends JPanel {
                             + noun() + ".");
             return;
         }
-        int node = model.nodeAt(position);
-        // The trees follow, exactly as they do for a single click, so the two
-        // halves of the view keep talking about the same node.
-        nodeListener.accept(node);
-        showNode(node);
+        showNode(model.nodeAt(position));
     }
 
     /**
@@ -501,8 +518,67 @@ public final class GraphCanvasPanel extends JPanel {
                 || chosen == GraphExtract.Mode.DEPENDENTS;
         depth.setEnabled(rooted);
         groupBy.setEnabled(chosen == GraphExtract.Mode.CLUSTERS);
+        // A cluster box is a summary, not a node: it has no degree, no
+        // transitive count and no output, so the selector goes quiet rather
+        // than offering weights nothing could honour.
+        weightChoice.setEnabled(chosen != GraphExtract.Mode.CLUSTERS);
         layout.setSelectedItem(GraphLayout.defaultFor(chosen));
         refresh();
+    }
+
+    /** The selected weight, straight from the control. */
+    private GraphWeight selectedWeight() {
+        GraphWeight chosen = (GraphWeight) weightChoice.getSelectedItem();
+        return chosen == null ? GraphWeight.DURATION : chosen;
+    }
+
+    /**
+     * Re-encodes the current drawing under the newly selected weight.
+     *
+     * <p>Restyle, never re-layout: the drawing's positions are
+     * weight-independent, so the camera and the selection survive and the
+     * layout cache is untouched.
+     */
+    private void weightChanged() {
+        GraphModel model = canvas.model();
+        if (model.size() == 0 || model.isCluster()) {
+            return;
+        }
+        long wanted = ++weightGeneration;
+        GraphWeight weight = selectedWeight();
+        if (weight == GraphWeight.DURATION) {
+            canvas.restyle(model.withDurationWeight());
+            selectionChanged(canvas.selectedPositions());
+            return;
+        }
+        setText(selected, "Computing " + weight.subject() + "…");
+        submitWeights(weight, model, wanted);
+    }
+
+    /** Asks the service for the weight's values over what is drawn. */
+    private void submitWeights(GraphWeight weight, GraphModel model, long wanted) {
+        if (service == null) {
+            return;
+        }
+        service.weights(
+                shownGraph, weight, model.extract(),
+                set -> weightsArrived(set, wanted),
+                failure -> {
+                    if (wanted == weightGeneration) {
+                        setText(selected, "The " + weight.subject()
+                                + " could not be computed: " + failure.getMessage());
+                    }
+                });
+    }
+
+    /** Applies computed weights, unless the drawing has moved on. */
+    private void weightsArrived(GraphLayoutService.WeightSet set, long wanted) {
+        if (wanted != weightGeneration) {
+            return;
+        }
+        canvas.restyle(canvas.model().withWeights(
+                set.weight(), set.valueByNode(), set.truncated(), set.note()));
+        selectionChanged(canvas.selectedPositions());
     }
 
     /** Rebuilds the request from the controls and submits it. */
@@ -559,7 +635,9 @@ public final class GraphCanvasPanel extends JPanel {
             return;
         }
 
-        canvas.setModel(GraphModel.of(result, currentLabels(), currentDurations()));
+        long wanted = ++weightGeneration;
+        GraphModel model = GraphModel.of(result, currentLabels(), currentDurations());
+        canvas.setModel(model);
         setText(description, aggregatedAutomatically
                 ? "Too big to draw " + noun() + " by " + noun() + ", so it is grouped. "
                         + result.description()
@@ -568,6 +646,13 @@ public final class GraphCanvasPanel extends JPanel {
         setText(selected, legend());
         setOverLimit(result.refused() || result.extract().hitLimit()
                 || aggregatedAutomatically, result);
+        // The drawing goes up immediately in the duration encoding; a
+        // non-default weight restyles it when its values arrive, so a slow
+        // computation delays the colours, never the graph.
+        GraphWeight weight = selectedWeight();
+        if (weight != GraphWeight.DURATION && !model.isCluster() && model.size() > 0) {
+            submitWeights(weight, model, wanted);
+        }
     }
 
     private void setOverLimit(boolean over, GraphLayoutService.Rendered result) {
@@ -646,7 +731,7 @@ public final class GraphCanvasPanel extends JPanel {
     /**
      * Called with the executed action behind a selected node, when there is one.
      *
-     * <p>The return leg of {@code GraphView.showAction}: a user who found an
+     * <p>The return leg of {@code GraphExplorerView.showAction}: a user who found an
      * action in the table can draw its neighbourhood, and a user who found one
      * in the drawing can open its detail. Nodes with no executed action — every
      * test's TestRunner in a {@code build} invocation — simply do not fire it,
@@ -654,17 +739,6 @@ public final class GraphCanvasPanel extends JPanel {
      */
     public void onActionSelected(java.util.function.LongConsumer listener) {
         this.actionListener = listener == null ? actionId -> {} : listener;
-    }
-
-    /**
-     * Called with the graph node index of a single selection.
-     *
-     * <p>So the trees beside the canvas can follow it. Two halves of one view
-     * showing two different nodes is the kind of disagreement a user reads as a
-     * bug in the data rather than in the window.
-     */
-    public void onNodeSelected(java.util.function.IntConsumer listener) {
-        this.nodeListener = listener == null ? nodeIndex -> {} : listener;
     }
 
     /** The executed action behind a drawn node, when the session ran one. */
@@ -820,6 +894,15 @@ public final class GraphCanvasPanel extends JPanel {
         mode.setSelectedItem(value);
     }
 
+    /** Picks a weight exactly as the selector would, for tests. */
+    void setWeightForTesting(GraphWeight value) {
+        weightChoice.setSelectedItem(value);
+    }
+
+    GraphWeight weightForTesting() {
+        return selectedWeight();
+    }
+
     private void failed(Throwable failure) {
         canvas.setModel(GraphModel.empty());
         setText(description, "The graph could not be drawn: " + failure.getMessage());
@@ -839,20 +922,63 @@ public final class GraphCanvasPanel extends JPanel {
         if (positions.length == 1) {
             GraphModel model = canvas.model();
             actionIdAt(positions[0]).ifPresent(actionListener::accept);
-            if (!model.isCluster()) {
-                nodeListener.accept(canvas.selectedNodes()[0]);
+            setText(selected, describeSelection(model, positions[0]));
+            if (model.weight().isTransitive() && !model.isCluster()) {
+                appendGlobalCount(model, positions[0]);
             }
-            String text = model.displayLabelAt(positions[0]);
-            setText(selected, model.durationAt(positions[0])
+            return;
+        }
+        setText(selected, positions.length + " " + noun() + "s selected");
+    }
+
+    /** One selected node, in the words of the selected weight. */
+    private String describeSelection(GraphModel model, int position) {
+        String text = model.displayLabelAt(position);
+        GraphWeight weight = model.weight();
+        if (weight == GraphWeight.DURATION) {
+            return model.durationAt(position)
                     .stream()
                     .mapToObj(micros -> text + "  —  " + micros / 1_000 + " ms")
                     .findFirst()
                     // Rule 11: an action nothing timed says so rather than
                     // showing a zero that reads as instant.
-                    .orElse(text + "  —  not timed in this session"));
+                    .orElse(text + "  —  not timed in this session");
+        }
+        return model.weightAt(position)
+                .stream()
+                .mapToObj(value -> text + "  —  " + weight.subject()
+                        + ": " + weight.format(value))
+                .findFirst()
+                // Same rule, same reason: no value is not a value of zero.
+                .orElse(text + "  —  " + weight.subject() + " not recorded");
+    }
+
+    /**
+     * Adds the whole-graph transitive count for the selected node, budgeted.
+     *
+     * <p>The on-screen count is exact for what is drawn and silent about the
+     * rest; this is the rest, for one node at a time, and it says
+     * "≥N (budget reached)" when the traversal gave up — a full transitive
+     * closure is forbidden, so giving up must remain possible and visible.
+     */
+    private void appendGlobalCount(GraphModel model, int position) {
+        if (service == null) {
             return;
         }
-        setText(selected, positions.length + " " + noun() + "s selected");
+        long wanted = weightGeneration;
+        int node = model.nodeAt(position);
+        GraphWeight weight = model.weight();
+        service.globalTransitiveCount(
+                shownGraph, node, weight.countsForwards(),
+                counted -> {
+                    int[] now = canvas.selectedPositions();
+                    if (wanted != weightGeneration
+                            || now.length != 1 || now[0] != position) {
+                        return;
+                    }
+                    setText(selected, describeSelection(canvas.model(), position)
+                            + "  —  whole graph: " + counted.describe());
+                });
     }
 
     /** What the colours mean, including how much of the drawing they cannot speak for. */
@@ -879,6 +1005,9 @@ public final class GraphCanvasPanel extends JPanel {
                     ? text
                     : text + "  " + unnamed + " of them have no recorded name.";
         }
+        if (model.weight() != GraphWeight.DURATION) {
+            return weightLegend(model);
+        }
         int untimed = model.untimedCount();
         String scale = model.slowestDuration()
                 .stream()
@@ -893,7 +1022,34 @@ public final class GraphCanvasPanel extends JPanel {
                 + " were not timed and are grey.";
     }
 
+    /** The legend for a non-duration weight, absences and budgets included. */
+    private String weightLegend(GraphModel model) {
+        GraphWeight weight = model.weight();
+        StringBuilder text = new StringBuilder();
+        java.util.OptionalLong max = model.maxWeight();
+        if (max.isPresent()) {
+            text.append("Colour and size are ").append(weight.subject())
+                    .append(", blue to red, up to ")
+                    .append(weight.format(max.getAsLong())).append('.');
+            int unweighted = model.unweightedCount();
+            if (unweighted > 0) {
+                text.append("  ").append(unweighted).append(" of ").append(model.size())
+                        .append(" have no recorded value and are grey.");
+            }
+        } else {
+            // Rule 11 again: a drawing with no values is not a drawing of
+            // zeros, and the legend is where that distinction lives.
+            text.append("Nothing here has a recorded ").append(weight.subject())
+                    .append(", so nothing is coloured or sized by it.");
+        }
+        if (!model.weightNote().isBlank()) {
+            text.append("  ").append(model.weightNote());
+        }
+        return text.toString();
+    }
+
     private void showNothing(String why) {
+        weightGeneration++;
         canvas.setModel(GraphModel.empty());
         overLimit.setVisible(false);
         setText(description, why);

@@ -369,20 +369,105 @@ final class GraphCanvasPanelTest {
         }
         assertThat(position).isNotNegative();
 
-        // Clicking used to move only the trees while the canvas kept drawing
-        // the old root, so there was no way to walk the graph by looking at
-        // it. Double-click and the context menu both land here.
-        java.util.concurrent.atomic.AtomicInteger followed =
-                new java.util.concurrent.atomic.AtomicInteger(-1);
-        panel.onNodeSelected(followed::set);
+        // Clicking used to select a node while the canvas kept drawing the
+        // old root, so there was no way to walk the graph by looking at it.
+        // Double-click and the context menu both land here.
         int at = position;
         SwingUtilities.invokeAndWait(() -> panel.focusOnPosition(at));
         awaitCondition(() -> panel.canvas().model().size() == 5,
                 "the drawing to recentre on node 2");
 
         // Node 2's neighbourhood at depth 2 spans the whole six-node chain's
-        // middle: 0..4. And the trees were told, so the two halves agree.
-        assertThat(followed.get()).isEqualTo(2);
+        // middle, 0..4 — reachable only from a drawing rooted at 2, which is
+        // what proves the focus actually moved the root.
+        GraphModel after = panel.canvas().model();
+        java.util.Set<Integer> drawn = new java.util.HashSet<>();
+        for (int i = 0; i < after.size(); i++) {
+            drawn.add(after.nodeAt(i));
+        }
+        assertThat(drawn).containsExactlyInAnyOrder(0, 1, 2, 3, 4);
+    }
+
+    @Test
+    @DisplayName("selecting a weight restyles the drawing without re-laying it out")
+    void weightRestylesWithoutRelayout() throws Exception {
+        panel.showNode(2);
+        awaitDrawn();
+        GraphTransform before = panel.canvas().transform();
+
+        SwingUtilities.invokeAndWait(
+                () -> panel.setWeightForTesting(GraphWeight.IMMEDIATE_DEPS));
+        awaitCondition(
+                () -> panel.legendText().contains("Colour and size are immediate dependencies"),
+                "the weight legend");
+
+        // The camera did not move: positions are weight-independent, so a
+        // weight change is a restyle, never a re-layout or a re-fit.
+        assertThat(panel.canvas().transform()).isSameAs(before);
+        assertThat(panel.canvas().model().weight())
+                .isEqualTo(GraphWeight.IMMEDIATE_DEPS);
+        // The chain 0→1→…→5: every drawn node except the head has exactly
+        // one immediate dependency, and the legend names the scale.
+        assertThat(panel.legendText()).contains("up to 1");
+    }
+
+    @Test
+    @DisplayName("on-screen transitive counts are exact and the whole-graph count is budgeted")
+    void transitiveWeightsCountTheChain() throws Exception {
+        panel.showNode(2);
+        awaitDrawn();
+
+        SwingUtilities.invokeAndWait(
+                () -> panel.setWeightForTesting(GraphWeight.TRANSITIVE_DEPS));
+        awaitCondition(
+                () -> panel.legendText()
+                        .contains("Colour and size are transitive dependencies on screen"),
+                "the transitive weight legend");
+
+        // showNode(2) at depth 2 draws nodes 0..4 of the chain, so node 4
+        // has four on-screen transitive dependencies and the scale says so.
+        assertThat(panel.legendText()).contains("up to 4");
+
+        GraphModel model = panel.canvas().model();
+        int position = -1;
+        for (int i = 0; i < model.size(); i++) {
+            if (model.nodeAt(i) == 2) {
+                position = i;
+            }
+        }
+        assertThat(position).isNotNegative();
+        int at = position;
+        SwingUtilities.invokeAndWait(() -> panel.canvas().select(at));
+        awaitCondition(
+                () -> panel.legendText().contains("whole graph: 2"),
+                "the budgeted whole-graph count");
+
+        // Node 2 of the six-node chain transitively needs 0 and 1: the
+        // whole-graph BFS finished under its budget, so the number is plain
+        // rather than a "≥" lower bound.
+        assertThat(panel.legendText())
+                .contains("transitive dependencies on screen: 2")
+                .contains("whole graph: 2")
+                .doesNotContain("budget reached");
+    }
+
+    @Test
+    @DisplayName("absent output sizes are unavailable, never zero bytes")
+    void absentSizesAreUnavailable() throws Exception {
+        panel.showNode(2);
+        awaitDrawn();
+
+        SwingUtilities.invokeAndWait(
+                () -> panel.setWeightForTesting(GraphWeight.OUTPUT_SIZE));
+        awaitCondition(
+                () -> panel.legendText().contains("Nothing here has a recorded output size"),
+                "the size legend");
+
+        // This fixture records no artifact sizes. Rule 11: the legend admits
+        // the absence instead of colouring six empty files.
+        assertThat(panel.legendText())
+                .contains("Nothing here has a recorded output size")
+                .doesNotContain("0 B");
     }
 
     @Test

@@ -26,7 +26,8 @@ import com.holtherndon.bazelviz.ui.actions.ActionsView;
 import com.holtherndon.bazelviz.ui.events.EventsView;
 import com.holtherndon.bazelviz.ui.enrich.CoverageView;
 import com.holtherndon.bazelviz.ui.errors.ErrorsView;
-import com.holtherndon.bazelviz.ui.graph.GraphView;
+import com.holtherndon.bazelviz.ui.graph.GraphExplorerView;
+import com.holtherndon.bazelviz.ui.graph.TreeView;
 import com.holtherndon.bazelviz.ui.query.QueryView;
 import com.holtherndon.bazelviz.ui.timeline.TimelineController;
 import com.holtherndon.bazelviz.ui.overview.OverviewPanel;
@@ -136,7 +137,17 @@ public final class MainWindow extends JFrame {
     private final TestsView testsView = new TestsView();
     private final ErrorsView errorsView = new ErrorsView();
     private final CoverageView coverageView = new CoverageView();
-    private final GraphView graphView = new GraphView();
+
+    /**
+     * The two halves of what used to be one Graph card: the trees browse
+     * dependencies one level at a time, the canvas draws bounded pieces of
+     * the graph with selectable weights. Split so each is a card something
+     * can navigate to — {@code OPEN_IN_TREE} lands on one, {@code
+     * OPEN_IN_GRAPH} on the other.
+     */
+    private final TreeView treeView = new TreeView();
+
+    private final GraphExplorerView graphExplorerView = new GraphExplorerView();
     private final FindingsView findingsView = new FindingsView();
 
     /**
@@ -155,23 +166,36 @@ public final class MainWindow extends JFrame {
      * The shared cross-view navigation actions — the navigation half of the
      * plan's {@code SelectionService} (product-plan section 7). Views build
      * refs for their rows; this is the one place a command becomes a card
-     * switch, so the planned Graph/Tree split re-points one switch arm in
-     * {@link #navigate} rather than hunting through the views.
+     * switch — the Graph/Tree split re-pointed one switch arm in
+     * {@link #navigate} and wired a second, exactly as planned, rather than
+     * hunting through the views.
      *
-     * <p>Two commands are deliberately absent from the wired set and
-     * therefore never offered anywhere: {@code OPEN_IN_TREE} until the
-     * Graph/Tree split lands, and {@code SHOW_EVENTS_FOR_LABEL} until an
+     * <p>One command is deliberately absent from the wired set and therefore
+     * never offered anywhere: {@code SHOW_EVENTS_FOR_LABEL}, until an
      * events-by-label read path exists.
      */
-    private final EntityActions entityActions = new EntityActions(
-            java.util.EnumSet.of(
-                    EntityActions.Command.OPEN_TARGET,
-                    EntityActions.Command.OPEN_IN_GRAPH,
-                    EntityActions.Command.SHOW_ACTIONS_FOR_LABEL,
-                    EntityActions.Command.REVEAL_ACTION,
-                    EntityActions.Command.SHOW_ON_TIMELINE,
-                    EntityActions.Command.SHOW_SOURCE_EVENT),
-            this::navigate);
+    private final EntityActions entityActions =
+            new EntityActions(wiredCommands(), this::navigate);
+
+    /**
+     * The commands {@link #navigate} genuinely answers.
+     *
+     * <p>A named method rather than an inline set so the wiring is checkable
+     * without constructing the window — the test suite runs headless, and a
+     * {@code JFrame} cannot be built there. {@code MainWindowNavWiringTest}
+     * pins this set; the switch in {@link #navigate} is exhaustive by
+     * compilation.
+     */
+    static java.util.Set<EntityActions.Command> wiredCommands() {
+        return java.util.EnumSet.of(
+                EntityActions.Command.OPEN_TARGET,
+                EntityActions.Command.OPEN_IN_TREE,
+                EntityActions.Command.OPEN_IN_GRAPH,
+                EntityActions.Command.SHOW_ACTIONS_FOR_LABEL,
+                EntityActions.Command.REVEAL_ACTION,
+                EntityActions.Command.SHOW_ON_TIMELINE,
+                EntityActions.Command.SHOW_SOURCE_EVENT);
+    }
 
     /**
      * The Overview card: the build's own summary above, what is known about it
@@ -345,7 +369,7 @@ public final class MainWindow extends JFrame {
         // clicked span's details offer the same jumps a table row does, and
         // they land in the same navigate() switch.
         timeline.installEntityActions(entityActions);
-        graphView.onActionSelected(this::followGraphSelection);
+        graphExplorerView.onActionSelected(this::followGraphSelection);
         // A finding points at records; these are the two ways it does so.
         // Selecting the evidence opens the action; following a link opens the
         // view the rule named, filtered the way the rule filtered it.
@@ -1104,7 +1128,8 @@ public final class MainWindow extends JFrame {
         testsView.openSession(opened);
         errorsView.openSession(opened);
         coverageView.openSession(opened);
-        graphView.openSession(opened);
+        treeView.openSession(opened);
+        graphExplorerView.openSession(opened);
         timeline.openSession(opened);
         // One metric collection feeds both the findings card and the overview's
         // cards, so opening a session scans its actions once rather than twice.
@@ -1128,7 +1153,8 @@ public final class MainWindow extends JFrame {
         testsView.closeSession();
         errorsView.closeSession();
         coverageView.closeSession();
-        graphView.closeSession();
+        treeView.closeSession();
+        graphExplorerView.closeSession();
         timeline.closeSession();
         queryView.closeSession();
         findingsView.detach();
@@ -1198,13 +1224,6 @@ public final class MainWindow extends JFrame {
         closeSessionItem.setEnabled(false);
     }
 
-    /** Shows the Events card with {@code eventId}'s raw payload loaded. */
-    /**
-     * Switches to the graph card and roots it at an action.
-     *
-     * <p>An action the graph does not declare says so there rather than showing
-     * an empty tree, because an empty tree reads as "nothing depends on it".
-     */
     /** Switches to the timeline and highlights an action, leaving the view where it is. */
     private void revealOnTimeline(long actionId) {
         showCard(NavEntry.TIMELINE);
@@ -1263,7 +1282,7 @@ public final class MainWindow extends JFrame {
      */
     private void openGraphOnDerivedPath() {
         showCard(NavEntry.GRAPH);
-        graphView.showCriticalPath(derivedCriticalPath);
+        graphExplorerView.showCriticalPath(derivedCriticalPath);
     }
 
     private void openFromOverview(NavEntry entry) {
@@ -1294,15 +1313,16 @@ public final class MainWindow extends JFrame {
                 actionsView.filterToLabel(((EntityRef.TargetLabel) ref).label());
             }
             case REVEAL_ACTION -> revealAction(((EntityRef.ActionId) ref).id());
-            // Today's Graph card. The planned Graph/Tree split re-points this
-            // arm at the new Graph card and wires OPEN_IN_TREE at the renamed
-            // Tree card — one arm each, nothing else moves.
+            // The Graph/Tree split, completed: the canvas card draws the
+            // action's neighbourhood, the tree card roots its trees at it —
+            // one arm each, exactly as the split's plan said.
             case OPEN_IN_GRAPH -> revealInGraph(((EntityRef.ActionId) ref).id());
+            case OPEN_IN_TREE -> revealInTree(((EntityRef.ActionId) ref).id());
             case SHOW_ON_TIMELINE -> revealOnTimeline(((EntityRef.ActionId) ref).id());
             case SHOW_SOURCE_EVENT -> revealEvent(((EntityRef.EventId) ref).id());
-            // Not in the wired set, so nothing can offer them and nothing can
+            // Not in the wired set, so nothing can offer it and nothing can
             // arrive here; the arm exists so the switch stays exhaustive.
-            case OPEN_IN_TREE, SHOW_EVENTS_FOR_LABEL ->
+            case SHOW_EVENTS_FOR_LABEL ->
                     log.warn("{} arrived unwired; nothing offers it", command);
         }
     }
@@ -1317,9 +1337,16 @@ public final class MainWindow extends JFrame {
         timeline.select(actionId);
     }
 
+    /** Draws an action's neighbourhood on the Graph card's canvas. */
     private void revealInGraph(long actionId) {
         showCard(NavEntry.GRAPH);
-        graphView.showAction(actionId);
+        graphExplorerView.showAction(actionId);
+    }
+
+    /** Roots the Tree card's dependency trees at an action. */
+    private void revealInTree(long actionId) {
+        showCard(NavEntry.TREE);
+        treeView.showAction(actionId);
     }
 
     private void revealEvent(long eventId) {
@@ -1723,7 +1750,8 @@ public final class MainWindow extends JFrame {
             case TARGETS -> targetsView;
             case TESTS -> testsView;
             case ERRORS -> errorsView;
-            case GRAPH -> graphView;
+            case GRAPH -> graphExplorerView;
+            case TREE -> treeView;
             case TIMELINE -> timeline.view();
             case EVENTS -> eventsView;
             case BUILD -> buildCard;

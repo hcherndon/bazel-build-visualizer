@@ -55,6 +55,14 @@ and must be used exactly — in code, UI, and docs:
 UI surfaces, metrics, and APIs must say which graph they are over. "The
 graph" is never an acceptable label.
 
+Two navigation cards read these graphs (since the 2026-08-24 Graph/Tree
+split): **Tree** (`TreeView`) browses dependencies and reverse dependencies
+one level at a time and finds paths, at any graph size; **Graph**
+(`GraphExplorerView`) draws bounded extracts on the canvas with selectable
+node weights. Each card carries its own graph-source selector naming which of
+the representations above is on screen; see `docs/graph-model.md` for the
+weight definitions and their budgets.
+
 ## Session state machine
 
 Mirrors `core-model`'s `SessionState` exactly (that enum is authoritative;

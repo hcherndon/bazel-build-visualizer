@@ -42,7 +42,9 @@ looked edgeless would be a claim about the build, and a false one.
 
 | Limit | Constant | Default | When reached |
 |---|---|---:|---|
-| Shortest-path search budget | `com.holtherndon.bazelviz.ui.graph.GraphView.PATH_BUDGET` | 200000 | `ShortestPath.Result.describe()` distinguishes "there is no path" from "the search gave up", which are different answers and only one is a fact about the build. |
+| Shortest-path search budget | `com.holtherndon.bazelviz.ui.graph.TreeView.PATH_BUDGET` | 200000 | `ShortestPath.Result.describe()` distinguishes "there is no path" from "the search gave up", which are different answers and only one is a fact about the build. |
+| Whole-graph transitive count budget | `com.holtherndon.bazelviz.analysis.GraphWeights.GLOBAL_TRANSITIVE_NODE_BUDGET` | 200000 | The Graph card's per-selected-node transitive count over the full CSR index stops here and reports "≥N (budget reached)" — a lower bound stated as one, never passed off as a total. Plan 13.3 forbids a transitive closure, so this traversal must be able to give up visibly. |
+| On-screen transitive count work budget | `com.holtherndon.bazelviz.analysis.GraphWeights.SUBGRAPH_TRANSITIVE_WORK_BUDGET` | 20000000 | The exact per-node transitive counts over the drawn subgraph share this traversal-step budget. Nodes past it are shown as unknown (grey, base size) — never zero — and the legend states that the budget was reached. For real neighbourhood drawings it never bites; it exists so a whole-build extract at the node ceiling cannot stall the weight worker for half a minute. |
 | Aggregate groups returned | `com.holtherndon.bazelviz.storage.metrics.MetricQueries.DEFAULT_GROUP_LIMIT` | 40 | The table states the total group count and how many actions the unlisted groups hold. |
 | Finding candidates per criterion | `com.holtherndon.bazelviz.storage.metrics.MetricQueries.DEFAULT_CANDIDATE_LIMIT` | 25 | Not a truncation of results but of *inputs*: the rules examine the extremes. Bounded so the rules cost the same on a five-million-action build as on a small one. |
 | Table page size | `com.holtherndon.bazelviz.ui.actions.ActionRowSource.DEFAULT_PAGE_SIZE` | 200 | Paging, not truncation: every row is reachable by scrolling, and the total is always shown. |
@@ -90,20 +92,23 @@ The metric collection is deliberately **not** on a timer: it scans every action
 
 ## What plan 20.3 asks for and this does not yet have
 
-Plan 20.3 lists nineteen limits that "settings must include". Fourteen of them
+Plan 20.3 lists nineteen limits that "settings must include". Fifteen of them
 exist as the constants above and can be changed by a caller; **none of them has
 a settings screen**, because v1 has no settings screen. That is the single
 largest gap between this table and plan 20.3, and it is stated here rather than
 implied by a page that lists only what exists.
 
-Five have no constant at all and are not implemented:
+Four have no constant at all and are not implemented:
 
 - Maximum application heap guidance — the JVM's own flag does this today.
 - Parser concurrency — import is single-threaded per source by design.
 - Maximum graph-layout time — layout is cancellable, which is the property that
   mattered; no wall-clock ceiling is applied.
-- Exact transitive-count budget — transitive counts are not computed at all
-  (plan 13.3 forbids a complete transitive closure, and no bounded version
-  shipped).
 - Full-text command indexing and filesystem stat enrichment — both are
   behaviours rather than limits, and neither is switchable.
+
+The exact transitive-count budget, long the fifth entry here, shipped with the
+Graph card's weight selector: `GraphWeights.GLOBAL_TRANSITIVE_NODE_BUDGET` and
+`GraphWeights.SUBGRAPH_TRANSITIVE_WORK_BUDGET` in the traversal table above. A
+complete transitive closure remains forbidden (plan 13.3); what shipped is the
+bounded version that gives up out loud.
