@@ -187,12 +187,9 @@ final class Phase9ExitCriteriaTest {
         // installed bundle and is checked by hand; docs/packaging.md records
         // the Info.plist this produced.
         // The descriptor is a declared data dependency of this test target
-        // (exported by //app), found through the runfiles tree under Bazel
-        // and relative to the module directory under Gradle.
-        String runfiles = System.getenv("TEST_SRCDIR");
-        Path descriptor = runfiles != null
-                ? Path.of(runfiles, "_main", "app", "src", "main", "packaging", "bviz.properties")
-                : Path.of("..", "app", "src", "main", "packaging", "bviz.properties");
+        // (exported by //app), found through the runfiles tree.
+        Path descriptor = Path.of(System.getenv("TEST_SRCDIR"),
+                "_main", "app", "src", "main", "packaging", "bviz.properties");
         Properties association = new Properties();
         try (var in = Files.newInputStream(descriptor)) {
             association.load(in);

@@ -38,12 +38,7 @@ final class LimitsDocTest {
         // (//docs:limits.md), found through the runfiles tree. TEST_SRCDIR is
         // Bazel's contract for that; _main is the main repository's name in
         // the tree.
-        String runfiles = System.getenv("TEST_SRCDIR");
-        if (runfiles != null) {
-            return Path.of(runfiles, "_main", "docs", "limits.md");
-        }
-        // Gradle-era fallback: the test JVM's working directory is app/.
-        return Path.of("..", "docs", "limits.md");
+        return Path.of(System.getenv("TEST_SRCDIR"), "_main", "docs", "limits.md");
     }
 
     @Test
