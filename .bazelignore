@@ -1,0 +1,8 @@
+# Bazel's package traversal does not consult .gitignore, so `bazel build
+# //...` recurses into anything on disk. Claude Code keeps git worktrees
+# under .claude/worktrees/ — each one a full checkout carrying BUILD.bazel
+# files and its own bazel-* convenience symlinks — and loading those as
+# packages of THIS workspace breaks //... outright (measured: rules_shell's
+# external test tree, reached through a worktree's bazel-* symlink, fails
+# loading in seconds). .bazelignore is the only fence Bazel offers here.
+.claude

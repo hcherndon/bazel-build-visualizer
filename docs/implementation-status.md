@@ -2109,4 +2109,7 @@ it is a different tab and was not reported.
   the execroot symlink forest refuses top-level directories named
   `bazel-*`, so the `bazel-runner` module's compile inputs are byte-exact
   in-process copies relocated under `bazel-out` (`tools/relocate.bzl`) —
-  name, label and layout unchanged.
+  name, label and layout unchanged. Post-merge fix (2026-08-25): a root
+  `.bazelignore` shields `//...` traversal from the git worktrees under
+  `.claude/`, whose BUILD files and bazel-* symlinks otherwise load as
+  packages of this workspace and break the build at loading.

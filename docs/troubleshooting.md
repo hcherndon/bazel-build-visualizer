@@ -20,6 +20,11 @@ troubleshooting (capture failures, session recovery) arrives with Phase 2+.
   and commit the `maven_install.json` diff with the change.
 - **Stale/odd behavior**: `bazel shutdown` then rebuild before deeper
   debugging; `bazel clean` exists but is almost never the answer.
+- **`bazel build //...` fails loading a package under `.claude/`.** The
+  root `.bazelignore` must list `.claude`: package traversal ignores
+  .gitignore, and the git worktrees kept under `.claude/worktrees/` carry
+  BUILD files and bazel-* symlinks that must never load as this
+  workspace's packages.
 - **The machine groans under test runs.** Read `.bazelrc`'s startup section
   before changing anything: the outer server is capped at 4 GiB and test
   parallelism at 4 for a documented reason (child Bazel servers in the
