@@ -1,0 +1,15 @@
+# On-disk session directory layout, journals, manifests.
+
+load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+
+bbv_java_library(
+    name = "session-format",
+    # api: manifests and layouts speak core-model types.
+    exports = ["//core-model"],
+    deps = ["//core-model"],
+)
+
+bbv_java_test_suite(
+    name = "tests",
+    deps = [":session-format"],
+)

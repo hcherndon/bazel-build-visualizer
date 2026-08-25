@@ -1,0 +1,90 @@
+# Phase 0 spikes and JMH benchmarks (not shipped).
+#
+# `bazel build //...` compiles everything here (rot protection — a behavior
+# change from Gradle, accepted in ADR-009); nothing here ever runs
+# automatically. Spikes: `bazel run //benchmarks:table_spike -- --offscreen`.
+# JMH: `bazel run //benchmarks:jmh -- -l` lists, a bare run executes.
+
+load("@rules_java//java:defs.bzl", "java_library", "java_plugin")
+load("//tools:bbv.bzl", "bbv_java_binary", "bbv_java_library")
+
+bbv_java_library(
+    name = "benchmarks",
+    deps = [
+        "//core-model",
+        "//graph-core",
+        "//storage-sqlite",
+        "//test-support",
+        "//ui-swing",
+        # BesThroughputSpike drives the real embedded server over a real
+        # socket, so it needs the capture path and a gRPC client to push
+        # events at it.
+        "//capture-bes",
+        "//proto",
+        "@maven//:io_grpc_grpc_api",
+        "@maven//:io_grpc_grpc_stub",
+        "@maven//:io_grpc_grpc_netty_shaded",
+    ],
+    runtime_deps = ["@maven//:ch_qos_logback_logback_classic"],
+)
+
+# Phase 0 architectural spikes. Each supports --offscreen (paints to a
+# BufferedImage and prints frame statistics, no window) and defaults to an
+# interactive window otherwise. System-property switches ride as JVM flags:
+#
+#   bazel run //benchmarks:table_spike -- --jvm_flag=-Dbbv.smoke=true --offscreen
+#
+# (io.netty.tryUnsafe / io.netty.noUnsafe go the same way for the BES
+# throughput spike's ADR-008 counterfactual.) 4 GiB heap and the
+# native-access grant, exactly as the Gradle JavaExec tasks forked them —
+# the spikes load native code through both sqlite-jdbc (SqlPagingSpike) and
+# FlatLaf (the Swing spikes).
+SPIKES = {
+    "table_spike": "TableSpike",
+    "timeline_spike": "TimelineSpike",
+    "graph_spike": "GraphSpike",
+    "sql_paging_spike": "SqlPagingSpike",
+    "bes_throughput_spike": "BesThroughputSpike",
+    "entity_scale_spike": "EntityScaleSpike",
+}
+
+[
+    bbv_java_binary(
+        name = target,
+        jvm_flags = ["-Xmx4g"],
+        main_class = "com.holtherndon.bazelviz.benchmarks.spike." + main,
+        runtime_deps = [":benchmarks"],
+    )
+    for target, main in SPIKES.items()
+]
+
+# JMH, without the me.champeau.jmh plugin: the annotation processor generates
+# the benchmark harness classes at compile time, and org.openjdk.jmh.Main
+# discovers them from the classpath at run time.
+java_plugin(
+    name = "jmh-processor",
+    processor_class = "org.openjdk.jmh.generators.BenchmarkProcessor",
+    deps = ["@maven//:org_openjdk_jmh_jmh_generator_annprocess"],
+)
+
+java_library(
+    name = "jmh-benchmarks",
+    srcs = glob(["src/jmh/java/**/*.java"]),
+    plugins = [":jmh-processor"],
+    deps = [
+        "//storage-sqlite",
+        "//test-support",
+        "@maven//:org_openjdk_jmh_jmh_core",
+    ],
+)
+
+# SqliteInsertBench loads sqlite-jdbc's native library, so the forked
+# benchmark JVMs need the same native-access grant every other forked JVM
+# gets (bbv_java_binary supplies it; JMH forks inherit it via -jvmArgsPrepend
+# only when asked, so pass `-jvmArgsPrepend=--enable-native-access=ALL-UNNAMED`
+# for forked runs — documented in docs/performance.md).
+bbv_java_binary(
+    name = "jmh",
+    main_class = "org.openjdk.jmh.Main",
+    runtime_deps = [":jmh-benchmarks"],
+)

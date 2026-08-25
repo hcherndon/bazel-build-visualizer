@@ -1,0 +1,35 @@
+# Explicit-SQL persistence: per-session DB + catalog DB.
+
+load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+
+bbv_java_library(
+    name = "storage-sqlite",
+    # All api (exports):
+    # - graph-core: the CSR index lives there, which knows nothing about
+    #   SQLite; the builder here is the one place the edge table and the
+    #   index meet.
+    # - analysis-core: plan 6.1 puts metrics, aggregation, percentiles and
+    #   data-quality reports in analysis-core, and "query implementations"
+    #   and "aggregate persistence" here. So the aggregate types are theirs
+    #   and the streaming is ours, and this edge is what joins the two. It
+    #   points this way and only this way: analysis-core still depends on
+    #   core-model and graph-core alone, which is what lets extraction,
+    #   clustering, layout and every formula be tested without a database.
+    exports = [
+        "//analysis-core",
+        "//core-model",
+        "//graph-core",
+        "@maven//:org_xerial_sqlite_jdbc",
+    ],
+    deps = [
+        "//analysis-core",
+        "//core-model",
+        "//graph-core",
+        "@maven//:org_xerial_sqlite_jdbc",
+    ],
+)
+
+bbv_java_test_suite(
+    name = "tests",
+    deps = [":storage-sqlite"],
+)

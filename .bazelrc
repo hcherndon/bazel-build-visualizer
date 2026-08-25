@@ -26,6 +26,12 @@ build --javacopt=-parameters
 build --javacopt=-encoding
 build --javacopt=UTF-8
 
+# Bazel's default Java toolchain runs Error Prone; the Gradle build ran plain
+# javac, and the plan (§10) keeps linters out of the migration's scope.
+# Disabled wholesale rather than curated, so the parity gate diffs builds,
+# not linters. Turning it on is a later, deliberate decision.
+build --javacopt=-XepDisableAllChecks
+
 # --- Tests -----------------------------------------------------------------
 test --test_output=errors
 
@@ -41,6 +47,15 @@ test --test_tag_filters=-bazel-sweep
 # them plus the child Bazel servers the real-bazel tests spawn is exactly the
 # shape that produced the 120 GB incident, so cap concurrent test JVMs too.
 test --local_test_jobs=4
+
+# The real-bazel tests spawn child Bazels, and a child Bazel derives its
+# output_user_root from TEST_TMPDIR. Bazel's default TEST_TMPDIR lives inside
+# the outer execroot, whose planted MODULE.bazel makes the execroot look like
+# the child's main repo — and a Bazel 9 child then refuses outright ("repo
+# contents cache is inside the main repo", exit 2), which cascades into
+# capability detection reporting NONE and captures publishing nothing. A
+# neutral tmp root outside any workspace keeps the children honest.
+test --test_tmpdir=/tmp/bbv-test-tmp
 
 # --- CI --------------------------------------------------------------------
 #

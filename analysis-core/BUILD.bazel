@@ -1,0 +1,22 @@
+# Critical path, parallelism, cache analysis.
+
+load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+
+bbv_java_library(
+    name = "analysis-core",
+    # api on both: the critical path walks a CSR graph. analysis-core knows
+    # nothing about where the graph came from or where it is stored.
+    exports = [
+        "//core-model",
+        "//graph-core",
+    ],
+    deps = [
+        "//core-model",
+        "//graph-core",
+    ],
+)
+
+bbv_java_test_suite(
+    name = "tests",
+    deps = [":analysis-core"],
+)

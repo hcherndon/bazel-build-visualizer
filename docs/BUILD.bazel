@@ -1,0 +1,5 @@
+# Documentation is mostly not build material, with one exception: the limits
+# page is executable documentation — LimitsDocTest parses it and checks every
+# row against the constant it names, so the test target declares the page as
+# data and finds it through runfiles.
+exports_files(["limits.md"])

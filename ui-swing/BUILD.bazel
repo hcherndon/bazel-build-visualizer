@@ -1,0 +1,73 @@
+# Swing/FlatLaf shell and custom-painted heavy views.
+
+load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+
+bbv_java_library(
+    name = "ui-swing",
+    # api: views and controllers speak core-model types.
+    exports = ["//core-model"],
+    deps = [
+        "//core-model",
+        # implementation — Phase 1 UI deliverable: the Events view drives the
+        # import pipeline and reads back what it wrote. capture-file exposes
+        # session-format and storage-sqlite as exports, so BepImporter,
+        # SessionManager, EventQueries and JournalPayloadReader all arrive
+        # with this one dependency. Plan rule 19 ("UI components depend on
+        # service interfaces, not SQLite implementation classes") is honoured
+        # by the ui.session service interfaces.
+        "//capture-file",
+        # Phase 2 UI deliverables: the launcher, the instrumentation-plan
+        # dialog, live capture status and the console all drive
+        # CaptureCoordinator, and the stop controls name CancellationMode.
+        # capture-bes exposes bazel-runner, but the runner is named here too
+        # because this module's own source imports its types directly.
+        "//capture-bes",
+        "//bazel-runner",
+        # Decoding the selected event's raw payload for the inspector (plan
+        # 17.11: render full protobuf text only for the selected event).
+        "//bep-codec",
+        # The critical path and the layouts. analysis-core knows nothing
+        # about Swing or SQLite; ui-swing is where a graph, its durations and
+        # a layout meet, which is the only place that has all three.
+        "//analysis-core",
+        "@maven//:com_formdev_flatlaf",
+        # The Query card's editor: SQL syntax highlighting, schema-aware
+        # completion, and a formatter. License/maintenance/performance review
+        # in MODULE.bazel's header; user-approved 2026-08-24.
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+        "@maven//:com_fifesoft_autocomplete",
+        "@maven//:com_github_vertical_blank_sql_formatter",
+    ],
+)
+
+# headless: the Events view's models and controllers are tested without a
+# display, which is also how CI runs. As a per-JVM flag it is set before any
+# code can touch GraphicsEnvironment, which retires the test-ordering hazard
+# the Gradle build file documented.
+bbv_java_test_suite(
+    name = "tests",
+    # Phase9ExitCriteriaTest reads the packaging descriptor cross-module;
+    # under Bazel that is a declared data dependency found via runfiles.
+    data = ["//app:src/main/packaging/bviz.properties"],
+    headless = True,
+    # EventRowSourceTest's far-jump case builds a million-row fake through a
+    # CopyOnWriteArrayList — measured at 465s under Gradle too, which simply
+    # never had a per-test time limit. The cost predates the migration; only
+    # the ceiling is new.
+    timeout_overrides = {"EventRowSourceTest": "eternal"},
+    deps = [
+        ":ui-swing",
+        "//analysis-core",
+        "//bazel-runner",
+        "//bep-codec",
+        "//capture-bes",
+        "//capture-file",
+        # Real BEP fixtures, so the Events view is tested against a session
+        # an actual import produced rather than against hand-built rows.
+        "//test-support",
+        "@maven//:com_formdev_flatlaf",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+        "@maven//:com_fifesoft_autocomplete",
+        "@maven//:com_github_vertical_blank_sql_formatter",
+    ],
+)
