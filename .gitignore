@@ -12,6 +12,19 @@
 /out/
 bin/
 
+# Bazel outputs and convenience symlinks. Anchored to the repository root for
+# the same reason the build/ patterns above are anchored: a bare `bazel-*`
+# matches at any depth and would swallow the tracked `bazel-runner/` module —
+# and several vendored proto paths contain "bazel" too. The last entry is the
+# workspace symlink Bazel names after the repository directory.
+/bazel-bin
+/bazel-out
+/bazel-testlogs
+/bazel-bazel-bep-viewer
+
+# jpackage output from `bazel run //app:jpackage` (see docs/packaging.md).
+/dist/
+
 .DS_Store
 .idea/
 *.iml

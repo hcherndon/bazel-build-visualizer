@@ -1,0 +1,6 @@
+# JetBrains Bazel plugin project view (the maintained successor to IJwB).
+# Import the repository root and let the plugin derive targets from it.
+directories:
+  .
+
+derive_targets_from_directories: true

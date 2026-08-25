@@ -1,0 +1,53 @@
+# --- Machine safety: the OUTER server's memory cap -------------------------
+#
+# Bazel sizes its server JVM from the machine's RAM, so on a large developer
+# machine an uncapped server reserves tens of gigabytes before doing anything.
+# This repository's own test suite starts CHILD Bazel servers (the real-bazel
+# fixtures; see BazelWorkspaceFixture.FIXTURE_RC, which caps each child at
+# -Xmx1g / 15s idle), and several uncapped servers alive at once have crashed
+# a development machine at over 120 GB resident. The migration plan's proposed
+# rc lacked this cap; it is not optional.
+startup --host_jvm_args=-Xmx4g
+startup --max_idle_secs=300
+
+# --- Toolchain (ADR-008 via ADR-009) ---------------------------------------
+#
+# Java 25 LTS, hermetic remote JDK on every machine and in CI. The foojay
+# resolver's auto-provisioning job disappears rather than migrates. Preview
+# features stay forbidden: no --enable-preview anywhere.
+build --java_language_version=25
+build --java_runtime_version=remotejdk_25
+
+# Carried over from bbv.java-common.gradle.kts: -parameters on every compile,
+# and the source encoding stated explicitly rather than inherited from the
+# platform. Order matters: each --javacopt appends one token, so these three
+# lines hand javac "-parameters -encoding UTF-8".
+build --javacopt=-parameters
+build --javacopt=-encoding
+build --javacopt=UTF-8
+
+# --- Tests -----------------------------------------------------------------
+test --test_output=errors
+
+# The four-version Bazel sweep (BazelVersionMatrixTest) is fenced twice: its
+# target is tagged "manual" so //... never expands to it, and this filter
+# excludes the tag even from an explicit wildcard. It downloads and starts
+# four Bazel servers and has crashed machines; run it only deliberately, one
+# target, one version at a time. real-bazel tests stay INCLUDED by default,
+# matching Gradle's `./gradlew build` semantics.
+test --test_tag_filters=-bazel-sweep
+
+# Each test JVM gets 2 GiB (bbv.java-common parity); a machine-size fleet of
+# them plus the child Bazel servers the real-bazel tests spawn is exactly the
+# shape that produced the 120 GB incident, so cap concurrent test JVMs too.
+test --local_test_jobs=4
+
+# --- CI --------------------------------------------------------------------
+#
+# CI excludes the hazard-tagged suites VISIBLY, here, not by a silent skip:
+# real-bazel tests drive a host Bazel that CI runners do have, but their
+# results depend on host state Bazel cannot fingerprint, and the sweep is
+# banned everywhere. The workflow runs `bazel test //... --config=ci`.
+build:ci --repository_cache=~/.cache/bazel-repo
+test:ci --test_tag_filters=-bazel-sweep,-real-bazel
+test:ci --test_env=CI=true
