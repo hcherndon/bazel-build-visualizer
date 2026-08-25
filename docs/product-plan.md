@@ -2143,8 +2143,12 @@ Avoid:
 > every live capture currently runs and indexes both graph queries after the
 > build. Custom remains a model value but is not offered without an
 > individual-source editor. Workspace validation and settings I/O run off the
-> EDT; settings use atomic replacement and late loads cannot overwrite edits or
-> update a disposed panel. ADR-007's effective-command dialog remains a
+> EDT; settings use atomic replacement, merge late loads per edited field and
+> history entry, and persist close-before-load edits without updating a
+> disposed panel. Desired and in-flight save snapshots are serialized so a
+> stale completion cannot become the final disk state. Controller close also
+> suppresses queued UI callbacks and releases pending preflight resources on
+> its worker. ADR-007's effective-command dialog remains a
 > separate required review after validation.
 
 ### Right inspector

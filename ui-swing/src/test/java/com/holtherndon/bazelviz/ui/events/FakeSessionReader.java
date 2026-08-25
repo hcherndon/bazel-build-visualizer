@@ -69,18 +69,27 @@ final class FakeSessionReader implements SessionReader {
     /** An explicit id list, so a test can create the gaps the sparse path needs. */
     static FakeSessionReader withIds(long... ids) {
         FakeSessionReader reader = new FakeSessionReader();
+        List<EventSummary> initial = new ArrayList<>(ids.length);
         for (int i = 0; i < ids.length; i++) {
-            reader.add(ids[i], i, DecodeStatus.OK);
+            initial.add(reader.summary(ids[i], i, DecodeStatus.OK));
         }
+        // CopyOnWriteArrayList is required once live-view tests start reading
+        // and mutating concurrently. Populate the immutable starting snapshot
+        // in one copy instead of copying the growing array once per row.
+        reader.summaries.addAll(initial);
         return reader;
     }
 
     /** Adds one event with a decoded id and a distinctive payload. */
     void add(long id, long sequence, DecodeStatus status) {
+        summaries.add(summary(id, sequence, status));
+    }
+
+    private EventSummary summary(long id, long sequence, DecodeStatus status) {
         long hash = 0x1000 + id;
         byte[] payloadBytes = ("payload-" + id).getBytes(java.nio.charset.StandardCharsets.UTF_8);
         RawLocation location = new RawLocation(0, 32 + id * 64, payloadBytes.length);
-        summaries.add(new EventSummary(
+        EventSummary summary = new EventSummary(
                 id,
                 1,
                 sequence,
@@ -93,12 +102,13 @@ final class FakeSessionReader implements SessionReader {
                 status.hasEvent() ? OptionalLong.of(1_700_000_000_000_000L + id) : OptionalLong.empty(),
                 1_700_000_000_500_000L + id,
                 location,
-                status.hasEvent() ? Optional.of("//target:" + id) : Optional.empty()));
+                status.hasEvent() ? Optional.of("//target:" + id) : Optional.empty());
         locations.put(id, location);
         if (status.hasEvent()) {
             identities.put(id, new EventIdentity(hash, 3, new byte[] {1, 2, 3}, "//target:" + id));
         }
         payloads.put(id, new RawPayload(payloadBytes, SourceKind.BEP_BINARY));
+        return summary;
     }
 
     /**

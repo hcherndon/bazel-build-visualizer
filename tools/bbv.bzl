@@ -94,6 +94,7 @@ def bbv_java_test_suite(
         name,
         srcs = None,
         compile_srcs = None,
+        source_groups = None,
         exclude = [],
         deps = [],
         runtime_deps = [],
@@ -106,13 +107,14 @@ def bbv_java_test_suite(
         **kwargs):
     """A module's test suite: one java_test per class, JUnit Platform runner.
 
-    All test sources compile once into a shared testonly library (test
-    classes in this codebase legitimately use each other's helpers, e.g.
+    By default all test sources compile once into a shared testonly library
+    (test classes in this codebase legitimately use each other's helpers, e.g.
     BfsTest builds graphs with CsrGraphTest.stream, so per-class compilation
-    would not build); each *Test class then runs as its own java_test over
-    that library. Invalidation is Gradle-equivalent — a test edit reruns the
-    module's classes — while execution, reporting and flake isolation stay
-    per class, in parallel.
+    would not build). `source_groups` may instead name coherent source lists;
+    each group gets its own library and `name-group` test_suite. That narrows
+    cache invalidation while preserving package-local test helpers. Each
+    *Test class still runs as its own java_test, so execution, reporting and
+    flake isolation remain per class and parallel.
 
     `headless = True` pins -Djava.awt.headless=true on every test JVM in the
     suite (app and ui-swing). As a JVM flag it is set before any code can
@@ -128,21 +130,17 @@ def bbv_java_test_suite(
     "bazel-"-prefixed directory before any action can read them (see
     tools/relocate.bzl).
     """
+    if source_groups != None and (srcs != None or compile_srcs != None or exclude):
+        fail("source_groups cannot be combined with srcs, compile_srcs, or exclude")
+
     all_srcs = srcs if srcs != None else native.glob(
         ["src/test/java/**/*.java"],
         exclude = exclude,
     )
-    lib_name = name + "-lib"
-    java_library(
-        name = lib_name,
-        testonly = True,
-        srcs = compile_srcs if compile_srcs != None else all_srcs,
-        resources = resources if resources != None else native.glob(
-            ["src/test/resources/**"],
-            allow_empty = True,
-        ),
-        deps = _add_missing(deps, _DEFAULT_TEST_DEPS),
-        visibility = ["//visibility:private"],
+    groups = source_groups if source_groups != None else {"": all_srcs}
+    test_resources = resources if resources != None else native.glob(
+        ["src/test/resources/**"],
+        allow_empty = True,
     )
 
     flags = _TEST_JVM_FLAGS + \
@@ -150,36 +148,62 @@ def bbv_java_test_suite(
             jvm_flags
 
     tests = []
-    for src in all_srcs:
-        if not src.endswith("Test.java"):
-            continue
-        clazz = _class_name_for(src)
-        test_name = clazz.rpartition(".")[2]
-        if native.existing_rule(test_name):
-            fail("duplicate test class simple name %s in //%s" %
-                 (test_name, native.package_name()))
-        java_junit5_test(
-            name = test_name,
-            size = size,
-            # Gradle test tasks had no per-test time limit; Bazel's default
-            # (moderate) one is right for almost every class here, and the
-            # exceptions are named individually rather than raising the whole
-            # suite's ceiling.
-            timeout = timeout_overrides.get(test_name),
-            data = data,
-            jvm_flags = flags,
-            runtime_deps = _add_missing(
-                [":" + lib_name] + runtime_deps,
-                _DEFAULT_TEST_RUNTIME_DEPS,
-            ),
-            test_class = clazz,
-            **kwargs
+    group_suites = []
+    for group_name in sorted(groups.keys()):
+        if source_groups != None and not group_name:
+            fail("source_groups names must not be empty")
+        group_srcs = groups[group_name]
+        suffix = "-" + group_name if source_groups != None else ""
+        lib_name = name + suffix + "-lib"
+        java_library(
+            name = lib_name,
+            testonly = True,
+            srcs = compile_srcs if compile_srcs != None else group_srcs,
+            resources = test_resources,
+            deps = _add_missing(deps, _DEFAULT_TEST_DEPS),
+            visibility = ["//visibility:private"],
         )
-        tests.append(":" + test_name)
+
+        group_tests = []
+        for src in group_srcs:
+            if not src.endswith("Test.java"):
+                continue
+            clazz = _class_name_for(src)
+            test_name = clazz.rpartition(".")[2]
+            if native.existing_rule(test_name):
+                fail("duplicate test class simple name %s in //%s" %
+                     (test_name, native.package_name()))
+            java_junit5_test(
+                name = test_name,
+                size = size,
+                # Gradle test tasks had no per-test time limit; Bazel's default
+                # (moderate) one is right for almost every class here, and the
+                # exceptions are named individually rather than raising the whole
+                # suite's ceiling.
+                timeout = timeout_overrides.get(test_name),
+                data = data,
+                jvm_flags = flags,
+                runtime_deps = _add_missing(
+                    [":" + lib_name] + runtime_deps,
+                    _DEFAULT_TEST_RUNTIME_DEPS,
+                ),
+                test_class = clazz,
+                **kwargs
+            )
+            group_tests.append(":" + test_name)
+            tests.append(":" + test_name)
+
+        if source_groups != None:
+            suite_name = name + suffix
+            native.test_suite(
+                name = suite_name,
+                tests = group_tests,
+            )
+            group_suites.append(":" + suite_name)
 
     native.test_suite(
         name = name,
-        tests = tests,
+        tests = group_suites if source_groups != None else tests,
     )
 
 def bbv_real_bazel_test(

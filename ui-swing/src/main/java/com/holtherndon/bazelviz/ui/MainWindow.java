@@ -13,7 +13,6 @@ import com.holtherndon.bazelviz.capture.live.CaptureResult;
 import com.holtherndon.bazelviz.capture.live.CaptureSummary;
 import com.holtherndon.bazelviz.capture.live.Preflight;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
-import com.holtherndon.bazelviz.runner.proc.CancellationMode;
 import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
 import com.holtherndon.bazelviz.ui.capture.CapturePanel;
 import com.holtherndon.bazelviz.ui.capture.CaptureStatusModel;
@@ -421,22 +420,10 @@ public final class MainWindow extends JFrame {
         SessionSource closing = currentSource;
         currentSource = null;
         closeSource(closing);
-        // Only a plan that was never launched is discarded here, and only
-        // because that releases its BES port. Discarding unconditionally meant
-        // closing the window during a build called BesServer.close() on the
-        // EDT, which waits out its ten-second graceful-shutdown budget with the
-        // stream still open -- a frozen, unrepainted window -- and then killed
-        // the live stream. The shutdownNow() below then interrupted the capture
-        // thread mid-finalization, which is what discards journal frames that
-        // were already acknowledged to Bazel.
-        if (!launchController.isBusy()) {
-            launchController.discardPlan();
-        } else {
-            // A capture is running. Ask it to stop and let it finalize on its
-            // own thread; do not wait for it here, because here is the EDT.
-            log.info("window closed during a capture; asking the build to stop");
-            launchController.cancel(CancellationMode.CANCEL);
-        }
+        // Suppress every later UI callback first. Pending preflight resources
+        // are released on the capture worker; a running build is asked to stop
+        // and still finalizes there. Neither path waits on the EDT.
+        launchController.close();
         worker.shutdownNow();
         // Deliberately not shutdownNow(): interrupting the capture thread is
         // what loses the staged journal buffer. The thread is a daemon, so it

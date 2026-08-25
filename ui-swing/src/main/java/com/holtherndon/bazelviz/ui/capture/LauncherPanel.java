@@ -8,8 +8,11 @@ import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
+import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -83,14 +86,13 @@ public final class LauncherPanel extends JPanel {
                     + " most recent unique commands · Up/Down recalls · Ctrl+Space completes");
     private final LauncherHistory history = new LauncherHistory();
     private final Timer saveDebounce = new Timer(400, event -> flushPersistence());
-    private LauncherStateStore store;
-    private Executor ioExecutor;
-    private LauncherStateStore.State lastSaved;
+    private final EnumSet<Setting> editedBeforeLoadCompletes = EnumSet.noneOf(Setting.class);
+    private SaveQueue saveQueue;
     private boolean applying;
     private boolean loadPending;
     private boolean persistenceReady;
-    private boolean disposed;
-    private long editRevision;
+    private volatile boolean disposed;
+    private volatile ClosedState closedWhileLoading;
 
     public LauncherPanel(
             Runnable runAction, Runnable chooseWorkspaceAction, Runnable chooseBazelAction) {
@@ -136,7 +138,7 @@ public final class LauncherPanel extends JPanel {
         graphCostWarning.setFont(graphCostWarning.getFont().deriveFont(Font.BOLD));
         captureDetail.addActionListener(event -> {
             updatePresetExplanation();
-            markDirty();
+            markDirty(Setting.PRESET);
         });
         updatePresetExplanation();
 
@@ -278,16 +280,17 @@ public final class LauncherPanel extends JPanel {
         } finally {
             applying = false;
         }
-        markDirty();
+        markDirty(Setting.COMMAND);
     }
 
     private void installPersistenceListeners() {
-        workspace.getDocument().addDocumentListener(dirtyListener(false));
-        bazelExecutable.getDocument().addDocumentListener(dirtyListener(false));
-        command.getDocument().addDocumentListener(dirtyListener(true));
+        workspace.getDocument().addDocumentListener(dirtyListener(Setting.WORKSPACE, false));
+        bazelExecutable.getDocument().addDocumentListener(
+                dirtyListener(Setting.BAZEL_EXECUTABLE, false));
+        command.getDocument().addDocumentListener(dirtyListener(Setting.COMMAND, true));
     }
 
-    private DocumentListener dirtyListener(boolean resetsHistoryWalk) {
+    private DocumentListener dirtyListener(Setting setting, boolean resetsHistoryWalk) {
         return new DocumentListener() {
             @Override
             public void insertUpdate(DocumentEvent event) {
@@ -308,7 +311,7 @@ public final class LauncherPanel extends JPanel {
                 if (resetsHistoryWalk && !applying) {
                     history.resetNavigation();
                 }
-                markDirty();
+                markDirty(setting);
             }
         };
     }
@@ -323,28 +326,42 @@ public final class LauncherPanel extends JPanel {
         if (disposed) {
             return;
         }
-        store = Objects.requireNonNull(newStore, "newStore");
-        ioExecutor = Objects.requireNonNull(executor, "executor");
+        LauncherStateStore checkedStore = Objects.requireNonNull(newStore, "newStore");
+        Executor checkedExecutor = Objects.requireNonNull(executor, "executor");
+        SaveQueue queue = new SaveQueue(checkedStore, checkedExecutor);
+        saveQueue = queue;
         loadPending = true;
-        long revisionAtStart = editRevision;
-        executor.execute(() -> {
-            LauncherStateStore.State loaded = newStore.load();
-            SwingUtilities.invokeLater(() -> finishLoad(loaded, revisionAtStart));
+        checkedExecutor.execute(() -> {
+            LauncherStateStore.State loaded = checkedStore.load();
+            if (disposed) {
+                finishClosedLoad(queue, loaded);
+            } else {
+                SwingUtilities.invokeLater(() -> finishLoad(queue, loaded));
+            }
         });
     }
 
-    private void finishLoad(LauncherStateStore.State loaded, long revisionAtStart) {
+    private void finishLoad(SaveQueue queue, LauncherStateStore.State loaded) {
         if (disposed) {
+            finishClosedLoad(queue, loaded);
             return;
         }
+        LauncherStateStore.State merged = mergeLoaded(
+                loaded, snapshot(), editedBeforeLoadCompletes);
         loadPending = false;
         persistenceReady = true;
-        lastSaved = loaded;
-        if (editRevision != revisionAtStart) {
-            flushPersistence();
-            return;
+        editedBeforeLoadCompletes.clear();
+        queue.initialize(loaded);
+        adopt(merged);
+        queue.request(merged);
+    }
+
+    private void finishClosedLoad(SaveQueue queue, LauncherStateStore.State loaded) {
+        ClosedState closed = closedWhileLoading;
+        queue.initialize(loaded);
+        if (closed != null) {
+            queue.request(mergeLoaded(loaded, closed.snapshot(), closed.edited()));
         }
-        adopt(loaded);
     }
 
     private void adopt(LauncherStateStore.State loaded) {
@@ -362,11 +379,13 @@ public final class LauncherPanel extends JPanel {
         updatePresetExplanation();
     }
 
-    private void markDirty() {
+    private void markDirty(Setting setting) {
         if (applying || disposed) {
             return;
         }
-        editRevision++;
+        if (!persistenceReady) {
+            editedBeforeLoadCompletes.add(setting);
+        }
         if (persistenceReady) {
             saveDebounce.restart();
         }
@@ -375,24 +394,11 @@ public final class LauncherPanel extends JPanel {
     /** Captures on the EDT and queues a save; the caller never waits for disk. */
     public void flushPersistence() {
         saveDebounce.stop();
-        if (disposed || store == null || !persistenceReady || loadPending) {
+        SaveQueue queue = saveQueue;
+        if (disposed || queue == null || !persistenceReady || loadPending) {
             return;
         }
-        LauncherStateStore.State state = snapshot();
-        if (state.equals(lastSaved)) {
-            return;
-        }
-        LauncherStateStore target = store;
-        ioExecutor.execute(() -> {
-            boolean saved = target.save(state);
-            SwingUtilities.invokeLater(() -> acknowledgeSave(state, saved));
-        });
-    }
-
-    private void acknowledgeSave(LauncherStateStore.State state, boolean saved) {
-        if (!disposed && saved) {
-            lastSaved = state;
-        }
+        queue.request(snapshot());
     }
 
     private LauncherStateStore.State snapshot() {
@@ -407,24 +413,26 @@ public final class LauncherPanel extends JPanel {
     /** Promotes a command into history and queues the updated state for persistence. */
     public void rememberCommand(String value) {
         history.record(value);
-        markDirty();
+        markDirty(Setting.HISTORY);
         flushPersistence();
     }
 
     /**
      * Stops persistence callbacks for a window that is closing.
      *
-     * <p>If loading is still pending, defaults are deliberately not saved over
-     * an unread existing file. A completed load may queue the current snapshot,
-     * but its acknowledgement never updates this disposed panel.
+     * <p>If loading is still pending, the current values and their edited-field
+     * set are captured on the EDT. The load worker later merges and persists
+     * them without adopting the result into this disposed panel.
      */
     public void close() {
         if (disposed) {
             return;
         }
         saveDebounce.stop();
-        if (persistenceReady && !loadPending) {
-            flushPersistence();
+        if (loadPending) {
+            closedWhileLoading = new ClosedState(snapshot(), editedBeforeLoadCompletes);
+        } else if (persistenceReady && saveQueue != null) {
+            saveQueue.request(snapshot());
         }
         disposed = true;
     }
@@ -465,6 +473,26 @@ public final class LauncherPanel extends JPanel {
             return preset;
         }
         return CapturePreset.defaultPreset();
+    }
+
+    private static LauncherStateStore.State mergeLoaded(
+            LauncherStateStore.State loaded,
+            LauncherStateStore.State current,
+            Set<Setting> edited) {
+        List<String> mergedHistory = loaded.history();
+        if (edited.contains(Setting.HISTORY)) {
+            LinkedHashSet<String> unique = new LinkedHashSet<>(current.history());
+            unique.addAll(loaded.history());
+            mergedHistory = unique.stream().limit(LauncherHistory.MAX_ENTRIES).toList();
+        }
+        return new LauncherStateStore.State(
+                edited.contains(Setting.WORKSPACE) ? current.workspace() : loaded.workspace(),
+                edited.contains(Setting.BAZEL_EXECUTABLE)
+                        ? current.bazelExecutable()
+                        : loaded.bazelExecutable(),
+                edited.contains(Setting.PRESET) ? current.preset() : loaded.preset(),
+                edited.contains(Setting.COMMAND) ? current.command() : loaded.command(),
+                mergedHistory);
     }
 
     static List<String> commonSubcommands() {
@@ -517,6 +545,80 @@ public final class LauncherPanel extends JPanel {
             String text = preset == null ? "" : preset.displayName()
                     + (preset == CapturePreset.PERFORMANCE_DIAGNOSTICS ? " (recommended)" : "");
             return super.getListCellRendererComponent(list, text, index, selected, focused);
+        }
+    }
+
+    private enum Setting {
+        WORKSPACE,
+        BAZEL_EXECUTABLE,
+        PRESET,
+        COMMAND,
+        HISTORY
+    }
+
+    private record ClosedState(LauncherStateStore.State snapshot, Set<Setting> edited) {
+        private ClosedState {
+            snapshot = Objects.requireNonNull(snapshot, "snapshot");
+            edited = Set.copyOf(edited);
+        }
+    }
+
+    /**
+     * Serializes launcher saves without making completion callbacks touch Swing.
+     * The newest requested snapshot remains desired while an older write is in
+     * flight, so a stale completion can never become the final disk value.
+     */
+    private static final class SaveQueue {
+        private final LauncherStateStore store;
+        private final Executor executor;
+        private LauncherStateStore.State persisted;
+        private LauncherStateStore.State desired;
+        private LauncherStateStore.State inFlight;
+        private boolean initialized;
+
+        private SaveQueue(LauncherStateStore store, Executor executor) {
+            this.store = store;
+            this.executor = executor;
+        }
+
+        private synchronized void initialize(LauncherStateStore.State loaded) {
+            if (initialized) {
+                return;
+            }
+            persisted = loaded;
+            initialized = true;
+            startNextIfNeeded();
+        }
+
+        private synchronized void request(LauncherStateStore.State state) {
+            desired = state;
+            startNextIfNeeded();
+        }
+
+        private void startNextIfNeeded() {
+            if (!initialized
+                    || inFlight != null
+                    || desired == null
+                    || desired.equals(persisted)) {
+                return;
+            }
+            LauncherStateStore.State next = desired;
+            inFlight = next;
+            executor.execute(() -> complete(next, store.save(next)));
+        }
+
+        private synchronized void complete(LauncherStateStore.State completed, boolean success) {
+            if (!completed.equals(inFlight)) {
+                return;
+            }
+            boolean superseded = !completed.equals(desired);
+            if (success) {
+                persisted = completed;
+            }
+            inFlight = null;
+            if (success || superseded) {
+                startNextIfNeeded();
+            }
         }
     }
 

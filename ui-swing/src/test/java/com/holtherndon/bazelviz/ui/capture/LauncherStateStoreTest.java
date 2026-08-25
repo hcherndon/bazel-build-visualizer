@@ -132,7 +132,7 @@ class LauncherStateStoreTest {
     void lateLoadDoesNotOverwriteAnewerEdit() throws Exception {
         LauncherStateStore store = new LauncherStateStore(temporaryDirectory);
         assertThat(store.save(new LauncherStateStore.State(
-                "/stored", "bazel", CapturePreset.LIVE_ESSENTIALS,
+                "/stored", "bazelisk", CapturePreset.FULL_GRAPH_DIAGNOSTICS,
                 "build //stored", List.of("build //stored")))).isTrue();
         ArrayDeque<Runnable> queuedIo = new ArrayDeque<>();
         LauncherPanel panel = panelAttachedTo(store, queuedIo);
@@ -142,10 +142,15 @@ class LauncherStateStoreTest {
         SwingUtilities.invokeAndWait(() -> {});
 
         assertThat(panel.workspace()).isEqualTo("/edited-before-load");
+        assertThat(panel.bazelExecutable()).isEqualTo("bazelisk");
+        assertThat(panel.preset()).isEqualTo(CapturePreset.FULL_GRAPH_DIAGNOSTICS);
+        assertThat(panel.command()).isEqualTo("build //stored");
         assertThat(queuedIo).hasSize(1);
         queuedIo.remove().run();
         SwingUtilities.invokeAndWait(() -> {});
-        assertThat(store.load().workspace()).isEqualTo("/edited-before-load");
+        assertThat(store.load()).isEqualTo(new LauncherStateStore.State(
+                "/edited-before-load", "bazelisk", CapturePreset.FULL_GRAPH_DIAGNOSTICS,
+                "build //stored", List.of("build //stored")));
     }
 
     @Test
@@ -165,6 +170,61 @@ class LauncherStateStoreTest {
         assertThat(panel.workspace()).isNotEqualTo("/stored");
         assertThat(queuedIo).isEmpty();
         assertThat(store.load()).isEqualTo(existing);
+    }
+
+    @Test
+    void closeBeforeLoadMergesEditsAndHistoryWithoutAdoptingIntoThePanel() throws Exception {
+        LauncherStateStore store = new LauncherStateStore(temporaryDirectory);
+        LauncherStateStore.State existing = new LauncherStateStore.State(
+                "/stored", "bazelisk", CapturePreset.FULL_GRAPH_DIAGNOSTICS,
+                "build //stored", List.of("build //stored"));
+        assertThat(store.save(existing)).isTrue();
+        ArrayDeque<Runnable> queuedIo = new ArrayDeque<>();
+        LauncherPanel panel = panelAttachedTo(store, queuedIo);
+
+        SwingUtilities.invokeAndWait(() -> {
+            panel.setWorkspace("/edited-before-close");
+            panel.commandFieldForTest().setText("test //new");
+            panel.rememberCommand("test //new");
+            panel.close();
+        });
+        queuedIo.remove().run();
+
+        assertThat(panel.bazelExecutable()).isEqualTo("bazel");
+        assertThat(queuedIo).hasSize(1);
+        queuedIo.remove().run();
+        assertThat(store.load()).isEqualTo(new LauncherStateStore.State(
+                "/edited-before-close", "bazelisk", CapturePreset.FULL_GRAPH_DIAGNOSTICS,
+                "test //new", List.of("test //new", "build //stored")));
+    }
+
+    @Test
+    void newestDesiredSnapshotWinsAfterAnOlderSaveCompletes() throws Exception {
+        LauncherStateStore store = new LauncherStateStore(temporaryDirectory);
+        LauncherStateStore.State original = new LauncherStateStore.State(
+                "/original", "bazel", CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                "build //...", List.of());
+        assertThat(store.save(original)).isTrue();
+        ArrayDeque<Runnable> queuedIo = new ArrayDeque<>();
+        LauncherPanel panel = panelAttachedTo(store, queuedIo);
+        queuedIo.remove().run();
+        SwingUtilities.invokeAndWait(() -> {});
+
+        SwingUtilities.invokeAndWait(() -> {
+            panel.setWorkspace("/older-queued-value");
+            panel.flushPersistence();
+            panel.setWorkspace("/original");
+            panel.flushPersistence();
+        });
+        assertThat(queuedIo).hasSize(1);
+
+        queuedIo.remove().run();
+        assertThat(store.load().workspace()).isEqualTo("/older-queued-value");
+        assertThat(queuedIo).hasSize(1);
+
+        queuedIo.remove().run();
+        assertThat(store.load()).isEqualTo(original);
+        assertThat(queuedIo).isEmpty();
     }
 
     @Test

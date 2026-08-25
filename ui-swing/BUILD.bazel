@@ -50,11 +50,40 @@ bbv_java_test_suite(
     # under Bazel that is a declared data dependency found via runfiles.
     data = ["//app:src/main/packaging/bviz.properties"],
     headless = True,
-    # EventRowSourceTest's far-jump case builds a million-row fake through a
-    # CopyOnWriteArrayList — measured at 465s under Gradle too, which simply
-    # never had a per-test time limit. The cost predates the migration; only
-    # the ceiling is new.
-    timeout_overrides = {"EventRowSourceTest": "eternal"},
+    # One library per functional package keeps an edit to a capture test from
+    # invalidating all graph/timeline/event test binaries. The named group
+    # suites (tests-capture, tests-events, ...) are also convenient scoped
+    # gates, while :tests remains the complete aggregate. The million-row
+    # far-jump case is separate so its cache key is independent even from the
+    # other event tests.
+    source_groups = {
+        "actions": glob(["src/test/java/com/holtherndon/bazelviz/ui/actions/*.java"]),
+        "capture": glob(["src/test/java/com/holtherndon/bazelviz/ui/capture/*.java"]),
+        "enrich": glob(["src/test/java/com/holtherndon/bazelviz/ui/enrich/*.java"]),
+        "errors": glob(["src/test/java/com/holtherndon/bazelviz/ui/errors/*.java"]),
+        "events": glob(
+            ["src/test/java/com/holtherndon/bazelviz/ui/events/*.java"],
+            exclude = ["src/test/java/com/holtherndon/bazelviz/ui/events/EventRowSourceScaleTest.java"],
+        ),
+        "events-scale": [
+            "src/test/java/com/holtherndon/bazelviz/ui/events/EventRowSourceScaleTest.java",
+            "src/test/java/com/holtherndon/bazelviz/ui/events/FakeSessionReader.java",
+        ],
+        "export": glob(["src/test/java/com/holtherndon/bazelviz/ui/export/*.java"]),
+        "graph": glob(["src/test/java/com/holtherndon/bazelviz/ui/graph/*.java"]),
+        "inspect": glob(["src/test/java/com/holtherndon/bazelviz/ui/inspect/*.java"]),
+        "metrics": glob(["src/test/java/com/holtherndon/bazelviz/ui/metrics/*.java"]),
+        "nav": glob(["src/test/java/com/holtherndon/bazelviz/ui/nav/*.java"]),
+        "overview": glob(["src/test/java/com/holtherndon/bazelviz/ui/overview/*.java"]),
+        "query": glob(["src/test/java/com/holtherndon/bazelviz/ui/query/*.java"]),
+        "session": glob(["src/test/java/com/holtherndon/bazelviz/ui/session/*.java"]),
+        "shell": glob(["src/test/java/com/holtherndon/bazelviz/ui/*.java"]),
+        "table": glob(["src/test/java/com/holtherndon/bazelviz/ui/table/*.java"]),
+        "targets": glob(["src/test/java/com/holtherndon/bazelviz/ui/targets/*.java"]),
+        "tests": glob(["src/test/java/com/holtherndon/bazelviz/ui/tests/*.java"]),
+        "theme": glob(["src/test/java/com/holtherndon/bazelviz/ui/theme/*.java"]),
+        "timeline": glob(["src/test/java/com/holtherndon/bazelviz/ui/timeline/*.java"]),
+    },
     deps = [
         ":ui-swing",
         "//analysis-core",

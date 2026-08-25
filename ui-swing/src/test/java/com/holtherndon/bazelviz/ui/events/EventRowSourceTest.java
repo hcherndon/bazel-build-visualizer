@@ -14,10 +14,9 @@ import org.junit.jupiter.api.Test;
  *
  * <p>These tests are about the one thing that could quietly go wrong here:
  * page N showing the rows of some other page. Every assertion checks the actual
- * ids that came back against the ids that row range must contain, including for
- * a jump to the far end of the table with nothing fetched in between — the
- * scroll-thumb drag that {@code OFFSET} paging would have made slow and that
- * arithmetic anchoring makes free.
+ * ids that came back against the ids that row range must contain. The
+ * million-row far-jump version of that contract has its own scale target so a
+ * change to these boundary cases does not invalidate its cache entry.
  */
 class EventRowSourceTest {
 
@@ -34,29 +33,6 @@ class EventRowSourceTest {
         // Opening costs one count plus a first-row and a last-row probe. No scan.
         assertThat(reader.pageAfterCalls()).isEqualTo(1);
         assertThat(reader.pageBeforeCalls()).isEqualTo(1);
-    }
-
-    @Test
-    @DisplayName("a jump to the far end of the table fetches exactly that page's rows")
-    void farJumpLandsOnTheRightRows() {
-        FakeSessionReader reader = FakeSessionReader.dense(1_000_000);
-        EventRowSource source = EventRowSource.open(reader, PAGE_SIZE);
-        int pagesBefore = reader.pageAfterCalls();
-
-        // Straight to row 900,000 with nothing fetched in between, the way a
-        // dragged scroll thumb arrives.
-        Page<EventRow> page = source.fetchPage(9_000, PAGE_SIZE);
-
-        assertThat(page.pageIndex()).isEqualTo(9_000);
-        assertThat(page.rows()).hasSize(PAGE_SIZE);
-        assertThat(page.rows().getFirst().id()).isEqualTo(900_001);
-        assertThat(page.rows().getLast().id()).isEqualTo(900_100);
-        assertThat(page.rows()).extracting(EventRow::sequence)
-                .startsWith(900_000L)
-                .endsWith(900_099L);
-        // One keyset page for the rows themselves. The store was never walked
-        // from the beginning, and nothing counted the 900,000 skipped rows.
-        assertThat(reader.pageAfterCalls() - pagesBefore).isEqualTo(1);
     }
 
     @Test
