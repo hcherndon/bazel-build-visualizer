@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.timeline;
 
+import com.formdev.flatlaf.FlatLaf;
 import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
@@ -12,6 +13,7 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
@@ -36,6 +38,7 @@ import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.JScrollBar;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.JViewport;
@@ -106,7 +109,10 @@ import javax.swing.SwingConstants;
  * true and the horizontal policy is NEVER, because horizontal position is the
  * pan/zoom transform's business and two mechanisms for one axis would fight.
  * For the same reason the wheel over the plot zooms and is consumed there: a
- * zoom gesture never also scrolls.
+ * zoom gesture never also scrolls. The scroll pane's own wheel handling is
+ * off for the same reason, pane-wide — which would leave the lane label
+ * column, its row header, dead to the wheel, so that column carries its own
+ * listener that scrolls the shared viewport instead of zooming.
  */
 public final class TimelineView extends JPanel {
 
@@ -258,12 +264,21 @@ public final class TimelineView extends JPanel {
         axis.add(header, BorderLayout.CENTER);
 
         plotScroll.setRowHeaderView(laneLabels);
-        plotScroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        // ALWAYS rather than AS_NEEDED: FlatLaf's default vertical scrollbar
+        // is thin and low-contrast, and AS_NEEDED made it appear and
+        // disappear as the plot's height changed, so a scrollable plot too
+        // often looked exactly like a non-scrollable one. Always showing it,
+        // restyled below, is the whole fix — a bar nobody notices is a bar
+        // that might as well not scroll.
+        plotScroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
         // Horizontal position belongs to the pan/zoom transform alone.
         plotScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         plotScroll.getVerticalScrollBar().setUnitIncrement(VERTICAL_SCROLL_UNIT);
+        styleVerticalScrollbar(plotScroll.getVerticalScrollBar());
         // The wheel over this plot means zoom. Leaving the scroll pane's own
-        // wheel handling on would make one gesture mean two things at once.
+        // wheel handling on would make one gesture mean two things at once;
+        // laneLabels — the row header — carries its own wheel listener below
+        // so wheeling over the label column still scrolls.
         plotScroll.setWheelScrollingEnabled(false);
         plotScroll.setBorder(BorderFactory.createEmptyBorder());
 
@@ -293,6 +308,26 @@ public final class TimelineView extends JPanel {
         deck.add(body, "timeline");
         add(deck, BorderLayout.CENTER);
         cards.show(deck, "empty");
+    }
+
+    /**
+     * Widens {@code bar}'s thumb and gives it a colour that reads against
+     * the track in either theme, via FlatLaf's per-component style property
+     * rather than a UI-default override — this scroll pane only, not every
+     * scroll pane in the application. {@link com.holtherndon.bazelviz.ui.theme.Themes}
+     * stays untouched; a look-and-feel other than FlatLaf simply ignores the
+     * client property and keeps its own scrollbar.
+     */
+    private static void styleVerticalScrollbar(JScrollBar bar) {
+        boolean dark = FlatLaf.isLafDark();
+        Color thumb = dark ? new Color(0x9A, 0x9A, 0x9A) : new Color(0x6E, 0x6E, 0x6E);
+        Color hoverThumb = dark ? new Color(0xC4, 0xC4, 0xC4) : new Color(0x46, 0x46, 0x46);
+        bar.putClientProperty("FlatLaf.style", Map.of(
+                "width", 14,
+                "thumbArc", 8,
+                "thumbInsets", new Insets(2, 3, 2, 3),
+                "thumb", thumb,
+                "hoverThumbColor", hoverThumb));
     }
 
     private void buildInspector() {
@@ -953,6 +988,22 @@ public final class TimelineView extends JPanel {
     private final class LaneLabels extends JComponent implements Scrollable {
 
         private static final long serialVersionUID = 1L;
+
+        LaneLabels() {
+            // plotScroll's own wheel handling is off pane-wide so the canvas's
+            // listener can own "wheel means zoom" without a second listener
+            // fighting it — but that same switch left this column dead to the
+            // wheel, since nothing else scrolled it. This is that scrolling,
+            // by the same unit increment Scrollable reports above and reading
+            // precise rotation the way the canvas's zoom handler does, so a
+            // trackpad's fractional notches feel as smooth here as they do
+            // over the plot.
+            addMouseWheelListener(event -> {
+                event.consume();
+                int delta = (int) Math.round(event.getPreciseWheelRotation() * VERTICAL_SCROLL_UNIT);
+                scrollTo(scrollPosition() + delta);
+            });
+        }
 
         @Override
         public Dimension getPreferredSize() {
