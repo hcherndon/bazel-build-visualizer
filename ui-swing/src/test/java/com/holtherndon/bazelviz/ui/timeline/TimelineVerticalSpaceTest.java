@@ -194,7 +194,9 @@ final class TimelineVerticalSpaceTest {
         assertThat(scroll.getHorizontalScrollBarPolicy())
                 .isEqualTo(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         assertThat(scroll.getVerticalScrollBarPolicy())
-                .isEqualTo(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+                .as("always visible, not AS_NEEDED — a bar that appears and "
+                        + "disappears with the plot's height is one nobody notices")
+                .isEqualTo(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
         assertThat(scroll.getVerticalScrollBar().getUnitIncrement()).isEqualTo(16);
         assertThat(((javax.swing.Scrollable) view.canvasForTest())
                 .getScrollableTracksViewportWidth())
@@ -296,6 +298,35 @@ final class TimelineVerticalSpaceTest {
         // is not listening for it either.
         assertThat(wheel.isConsumed()).isTrue();
         assertThat(scroll.isWheelScrollingEnabled()).isFalse();
+    }
+
+    @Test
+    @DisplayName("the wheel over the lane labels scrolls the shared viewport, and does not zoom")
+    void wheelOverLaneLabelsScrollsTheSharedViewport() {
+        TimelineView view = viewShowing(modelWithLaneCount(20));
+        sizeViewport(view);
+        JScrollPane scroll = view.scrollForTest();
+        scroll.getViewport().setViewPosition(new Point(0, 50));
+        JComponent laneLabels = view.laneLabelsForTest();
+
+        // plotScroll.setWheelScrollingEnabled(false) is pane-wide, so nothing
+        // but a listener on the label column itself moves this viewport when
+        // the pointer is over the names rather than the plot.
+        double before = view.viewport().orElseThrow().transform().pixelsPerMicro();
+        MouseWheelEvent wheel = new MouseWheelEvent(laneLabels, MouseEvent.MOUSE_WHEEL,
+                System.currentTimeMillis(), 0, 50, 10, 50, 10, 1, false,
+                MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, 2, 2.0);
+        laneLabels.getMouseWheelListeners()[0].mouseWheelMoved(wheel);
+
+        // Two notches at the same sixteen-pixel unit increment Scrollable
+        // reports for this column.
+        assertThat(scroll.getViewport().getViewPosition().y)
+                .as("wheeling the label column moved the shared viewport")
+                .isEqualTo(50 + Math.round(2.0 * 16));
+        assertThat(view.viewport().orElseThrow().transform().pixelsPerMicro())
+                .as("the label column's wheel gesture scrolls only — the canvas is still the one place it zooms")
+                .isEqualTo(before);
+        assertThat(wheel.isConsumed()).isTrue();
     }
 
     @Test
