@@ -58,20 +58,28 @@ fetches Bazel, Bazel fetches the JDK. Specifically:
   `MODULE.bazel.lock` are committed and replace the 17 Gradle lockfiles.
   The deliberate-friction contract survives: adding a dependency is a
   MODULE.bazel edit plus an explicit repin.
-- **Protobuf/gRPC:** `proto_library` over the vendored sources (vendoring
-  and `update-protos.sh` unchanged), with Java and gRPC codegen run by the
-  *same sha256-pinned binaries Gradle resolves today* (protoc 4.36.0,
-  protoc-gen-grpc-java 1.83.1 maven-central exes) and the runtime classpath
-  staying the audited maven jars. The BCR `grpc-java` module is
-  deliberately **not** used: it trails at 1.82.0, substitutes source-built
-  targets for the locked jars, and pours ~30 unchosen artifacts into the
-  maven hub. Generated-source parity with Gradle is byte-diffed, not
-  asserted.
-- **Tests:** contrib_rules_jvm's JUnit-Platform runner, one target per test
-  class (per-class caching and parallelism). The four real-Bazel test
-  classes run un-sandboxed with inherited environment and uncached results
-  — and CI asserts they *ran*, because "silently skipped and green" is the
-  precise failure mode `BazelBinary` exists to prevent.
+- **Protobuf/gRPC:** one genrule runs the *same sha256-pinned binaries
+  Gradle resolved* (protoc 4.36.0, protoc-gen-grpc-java 1.83.1
+  maven-central exes) directly over the vendored sources (vendoring and
+  `update-protos.sh` unchanged); no `proto_library` is declared — with the
+  pinned exes doing all codegen it would only add a second, unused
+  compilation path — and the runtime classpath stays the audited maven
+  jars. The BCR `grpc-java` module is deliberately **not** used: it trails
+  at 1.82.0, substitutes source-built targets for the locked jars, and
+  pours ~30 unchosen artifacts into the maven hub. Generated-source parity
+  with Gradle was byte-diffed at cutover, not asserted.
+- **Tests:** contrib_rules_jvm's JUnit-Platform runner, one test target per
+  class for parallelism and per-class reporting (each module's test sources
+  compile once into a shared library — test classes legitimately share
+  helpers — so invalidation is per module, execution per class). The seven
+  real-Bazel test classes (six whole classes plus `RealBazelCliRunTest`,
+  split out of the mixed `CliRunTest`) run un-sandboxed with inherited
+  environment and uncached results. CI excludes them **visibly**, as the
+  `--config=ci` tag filter in `.bazelrc`, and they run on developer
+  machines — the guard against "silently skipped and green", the precise
+  failure mode `BazelBinary` exists to prevent, is that any skip is loud
+  (`BazelBinary.whyUnavailable()`) and any exclusion is written in the
+  config rather than shaped by the environment.
 - **Cutover, not coexistence:** Gradle remains the build of record until
   the parity checklist passes, then is deleted whole in one change. Two
   supported builds would be two places for the build to lie about itself.

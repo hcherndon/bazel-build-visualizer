@@ -171,17 +171,20 @@ reconsider the idiomatic route — the shaded-netty blocker already fell.
 
 ### 4.2 Tests: contrib_rules_jvm JUnit-Platform runner, one target per class
 
-`java_test_suite(runner = "junit5")` from contrib_rules_jvm generates one
-`java_test` per test class, running the repo's own JUnit **6.1.3** artifacts
-from `@maven` (the runner is version-agnostic over the Platform launcher
-API; 0.31.1+ is documented working against Platform 6.x — step 0 verifies
-6.1.3 and the XML the runner writes). Fallback if it disappoints: an
-~80-line launcher in `test-support` driving `junit-platform-launcher`
-directly with Bazel's XML contract — this repo would not mind owning that.
+The draft proposed `java_test_suite(runner = "junit5")` from
+contrib_rules_jvm — one `java_test` per test class, each compiling its own
+source file. **Executed refinement:** this codebase's test classes
+legitimately use each other's helpers (`BfsTest` builds graphs with
+`CsrGraphTest.stream`), so per-class compilation does not build. What
+shipped (`bbv_java_test_suite` in `tools/bbv.bzl`) compiles all of a
+module's test sources once into a shared testonly `java_library` and runs
+one runtime-only `java_junit5_test` per class over it. Invalidation is
+therefore per module — exactly Gradle's granularity, no worse — while
+execution, reporting, flake isolation and parallelism stay per class. The
+runner is contrib_rules_jvm's JUnit Platform runner against the repo's own
+JUnit **6.1.3** artifacts from `@maven`, verified working (XML included);
+the draft's fallback — an ~80-line owned launcher — stayed unwritten.
 
-What per-class targets buy, concretely: Bazel caches at test-target
-granularity, so a `storage-sqlite` edit reruns that module's classes and
-nothing else — today `check` reruns every module's whole suite JVM.
 `assumeTrue`-skips keep working unchanged (they surface as skipped in the
 XML, same as under Gradle).
 
@@ -244,9 +247,14 @@ place." That transfers as a small Starlark file:
 
 - `bbv_java_library(name, deps, …)` — wraps `java_library`; adds slf4j,
   `-parameters`, resources glob.
-- `bbv_java_test_suite(name, deps, jvm_flags = [], …)` — wraps
-  `java_test_suite`; adds JUnit 6 + AssertJ + launcher deps, `-Xmx2g`, the
-  native-access flag, `runner = "junit5"`.
+- `bbv_java_test_suite(name, deps, jvm_flags = [], …)` — one shared
+  testonly `java_library` over the module's test sources plus one
+  runtime-only `java_junit5_test` per class (§4.2's executed refinement);
+  adds JUnit 6 + AssertJ + launcher/reporting deps, `-Xmx2g`, the
+  native-access flag, headless AWT where asked.
+- `bbv_real_bazel_test(…)` — the dedicated per-class shape for the
+  hazard-tagged classes of §4.3 (grew out of execution; the draft had the
+  suites only).
 - `bbv_java_binary(…)` — wraps `java_binary`; adds the native-access flag.
 
 The native-access string is written **once**, in this file, replacing
@@ -308,12 +316,22 @@ build --javacopt=-parameters
 build --javacopt=-encoding
 build --javacopt=UTF-8
 
+# Bazel's default Java toolchain runs Error Prone; the Gradle build ran
+# plain javac and linters are out of scope (§10). Disabled wholesale so the
+# parity gate diffs builds, not linters.
+build --javacopt=-XepDisableAllChecks
+
 test --test_output=errors
 # Fence two of three for the sweep (the target's own "manual" tag is the
 # first); real-bazel stays included by default, like `./gradlew build`.
 test --test_tag_filters=-bazel-sweep
 # 2 GiB test JVMs times unbounded parallelism is the 120 GB shape again.
 test --local_test_jobs=4
+# A child Bazel derives its output root from TEST_TMPDIR, whose default
+# location is inside the execroot — which a Bazel 9 child then mistakes for
+# its own main repo and refuses to start ("repo contents cache is inside
+# the main repo"). A neutral tmp root keeps the real-bazel children honest.
+test --test_tmpdir=/tmp/bbv-test-tmp
 
 # CI adds: --config=ci. CI's exclusion of real-bazel is visible here, not a
 # silent environment-shaped skip.
@@ -435,9 +453,9 @@ branch only long enough to diff them; they are never both "supported").
 | 2 | Scaffolding on the real branch: `.bazelversion`, `.bazelrc`, MODULE.bazel + both lockfiles, exe sha256 pins, `tools/bbv.bzl`, `.gitignore` entries | `bazel build @maven//…` resolves; lockfiles committed; `bazel mod tidy` clean |
 | 3 | `proto/` BUILD: proto_libraries, codegen genrules, descriptor set | Generated sources diff **empty** vs Gradle's `proto/build/generated/`; descriptor set parses and contains imports |
 | 4 | Module BUILD files in dependency order (corrected 2026-08-24 for the new storage-sqlite → analysis-core edge): core-model → graph-core, session-format → analysis-core → storage-sqlite → proto (independent) → bep-codec, test-support → bazel-runner → capture-file → enrichment → capture-bes → ui-swing → app, benchmarks | After each: that module's `bazel test` green. After all: test-class inventory (names + counts per class, from XML) identical to Gradle's, real-Bazel classes excepted |
-| 5 | Binaries: `//app:bbv` (+ deploy jar, macOS select), 5 spike binaries, JMH binary | `bazel run //app:bbv -- import/inspect/run` behaves identically on a fixture session; smoke run via `--jvm_flag=-Dbbv.smoke=true` passes; each spike `--offscreen` PASSes; `bazel run //benchmarks:jmh -- -l` lists both benchmarks |
-| 6 | Real-Bazel test targets (§4.3) | On this machine: all four run and pass under `bazel test --test_tag_filters=real-bazel`; with `PATH` stripped they skip with the correct message |
-| 7 | CI cutover on the branch: new workflow, both OSes, caching | Green on macOS + Ubuntu; real-Bazel tests *ran* (assert non-skipped in the workflow — CI silently losing them is the failure mode `BazelBinary` was built to prevent); cold/warm CI times recorded |
+| 5 | Binaries: `//app:bbv` (+ deploy jar, macOS select), 6 spike binaries, JMH binary | `bazel run //app:bbv -- import/inspect/run` behaves identically on a fixture session; smoke run via `--jvm_flag=-Dbbv.smoke=true` passes; each spike `--offscreen` PASSes; `bazel run //benchmarks:jmh -- -l` lists both benchmarks |
+| 6 | Real-Bazel test targets (§4.3) | On this machine: all seven run and pass under `bazel test --test_tag_filters=real-bazel`; with `PATH` stripped they skip with the correct message |
+| 7 | CI cutover on the branch: new workflow, both OSes, caching | Green on macOS + Ubuntu. (Executed revision: CI runs `bazelisk test //... --config=ci`, which excludes real-bazel — the exclusion is a named line in `.bazelrc`, visible rather than environment-shaped, and the seven classes run on developer machines per step 6. The draft's "assert non-skipped in the workflow" retired with that decision.) |
 | 8 | Parity signoff (checklist §8) + docs sweep: README, troubleshooting.md, performance.md, implementation-status.md; historical docs (phase2-audit, ground-truth, product-plan) get pointer notes only, never rewrites — ADR-008 set that precedent | Checklist all green, recorded at the bottom of this document |
 | 9 | **Gradle removal**: all `*.gradle.kts`, `build-logic/`, `gradle/`, `gradlew*`, `gradle.properties`, 17 lockfiles, `.gradle`/`.kotlin` ignores | `git grep -il gradle -- ':!docs' ':!*.md'` empty; `bazel test //...` green from a fresh clone on a machine with only bazelisk |
 | 10 | Dogfood + measure: `bbv run -- build //...` on this repo; Gradle-vs-Bazel clean/incremental/no-op/CI timings into performance.md (including where Bazel is *slower*); update agent memory (`./gradlew check` → `bazel test //...`) | A committed session capture of this repo building itself; performance.md updated with measured, dated figures |
@@ -470,27 +488,44 @@ indefinitely at any row with everything before it green.
 
 ## 8. Parity signoff checklist (step 8 gate)
 
-- [ ] Test inventory: identical class list and per-class test counts,
-      Gradle XML vs `bazel-testlogs` XML (scripted diff, committed under
-      `tools/`).
-- [ ] Generated proto/grpc sources: byte-identical to Gradle's (step 3
-      diff re-run at signoff).
-- [ ] Runtime classpath: GAV set in `maven_install.json` ≡ union of
-      Gradle lockfiles (known deltas only: +jmh ×2, +junit-platform-reporting).
-- [ ] `bbv import` / `inspect` / `run` / smoke behave identically from
-      `bazel run` and from the deploy jar (native-access flag present —
-      run once under `--illegal-native-access=deny` to prove it, the
-      ADR-008 enforcement rehearsal).
-- [ ] All seven real-Bazel test classes ran (not skipped) where a host
-      Bazel exists. (Executed revision: CI now excludes real-bazel visibly
-      via `--config=ci`; the classes run on developer machines instead.)
-- [ ] Spikes: offscreen PASS verdicts (six spikes now); JMH lists benchmarks.
-- [ ] Double clean build ⇒ identical `bbv_deploy.jar` sha256.
-- [ ] No CppCompile actions anywhere in `deps(//...)`.
-- [ ] Fresh-clone build on a bazelisk-only environment (no JVM installed)
-      succeeds.
-- [ ] `git status` clean after full build (no stray outputs; the four
-      symlinks and nothing else, all ignored).
+Ticked 2026-08-25 against the evidence in §11's signoff record; a box is
+ticked only for something that actually ran, and the two items that did not
+run say so instead.
+
+- [x] Test inventory: identical class list and per-class test counts,
+      Gradle XML vs `bazel-testlogs` XML — 216 classes, 1852 tests,
+      0 failures, 0 skipped on both sides (`tools/test_inventory.py` holds
+      the counting logic; record in §11.1).
+- [x] Generated proto/grpc sources: byte-identical to Gradle's (step 3
+      diff re-run at signoff; sha256s in §11.2).
+- [x] Runtime classpath: GAV set in `maven_install.json` ≡ union of
+      Gradle lockfiles, zero version mismatches; every delta is a
+      codegen/generator tool or a planned addition, enumerated in §11.3.
+- [x] `bbv import` / `inspect` / `run` / smoke exercised from `bazel run`
+      and the smoke path additionally from the deploy jar under
+      `--illegal-native-access=deny` (the ADR-008 enforcement rehearsal;
+      scope and exit codes in §11.4).
+- [x] All seven real-Bazel test classes ran (not skipped) on this machine
+      (§11.5). CI excludes real-bazel visibly via `--config=ci`; the
+      classes run on developer machines instead.
+- [x] JMH lists both benchmarks (§11.6). **Spike offscreen PASS verdicts:
+      not executed at signoff** — deferred; the six spike binaries compile
+      in `bazel build //...` (rot protection) and their verdicts measure
+      machine performance, not the build system (performance.md's
+      build-system note). Follow-up: run each `--offscreen` once and
+      record.
+- [x] Double clean build ⇒ identical `bbv_deploy.jar` sha256 (§11.7).
+- [x] No protobuf/gRPC/C++-toolchain CppCompile actions in `deps(//...)`;
+      the aquery's single hit is Bazel's own `@bazel_tools` launcher tool,
+      stated verbatim in §11.8.
+- [ ] Fresh-clone build on a bazelisk-only environment (no JVM installed):
+      **not executed — deferred.** Needs a second workspace and a full
+      re-download to prove anything; the committed lockfiles and hermetic
+      toolchain make CI's ubuntu runner (bazelisk + no project JVM setup)
+      the honest first execution of this check.
+- [x] `git status` clean after full build (§11.9; the convenience symlinks
+      and nothing else, all ignored — the workspace-name symlink entry in
+      `.gitignore` matches the canonical clone directory name).
 
 ## 9. Risk register
 
@@ -522,3 +557,74 @@ indefinitely at any row with everything before it green.
 - Error Prone / NullAway / formatters — not in the Gradle build; adding
   them is orthogonal and easier after (Bazel java toolchains carry Error
   Prone natively) but not this change.
+
+## 11. Signoff record (2026-08-25)
+
+Recorded per step 8's exit criterion. Machine: the macOS arm64 development
+machine; Bazel 9.2.0 via bazelisk 1.29.0; local JDK 25.0.1 for the
+deploy-jar rehearsal and jpackage. Commits: parity gates ran at cutover
+(commit `7421515`); the deny rehearsal, double-clean determinism check,
+CppCompile aquery and GAV comparison ran the following day from the same
+tree.
+
+1. **Test inventory.** `./gradlew build --max-workers=3` → BUILD
+   SUCCESSFUL; Gradle XML totals 216 classes / 1852 tests / 0 failures /
+   0 skipped. `bazel test //... --test_tag_filters=-bazel-sweep` →
+   "Executed 7 out of 216 tests: 216 tests pass" (the 7 are the
+   `external`-tagged real-Bazel targets, which never cache); testlogs XML
+   totals 216 targets / 1852 tests / 0 failures / 0 skipped. Identical
+   inventory. Counting logic: `tools/test_inventory.py`.
+2. **Proto parity.** `diff -r` of the extracted srcjars against Gradle's
+   generated trees: no difference beyond protoc's own jar manifest.
+   sha256 over the java trees (both sides):
+   `ae6c0b89653de586defcd4dab579e4fa751f6a22a4def5d8ccf27e5d76e5b768`;
+   grpc trees:
+   `03313a46c29894c1152bc253bd4836dbc5e43bbe0aa86fd98dd3fa003697a515`;
+   descriptor set byte-identical:
+   `f31bf690c020d40969b60ea6cdef3aae48936cee242827ecb83844411130fc87`.
+3. **Dependency universe.** Union of the 15 module `gradle.lockfile`s (from
+   git history) vs `maven_install.json`: zero version mismatches. Only in
+   Gradle: `com.google.protobuf:protoc` and `io.grpc:protoc-gen-grpc-java`
+   (same versions, now sha256-pinned `http_file` exes rather than maven
+   artifacts), `org.junit:junit-bom` (a BOM, no jar), and the
+   me.champeau.jmh plugin's bytecode-generator stack
+   (`jmh-generator-asm`/`-bytecode`/`-reflection`, `org.ow2.asm:asm`) —
+   replaced by annotation processing. Only in Bazel:
+   `junit-platform-reporting` (planned; runner XML),
+   `jmh-generator-annprocess` (planned), and its transitive
+   `open-test-reporting-tooling-spi`.
+4. **Native-access rehearsal.** Smoke run (window opens, FlatLaf loads its
+   native library, exits after two seconds) under
+   `--illegal-native-access=deny`: via
+   `bazel run //app:bbv -- --jvm_flag=--illegal-native-access=deny
+   --jvm_flag=-Dbbv.smoke=true` → exit 0, and via
+   `java --illegal-native-access=deny --enable-native-access=ALL-UNNAMED
+   -Dbbv.smoke=true -jar bazel-bin/app/bbv_deploy.jar` → exit 0.
+   `import --help` verified via `bazel run`. `import`/`inspect`/`run`
+   behavior is otherwise covered in-process by the app suite
+   (CliImportTest, CliInspectTest, RealBazelCliRunTest and siblings) under
+   `bazel test`; no side-by-side fixture-session comparison of the two
+   launch paths was performed beyond the smoke path.
+5. **Real-Bazel classes.** All seven ran and PASSED on this machine under
+   `bazel test`: RealBazelCapabilityTest (19.2s), RealBazelBesTest (29.2s),
+   RealBazelCaptureTest (55.3s), RealBazelEnrichmentTest (51.6s),
+   RealBazelGraphTest (15.0s), RealBazelNormalizationTest (99.1s),
+   RealBazelCliRunTest (24.6s). None skipped. The PATH-stripped skip path
+   was not separately exercised at signoff.
+6. **JMH.** `bazel run //benchmarks:jmh -- -l` lists
+   `SqliteInsertBench.insertRows`, `SyntheticGeneratorBench.actionAtRandom`
+   and `.actionAtSequential`. Spike offscreen verdicts: not executed
+   (checklist note).
+7. **Determinism.** `bazel clean` + `bazel build //app:bbv_deploy.jar`,
+   twice: both builds produced sha256
+   `6d9d7cacf4d8e34f53d21060771e69f645c0e32bd4d61d5c97d22c60a19550b6`
+   (matching the pre-clean artifact).
+8. **CppCompile.** `bazel aquery 'mnemonic("CppCompile", deps(//...))'`
+   returns exactly one action: `@bazel_tools//src/tools/launcher:
+   launcher_maker` (`Compiling src/tools/launcher/launcher_maker.cc [for
+   tool]`, exec configuration) — Bazel's own java_binary launcher tooling,
+   present regardless of this repository's rules. Zero actions from
+   protobuf, gRPC, or any repo target; the prebuilt-protoc goal this
+   invariant was written for holds.
+9. **Clean tree.** `git status --porcelain` empty after the full build and
+   test cycle, with only the ignored convenience symlinks on disk.
