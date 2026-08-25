@@ -2044,3 +2044,38 @@ it is a different tab and was not reported.
   and the button is absent in each of the three ways it can have nothing
   behind it. `InspectorPanelTest`, `EventsViewEntityActionsTest` and
   `TimelineInspectorTest` now assert against the menu instead of a strip.
+
+- **The timeline's lane labels stopped being a dead zone for the wheel, and
+  its vertical scrollbar stopped being invisible** (2026-08-24).
+  `TimelineView`'s `plotScroll` carries `setWheelScrollingEnabled(false)`
+  pane-wide so the canvas's own `MouseWheelListener` can own "wheel means
+  zoom" without the scroll pane's default handling fighting it — correct for
+  the canvas, but `LaneLabels` (the row header) had no wheel listener of its
+  own, so wheeling over the lane names did nothing at all. `LaneLabels` now
+  gets a constructor-installed `MouseWheelListener` that scrolls the shared
+  viewport by `getPreciseWheelRotation()` times `VERTICAL_SCROLL_UNIT` — the
+  same unit its `Scrollable#getScrollableUnitIncrement` already reports —
+  through the existing clamping `scrollTo` helper, so a trackpad's fractional
+  notches feel the same here as they do over the plot, and the canvas's own
+  wheel path is untouched: it still zooms, and only zooms. Separately,
+  `VERTICAL_SCROLLBAR_AS_NEEDED` plus FlatLaf's thin, low-contrast default
+  thumb meant the bar appeared and disappeared with the plot's height and was
+  easy to miss even shown, so a scrollable plot too often looked exactly like
+  a non-scrollable one. The policy is now `VERTICAL_SCROLLBAR_ALWAYS`, and a
+  new `TimelineView.styleVerticalScrollbar` applies FlatLaf's per-component
+  `"FlatLaf.style"` client property to `plotScroll`'s vertical scrollbar only
+  — a wider, higher-contrast thumb via the `width`/`thumbArc`/`thumb`/
+  `hoverThumbColor` style keys, computed from `FlatLaf.isLafDark()` so it
+  reads against either theme. Scoped to this one scroll bar: `ui/theme/
+  Themes.java`'s global defaults are unchanged, and any look-and-feel other
+  than FlatLaf simply ignores the client property. No new limit constant —
+  `VERTICAL_SCROLL_UNIT` is reused rather than duplicated, and the scrollbar's
+  width/arc are styling, not a documented limit, so `docs/limits.md` is
+  unchanged. `TimelineVerticalSpaceTest`'s scrollbar-policy assertion now
+  expects `VERTICAL_SCROLLBAR_ALWAYS`; its wheel-consumption assertions for
+  the canvas (`isWheelScrollingEnabled()` still false, the canvas gesture
+  still zooms without scrolling) are untouched. New
+  `wheelOverLaneLabelsScrollsTheSharedViewport` dispatches a precise wheel
+  event straight at `LaneLabels`' listener the same way the existing canvas
+  test does, and asserts both halves: the shared viewport moved by the
+  expected pixel delta, and the plot's zoom transform did not change.
