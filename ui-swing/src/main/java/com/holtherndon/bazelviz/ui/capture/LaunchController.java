@@ -9,10 +9,14 @@ import com.holtherndon.bazelviz.runner.plan.PlanRequest;
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
 import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 
 /**
  * Drives a capture from the UI without ever touching a disk, a socket or a
@@ -58,12 +62,24 @@ public final class LaunchController {
     private final Executor worker;
     private final Executor toUi;
     private final Listener listener;
+    private final Predicate<Path> directoryExists;
     private final AtomicReference<CaptureCoordinator> active = new AtomicReference<>();
+    private final AtomicBoolean running = new AtomicBoolean();
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     public LaunchController(Executor worker, Executor toUi, Listener listener) {
+        this(worker, toUi, listener, Files::isDirectory);
+    }
+
+    LaunchController(
+            Executor worker,
+            Executor toUi,
+            Listener listener,
+            Predicate<Path> directoryExists) {
         this.worker = Objects.requireNonNull(worker, "worker");
         this.toUi = Objects.requireNonNull(toUi, "toUi");
         this.listener = Objects.requireNonNull(listener, "listener");
+        this.directoryExists = Objects.requireNonNull(directoryExists, "directoryExists");
     }
 
     /**
@@ -75,21 +91,32 @@ public final class LaunchController {
      */
     public void preflight(CaptureRequest request) {
         Objects.requireNonNull(request, "request");
+        if (closed.get()) {
+            return;
+        }
         if (active.get() != null) {
             failOnUi(new IllegalStateException("a capture is already in progress"));
             return;
         }
         CaptureCoordinator coordinator = new CaptureCoordinator(request.withConsole(consoleSink())
-                .withProgress(progress -> toUi.execute(() -> listener.captureProgress(progress))));
+                .withProgress(progress -> postToUi(() -> listener.captureProgress(progress))));
         if (!active.compareAndSet(null, coordinator)) {
-            coordinator.close();
+            worker.execute(coordinator::close);
             failOnUi(new IllegalStateException("a capture is already in progress"));
             return;
         }
         worker.execute(() -> {
             try {
+                if (closed.get()) {
+                    discard(coordinator);
+                    return;
+                }
+                if (!directoryExists.test(request.workingDirectory())) {
+                    throw new IOException(
+                            "the working directory does not exist: " + request.workingDirectory());
+                }
                 Preflight preflight = coordinator.preflight();
-                toUi.execute(() -> listener.planReady(preflight));
+                postToUi(() -> listener.planReady(preflight));
             } catch (IOException | RuntimeException failure) {
                 discard(coordinator);
                 failOnUi(failure);
@@ -99,15 +126,22 @@ public final class LaunchController {
 
     /** Re-plans with the user's answer to a conflict, and reports the new plan. */
     public void resolve(PlanConflict.Kind kind, String resolutionId) {
+        if (closed.get()) {
+            return;
+        }
         CaptureCoordinator coordinator = active.get();
         if (coordinator == null) {
             return;
         }
         worker.execute(() -> {
             try {
+                if (closed.get()) {
+                    discard(coordinator);
+                    return;
+                }
                 Preflight replanned = coordinator.replan(
                         request -> request.resolving(kind, resolutionId));
-                toUi.execute(() -> listener.planReady(replanned));
+                postToUi(() -> listener.planReady(replanned));
             } catch (IOException | RuntimeException failure) {
                 discard(coordinator);
                 failOnUi(failure);
@@ -117,20 +151,23 @@ public final class LaunchController {
 
     /** Applies an arbitrary adjustment to the plan — a veto, an overwrite. */
     public void replan(java.util.function.UnaryOperator<PlanRequest> adjust) {
+        if (closed.get()) {
+            return;
+        }
         CaptureCoordinator coordinator = active.get();
         if (coordinator == null) {
             return;
         }
         worker.execute(() -> {
             try {
-                toUi.execute(() -> {
-                    try {
-                        listener.planReady(coordinator.replan(adjust));
-                    } catch (IOException failure) {
-                        listener.captureFailed(failure);
-                    }
-                });
-            } catch (RuntimeException failure) {
+                if (closed.get()) {
+                    discard(coordinator);
+                    return;
+                }
+                Preflight replanned = coordinator.replan(adjust);
+                postToUi(() -> listener.planReady(replanned));
+            } catch (IOException | RuntimeException failure) {
+                discard(coordinator);
                 failOnUi(failure);
             }
         });
@@ -138,19 +175,28 @@ public final class LaunchController {
 
     /** Launches the planned build. Does nothing when no plan is pending. */
     public void launch() {
+        if (closed.get()) {
+            return;
+        }
         CaptureCoordinator coordinator = active.get();
         if (coordinator == null) {
             return;
         }
+        running.set(true);
         worker.execute(() -> {
             try {
+                if (closed.get()) {
+                    discard(coordinator);
+                    return;
+                }
                 Preflight preflight = coordinator.preflight();
-                toUi.execute(() -> listener.captureStarted(preflight));
+                postToUi(() -> listener.captureStarted(preflight));
                 CaptureResult result = coordinator.run();
-                toUi.execute(() -> listener.captureFinished(result));
+                postToUi(() -> listener.captureFinished(result));
             } catch (IOException | RuntimeException failure) {
                 failOnUi(failure);
             } finally {
+                running.set(false);
                 discard(coordinator);
             }
         });
@@ -175,7 +221,27 @@ public final class LaunchController {
     public void discardPlan() {
         CaptureCoordinator coordinator = active.getAndSet(null);
         if (coordinator != null) {
-            coordinator.close();
+            worker.execute(coordinator::close);
+        }
+    }
+
+    /**
+     * Stops callbacks for a disposed window and releases capture resources on
+     * the capture worker. A running build is asked to cancel and still gets to
+     * finalize its journal; a pending preflight or plan is closed on the worker.
+     */
+    public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        CaptureCoordinator coordinator = active.get();
+        if (coordinator == null) {
+            return;
+        }
+        if (running.get()) {
+            coordinator.cancel(CancellationMode.CANCEL);
+        } else {
+            worker.execute(() -> discard(coordinator));
         }
     }
 
@@ -194,7 +260,7 @@ public final class LaunchController {
             // as this returns, so posting the array itself would show whatever
             // the next read happened to put there.
             byte[] copy = java.util.Arrays.copyOfRange(data, offset, offset + length);
-            toUi.execute(() -> listener.consoleOutput(stream, copy, 0, copy.length));
+            postToUi(() -> listener.consoleOutput(stream, copy, 0, copy.length));
         };
     }
 
@@ -205,6 +271,17 @@ public final class LaunchController {
     }
 
     private void failOnUi(Throwable failure) {
-        toUi.execute(() -> listener.captureFailed(failure));
+        postToUi(() -> listener.captureFailed(failure));
+    }
+
+    private void postToUi(Runnable callback) {
+        if (closed.get()) {
+            return;
+        }
+        toUi.execute(() -> {
+            if (!closed.get()) {
+                callback.run();
+            }
+        });
     }
 }

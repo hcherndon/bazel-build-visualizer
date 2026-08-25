@@ -1,6 +1,6 @@
 # ADR-009: Bazel as the build system
 
-Status: **accepted** (2026-08-24; drafted 2026-08-22 as proposed).
+Status: **accepted** (2026-08-24; amended 2026-08-25; drafted 2026-08-22 as proposed).
 Supersedes [ADR-003](003-gradle.md), which is marked accordingly. Accepted
 with the migration itself: the version pins were re-verified against the
 Bazel Central Registry on the acceptance date and all resolved unchanged,
@@ -69,9 +69,13 @@ fetches Bazel, Bazel fetches the JDK. Specifically:
   pours ~30 unchosen artifacts into the maven hub. Generated-source parity
   with Gradle was byte-diffed at cutover, not asserted.
 - **Tests:** contrib_rules_jvm's JUnit-Platform runner, one test target per
-  class for parallelism and per-class reporting (each module's test sources
-  compile once into a shared library — test classes legitimately share
-  helpers — so invalidation is per module, execution per class). The seven
+  class for parallelism and per-class reporting. A module compiles its test
+  sources into one shared library by default because test classes legitimately
+  share helpers. A large module may declare coherent functional source groups;
+  each group then compiles once, exposes a named scoped suite, and carries only
+  its own test binaries' cache keys. Execution remains per class in both forms.
+  This 2026-08-25 amendment narrows invalidation without pretending every test
+  class is independently compilable. The seven
   real-Bazel test classes (six whole classes plus `RealBazelCliRunTest`,
   split out of the mixed `CliRunTest`) run un-sandboxed with inherited
   environment and uncached results. CI excludes them **visibly**, as the
@@ -92,7 +96,9 @@ fetches Bazel, Bazel fetches the JDK. Specifically:
 - Contributor prerequisites drop to bazelisk alone — no JVM, no wrapper
   bootstrap. CI loses its setup-java step.
 - Test iteration improves structurally: target-level caching means an edit
-  reruns the classes it can affect, not every module's suite.
+  reruns the classes it can affect, not every module's suite. Functional source
+  groups keep a test-only edit from invalidating unrelated test binaries in a
+  large module while preserving package-local shared fixtures.
 - **Packaging gets more expensive — and the bill is already due.** When
   this ADR was drafted, jpackage was future Phase 9 work; by acceptance the
   Gradle `jpackage`/`notarize` tasks existed (landed 2026-08-23), so the

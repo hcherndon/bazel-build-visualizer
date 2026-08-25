@@ -12,15 +12,14 @@ import com.holtherndon.bazelviz.capture.live.CaptureRequest;
 import com.holtherndon.bazelviz.capture.live.CaptureResult;
 import com.holtherndon.bazelviz.capture.live.CaptureSummary;
 import com.holtherndon.bazelviz.capture.live.Preflight;
-import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
-import com.holtherndon.bazelviz.runner.proc.CancellationMode;
 import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
 import com.holtherndon.bazelviz.ui.capture.CapturePanel;
 import com.holtherndon.bazelviz.ui.capture.CaptureStatusModel;
 import com.holtherndon.bazelviz.ui.capture.ConsoleView;
 import com.holtherndon.bazelviz.ui.capture.InstrumentationPlanDialog;
 import com.holtherndon.bazelviz.ui.capture.LaunchController;
+import com.holtherndon.bazelviz.ui.capture.LauncherPanel;
 import com.holtherndon.bazelviz.ui.events.EventValueFormat;
 import com.holtherndon.bazelviz.ui.actions.ActionsView;
 import com.holtherndon.bazelviz.ui.events.EventsView;
@@ -72,7 +71,6 @@ import java.util.concurrent.Executors;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.JButton;
-import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
@@ -87,7 +85,6 @@ import javax.swing.JScrollPane;
 import javax.swing.JSeparator;
 import javax.swing.JSplitPane;
 import javax.swing.JTextArea;
-import javax.swing.JTextField;
 import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
@@ -97,7 +94,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Main application window shell (plan section 17.1). The frame regions —
- * launcher bar, navigation sidebar, card-switched center, status bar — were
+ * navigation sidebar, card-switched center, status bar — were
  * laid out as placeholders in Phase 0; each gains its backing service in the
  * phase noted on its card.
  *
@@ -252,33 +249,17 @@ public final class MainWindow extends JFrame {
     private final JMenuItem closeSessionItem = new JMenuItem("Close Session");
     private final JList<NavEntry> nav = new JList<>(NavEntry.values());
 
-    private final JComboBox<CapturePreset> presetChoice = new JComboBox<>();
-    private final JTextField commandField = new JTextField();
-    private final JTextField workspaceField = new JTextField();
-    /**
-     * Which Bazel to run (plan 17.1's executable selector).
-     *
-     * <p>A field rather than the literal {@code "bazel"} this used to pass,
-     * because a great many people run {@code bazelisk}, a wrapper, or a pinned
-     * binary at a path — and a tool that can only launch whatever is first on
-     * {@code PATH} cannot capture the build they actually run. The resolver
-     * handles a bare name by searching {@code PATH} and an absolute path by
-     * using it, so both spellings work here.
-     */
-    private final JTextField bazelField = new JTextField();
-    private final JButton runButton = new JButton("Run");
+    private final LauncherPanel launcherPanel = new LauncherPanel(
+            this::startLaunch, this::chooseWorkingDirectory, this::chooseBazelExecutable);
     private final CapturePanel capturePanel = new CapturePanel();
     private final ConsoleView consoleView = new ConsoleView();
 
     /**
-     * The Build card: how the capture is going, above what the build is saying.
+     * The Console card: launch controls, capture status, then build output.
      *
-     * <p>One card where plan 17.1 had two. Following a build meant reading the
-     * phase, the three counters and the stop buttons on Capture and Bazel's own
-     * output on Console, which are the two halves of one question and were a
-     * card apart. The status is a header strip a few rows deep; the console
-     * takes the rest, which is the shape that matters because the console is
-     * the part that grows.
+     * <p>{@link NavEntry#BUILD} keeps its stable enum and card id, but the
+     * visible name is Console. The launcher lives here instead of occupying
+     * frame-wide space above every view.
      *
      * <p>Declared after both halves: field initializers run in order, and
      * {@link #buildBuildCard()} reads them.
@@ -336,6 +317,7 @@ public final class MainWindow extends JFrame {
         // constructor resolves the catalog. Path arithmetic only; the library
         // creates directories lazily on its own I/O thread.
         Path settingsDirectory = sessionsRoot.resolveSibling("settings");
+        launcherPanel.attachPersistence(settingsDirectory);
         queryView.attachLibrary(settingsDirectory);
         // The entity tables' per-view column state (widths, visibility,
         // order, sort) lives in the same settings directory, one JSON file
@@ -360,7 +342,6 @@ public final class MainWindow extends JFrame {
         split.setResizeWeight(0);
 
         JPanel content = new JPanel(new BorderLayout());
-        content.add(buildLauncherBar(), BorderLayout.NORTH);
         content.add(split, BorderLayout.CENTER);
         content.add(buildStatusBar(), BorderLayout.SOUTH);
         setContentPane(content);
@@ -431,6 +412,7 @@ public final class MainWindow extends JFrame {
 
     @Override
     public void dispose() {
+        launcherPanel.close();
         // Every view, not just the events one: since this window took ownership
         // of the session source, closing only one view left the other five
         // holding executors and JDBC connections, and left the source open.
@@ -438,22 +420,10 @@ public final class MainWindow extends JFrame {
         SessionSource closing = currentSource;
         currentSource = null;
         closeSource(closing);
-        // Only a plan that was never launched is discarded here, and only
-        // because that releases its BES port. Discarding unconditionally meant
-        // closing the window during a build called BesServer.close() on the
-        // EDT, which waits out its ten-second graceful-shutdown budget with the
-        // stream still open -- a frozen, unrepainted window -- and then killed
-        // the live stream. The shutdownNow() below then interrupted the capture
-        // thread mid-finalization, which is what discards journal frames that
-        // were already acknowledged to Bazel.
-        if (!launchController.isBusy()) {
-            launchController.discardPlan();
-        } else {
-            // A capture is running. Ask it to stop and let it finalize on its
-            // own thread; do not wait for it here, because here is the EDT.
-            log.info("window closed during a capture; asking the build to stop");
-            launchController.cancel(CancellationMode.CANCEL);
-        }
+        // Suppress every later UI callback first. Pending preflight resources
+        // are released on the capture worker; a running build is asked to stop
+        // and still finalizes there. Neither path waits on the EDT.
+        launchController.close();
         worker.shutdownNow();
         // Deliberately not shutdownNow(): interrupting the capture thread is
         // what loses the staged journal buffer. The thread is a daemon, so it
@@ -1423,7 +1393,7 @@ public final class MainWindow extends JFrame {
                     "Capture in progress", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        String typed = commandField.getText().strip();
+        String typed = launcherPanel.command().strip();
         if (typed.isEmpty()) {
             JOptionPane.showMessageDialog(this,
                     "Enter a Bazel command, such as: test //...",
@@ -1432,31 +1402,24 @@ public final class MainWindow extends JFrame {
         }
         Path workingDirectory;
         try {
-            workingDirectory = Path.of(workspaceField.getText().strip()).toAbsolutePath().normalize();
+            workingDirectory = Path.of(launcherPanel.workspace().strip()).toAbsolutePath().normalize();
         } catch (java.nio.file.InvalidPathException bad) {
             JOptionPane.showMessageDialog(this,
-                    "That is not a usable directory: " + workspaceField.getText(),
+                    "That is not a usable directory: " + launcherPanel.workspace(),
                     "Cannot launch", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        if (!java.nio.file.Files.isDirectory(workingDirectory)) {
-            JOptionPane.showMessageDialog(this,
-                    "The working directory does not exist:\n" + workingDirectory,
-                    "Cannot launch", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
-        String executable = bazelField.getText().strip();
+        String executable = launcherPanel.bazelExecutable().strip();
         if (executable.isEmpty()) {
             executable = "bazel";
         }
-        CapturePreset preset = (CapturePreset) presetChoice.getSelectedItem();
         CaptureRequest request = CaptureRequest.of(
                         sessionsRoot, APP_VERSION, executable, workingDirectory,
                         com.holtherndon.bazelviz.runner.command.CommandLineParser.tokenize(typed))
-                .withPreset(preset == null ? CapturePreset.defaultPreset() : preset);
+                .withPreset(launcherPanel.preset());
 
-        runButton.setEnabled(false);
+        launcherPanel.rememberCommand(typed);
+        launcherPanel.setRunEnabled(false);
         setCaptureStatus(captureStatus.withPhase(
                 CaptureStatusModel.Phase.PREPARING, "Resolving Bazel and probing capabilities…"));
         showCard(NavEntry.BUILD);
@@ -1467,7 +1430,7 @@ public final class MainWindow extends JFrame {
         JFileChooser chooser = new JFileChooser();
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
         chooser.setDialogTitle("Bazel executable");
-        String current = bazelField.getText().strip();
+        String current = launcherPanel.bazelExecutable().strip();
         if (current.contains(File.separator)) {
             File asFile = new File(current);
             if (asFile.getParentFile() != null && asFile.getParentFile().isDirectory()) {
@@ -1475,7 +1438,7 @@ public final class MainWindow extends JFrame {
             }
         }
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            bazelField.setText(chooser.getSelectedFile().getAbsolutePath());
+            launcherPanel.setBazelExecutable(chooser.getSelectedFile().getAbsolutePath());
         }
     }
 
@@ -1483,7 +1446,7 @@ public final class MainWindow extends JFrame {
         JFileChooser chooser = new JFileChooser();
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         chooser.setDialogTitle("Working directory for the build");
-        String current = workspaceField.getText().strip();
+        String current = launcherPanel.workspace().strip();
         if (!current.isEmpty()) {
             File asFile = new File(current);
             if (asFile.isDirectory()) {
@@ -1491,7 +1454,7 @@ public final class MainWindow extends JFrame {
             }
         }
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            workspaceField.setText(chooser.getSelectedFile().getAbsolutePath());
+            launcherPanel.setWorkspace(chooser.getSelectedFile().getAbsolutePath());
         }
     }
 
@@ -1536,7 +1499,7 @@ public final class MainWindow extends JFrame {
                 }
                 case CANCEL -> {
                     launchController.discardPlan();
-                    runButton.setEnabled(true);
+                    launcherPanel.setRunEnabled(true);
                     setCaptureStatus(CaptureStatusModel.idle());
                 }
             }
@@ -1605,7 +1568,7 @@ public final class MainWindow extends JFrame {
                     String.join(" ", preflight.plan().effective().userVisibleArgs())));
             // No card change. The status and the console are one card now, so
             // the user who navigated elsewhere while the plan dialog was up
-            // stays where they went; startLaunch already put the Build card up
+            // stays where they went; startLaunch already put the Console card up
             // for the user who did not.
         }
 
@@ -1634,7 +1597,7 @@ public final class MainWindow extends JFrame {
 
         @Override
         public void captureFinished(CaptureResult result) {
-            runButton.setEnabled(true);
+            launcherPanel.setRunEnabled(true);
             CaptureStatusModel.Phase phase = result.wasCancelled()
                     ? CaptureStatusModel.Phase.CANCELLED
                     : result.captureComplete()
@@ -1653,7 +1616,7 @@ public final class MainWindow extends JFrame {
 
         @Override
         public void captureFailed(Throwable failure) {
-            runButton.setEnabled(true);
+            launcherPanel.setRunEnabled(true);
             setCaptureStatus(captureStatus.withPhase(
                     CaptureStatusModel.Phase.FAILED, String.valueOf(failure.getMessage())));
             log.warn("the capture could not run", failure);
@@ -1689,76 +1652,6 @@ public final class MainWindow extends JFrame {
     }
 
     // ------------------------------------------------------------------ shell
-
-    /**
-     * The launcher (plan 24, Phase 2 UI deliverable).
-     *
-     * <p>A preset, a command and a working directory. Pressing Run does not run
-     * anything: it preflights, and the instrumentation dialog is what launches
-     * (ADR-007). The field holds the command exactly as the user would type it
-     * in a terminal, {@code bazel} omitted, because that is the thing they can
-     * check against what they meant.
-     */
-    private JComponent buildLauncherBar() {
-        for (CapturePreset preset : CapturePreset.values()) {
-            presetChoice.addItem(preset);
-        }
-        presetChoice.setSelectedItem(CapturePreset.defaultPreset());
-        presetChoice.setRenderer(new DefaultListCellRenderer() {
-            private static final long serialVersionUID = 1L;
-
-            @Override
-            public Component getListCellRendererComponent(
-                    JList<?> list, Object value, int index, boolean isSelected, boolean hasFocus) {
-                return super.getListCellRendererComponent(
-                        list, value == null ? "" : ((CapturePreset) value).displayName(),
-                        index, isSelected, hasFocus);
-            }
-        });
-
-        commandField.setToolTipText(
-                "The Bazel command, without 'bazel' — for example: test //...");
-        commandField.addActionListener(event -> startLaunch());
-
-        workspaceField.setColumns(18);
-        workspaceField.setToolTipText("Where the build runs. Relative targets resolve against it.");
-        workspaceField.setText(System.getProperty("user.dir", ""));
-
-        bazelField.setColumns(10);
-        bazelField.setToolTipText(PlainText.tooltip(
-                "Which Bazel to run: a name to find on PATH, or a path to a binary."));
-        bazelField.setText("bazel");
-        bazelField.addActionListener(event -> startLaunch());
-
-        JButton chooseBazel = new JButton("…");
-        chooseBazel.setToolTipText("Choose the Bazel executable");
-        chooseBazel.addActionListener(event -> chooseBazelExecutable());
-
-        JButton chooseWorkspace = new JButton("…");
-        chooseWorkspace.setToolTipText("Choose the working directory");
-        chooseWorkspace.addActionListener(event -> chooseWorkingDirectory());
-
-        runButton.setToolTipText("Preflight the command and show what will run");
-        runButton.addActionListener(event -> startLaunch());
-
-        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        left.add(presetChoice);
-        left.add(bazelField);
-        left.add(chooseBazel);
-        left.add(workspaceField);
-        left.add(chooseWorkspace);
-
-        JPanel bar = new JPanel(new BorderLayout(8, 0));
-        bar.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        bar.add(left, BorderLayout.WEST);
-        bar.add(commandField, BorderLayout.CENTER);
-        bar.add(runButton, BorderLayout.EAST);
-
-        JPanel north = new JPanel(new BorderLayout());
-        north.add(bar, BorderLayout.CENTER);
-        north.add(new JSeparator(), BorderLayout.SOUTH);
-        return north;
-    }
 
     private JComponent buildNavigation() {
         nav.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -1826,10 +1719,13 @@ public final class MainWindow extends JFrame {
         return split;
     }
 
-    /** Stacks the capture status above the console, one card for one build. */
+    /** Stacks launcher, capture status, and console in their reading order. */
     private JComponent buildBuildCard() {
         JPanel card = new JPanel(new BorderLayout());
-        card.add(capturePanel, BorderLayout.NORTH);
+        JPanel controls = new JPanel(new BorderLayout());
+        controls.add(launcherPanel, BorderLayout.NORTH);
+        controls.add(capturePanel, BorderLayout.CENTER);
+        card.add(controls, BorderLayout.NORTH);
         card.add(consoleView, BorderLayout.CENTER);
         return card;
     }

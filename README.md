@@ -61,6 +61,19 @@ toolchain ([ADR-008](docs/adr/008-java-25.md) via
 bazel test //...
 ```
 
+UI tests also have functional package suites for quick iteration, while
+`//ui-swing:tests` remains the complete UI gate. For example:
+
+```
+bazel test //ui-swing:tests-capture
+bazel test //ui-swing:tests-events
+bazel test //ui-swing:tests-timeline
+```
+
+Each group compiles to its own test library, so changing a capture test does
+not invalidate the graph, event, or timeline test binaries. Every test class
+still has its existing direct target, such as `//ui-swing:LauncherPanelTest`.
+
 The four-version Bazel sweep (`BazelVersionMatrixTest`) is excluded from
 every default run and must never be run casually — it starts four Bazel
 servers and has crashed a development machine. See the notes in

@@ -1129,7 +1129,7 @@ What ships: a local, single-user macOS application that launches or imports a
 Bazel build, captures it raw-first, normalizes it into a queryable session,
 enriches it from the execution log, the trace profile, `aquery` and `cquery`,
 and shows it as an overview, a timeline, an action table, dependency trees, a
-graph canvas, tests, errors, events, a build pane and evidence-backed findings —
+graph canvas, tests, errors, events, a console pane and evidence-backed findings —
 at five million actions, without loading the build into memory, and without
 claiming a number it does not have.
 
@@ -2113,3 +2113,64 @@ it is a different tab and was not reported.
   `.bazelignore` shields `//...` traversal from the git worktrees under
   `.claude/`, whose BUILD files and bazel-* symlinks otherwise load as
   packages of this workspace and break the build at loading.
+
+  The UI suite now compiles 20 functional source groups into independent test
+  libraries and exposes matching scoped suites such as `tests-capture`,
+  `tests-events` and `tests-timeline`; `//ui-swing:tests` still aggregates every
+  per-class target. A test edit therefore invalidates only its functional
+  group instead of all UI tests. The million-row event far-jump case has its
+  own `EventRowSourceScaleTest` target and cache key. Its fake reader now fills
+  the required concurrent list with one bulk copy rather than one full array
+  copy per inserted row: the unchanged million-row assertion fell from 461.0
+  seconds to 6.2 seconds in a cold two-job event-group run. A cold four-job
+  aggregate then passed 87/87 UI targets in 135.7 seconds with a 9.71-second
+  critical path; the preceding deliberately serial aggregate took 959.1
+  seconds with a 462.6-second critical path. An unchanged rerun then resolved
+  all 87 targets from cache in 2.0 seconds (864 action-cache hits).
+
+- **Launching a build now starts in Console, in a form that explains itself**
+  (2026-08-25). `NavEntry.BUILD` and its `build` card id remain stable, but the
+  visible title is **Console** and it is first in the sidebar. The launcher no
+  longer consumes `MainWindow`'s frame-wide `BorderLayout.NORTH`; the Console
+  card reads top-to-bottom as `LauncherPanel`, live `CapturePanel`, then the
+  growing `ConsoleView`. The compact launcher has explicit accessible labels
+  for Workspace, Bazel executable, Capture detail and Bazel command (without
+  bazel), plus named **Choose workspace…** and **Choose Bazel…** buttons. Its
+  combo offers exactly Live Essentials, Performance Diagnostics (recommended
+  and selected by default), and Full Graph Diagnostics. The selected explanation
+  states the current behavior rather than the intended names: Live omits the
+  execution log and profile, Performance adds them, and Full currently adds no
+  source beyond Performance. A separate bold warning remains visible for every
+  choice because `CaptureCoordinator` currently runs `aquery`, `cquery`, and
+  graph indexing after every live capture, with the same disk/CPU/indexing cost
+  regardless of preset. `CapturePreset.CUSTOM` stays compatible with
+  stored/model code but is deliberately absent until there is an
+  individual-source editor. The separate `InstrumentationPlanDialog` and every
+  ADR-007 preflight choice are unchanged.
+
+  `LauncherStateStore` keeps the four values and `LauncherHistory` under the
+  existing `settings/` directory. A dedicated `bbv-launcher-settings` thread
+  performs every load/save, its store refuses EDT access, and missing or
+  corrupt state falls back to defaults without blocking launch. Saves write a
+  sibling temporary file and atomically replace the live file where supported;
+  a failed replacement leaves the old settings and the snapshot retryable.
+  Save state advances only after the worker acknowledges success. The save
+  queue tracks the persisted, desired and in-flight snapshots separately, so
+  completion of an older write always schedules the newest desired state
+  instead of making the older state authoritative. A late load merges each
+  edited field independently and combines new history with stored history;
+  untouched stored fields are retained. Closing during load captures that
+  merge for background persistence without adopting anything into the disposed
+  panel. Workspace existence is likewise checked on the capture worker before
+  coordinator preflight, so an invalid directory never reaches the ADR-007
+  plan dialog or creates a failed-to-start session. `LaunchController.close()`
+  suppresses callbacks that were queued before disposal, prevents new ones,
+  and releases a pending preflight/plan on the capture worker; a running build
+  is cancelled there and still finalizes its journal. History is
+  exactly 50 unique commands, newest first; a duplicate is promoted, Up/Down
+  recalls while leaving the field editable, and the bound is printed below
+  the field. Ctrl+Space completion reuses the existing autocomplete library
+  over a fixed, test-pinned set of common Bazel subcommands. Focused headless
+  coverage is in `LauncherPanelTest`, `LauncherHistoryTest`,
+  `LauncherStateStoreTest`, `LaunchControllerTest`, and the updated
+  `NavEntryTest`; no dependency or build-file change was needed.
