@@ -1,5 +1,6 @@
 # Entry point and composition root.
 
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//tools:bbv.bzl", "bbv_java_binary", "bbv_java_library", "bbv_java_test_suite", "bbv_real_bazel_test")
 
 # The macOS file association for .bviz (plan 24, Phase 9): consumed by the
@@ -98,4 +99,24 @@ bbv_real_bazel_test(
         "//session-format",
         "//test-support",
     ],
+)
+
+# ---------------------------------------------------------------- packaging
+#
+# Plan 24, Phase 9: macOS file associations, an app menu, packages for both
+# architectures, and signing hooks that do not embed credentials. Ported from
+# the Gradle jpackage/notarize tasks; the scripts carry the behavior. Output
+# goes to <workspace>/dist/jpackage (gitignored).
+sh_binary(
+    name = "jpackage",
+    srcs = ["packaging/jpackage.sh"],
+    data = [
+        "src/main/packaging/bviz.properties",
+        ":bbv_deploy.jar",
+    ],
+)
+
+sh_binary(
+    name = "notarize",
+    srcs = ["packaging/notarize.sh"],
 )

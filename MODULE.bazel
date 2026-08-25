@@ -7,6 +7,8 @@ bazel_dep(name = "rules_jvm_external", version = "7.1")
 bazel_dep(name = "protobuf", version = "36.0")
 bazel_dep(name = "contrib_rules_jvm", version = "0.34.0")
 bazel_dep(name = "platforms", version = "1.1.0")
+# sh_binary left native Bazel in 9; the jpackage/notarize run targets need it.
+bazel_dep(name = "rules_shell", version = "0.6.1")
 
 # Central dependency versions, transplanted from gradle/libs.versions.toml.
 # Every third-party addition needs the review described in the agent execution
