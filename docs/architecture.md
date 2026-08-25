@@ -5,9 +5,11 @@ with rationale live in [docs/adr/](adr/); this file is the map.
 
 ## Module map
 
-Fifteen Gradle modules plus the `build-logic` included build. Dependencies
-point strictly downward toward `core-model`; the UI never appears on a
-capture/storage/analysis classpath and vice versa.
+Fifteen Bazel packages sharing the `tools/bbv.bzl` convention macros
+(ADR-009; each was a Gradle module until 2026-08-24). Dependencies point
+strictly downward toward `core-model`; the UI never appears on a
+capture/storage/analysis classpath and vice versa, and Bazel's strict
+dependency checking enforces the arrows compile-time hard.
 
 | Module | Responsibility |
 |---|---|

@@ -6,8 +6,17 @@ says so explicitly. The plan's own framing (section 20.2) applies: these are
 benchmark targets, not guarantees.
 
 macOS on Apple Silicon is the platform the objectives are stated against
-(plan 20.2). Linux is a portability target and CI runs `check` there, but no
+(plan 20.2). Linux is a portability target and CI tests there, but no
 performance objective is gated on Linux numbers.
+
+**Build-system note (2026-08-24).** The build migrated from Gradle to Bazel
+(ADR-009) after every figure below was measured. The figures stand: the
+forked spike JVMs are configured identically under both builds (`-Xmx4g`,
+`--enable-native-access=ALL-UNNAMED`, same JDK baseline), so the measurement
+environment did not change in any way a spike can see. Command lines quoted
+inside measurement records are the Gradle-era commands that produced those
+numbers and are preserved as records; the current way to run everything is
+`bazel run //benchmarks:<spike>` as shown in "Running the spikes".
 
 ## Benchmark tiers (plan 20.1)
 
@@ -65,8 +74,9 @@ keyset result is the load-bearing finding for the actions table.
 
 **Measurement environment.** Apple M4 Pro (10 performance + 4 efficiency
 cores), 48 GB RAM, macOS 26.6.2 (arm64), **Amazon Corretto 25.0.1+8-LTS**
-(ADR-008's Java 25 baseline; confirm the exact JVM the spikes launch with
-`./gradlew :benchmarks:printSpikeJvm`), spike JVMs at `-Xmx4g` with
+(ADR-008's Java 25 baseline; Gradle-era measurement — under Bazel the spikes
+launch on the hermetic remotejdk_25 toolchain, and `bazel run` prints its
+java on failure), spike JVMs at `-Xmx4g` with
 `--enable-native-access=ALL-UNNAMED`, synthetic seed 42, default GC (G1),
 default (non-compact) object headers, no AOT cache. Measured 2026-08-21.
 These are single-run figures from one machine, not a regression baseline with
@@ -181,25 +191,28 @@ PASS/FAIL verdict and exit nonzero on a budget breach in `--offscreen` mode,
 so a regression fails the command rather than scrolling past.
 
 ```
-./gradlew :benchmarks:runTableSpike     --args="--offscreen"
-./gradlew :benchmarks:runTimelineSpike  --args="--offscreen"
-./gradlew :benchmarks:runTimelineSpike  --args="--offscreen --tier3"
-./gradlew :benchmarks:runGraphSpike     --args="--offscreen"
-./gradlew :benchmarks:runGraphSpike     --args="--offscreen --tier2"
-./gradlew :benchmarks:runSqlPagingSpike --args="--rows=2000000"
+bazel run //benchmarks:table_spike      -- --offscreen
+bazel run //benchmarks:timeline_spike   -- --offscreen
+bazel run //benchmarks:timeline_spike   -- --offscreen --tier3
+bazel run //benchmarks:graph_spike      -- --offscreen
+bazel run //benchmarks:graph_spike      -- --offscreen --tier2
+bazel run //benchmarks:sql_paging_spike -- --rows=2000000
 ```
 
 The tier flags matter: the timeline and graph spikes default to Tier 2 and
 Tier 1 respectively, so the Tier 3 / Tier 2 figures in the results above come
 from the flagged invocations.
 
-Spike JVMs run with `-Xmx4g` (set in `benchmarks/build.gradle.kts`). Record
-alongside every measurement: OS + version, CPU, RAM, JDK build, display
-scale (for windowed runs), and the seed/tier used.
+Spike JVMs run with `-Xmx4g` (set in `benchmarks/BUILD.bazel`). System
+properties ride as `--jvm_flag=-D<name>=<value>` arguments before the
+program's own. Record alongside every measurement: OS + version, CPU, RAM,
+JDK build, display scale (for windowed runs), and the seed/tier used.
 
 JMH microbenchmarks (allocation-sensitive inner loops) live in
-`:benchmarks` under the `jmh` source set; run them with
-`./gradlew :benchmarks:jmh`.
+`benchmarks/src/jmh`; `bazel run //benchmarks:jmh -- -l` lists them, a bare
+run executes them. For forked benchmark JVMs pass
+`-jvmArgsPrepend=--enable-native-access=ALL-UNNAMED` (SqliteInsertBench
+loads native code).
 
 ## Java 25 runtime options
 
@@ -212,7 +225,8 @@ would have to change for adoption.
 
 ### How these were run
 
-The spike `JavaExec` tasks fix their own `jvmArgs` in
+(Gradle-era record, preserved as measured.) The spike `JavaExec` tasks fix
+their own `jvmArgs` in
 `benchmarks/build.gradle.kts` and expose no property for adding more, and no
 build file was modified for this evaluation. The flagged runs therefore
 invoked the JDK directly on a hand-assembled runtime classpath: the
@@ -847,6 +861,10 @@ same configuration is 79.4k/s.
 
 ## Build performance
 
-`gradle.properties` enables parallel execution, the build cache, and the
-configuration cache (`-Xmx3g` daemon). If a change regresses configuration
-time noticeably, treat it as a defect.
+Bazel is parallel and incremental by default, with per-class test targets
+carrying test caching (ADR-009). `.bazelrc` deliberately caps the server at
+4 GiB and local test parallelism at 4 — machine safety around the real-bazel
+child servers outranks build throughput here. No Gradle-vs-Bazel timing
+comparison has been measured and published yet; when one is, it goes in this
+section with dates and a method, not as a promise. If a change regresses
+analysis time noticeably, treat it as a defect.

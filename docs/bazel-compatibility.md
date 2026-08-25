@@ -232,8 +232,12 @@ row it asserts — so this table is measured rather than remembered. Re-run it
 with:
 
 ```
-./gradlew :capture-bes:test -Pbbv.bazelSweep=true --tests '*BazelVersionMatrixTest*'
+bazel test //capture-bes:BazelVersionMatrixTest --test_tag_filters= --test_output=streamed
 ```
+
+(Deliberately awkward to reach: the target is tagged `manual` so no wildcard
+expands to it, and the rc's default `--test_tag_filters=-bazel-sweep` is the
+second fence. Run it on purpose, supervised, never in automation.)
 
 | Version | Build | Capture | Received | Journaled | Indexed rows | Version recorded |
 |---|---|---|---:|---:|---:|---|
@@ -252,7 +256,7 @@ workspace. That is a real difference in what those versions publish, not a
 capture difference, and it is why the tool counts what arrives rather than
 predicting it.
 
-**The sweep is excluded from `./gradlew build`.** It downloads and starts four
+**The sweep is excluded from every default build.** It downloads and starts four
 Bazel servers, and Bazel sizes its server JVM from the machine's RAM — a sweep
 that had several alive at once has crashed a laptop. The fixture caps each at
 `-Xmx1g` with `max_idle_secs=15` and the test is parameterized rather than

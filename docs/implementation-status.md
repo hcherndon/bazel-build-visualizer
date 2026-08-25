@@ -2044,3 +2044,34 @@ it is a different tab and was not reported.
   and the button is absent in each of the three ways it can have nothing
   behind it. `InspectorPanelTest`, `EventsViewEntityActionsTest` and
   `TimelineInspectorTest` now assert against the menu instead of a strip.
+
+- **The build system is Bazel 9.2.0** (2026-08-24, ADR-009 accepted; Gradle
+  removed). One `bazel test //...` replaces `./gradlew build`: fifteen
+  modules as `BUILD.bazel` packages over `tools/bbv.bzl` convention macros
+  (the successor of `build-logic/`'s three plugins — native-access grant,
+  2 GiB test heaps, headless AWT, UTF-8 + `-parameters`, each written once),
+  one `MODULE.bazel` dependency universe locked in `maven_install.json`
+  (every catalog artifact transplanted, plus `junit-platform-reporting` for
+  the runner's XML and the two JMH jars the Gradle plugin used to supply),
+  and protobuf/gRPC codegen by the same sha256-pinned protoc 4.36.0 /
+  protoc-gen-grpc-java 1.83.1 binaries Gradle resolved — generated sources
+  and the descriptor set verified byte-identical before cutover. Tests run
+  one `java_test` per class through contrib_rules_jvm's JUnit Platform
+  runner; the seven real-Bazel classes (CliRunTest's three tagged methods
+  split into `RealBazelCliRunTest`) are dedicated un-sandboxed targets with
+  inherited `PATH`/`HOME`/`BBV_TEST_BAZEL`/`USE_BAZEL_VERSION`, and
+  `BazelVersionMatrixTest` sits behind two fences (`manual` tag + the rc's
+  `-bazel-sweep` filter). The outer server is capped in `.bazelrc`
+  (`-Xmx4g`, 300 s idle) for the same reason the fixture caps its children.
+  jpackage/notarize became `bazel run //app:jpackage` / `//app:notarize`
+  over the deploy jar, env-gated exactly as before; CI runs
+  `bazelisk test //... --config=ci` on both OSes with the real-bazel
+  exclusion visible in the config, uploading `bazel-testlogs` on failure.
+  Layout-coupled tests were reworked, not weakened: `EdtDisciplineTest`
+  scans the module's own code source (floor raised to the measured 40
+  components), `LimitsDocTest` and `Phase9ExitCriteriaTest` resolve their
+  documents through runfiles. One Bazel-specific workaround stands:
+  the execroot symlink forest refuses top-level directories named
+  `bazel-*`, so the `bazel-runner` module's compile inputs are byte-exact
+  in-process copies relocated under `bazel-out` (`tools/relocate.bzl`) —
+  name, label and layout unchanged.

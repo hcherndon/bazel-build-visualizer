@@ -5,23 +5,26 @@ troubleshooting (capture failures, session recovery) arrives with Phase 2+.
 
 ## Build
 
-- **First build is slow / downloads a JDK.** Expected: the Java 25 toolchain
-  is auto-provisioned by the foojay resolver (ADR-008). Later builds reuse
-  it from `~/.gradle/jdks/`. If you already have a JDK 25 installed, Gradle
-  detects and uses it instead of downloading one.
-- **"Timeout waiting to lock" / daemon lock errors.** Another Gradle
-  invocation (IDE sync, second terminal) holds the lock. Wait and retry;
-  do not delete lock files while a daemon runs. `./gradlew --status` lists
-  daemons, `./gradlew --stop` stops them.
-- **Dependency locking failures** after changing a dependency: regenerate
-  lockfiles with `./gradlew resolveAndLockAll --write-locks
-  --no-configuration-cache` and commit the lockfile diff with the change.
-- **Configuration-cache problems** after editing build scripts: retry once
-  (the cache invalidates itself); a persistent report lands under
-  `build/reports/configuration-cache/`.
-- **Stale/odd behavior**: `./gradlew --stop` then rebuild before deeper
-  debugging — a long-lived daemon with old classpaths explains most
-  mysteries.
+- **First build is slow / downloads things.** Expected: bazelisk downloads
+  Bazel 9.2.0 (per `.bazelversion`), Bazel fetches the remote JDK 25
+  toolchain (ADR-008 via ADR-009) and every dependency. All of it is cached;
+  later builds are quiet. A locally installed JDK is deliberately ignored —
+  the build is hermetic.
+- **"Another command is running" / server lock.** Another Bazel invocation
+  (IDE sync, second terminal) holds the workspace lock. Wait and retry;
+  never run two invocations against this workspace at once. `bazel shutdown`
+  stops the server (it also stops itself after the 300 s idle cap in
+  `.bazelrc`).
+- **Dependency changes fail with a lockfile error.** Expected friction: edit
+  `MODULE.bazel`'s `maven.install`, run `REPIN=1 bazel run @maven//:pin`,
+  and commit the `maven_install.json` diff with the change.
+- **Stale/odd behavior**: `bazel shutdown` then rebuild before deeper
+  debugging; `bazel clean` exists but is almost never the answer.
+- **The machine groans under test runs.** Read `.bazelrc`'s startup section
+  before changing anything: the outer server is capped at 4 GiB and test
+  parallelism at 4 for a documented reason (child Bazel servers in the
+  real-bazel tests; a machine has been crashed at over 120 GB). Never run
+  the `bazel-sweep`-tagged target casually.
 
 ## Running
 
@@ -42,14 +45,13 @@ troubleshooting (capture failures, session recovery) arrives with Phase 2+.
   is optional, so the warning is not something to fix by removing a
   dependency.
 
-  The Gradle build already passes `--enable-native-access=ALL-UNNAMED` to the
-  JVMs it forks, so `./gradlew check`, `:app:run`, the spikes and
-  `:benchmarks:jmh` are all quiet.
-  The generated start scripts (`installDist` / `distZip`) carry it too, via
-  `applicationDefaultJvmArgs`. You will see the warning only if you launch a
-  JVM yourself — `java -jar` on a bare jar, a profiler's own launcher, or an
-  IDE run configuration that does not inherit the Gradle JVM args. Fix it by
-  adding the same flag:
+  The build already passes `--enable-native-access=ALL-UNNAMED` to the JVMs
+  it forks (`tools/bbv.bzl`, the single written occurrence), so
+  `bazel test //...`, `bazel run //app:bbv`, the spikes and
+  `//benchmarks:jmh` are all quiet, and the jpackage image carries it in its
+  `.cfg`. You will see the warning only if you launch a JVM yourself —
+  `java -jar` on the deploy jar, a profiler's own launcher, or an IDE run
+  configuration that does not add the flag. Fix it by adding the same flag:
 
   ```
   java --enable-native-access=ALL-UNNAMED -jar <jar>
@@ -65,14 +67,14 @@ troubleshooting (capture failures, session recovery) arrives with Phase 2+.
 
 ## Where things live
 
-- Test reports: `<module>/build/reports/tests/test/index.html`.
+- Test logs and XML: `bazel-testlogs/<module>/<TestClass>/test.log` and
+  `test.xml` (one directory per test class).
 - App logs: console via logback (`app/src/main/resources/logback.xml`);
   per-session capture logs will live in the session directory
-- Headless app smoke run: `./gradlew :app:run -Dbbv.smoke=true` opens the
-  window and exits after two seconds.
-- CI failures: the workflow uploads `**/build/reports/tests` as an artifact
-  on failure — download it from the run page rather than re-deriving
-  locally.
+- Headless app smoke run: `bazel run //app:bbv -- --jvm_flag=-Dbbv.smoke=true`
+  opens the window and exits after two seconds.
+- CI failures: the workflow uploads `bazel-testlogs/**` as an artifact on
+  failure — download it from the run page rather than re-deriving locally.
 
 ## Sessions and capture (Phase 10)
 
