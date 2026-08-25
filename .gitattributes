@@ -1,5 +1,4 @@
 # Normalize line endings; Windows-only scripts stay CRLF.
 * text=auto
 *.bat eol=crlf
-gradlew eol=lf
 *.jar binary

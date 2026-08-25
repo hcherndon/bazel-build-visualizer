@@ -48,8 +48,8 @@ public final class BazelBinary {
      *     something unusable. An explicit override that cannot be run is a
      *     configuration error, not an absent Bazel: collapsing the two made a
      *     typo in the variable skip the entire real-Bazel suite and leave
-     *     {@code ./gradlew check} green — hiding exactly the evidence every
-     *     Phase 2 exit criterion rests on.
+     *     the build green — hiding exactly the evidence every Phase 2 exit
+     *     criterion rests on.
      */
     public static Optional<Path> find() {
         String override = System.getenv(OVERRIDE_ENV);

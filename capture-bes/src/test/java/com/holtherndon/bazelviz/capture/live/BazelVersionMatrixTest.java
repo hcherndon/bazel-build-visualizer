@@ -36,11 +36,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  * parameterized rather than parallel, so exactly one version is alive at a
  * time.
  *
- * <p>It is still tagged {@code bazel-sweep} and excluded from
- * {@code ./gradlew build}, because a full four-version sweep downloads and
- * starts four Bazel servers and takes minutes. Run it deliberately:
+ * <p>It is still tagged {@code bazel-sweep} — and its target additionally
+ * {@code manual}, so no {@code //...} wildcard reaches it and the rc's default
+ * {@code --test_tag_filters=-bazel-sweep} is the second fence — because a full
+ * four-version sweep downloads and starts four Bazel servers and takes
+ * minutes. Run it deliberately, supervised, never in automation:
  *
- * <pre>./gradlew :capture-bes:test -Pbbv.bazelSweep=true --tests '*BazelVersionMatrixTest*'</pre>
+ * <pre>bazel test //capture-bes:BazelVersionMatrixTest --test_tag_filters= --test_output=streamed</pre>
  *
  * <p>{@code RealBazelCaptureTest} keeps a single-version end-to-end capture in
  * the default suite, so the path is exercised on every build; this is the one
