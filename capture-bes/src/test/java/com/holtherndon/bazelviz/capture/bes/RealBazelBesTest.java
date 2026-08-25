@@ -33,8 +33,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * when nothing had checked, which is worse than reporting nothing.
  *
  * <p>Tagged {@code real-bazel}: these take tens of seconds each because Bazel
- * starts a server, so {@code ./gradlew check} runs them but a tight edit loop
- * can exclude them with {@code -PexcludeTags=real-bazel}.
+ * starts a server, so {@code bazel test //...} runs them but a tight edit loop
+ * can exclude them with {@code --test_tag_filters=-bazel-sweep,-real-bazel}.
  */
 @Tag("real-bazel")
 class RealBazelBesTest {

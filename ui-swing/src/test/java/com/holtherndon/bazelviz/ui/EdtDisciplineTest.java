@@ -71,9 +71,15 @@ final class EdtDisciplineTest {
     @DisplayName("every component that can reach a database owns a thread to do it on")
     void readersHaveThreads() throws Exception {
         List<Class<?>> components = compiledComponents();
+        // 40 components existed when this floor was measured (2026-08-24,
+        // during the Bazel migration, against the Gradle-compiled classes).
+        // A floor at the real count rather than a token "more than 20" is
+        // what stops a broken scan from quietly emptying the rule: discovery
+        // that finds fewer components than certainly exist is a broken scan,
+        // not a smaller UI.
         assertThat(components)
-                .as("the compiled UI classes; if this is empty the scan is broken, not the code")
-                .hasSizeGreaterThan(20);
+                .as("the compiled UI classes; if this shrinks the scan is broken, not the code")
+                .hasSizeGreaterThanOrEqualTo(40);
 
         List<String> offenders = new ArrayList<>();
         for (Class<?> component : components) {
@@ -137,28 +143,54 @@ final class EdtDisciplineTest {
      * <p>Read off the class output rather than from a list, because a list is a
      * thing somebody has to remember to add a new view to and this rule is
      * exactly the kind nobody remembers.
+     *
+     * <p>Discovery is anchored on {@link MainWindow}'s code source — the jar
+     * or classes directory the module's own classes were loaded from — rather
+     * than on any build system's output layout. Under Gradle that was a
+     * {@code build/classes/java/main} directory; under Bazel it is the module
+     * jar; under both it contains exactly this module's main classes and none
+     * of its test classes, which matters because this file's own
+     * {@code Offender} fixture is a deliberate rule violation.
      */
     private static List<Class<?>> compiledComponents() throws Exception {
-        Path classes = Path.of("build", "classes", "java", "main");
-        assertThat(Files.isDirectory(classes))
-                .as("compiled classes at %s", classes.toAbsolutePath())
-                .isTrue();
+        var codeSource = MainWindow.class.getProtectionDomain().getCodeSource();
+        assertThat(codeSource)
+                .as("the code source of the ui-swing classes; a null here means the"
+                        + " classes came from somewhere unscannable and the scan is broken")
+                .isNotNull();
+        Path source = Path.of(codeSource.getLocation().toURI());
+        List<String> names = new ArrayList<>();
+        if (Files.isDirectory(source)) {
+            try (var walk = Files.walk(source)) {
+                for (Path file : walk.filter(path -> path.toString().endsWith(".class")).toList()) {
+                    names.add(source.relativize(file).toString()
+                            .replace(java.io.File.separatorChar, '.')
+                            .replaceAll("\\.class$", ""));
+                }
+            }
+        } else {
+            try (var jar = new java.util.jar.JarFile(source.toFile())) {
+                for (var entries = jar.entries(); entries.hasMoreElements(); ) {
+                    var entry = entries.nextElement();
+                    if (entry.getName().endsWith(".class")) {
+                        names.add(entry.getName()
+                                .replace('/', '.')
+                                .replaceAll("\\.class$", ""));
+                    }
+                }
+            }
+        }
         List<Class<?>> components = new ArrayList<>();
-        try (var walk = Files.walk(classes)) {
-            for (Path file : walk.filter(path -> path.toString().endsWith(".class")).toList()) {
-                String name = classes.relativize(file).toString()
-                        .replace(java.io.File.separatorChar, '.')
-                        .replaceAll("\\.class$", "");
-                Class<?> loaded;
-                try {
-                    loaded = Class.forName(name, false, EdtDisciplineTest.class.getClassLoader());
-                } catch (Throwable unloadable) {
-                    continue;
-                }
-                if (JComponent.class.isAssignableFrom(loaded)
-                        || java.awt.Window.class.isAssignableFrom(loaded)) {
-                    components.add(loaded);
-                }
+        for (String name : names) {
+            Class<?> loaded;
+            try {
+                loaded = Class.forName(name, false, EdtDisciplineTest.class.getClassLoader());
+            } catch (Throwable unloadable) {
+                continue;
+            }
+            if (JComponent.class.isAssignableFrom(loaded)
+                    || java.awt.Window.class.isAssignableFrom(loaded)) {
+                components.add(loaded);
             }
         }
         return components;

@@ -1,0 +1,15 @@
+# Memory-mapped CSR graph indexes and traversal.
+
+load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+
+bbv_java_library(
+    name = "graph-core",
+    # api: callers traverse with core-model ids in hand.
+    exports = ["//core-model"],
+    deps = ["//core-model"],
+)
+
+bbv_java_test_suite(
+    name = "tests",
+    deps = [":graph-core"],
+)

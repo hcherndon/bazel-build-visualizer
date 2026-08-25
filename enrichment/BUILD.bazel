@@ -1,0 +1,51 @@
+# Execution-log / timing-profile correlation onto sessions.
+
+load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+
+bbv_java_library(
+    name = "enrichment",
+    # api: enrichment results land in sessions and are described in
+    # core-model terms; the auxiliary query runner plans a query with
+    # bazel-runner's planner and launches it with its subprocess helper.
+    # Nothing in bazel-runner depends on enrichment, so this direction is
+    # the only one there is.
+    exports = [
+        "//bazel-runner",
+        "//core-model",
+        "//session-format",
+        "//storage-sqlite",
+    ],
+    deps = [
+        "//bazel-runner",
+        "//core-model",
+        "//session-format",
+        "//storage-sqlite",
+        # implementation:
+        "//proto",
+        # Pure-Java zstd. The compact execution log is a zstd frame (finding
+        # S4), so a decoder is not optional. Chosen over zstd-jni because it
+        # needs no platform-native binaries: decompression is nowhere near
+        # the bottleneck ahead of protobuf parsing and SQLite writes.
+        "@maven//:io_airlift_aircompressor",
+        "@maven//:com_google_protobuf_protobuf_java",
+        # Streaming JSON, for the trace profile. Gson's JsonReader is a pull
+        # parser, which is the requirement: a profile is not a protobuf and
+        # can be hundreds of megabytes, so it is read a token at a time and
+        # never held. Declared rather than inherited through
+        # protobuf-java-util — depending on that by accident is how a
+        # version nobody chose ends up in the build.
+        "@maven//:com_google_code_gson_gson",
+    ],
+)
+
+bbv_java_test_suite(
+    name = "tests",
+    deps = [
+        ":enrichment",
+        "//proto",
+        "//test-support",
+        "@maven//:io_airlift_aircompressor",
+        "@maven//:com_google_code_gson_gson",
+        "@maven//:com_google_protobuf_protobuf_java",
+    ],
+)

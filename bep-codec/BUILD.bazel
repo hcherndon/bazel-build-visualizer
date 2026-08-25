@@ -1,0 +1,21 @@
+# BEP framing/decoding (binary and JSON).
+
+load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+
+bbv_java_library(
+    name = "bep-codec",
+    # api: decoders hand back generated protobuf types and core-model ids.
+    exports = [
+        "//core-model",
+        "//proto",
+    ],
+    deps = [
+        "//core-model",
+        "//proto",
+    ],
+)
+
+bbv_java_test_suite(
+    name = "tests",
+    deps = [":bep-codec"],
+)

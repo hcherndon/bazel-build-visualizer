@@ -34,7 +34,11 @@ final class LimitsDocTest {
             "^\\|[^|]*\\|\\s*`([\\w.]+)`(?:\\s*—\\s*`?(\\w+)`?)?\\s*\\|\\s*([^|]*?)\\s*\\|");
 
     private static Path document() {
-        return Path.of("..", "docs", "limits.md");
+        // The page is a declared data dependency of this test target
+        // (//docs:limits.md), found through the runfiles tree. TEST_SRCDIR is
+        // Bazel's contract for that; _main is the main repository's name in
+        // the tree.
+        return Path.of(System.getenv("TEST_SRCDIR"), "_main", "docs", "limits.md");
     }
 
     @Test

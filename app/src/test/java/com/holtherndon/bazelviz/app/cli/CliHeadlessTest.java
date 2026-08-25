@@ -16,9 +16,10 @@ import org.junit.jupiter.api.io.TempDir;
  *
  * <p>CI runs {@code bbv import} on machines with no display, where touching a
  * window toolkit throws {@link java.awt.HeadlessException} and the command dies
- * having imported nothing. The test task sets {@code java.awt.headless=true}
- * for this whole module (see {@code app/build.gradle.kts}); this test confirms
- * the mode really is in force and then runs a complete import inside it.
+ * having imported nothing. The test suite sets {@code java.awt.headless=true}
+ * for this whole module (see {@code app/BUILD.bazel}'s {@code headless = True});
+ * this test confirms the mode really is in force and then runs a complete
+ * import inside it.
  *
  * <p>Note what this does <em>not</em> rely on: {@code Main} dispatching before
  * it creates a window is what keeps the real process headless, and that seam is
@@ -37,7 +38,7 @@ class CliHeadlessTest {
     void aFullImportRunsWithNoGraphicsEnvironment() throws IOException {
         assertThat(GraphicsEnvironment.isHeadless())
                 .as("this test is meaningless unless the JVM really is headless;"
-                        + " app/build.gradle.kts sets java.awt.headless for the test task")
+                        + " app/BUILD.bazel sets java.awt.headless for the test suite")
                 .isTrue();
 
         Path source = workspace.resolve("build.bep");

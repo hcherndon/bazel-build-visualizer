@@ -186,7 +186,10 @@ final class Phase9ExitCriteriaTest {
         // handler calls. The fourth half — Finder actually doing it — needs an
         // installed bundle and is checked by hand; docs/packaging.md records
         // the Info.plist this produced.
-        Path descriptor = Path.of("..", "app", "src", "main", "packaging", "bviz.properties");
+        // The descriptor is a declared data dependency of this test target
+        // (exported by //app), found through the runfiles tree.
+        Path descriptor = Path.of(System.getenv("TEST_SRCDIR"),
+                "_main", "app", "src", "main", "packaging", "bviz.properties");
         Properties association = new Properties();
         try (var in = Files.newInputStream(descriptor)) {
             association.load(in);

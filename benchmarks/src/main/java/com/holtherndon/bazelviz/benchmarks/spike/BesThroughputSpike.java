@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * does.
  *
  * <pre>{@code
- *   ./gradlew :benchmarks:runBesThroughputSpike --args="--events=200000"
+ *   bazel run //benchmarks:bes_throughput_spike -- --events=200000
  * }</pre>
  */
 public final class BesThroughputSpike {

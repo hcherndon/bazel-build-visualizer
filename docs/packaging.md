@@ -1,25 +1,29 @@
 # Packaging for macOS
 
-What `./gradlew :app:jpackage` produces, what it deliberately does not do, and
-where the credentials live.
+What `bazel run //app:jpackage` produces, what it deliberately does not do,
+and where the credentials live.
 
 ## What is built
 
 ```
-./gradlew :app:jpackage                       # an .app image (the default)
-./gradlew :app:jpackage -Pbbv.packageType=dmg # a disk image
-./gradlew :app:notarize -Pbbv.packageType=dmg # submit and staple
+bazel run //app:jpackage                  # an .app image (the default)
+bazel run //app:jpackage -- --type=dmg    # a disk image
+bazel run //app:notarize                  # submit and staple what dist/ holds
 ```
 
-jpackage runs against the `installDist` layout — the directory the `application`
-plugin already produces — rather than a fat jar. A desktop application is never
-on anybody else's classpath, so flattening the jars buys nothing and loses the
-one-to-one mapping between a module and a file in `Contents/app`.
+Output lands in `dist/jpackage` at the workspace root (gitignored). jpackage
+runs against the deploy jar (`//app:bbv_deploy.jar`) — a single fat jar is
+exactly what a desktop application that is never on anybody else's classpath
+wants, and it is the artifact Bazel already builds deterministically. (The
+Gradle era packaged the `installDist` directory instead; that layout died
+with the `application` plugin.) jpackage itself comes from the **local** JDK
+(`JAVA_HOME` or `PATH`) — the hermetic remote JDK is a build-time toolchain,
+and packaging for the host is the one honestly host-specific step.
 
-The image carries the JVM options the launcher scripts carry, which is not
+The image carries the JVM options the `bbv` launcher carries, which is not
 cosmetic: `--enable-native-access=ALL-UNNAMED` is load-bearing, because
 sqlite-jdbc and FlatLaf both call `System::load` and a future JDK makes that an
-error rather than a warning (see `bbv.java-common.gradle.kts`).
+error rather than a warning (see `tools/bbv.bzl`).
 
 Verified on this machine: the image builds, its `Info.plist` declares the file
 association, its `.cfg` carries all four JVM options, and the packaged launcher
@@ -37,7 +41,7 @@ jpackage: macOS will not accept an app-version starting with zero, so this
 package is stamped 1.0.0 while the application reports 0.1.0.
 ```
 
-`-Pbbv.packageVersion=…` overrides it. Once the project reaches `1.0.0` the
+`-- --app-version=…` overrides it. Once the project reaches `1.0.0` the
 substitution stops happening by itself.
 
 ## File associations
@@ -58,13 +62,13 @@ install would be a bad neighbour.
 
 ## Signing and notarization
 
-Neither credential is in this repository, and neither is read from
-`gradle.properties` — that file is committed.
+Neither credential is in this repository, and neither is read from any
+committed file.
 
 | Variable | What it is | Read by |
 |---|---|---|
-| `BBV_MAC_SIGNING_IDENTITY` | the Developer ID name | `:app:jpackage` |
-| `BBV_MAC_NOTARY_PROFILE` | a keychain profile **name** | `:app:notarize` |
+| `BBV_MAC_SIGNING_IDENTITY` | the Developer ID name | `//app:jpackage` |
+| `BBV_MAC_NOTARY_PROFILE` | a keychain profile **name** | `//app:notarize` |
 
 The notary profile is stored once, by the person doing the release, with
 
@@ -90,8 +94,8 @@ Gatekeeper will refuse it on another machine.
 **jpackage does not cross-compile.** It packages for the architecture of the
 JDK running it, and jlink cannot produce a runtime image for another
 architecture without that architecture's `jmods`. So "build Apple Silicon and
-Intel packages" means running `:app:jpackage` twice, on two machines or on two
-CI runners:
+Intel packages" means running `//app:jpackage` twice, on two machines or on
+two CI runners:
 
 ```
 runs-on: macos-14      # arm64

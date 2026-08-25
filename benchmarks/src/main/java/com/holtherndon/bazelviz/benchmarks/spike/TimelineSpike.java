@@ -24,9 +24,8 @@ import javax.swing.WindowConstants;
  * <p>Modes:
  * <ul>
  *   <li>default: interactive window (drag pans, wheel zooms);
- *       {@code -Dbbv.smoke=true} closes it automatically. Gradle CLI
- *       {@code -D} properties stay in the daemon and never reach this forked
- *       JVM, so {@code --smoke} and {@code BBV_SMOKE=true} work too.</li>
+ *       {@code --jvm_flag=-Dbbv.smoke=true} closes it automatically;
+ *       {@code --smoke} and {@code BBV_SMOKE=true} work too.</li>
  *   <li>{@code --offscreen}: headless; paints {@value #MEASURED_FRAMES} frames at
  *       randomized pan/zoom into a 1600x900 RGB image and prints frame statistics
  *       with a PASS/FAIL verdict.</li>

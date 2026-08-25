@@ -51,29 +51,45 @@ shows a number it cannot define.
 
 ## Building
 
-Prerequisites: none beyond a JVM able to run the Gradle wrapper — the Java
-25 toolchain ([ADR-008](docs/adr/008-java-25.md)) is auto-provisioned on
-first build.
+Prerequisites: [bazelisk](https://github.com/bazelbuild/bazelisk)
+(`brew install bazelisk`). Nothing else — not even a JVM: bazelisk fetches
+Bazel 9.2.0 per `.bazelversion`, and the build fetches the remote JDK 25
+toolchain ([ADR-008](docs/adr/008-java-25.md) via
+[ADR-009](docs/adr/009-bazel-build.md)).
 
 ```
-./gradlew check
+bazel test //...
 ```
+
+The four-version Bazel sweep (`BazelVersionMatrixTest`) is excluded from
+every default run and must never be run casually — it starts four Bazel
+servers and has crashed a development machine. See the notes in
+`capture-bes/BUILD.bazel` before touching it.
 
 ## Running the app
 
 ```
-./gradlew :app:run
+bazel run //app:bbv
 ```
 
-(`-Dbbv.smoke=true` opens the window and exits after two seconds; used by
-scripted verification.)
+(`bazel run //app:bbv -- --jvm_flag=-Dbbv.smoke=true` opens the window and
+exits after two seconds; used by scripted verification. `bbv.theme` and
+`bbv.appdir` ride the same way, as `--jvm_flag=-D<name>=<value>` arguments
+before the program's own.)
 
 ## Importing a BEP file from the command line
 
 ```
-./gradlew :app:installDist
-app/build/install/bbv/bin/bbv import path/to/build.bep
-app/build/install/bbv/bin/bbv inspect <session-dir> --events 20
+bazel run //app:bbv -- import path/to/build.bep
+bazel run //app:bbv -- inspect <session-dir> --events 20
+```
+
+For an installable single file, build the deploy jar and run it with the
+native-access grant the launcher would have added:
+
+```
+bazel build //app:bbv_deploy.jar
+java --enable-native-access=ALL-UNNAMED -jar bazel-bin/app/bbv_deploy.jar import path/to/build.bep
 ```
 
 `bbv import --help` documents the options and the exit-code contract: 0 for a
@@ -83,7 +99,7 @@ the damage was imported, 3 when the import failed outright.
 ## Launching a build from the command line
 
 ```
-app/build/install/bbv/bin/bbv run -- build //...
+bazel run //app:bbv -- run -- build //...
 ```
 
 The Bazel command goes after `--`, so its options are never confused with
@@ -109,10 +125,10 @@ differs; only two of them are frame-rate spikes:
 
 | Spike | `--offscreen` behaviour | Reports |
 |---|---|---|
-| `runTableSpike` | headless; builds the model, no window | page-fetch latency percentiles, cache stats, JTable pixel geometry |
-| `runTimelineSpike` | paints 300 frames to a `BufferedImage` | LOD build time, frame-time percentiles |
-| `runGraphSpike` | paints 300 frames to a `BufferedImage` | CSR build/traversal rates, retained bytes, frame-time percentiles |
-| `runSqlPagingSpike` | console-only; the flag is accepted and ignored | insert throughput, OFFSET vs keyset vs point-lookup latency |
+| `table_spike` | headless; builds the model, no window | page-fetch latency percentiles, cache stats, JTable pixel geometry |
+| `timeline_spike` | paints 300 frames to a `BufferedImage` | LOD build time, frame-time percentiles |
+| `graph_spike` | paints 300 frames to a `BufferedImage` | CSR build/traversal rates, retained bytes, frame-time percentiles |
+| `sql_paging_spike` | console-only; the flag is accepted and ignored | insert throughput, OFFSET vs keyset vs point-lookup latency |
 
 The timeline and graph spikes open an interactive window when run without
 `--offscreen`; the table spike opens one too, while the SQL spike is always
@@ -120,11 +136,15 @@ console-only. Targets and measured results:
 [docs/performance.md](docs/performance.md).
 
 ```
-./gradlew :benchmarks:runTableSpike     --args="--offscreen"
-./gradlew :benchmarks:runTimelineSpike  --args="--offscreen"
-./gradlew :benchmarks:runGraphSpike     --args="--offscreen"
-./gradlew :benchmarks:runSqlPagingSpike --args="--rows=2000000"
+bazel run //benchmarks:table_spike      -- --offscreen
+bazel run //benchmarks:timeline_spike   -- --offscreen
+bazel run //benchmarks:graph_spike      -- --offscreen
+bazel run //benchmarks:sql_paging_spike -- --rows=2000000
 ```
+
+(`bes_throughput_spike` and `entity_scale_spike` run the same way. JMH:
+`bazel run //benchmarks:jmh -- -l` lists the benchmarks; a bare run
+executes them — never in CI.)
 
 ## Modules
 
@@ -146,15 +166,17 @@ console-only. Targets and measured results:
 | `test-support` | deterministic synthetic data generators (Tier 1-3) |
 | `benchmarks` | Phase 0 spikes and JMH benchmarks (not shipped) |
 
-Build conventions live in `build-logic/` (see
-[ADR-003](docs/adr/003-gradle.md)).
+Build conventions live in `tools/bbv.bzl` (see
+[ADR-009](docs/adr/009-bazel-build.md), which supersedes
+[ADR-003](docs/adr/003-gradle.md)). Packaging:
+`bazel run //app:jpackage` builds the macOS app image ([docs/packaging.md](docs/packaging.md)).
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — module map, the six graph
   representations, session state machine, pipeline, threading model
-- [docs/adr/](docs/adr/) — ADR-001 … ADR-008, the fixed decisions
-  (ADR-008 supersedes ADR-002)
+- [docs/adr/](docs/adr/) — ADR-001 … ADR-009, the fixed decisions
+  (ADR-008 supersedes ADR-002; ADR-009 supersedes ADR-003)
 - [docs/performance.md](docs/performance.md) — benchmark tiers, Phase 0
   targets and measurements
 - [docs/implementation-status.md](docs/implementation-status.md) — what

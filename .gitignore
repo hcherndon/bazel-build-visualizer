@@ -1,16 +1,25 @@
-# Gradle build outputs. These are anchored to module roots on purpose: a bare
-# `build/` matches at *any* depth, which silently excluded five vendored proto
-# files whose upstream paths contain a `build` component — including
+# Anchor ignore patterns to the repository root on purpose: a bare `build/`
+# (Gradle-era) matched at *any* depth and silently excluded five vendored
+# proto files whose upstream paths contain a `build` component — including
 # build_event_stream.proto, the entire BEP schema. Prefer a pattern that lets
-# a stray build directory show up noisily in `git status` over one that can
-# quietly drop source files.
-/build/
-/*/build/
-.gradle/
-.kotlin/
+# a stray directory show up noisily in `git status` over one that can quietly
+# drop source files.
 
 /out/
 bin/
+
+# Bazel outputs and convenience symlinks. Anchored to the repository root for
+# the same reason the build/ patterns above are anchored: a bare `bazel-*`
+# matches at any depth and would swallow the tracked `bazel-runner/` module —
+# and several vendored proto paths contain "bazel" too. The last entry is the
+# workspace symlink Bazel names after the repository directory.
+/bazel-bin
+/bazel-out
+/bazel-testlogs
+/bazel-bazel-bep-viewer
+
+# jpackage output from `bazel run //app:jpackage` (see docs/packaging.md).
+/dist/
 
 .DS_Store
 .idea/
