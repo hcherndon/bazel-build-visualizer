@@ -22,6 +22,7 @@ import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JPanel;
+import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
@@ -72,19 +73,24 @@ public final class LauncherPanel extends JPanel {
     private final JButton chooseWorkspace = new JButton("Choose workspace…");
     private final JButton chooseBazel = new JButton("Choose Bazel…");
     private final JButton run = new JButton("Run");
-    private final JLabel presetExplanation = new JLabel();
+    private final JTextArea presetExplanation = explanationArea("", 1);
+    private final JTextArea graphCostWarning = explanationArea(
+            "Cost warning for every choice: after the build, BBV runs aquery and cquery and"
+                    + " indexes both graphs, using extra disk, CPU, and indexing time.",
+            2);
     private final JLabel historyExplanation = new JLabel(
             "Keeps the " + LauncherHistory.MAX_ENTRIES
                     + " most recent unique commands · Up/Down recalls · Ctrl+Space completes");
     private final LauncherHistory history = new LauncherHistory();
     private final Timer saveDebounce = new Timer(400, event -> flushPersistence());
-    private final Font ordinaryExplanationFont;
-    private final Color ordinaryExplanationColor;
-
     private LauncherStateStore store;
     private Executor ioExecutor;
     private LauncherStateStore.State lastSaved;
     private boolean applying;
+    private boolean loadPending;
+    private boolean persistenceReady;
+    private boolean disposed;
+    private long editRevision;
 
     public LauncherPanel(
             Runnable runAction, Runnable chooseWorkspaceAction, Runnable chooseBazelAction) {
@@ -111,6 +117,7 @@ public final class LauncherPanel extends JPanel {
         chooseBazel.setName("launcher.chooseBazel");
         run.setName("launcher.run");
         presetExplanation.setName("launcher.presetExplanation");
+        graphCostWarning.setName("launcher.graphCostWarning");
         historyExplanation.setName("launcher.historyExplanation");
 
         workspace.setToolTipText(PlainText.tooltip(
@@ -124,8 +131,9 @@ public final class LauncherPanel extends JPanel {
         run.setToolTipText("Preflight the command and show the effective command for review");
 
         captureDetail.setRenderer(new PresetRenderer());
-        ordinaryExplanationFont = presetExplanation.getFont();
-        ordinaryExplanationColor = presetExplanation.getForeground();
+        Color warning = UIManager.getColor("Actions.Red");
+        graphCostWarning.setForeground(warning == null ? new Color(180, 36, 36) : warning);
+        graphCostWarning.setFont(graphCostWarning.getFont().deriveFont(Font.BOLD));
         captureDetail.addActionListener(event -> {
             updatePresetExplanation();
             markDirty();
@@ -167,11 +175,15 @@ public final class LauncherPanel extends JPanel {
         explanation.insets = new Insets(0, 4, 4, 4);
         add(presetExplanation, explanation);
 
-        add(commandLabel, constraints(0, 4, 0, 0));
-        add(command, constraints(1, 4, 1, 1));
-        add(run, constraints(2, 4, 0, 0));
+        GridBagConstraints graphWarning = constraints(1, 4, 1, 2);
+        graphWarning.insets = new Insets(0, 4, 4, 4);
+        add(graphCostWarning, graphWarning);
 
-        GridBagConstraints historyHint = constraints(1, 5, 1, 2);
+        add(commandLabel, constraints(0, 5, 0, 0));
+        add(command, constraints(1, 5, 1, 1));
+        add(run, constraints(2, 5, 0, 0));
+
+        GridBagConstraints historyHint = constraints(1, 6, 1, 2);
         historyHint.insets = new Insets(0, 4, 2, 4);
         historyExplanation.setEnabled(false);
         add(historyExplanation, historyHint);
@@ -182,6 +194,19 @@ public final class LauncherPanel extends JPanel {
         label.setLabelFor(target);
         label.setName(name);
         return label;
+    }
+
+    private static JTextArea explanationArea(String text, int rows) {
+        JTextArea area = new JTextArea(text, rows, 20);
+        area.setEditable(false);
+        area.setFocusable(false);
+        area.setOpaque(false);
+        area.setBorder(null);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setFont(UIManager.getFont("Label.font"));
+        area.setForeground(UIManager.getColor("Label.foreground"));
+        return area;
     }
 
     private static GridBagConstraints constraints(
@@ -200,22 +225,15 @@ public final class LauncherPanel extends JPanel {
     private void updatePresetExplanation() {
         CapturePreset selected = preset();
         String text = switch (selected) {
-            case LIVE_ESSENTIALS -> "BEP and console only; lowest capture overhead.";
+            case LIVE_ESSENTIALS ->
+                    "Live BEP and console; no execution log or timing profile.";
             case PERFORMANCE_DIAGNOSTICS ->
-                    "Recommended: adds timing, execution, cache, and action diagnostics.";
+                    "Recommended: adds the execution log and timing profile to live BEP and console.";
             case FULL_GRAPH_DIAGNOSTICS ->
-                    "Warning: high disk, CPU, and indexing cost; use only for full-graph questions.";
+                    "Currently the same sources as Performance Diagnostics; it adds no graph capture today.";
             case CUSTOM -> throw new IllegalStateException("Custom is not a visible launcher option");
         };
         presetExplanation.setText(text);
-        if (selected.requiresCostWarning()) {
-            Color warning = UIManager.getColor("Actions.Red");
-            presetExplanation.setForeground(warning == null ? new Color(180, 36, 36) : warning);
-            presetExplanation.setFont(ordinaryExplanationFont.deriveFont(Font.BOLD));
-        } else {
-            presetExplanation.setForeground(ordinaryExplanationColor);
-            presetExplanation.setFont(ordinaryExplanationFont);
-        }
     }
 
     private void installCompletion() {
@@ -302,12 +320,31 @@ public final class LauncherPanel extends JPanel {
 
     /** Explicit store/executor seam for focused headless tests. */
     void attachPersistence(LauncherStateStore newStore, Executor executor) {
+        if (disposed) {
+            return;
+        }
         store = Objects.requireNonNull(newStore, "newStore");
         ioExecutor = Objects.requireNonNull(executor, "executor");
+        loadPending = true;
+        long revisionAtStart = editRevision;
         executor.execute(() -> {
             LauncherStateStore.State loaded = newStore.load();
-            SwingUtilities.invokeLater(() -> adopt(loaded));
+            SwingUtilities.invokeLater(() -> finishLoad(loaded, revisionAtStart));
         });
+    }
+
+    private void finishLoad(LauncherStateStore.State loaded, long revisionAtStart) {
+        if (disposed) {
+            return;
+        }
+        loadPending = false;
+        persistenceReady = true;
+        lastSaved = loaded;
+        if (editRevision != revisionAtStart) {
+            flushPersistence();
+            return;
+        }
+        adopt(loaded);
     }
 
     private void adopt(LauncherStateStore.State loaded) {
@@ -318,7 +355,6 @@ public final class LauncherPanel extends JPanel {
             captureDetail.setSelectedItem(visibleOrDefault(loaded.preset()));
             command.setText(loaded.command());
             history.replaceNewestFirst(loaded.history());
-            lastSaved = snapshot();
             saveDebounce.stop();
         } finally {
             applying = false;
@@ -327,7 +363,11 @@ public final class LauncherPanel extends JPanel {
     }
 
     private void markDirty() {
-        if (!applying && store != null) {
+        if (applying || disposed) {
+            return;
+        }
+        editRevision++;
+        if (persistenceReady) {
             saveDebounce.restart();
         }
     }
@@ -335,16 +375,24 @@ public final class LauncherPanel extends JPanel {
     /** Captures on the EDT and queues a save; the caller never waits for disk. */
     public void flushPersistence() {
         saveDebounce.stop();
-        if (store == null) {
+        if (disposed || store == null || !persistenceReady || loadPending) {
             return;
         }
         LauncherStateStore.State state = snapshot();
         if (state.equals(lastSaved)) {
             return;
         }
-        lastSaved = state;
         LauncherStateStore target = store;
-        ioExecutor.execute(() -> target.save(state));
+        ioExecutor.execute(() -> {
+            boolean saved = target.save(state);
+            SwingUtilities.invokeLater(() -> acknowledgeSave(state, saved));
+        });
+    }
+
+    private void acknowledgeSave(LauncherStateStore.State state, boolean saved) {
+        if (!disposed && saved) {
+            lastSaved = state;
+        }
     }
 
     private LauncherStateStore.State snapshot() {
@@ -359,7 +407,26 @@ public final class LauncherPanel extends JPanel {
     /** Promotes a command into history and queues the updated state for persistence. */
     public void rememberCommand(String value) {
         history.record(value);
+        markDirty();
         flushPersistence();
+    }
+
+    /**
+     * Stops persistence callbacks for a window that is closing.
+     *
+     * <p>If loading is still pending, defaults are deliberately not saved over
+     * an unread existing file. A completed load may queue the current snapshot,
+     * but its acknowledgement never updates this disposed panel.
+     */
+    public void close() {
+        if (disposed) {
+            return;
+        }
+        saveDebounce.stop();
+        if (persistenceReady && !loadPending) {
+            flushPersistence();
+        }
+        disposed = true;
     }
 
     public String workspace() {
@@ -420,8 +487,12 @@ public final class LauncherPanel extends JPanel {
         return command;
     }
 
-    JLabel presetExplanationForTest() {
+    JTextArea presetExplanationForTest() {
         return presetExplanation;
+    }
+
+    JTextArea graphCostWarningForTest() {
+        return graphCostWarning;
     }
 
     JLabel historyExplanationForTest() {

@@ -9,10 +9,13 @@ import com.holtherndon.bazelviz.runner.plan.PlanRequest;
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
 import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 
 /**
  * Drives a capture from the UI without ever touching a disk, a socket or a
@@ -58,12 +61,22 @@ public final class LaunchController {
     private final Executor worker;
     private final Executor toUi;
     private final Listener listener;
+    private final Predicate<Path> directoryExists;
     private final AtomicReference<CaptureCoordinator> active = new AtomicReference<>();
 
     public LaunchController(Executor worker, Executor toUi, Listener listener) {
+        this(worker, toUi, listener, Files::isDirectory);
+    }
+
+    LaunchController(
+            Executor worker,
+            Executor toUi,
+            Listener listener,
+            Predicate<Path> directoryExists) {
         this.worker = Objects.requireNonNull(worker, "worker");
         this.toUi = Objects.requireNonNull(toUi, "toUi");
         this.listener = Objects.requireNonNull(listener, "listener");
+        this.directoryExists = Objects.requireNonNull(directoryExists, "directoryExists");
     }
 
     /**
@@ -88,6 +101,10 @@ public final class LaunchController {
         }
         worker.execute(() -> {
             try {
+                if (!directoryExists.test(request.workingDirectory())) {
+                    throw new IOException(
+                            "the working directory does not exist: " + request.workingDirectory());
+                }
                 Preflight preflight = coordinator.preflight();
                 toUi.execute(() -> listener.planReady(preflight));
             } catch (IOException | RuntimeException failure) {

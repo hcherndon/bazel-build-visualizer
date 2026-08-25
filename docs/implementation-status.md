@@ -2123,21 +2123,33 @@ it is a different tab and was not reported.
   for Workspace, Bazel executable, Capture detail and Bazel command (without
   bazel), plus named **Choose workspace…** and **Choose Bazel…** buttons. Its
   combo offers exactly Live Essentials, Performance Diagnostics (recommended
-  and selected by default), and Full Graph Diagnostics; an always-visible
-  explanation follows the selection and Full Graph renders a bold warning
-  naming disk, CPU and indexing cost. `CapturePreset.CUSTOM` stays compatible
-  with stored/model code but is deliberately absent until there is an
+  and selected by default), and Full Graph Diagnostics. The selected explanation
+  states the current behavior rather than the intended names: Live omits the
+  execution log and profile, Performance adds them, and Full currently adds no
+  source beyond Performance. A separate bold warning remains visible for every
+  choice because `CaptureCoordinator` currently runs `aquery`, `cquery`, and
+  graph indexing after every live capture, with the same disk/CPU/indexing cost
+  regardless of preset. `CapturePreset.CUSTOM` stays compatible with
+  stored/model code but is deliberately absent until there is an
   individual-source editor. The separate `InstrumentationPlanDialog` and every
   ADR-007 preflight choice are unchanged.
 
   `LauncherStateStore` keeps the four values and `LauncherHistory` under the
   existing `settings/` directory. A dedicated `bbv-launcher-settings` thread
   performs every load/save, its store refuses EDT access, and missing or
-  corrupt state falls back to defaults without blocking launch. History is
+  corrupt state falls back to defaults without blocking launch. Saves write a
+  sibling temporary file and atomically replace the live file where supported;
+  a failed replacement leaves the old settings and the snapshot retryable.
+  Save state advances only after the worker acknowledges success. A late load
+  cannot overwrite a newer edit, and closing while load is pending neither
+  adopts into the disposed panel nor writes defaults over the existing file.
+  Workspace existence is likewise checked on the capture worker before
+  coordinator preflight, so an invalid directory never reaches the ADR-007
+  plan dialog or creates a failed-to-start session. History is
   exactly 50 unique commands, newest first; a duplicate is promoted, Up/Down
   recalls while leaving the field editable, and the bound is printed below
   the field. Ctrl+Space completion reuses the existing autocomplete library
   over a fixed, test-pinned set of common Bazel subcommands. Focused headless
   coverage is in `LauncherPanelTest`, `LauncherHistoryTest`,
-  `LauncherStateStoreTest`, and the updated `NavEntryTest`; no dependency or
-  build-file change was needed.
+  `LauncherStateStoreTest`, `LaunchControllerTest`, and the updated
+  `NavEntryTest`; no dependency or build-file change was needed.

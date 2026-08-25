@@ -413,7 +413,7 @@ public final class MainWindow extends JFrame {
 
     @Override
     public void dispose() {
-        launcherPanel.flushPersistence();
+        launcherPanel.close();
         // Every view, not just the events one: since this window took ownership
         // of the session source, closing only one view left the other five
         // holding executors and JDBC connections, and left the source open.

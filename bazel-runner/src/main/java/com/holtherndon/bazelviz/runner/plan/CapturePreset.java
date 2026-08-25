@@ -23,8 +23,10 @@ import java.util.Set;
 public enum CapturePreset {
 
     /**
-     * Preset A. Minimal perturbation: the event stream and the console, nothing
-     * that writes another file or costs another analysis pass.
+     * Preset A. Adds the live event stream and console without execution-log or
+     * profile instrumentation. The capture coordinator currently runs both
+     * graph queries and builds their indexes after every live capture,
+     * independently of this request set.
      */
     LIVE_ESSENTIALS(
             "Live Essentials",
@@ -51,10 +53,9 @@ public enum CapturePreset {
                     Capability.AQUERY_PROTO_OUTPUT)),
 
     /**
-     * Preset C. Adds the configured-target graph and complete edge
-     * materialization. Must be presented with a disk, CPU and indexing-cost
-     * warning (plan 4.2), which is why {@link #requiresCostWarning()} exists
-     * rather than the UI hard-coding a comparison against this constant.
+     * Preset C. Retains the plan's configured-target request in the model. In
+     * the current capture path it adds no source beyond Performance Diagnostics:
+     * the coordinator runs both graph queries and indexing for every preset.
      */
     FULL_GRAPH_DIAGNOSTICS(
             "Full Graph Diagnostics",
@@ -96,8 +97,12 @@ public enum CapturePreset {
         return PERFORMANCE_DIAGNOSTICS;
     }
 
-    /** True when the UI must show a prominent disk/CPU/indexing-cost warning. */
+    /**
+     * True when the UI must disclose post-build graph-query and indexing cost.
+     * That cost currently applies to every preset, including Custom, because
+     * the coordinator does not consult the preset before running the queries.
+     */
     public boolean requiresCostWarning() {
-        return this == FULL_GRAPH_DIAGNOSTICS;
+        return true;
     }
 }

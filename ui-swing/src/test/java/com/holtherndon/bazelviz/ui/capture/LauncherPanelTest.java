@@ -8,6 +8,7 @@ import java.awt.Container;
 import java.awt.Font;
 import java.awt.event.ActionEvent;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JComboBox;
@@ -52,18 +53,20 @@ class LauncherPanelTest {
         assertThat(choices.getSelectedItem()).isEqualTo(CapturePreset.PERFORMANCE_DIAGNOSTICS);
         assertThat(renderedText(choices, CapturePreset.PERFORMANCE_DIAGNOSTICS))
                 .isEqualTo("Performance Diagnostics (recommended)");
-        assertThat(panel.presetExplanationForTest().getText())
-                .containsIgnoringCase("Recommended")
-                .containsIgnoringCase("timing");
+        assertPresetExplanation(panel, CapturePreset.LIVE_ESSENTIALS,
+                "Live BEP and console; no execution log or timing profile.");
+        assertPresetExplanation(panel, CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                "Recommended: adds the execution log and timing profile to live BEP and console.");
+        assertPresetExplanation(panel, CapturePreset.FULL_GRAPH_DIAGNOSTICS,
+                "Currently the same sources as Performance Diagnostics;"
+                        + " it adds no graph capture today.");
 
-        SwingUtilities.invokeAndWait(
-                () -> choices.setSelectedItem(CapturePreset.FULL_GRAPH_DIAGNOSTICS));
-        assertThat(panel.presetExplanationForTest().getText())
-                .containsIgnoringCase("Warning")
-                .containsIgnoringCase("disk")
-                .containsIgnoringCase("CPU")
-                .containsIgnoringCase("indexing");
-        assertThat(panel.presetExplanationForTest().getFont().getStyle()).isEqualTo(Font.BOLD);
+        assertThat(panel.graphCostWarningForTest().getText())
+                .isEqualTo("Cost warning for every choice: after the build, BBV runs aquery and"
+                        + " cquery and indexes both graphs, using extra disk, CPU, and indexing time.");
+        assertThat(panel.graphCostWarningForTest().getFont().getStyle()).isEqualTo(Font.BOLD);
+        assertThat(Arrays.stream(CapturePreset.values()))
+                .allSatisfy(preset -> assertThat(preset.requiresCostWarning()).isTrue());
     }
 
     @Test
@@ -124,6 +127,13 @@ class LauncherPanelTest {
             values.add(choices.getItemAt(i));
         }
         return values;
+    }
+
+    private static void assertPresetExplanation(
+            LauncherPanel panel, CapturePreset preset, String expected) throws Exception {
+        SwingUtilities.invokeAndWait(() -> panel.presetChoiceForTest().setSelectedItem(preset));
+        assertThat(panel.presetExplanationForTest().getText()).isEqualTo(expected);
+        assertThat(panel.graphCostWarningForTest().isVisible()).isTrue();
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

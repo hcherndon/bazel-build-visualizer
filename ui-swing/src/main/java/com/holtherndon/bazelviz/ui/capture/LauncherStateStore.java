@@ -5,8 +5,10 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
@@ -28,10 +30,16 @@ public final class LauncherStateStore {
     private static final String FORMAT = "1";
 
     private final Path file;
+    private final Replacer replacer;
 
     public LauncherStateStore(Path settingsDirectory) {
+        this(settingsDirectory, LauncherStateStore::replace);
+    }
+
+    LauncherStateStore(Path settingsDirectory, Replacer replacer) {
         file = Objects.requireNonNull(settingsDirectory, "settingsDirectory")
                 .resolve("launcher.properties");
+        this.replacer = Objects.requireNonNull(replacer, "replacer");
     }
 
     /** Visible for focused persistence tests and troubleshooting. */
@@ -75,12 +83,19 @@ public final class LauncherStateStore {
         }
     }
 
-    /** Saves one snapshot. A failed preference save is logged and dropped. Blocking. */
-    public void save(State state) {
+    /**
+     * Saves one snapshot through a sibling temporary file. Blocking.
+     *
+     * @return true only after the replacement succeeds; false leaves the
+     *     previous live file intact and lets the caller retry the snapshot
+     */
+    public boolean save(State state) {
         requireBackgroundThread();
         Objects.requireNonNull(state, "state");
+        Path temporary = null;
         try {
             Files.createDirectories(file.getParent());
+            temporary = Files.createTempFile(file.getParent(), ".launcher-", ".tmp");
             Properties values = new Properties();
             values.setProperty("format", FORMAT);
             values.setProperty("workspace", state.workspace());
@@ -91,12 +106,39 @@ public final class LauncherStateStore {
             for (int i = 0; i < state.history().size(); i++) {
                 values.setProperty("history." + i, state.history().get(i));
             }
-            try (Writer writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
+            try (Writer writer = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
                 values.store(writer, "Bazel Build Visualizer launcher");
             }
+            replacer.replace(temporary, file);
+            temporary = null;
+            return true;
         } catch (IOException | RuntimeException failure) {
             log.warn("launcher settings could not be saved to {}", file, failure);
+            return false;
+        } finally {
+            if (temporary != null) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException | RuntimeException cleanupFailure) {
+                    log.warn("temporary launcher settings could not be removed from {}",
+                            temporary, cleanupFailure);
+                }
+            }
         }
+    }
+
+    private static void replace(Path temporary, Path destination) throws IOException {
+        try {
+            Files.move(temporary, destination,
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException unsupported) {
+            Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    @FunctionalInterface
+    interface Replacer {
+        void replace(Path temporary, Path destination) throws IOException;
     }
 
     private static String required(Properties values, String key) {

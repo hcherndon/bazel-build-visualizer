@@ -2137,9 +2137,15 @@ Avoid:
 > **Console** and comes first. Its labelled four-row form persists workspace,
 > Bazel executable, capture detail, the editable command and 50-entry unique
 > command history under `settings/`, with disk I/O off the EDT. The three
-> visible capture choices explain their scope and cost; Custom remains a model
-> value but is not offered without an individual-source editor. ADR-007's
-> effective-command dialog remains a separate required review.
+> visible capture choices explain their actual current scope: Live omits the
+> execution log/profile, Performance adds them, and Full currently adds no
+> source beyond Performance. A prominent warning applies to all three because
+> every live capture currently runs and indexes both graph queries after the
+> build. Custom remains a model value but is not offered without an
+> individual-source editor. Workspace validation and settings I/O run off the
+> EDT; settings use atomic replacement and late loads cannot overwrite edits or
+> update a disposed panel. ADR-007's effective-command dialog remains a
+> separate required review after validation.
 
 ### Right inspector
 
