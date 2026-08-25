@@ -1129,7 +1129,7 @@ What ships: a local, single-user macOS application that launches or imports a
 Bazel build, captures it raw-first, normalizes it into a queryable session,
 enriches it from the execution log, the trace profile, `aquery` and `cquery`,
 and shows it as an overview, a timeline, an action table, dependency trees, a
-graph canvas, tests, errors, events, a build pane and evidence-backed findings —
+graph canvas, tests, errors, events, a console pane and evidence-backed findings —
 at five million actions, without loading the build into memory, and without
 claiming a number it does not have.
 
@@ -2113,3 +2113,31 @@ it is a different tab and was not reported.
   `.bazelignore` shields `//...` traversal from the git worktrees under
   `.claude/`, whose BUILD files and bazel-* symlinks otherwise load as
   packages of this workspace and break the build at loading.
+
+- **Launching a build now starts in Console, in a form that explains itself**
+  (2026-08-25). `NavEntry.BUILD` and its `build` card id remain stable, but the
+  visible title is **Console** and it is first in the sidebar. The launcher no
+  longer consumes `MainWindow`'s frame-wide `BorderLayout.NORTH`; the Console
+  card reads top-to-bottom as `LauncherPanel`, live `CapturePanel`, then the
+  growing `ConsoleView`. The compact launcher has explicit accessible labels
+  for Workspace, Bazel executable, Capture detail and Bazel command (without
+  bazel), plus named **Choose workspace…** and **Choose Bazel…** buttons. Its
+  combo offers exactly Live Essentials, Performance Diagnostics (recommended
+  and selected by default), and Full Graph Diagnostics; an always-visible
+  explanation follows the selection and Full Graph renders a bold warning
+  naming disk, CPU and indexing cost. `CapturePreset.CUSTOM` stays compatible
+  with stored/model code but is deliberately absent until there is an
+  individual-source editor. The separate `InstrumentationPlanDialog` and every
+  ADR-007 preflight choice are unchanged.
+
+  `LauncherStateStore` keeps the four values and `LauncherHistory` under the
+  existing `settings/` directory. A dedicated `bbv-launcher-settings` thread
+  performs every load/save, its store refuses EDT access, and missing or
+  corrupt state falls back to defaults without blocking launch. History is
+  exactly 50 unique commands, newest first; a duplicate is promoted, Up/Down
+  recalls while leaving the field editable, and the bound is printed below
+  the field. Ctrl+Space completion reuses the existing autocomplete library
+  over a fixed, test-pinned set of common Bazel subcommands. Focused headless
+  coverage is in `LauncherPanelTest`, `LauncherHistoryTest`,
+  `LauncherStateStoreTest`, and the updated `NavEntryTest`; no dependency or
+  build-file change was needed.

@@ -2130,6 +2130,16 @@ Avoid:
 > **Graph** — the Phase 7 rendered canvas, now with selectable node weights —
 > and **Tree** — the Phase 5 dependency trees, search and path-between-nodes.
 > `NavEntry`'s javadoc and `docs/graph-model.md` carry the reasons.
+>
+> **As built (2026-08-25):** the launcher moved from a frame-wide bar into the
+> top of that merged card, followed by capture status and console output. The
+> stable `NavEntry.BUILD`/`build` identifiers remain, but the visible entry is
+> **Console** and comes first. Its labelled four-row form persists workspace,
+> Bazel executable, capture detail, the editable command and 50-entry unique
+> command history under `settings/`, with disk I/O off the EDT. The three
+> visible capture choices explain their scope and cost; Custom remains a model
+> value but is not offered without an individual-source editor. ADR-007's
+> effective-command dialog remains a separate required review.
 
 ### Right inspector
 
@@ -3240,7 +3250,9 @@ The coding agent must follow these rules:
 2. Do not attempt the full UI before raw capture and storage are reliable.
 3. Maintain `docs/implementation-status.md` with every phase and task.
 4. Add or update an ADR before changing a fixed architectural decision.
-5. Run `./gradlew check` after each meaningful change.
+5. Run scoped Bazel targets while iterating, then `bazel build //...` and
+   `bazel test //... --test_tag_filters=-bazel-sweep` after a meaningful code
+   or build change. Never run the `bazel-sweep` suite casually.
 6. Add tests with every parser, metric, migration, and graph algorithm.
 7. Preserve raw source data before deriving normalized data.
 8. Never block the Swing EDT with I/O or computation.

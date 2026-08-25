@@ -15,12 +15,13 @@ import java.util.Locale;
  * design:
  *
  * <ul>
- *   <li><b>Console and Capture are one {@code BUILD} entry.</b> They were
+ *   <li><b>Console and Capture are one {@code BUILD} entry, shown as
+ *       Console.</b> They were
  *       always read together — the capture's phase and counters answer "is it
  *       still going" and the console answers "what is it saying" — and
  *       splitting them made the user switch cards mid-build to follow one
- *       build. The card now carries the capture status as a header strip above
- *       the console.
+ *       build. The launcher and capture status now sit above the console in
+ *       that card, and Console comes first because it is where a build starts.
  *   <li><b>{@code FAILURES} is {@code ERRORS}.</b> The view lists Bazel's
  *       console diagnostics alongside failed actions and targets, and a
  *       compiler warning printed on stderr is not a failure. "Errors" covers
@@ -44,6 +45,7 @@ import java.util.Locale;
  * </ul>
  */
 public enum NavEntry {
+    BUILD("Console", 2),
     OVERVIEW("Overview", 3),
     TIMELINE("Timeline", 6),
     ACTIONS("Actions", 3),
@@ -53,7 +55,6 @@ public enum NavEntry {
     TESTS("Tests", 3),
     ERRORS("Errors", 3),
     EVENTS("Events", 1),
-    BUILD("Build", 2),
     FINDINGS("Findings", 8),
     QUERY("Query", 10);
 

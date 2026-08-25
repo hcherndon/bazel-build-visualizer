@@ -11,12 +11,13 @@ class NavEntryTest {
     @Test
     void sidebarEntriesMatchThePlanInDisplayOrder() {
         // Twelve, where plan 17.1 lists eleven. Console and Capture were
-        // merged into one Build card, Failures was renamed Errors, Query is
+        // merged into one Console card, Failures was renamed Errors, Query is
         // in no phase of the plan at all, and the old Graph card split into
         // Graph (the canvas) and Tree (the dependency trees); NavEntry's own
         // javadoc carries the reasons.
         assertThat(Arrays.stream(NavEntry.values()).map(NavEntry::title))
                 .containsExactly(
+                        "Console",
                         "Overview",
                         "Timeline",
                         "Actions",
@@ -26,7 +27,6 @@ class NavEntryTest {
                         "Tests",
                         "Errors",
                         "Events",
-                        "Build",
                         "Findings",
                         "Query");
     }
@@ -51,15 +51,16 @@ class NavEntryTest {
     }
 
     @Test
-    void theBuildEntryCarriesBothHalvesOfACapture() {
-        // One entry, not two: the capture status is the Build card's header and
-        // the console is its body, so there is no card to switch to when the
-        // build starts printing. Phase 2 is where both halves arrived.
+    void theConsoleEntryCarriesTheLauncherAndBothHalvesOfACapture() {
+        // One entry, not two: BUILD keeps the stable card id while its visible
+        // title is Console. It comes first because this is where a build starts.
         assertThat(Arrays.stream(NavEntry.values()).map(Enum::name))
                 .doesNotContain("CONSOLE", "CAPTURE", "FAILURES")
                 .contains("BUILD", "ERRORS");
         assertThat(NavEntry.BUILD.arrivalPhase()).isEqualTo(2);
+        assertThat(NavEntry.BUILD.title()).isEqualTo("Console");
         assertThat(NavEntry.BUILD.cardName()).isEqualTo("build");
+        assertThat(NavEntry.values()[0]).isEqualTo(NavEntry.BUILD);
         assertThat(NavEntry.ERRORS.cardName()).isEqualTo("errors");
     }
 
