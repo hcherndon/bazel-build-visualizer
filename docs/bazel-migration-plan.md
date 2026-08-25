@@ -1,11 +1,41 @@
 # Gradle → Bazel migration: scope and plan
 
-Status: **proposed** — this document is the scoping deliverable; nothing in it
-has been implemented. The build-system decision itself is ADR territory:
-[ADR-003](adr/003-gradle.md) fixed Gradle, so the migration may not begin
-until [ADR-009](adr/009-bazel-build.md) (drafted alongside this plan, status
-proposed) is accepted. Written 2026-08-22; every version pin below was
-verified against its registry on that date.
+Status: **accepted and executed** — [ADR-009](adr/009-bazel-build.md) was
+accepted 2026-08-24 and the migration carried out with it;
+[ADR-003](adr/003-gradle.md) is marked superseded. Written 2026-08-22;
+every version pin below was verified against its registry on that date and
+re-verified on 2026-08-24 (all resolved unchanged). Main had moved in the
+two days between drafting and execution; the drift is corrected in place
+below and summarized here:
+
+- **Five catalog additions the draft predates** (all now in the
+  `maven.install` list): `com.fifesoft:rsyntaxtextarea:3.6.1`,
+  `com.fifesoft:autocomplete:3.3.3`,
+  `com.github.vertical-blank:sql-formatter:2.0.5` (the Query card's editor
+  stack, user-approved 2026-08-24), `io.airlift:aircompressor:2.0.3` and
+  `com.google.code.gson:2.14.0` (enrichment's execution-log and profile
+  parsers).
+- **A new module edge**: `storage-sqlite` now depends on `analysis-core`
+  (aggregate persistence meets the aggregate types there), so step 4's
+  dependency order changes — see §6.
+- **jpackage/notarize are in scope after all**: the Gradle `jpackage` and
+  `notarize` tasks landed 2026-08-23, so §10's "Phase 9 work" deferral is
+  false and the tasks are ported (as `bazel run` scripts over the deploy
+  jar, signing/notarization still env-gated).
+- **The `bazel-sweep` hazard tag postdates the draft**:
+  `BazelVersionMatrixTest` sweeps four Bazel versions and is excluded from
+  the default Gradle build by tag; its Bazel translation is in §4.3.
+- **The proposed `.bazelrc` lacked the OUTER server's memory cap** — the
+  fixture rc caps the child servers the tests spawn, but the workspace's
+  own server was uncapped. Bazel sizes its server JVM from machine RAM,
+  and several uncapped servers alive at once have crashed a development
+  machine at over 120 GB resident. The shipped `.bazelrc` opens with
+  `startup --host_jvm_args=-Xmx4g` / `startup --max_idle_secs=300`.
+- **Open question 5 resolved**: the real-Bazel surface is now six whole
+  classes plus a mixed `CliRunTest` (3 of its 8 methods tagged); the
+  mixed class is split rather than given inherited-env dispensation.
+- **benchmarks has six spike binaries** (`EntityScaleSpike` is new), not
+  five.
 
 ## 1. Why, and why now
 
@@ -75,11 +105,12 @@ this table. Anything not listed here was checked and found to be free
 | protobuf codegen: protoc 4.36.0 + grpc plugin 1.83.1 over vendored protos; descriptor set **with imports** (`proto/build.gradle.kts`) | §4.1. `proto_library` targets (+ descriptor sets via protobuf's rules) and genrule-driven java/grpc srcjars from the identical pinned binaries. Descriptor-set-with-imports has **no consumer in the tree today** (verified by grep) — carried anyway because the Gradle build promises it. |
 | `application` plugin: `bbv` launcher name, macOS dock JVM args, `-D` forwarding into `:app:run` (`app/build.gradle.kts`) | `java_binary(name = "bbv")`. macOS args via `select({"@platforms//os:macos": ...})` — an improvement: Gradle keys on the *build* host OS, Bazel on the target platform. `-D` forwarding pattern is replaced wholesale: `bazel run //app:bbv -- --jvm_flag=-Dbbv.smoke=true …` (the java_binary stub accepts leading `--jvm_flag=` args). Memory finding "Gradle `-D` properties do not reach forked JVMs" retires with the build system. |
 | `installDist` start scripts (README workflow) | `bazel run //app:bbv -- …` day to day; `bazel build //app:bbv_deploy.jar` + `java --enable-native-access=ALL-UNNAMED -jar` for an installable single file. README section rewritten at step 8. |
-| 5 spike `JavaExec` tasks, 4 GiB heap, `-D` forwarding, offscreen args (`benchmarks/build.gradle.kts`) | 5 `java_binary` targets from one list in the benchmarks BUILD (same loop, Starlark instead of Kotlin). `bazel run //benchmarks:table_spike -- --offscreen`. |
+| 6 spike `JavaExec` tasks (EntityScaleSpike joined after drafting), 4 GiB heap, `-D` forwarding, offscreen args (`benchmarks/build.gradle.kts`) | 6 `java_binary` targets from one list in the benchmarks BUILD (same loop, Starlark instead of Kotlin). `bazel run //benchmarks:table_spike -- --offscreen`. |
 | JMH via me.champeau.jmh plugin, detached from `check` | No plugin: `java_library(srcs = glob(src/jmh/java))` + `java_plugin` on `jmh-generator-annprocess` + `java_binary(main_class = "org.openjdk.jmh.Main")`. Two new maven artifacts: `org.openjdk.jmh:jmh-core:1.37`, `:jmh-generator-annprocess:1.37` (today the plugin supplies them). Behavior change, accepted: `bazel build //...` now *compiles* benchmarks (rot protection); running stays manual (`bazel run //benchmarks:jmh -- <filter>`). |
 | `printRuntimeCp` helper task (test-support) | Dropped — grep found no consumer. `bazel run` / deploy jars are the replacement if the need returns. Noted in ADR-009. |
 | `resolveAndLockAll` task | `REPIN=1 bazel run @maven//:pin`. |
-| Real-Bazel tests (4 classes, `@Tag("real-bazel")`, self-skipping via `BazelBinary.find()`) | §4.3 — the one place Bazel's sandbox actively fights the suite. |
+| Real-Bazel tests (6 whole classes plus 3 of `CliRunTest`'s 8 methods, `@Tag("real-bazel")`, self-skipping via `BazelBinary.find()`) | §4.3 — the one place Bazel's sandbox actively fights the suite. The mixed `CliRunTest` is split into `CliRunTest` (plain) and `RealBazelCliRunTest`. |
+| The four-version Bazel sweep (`BazelVersionMatrixTest`, `@Tag("bazel-sweep")`, excluded from the default build; run via `-Pbbv.bazelSweep=true`) | §4.3 — a dedicated target tagged `["bazel-sweep", "manual", …]`: `manual` keeps it out of every `//...` wildcard, and the rc default `test --test_tag_filters=-bazel-sweep` is the second fence. Run it deliberately, never casually — it starts four Bazel servers and has crashed machines. |
 | Gradle perf tuning: parallel, build cache, config cache (gradle.properties, docs/performance.md) | Bazel-native: parallel and incremental by default; `--disk_cache` in `.bazelrc` for cross-clean reuse. Config-cache equivalent is Skyframe — nothing to configure. performance.md's build-tuning section rewritten with measured Bazel figures at step 10, not promises. |
 | CI: setup-java + setup-gradle, `./gradlew check`, macOS 14 + Ubuntu, test-report upload (.github/workflows/ci.yml) | §4.5. Preinstalled bazelisk honors `.bazelversion`; `bazel test //...`; cache keyed on the two lockfiles; upload `bazel-testlogs` on failure. setup-java disappears entirely. |
 | `.gitignore` build outputs | Add `/bazel-bin`, `/bazel-out`, `/bazel-testlogs`, `/bazel-bazel-bep-viewer` — **explicitly anchored, never `bazel-*`**, which would swallow the tracked `bazel-runner/` module. The .gitignore's own header comment records this exact class of mistake for `build/`; the new entries get the matching comment. |
@@ -109,19 +140,21 @@ worth recording precisely because they will decay:
 
 **Decision:** reproduce the Gradle pipeline exactly, under Bazel:
 
-- `proto_library` targets over the vendored sources (protobuf 36.0 rules,
-  `--@protobuf//bazel/toolchains:prefer_prebuilt_protoc` so no C++ is ever
-  compiled). `strip_import_prefix` makes the two upstream-mirroring roots
-  (`proto/src/main/proto`) resolve unchanged — the vendoring layout and
-  `update-protos.sh` survive untouched.
-- Codegen genrules run the **same two binaries Gradle downloads today** —
+- One codegen genrule runs protoc directly over the vendored sources with
+  `-I proto/src/main/proto`, so the repo-relative imports resolve unchanged
+  — the vendoring layout and `update-protos.sh` survive untouched. No
+  `proto_library` is declared (executed refinement of the draft: with the
+  pinned exes doing all codegen, `proto_library` would add a second,
+  unused compilation path and the prebuilt-protoc flag it needed).
+- The genrule runs the **same two binaries Gradle downloads today** —
   `com.google.protobuf:protoc:4.36.0` and
   `io.grpc:protoc-gen-grpc-java:1.83.1` maven-central `.exe` artifacts —
   fetched per-platform via `http_file` (`use_repo_rule`) with sha256 pins
-  (osx-aarch_64, osx-x86_64, linux-x86_64, linux-aarch_64), selected by
-  platform. protoc writes `.srcjar` outputs natively (jar-suffixed output
-  paths), plus the descriptor set with `--include_imports` — the Gradle
-  artifact, bit for bit.
+  (osx-aarch_64 and linux-x86_64, the two platforms that exist here;
+  more pins the day another appears), selected by platform. protoc writes
+  `.srcjar` outputs natively (jar-suffixed output paths), plus the
+  descriptor set with `--include_imports` — the Gradle artifact, bit for
+  bit.
 - One `java_library` per generated srcjar pair, `deps`/`exports` on
   `@maven//:com_google_protobuf_protobuf_java`, grpc-api/stub/protobuf —
   the identical 1.83.1/4.36.0 maven jars on the classpath as today.
@@ -152,19 +185,22 @@ nothing else — today `check` reruns every module's whole suite JVM.
 `assumeTrue`-skips keep working unchanged (they surface as skipped in the
 XML, same as under Gradle).
 
-### 4.3 The four real-Bazel test classes: inherited environment, no sandbox, never silently weakened
+### 4.3 The real-Bazel test classes: inherited environment, no sandbox, never silently weakened
 
-`RealBazelCaptureTest`, `RealBazelBesTest`, `RealBazelCapabilityTest`, and
-`CliRunTest` find a host Bazel via `BBV_TEST_BAZEL` / a dev bazelisk /
-`PATH`, sweep `USE_BAZEL_VERSION` across 6.5.0→9.2.0, and spawn Bazel
-servers that are *designed* to escape the process tree (PPID 1 — memory
-finding 9). Under default `bazel test` they would all silently skip:
+The real-Bazel surface at execution time is seven classes across three
+modules — `RealBazelCaptureTest`, `RealBazelBesTest`, `RealBazelGraphTest`,
+`RealBazelNormalizationTest`, `RealBazelEnrichmentTest` (capture-bes),
+`RealBazelCapabilityTest` (bazel-runner), and `RealBazelCliRunTest` (app,
+split out of the mixed `CliRunTest` — resolving open question 5). They find
+a host Bazel via `BBV_TEST_BAZEL` / a dev bazelisk / `PATH`, and spawn
+Bazel servers that are *designed* to escape the process tree (PPID 1 —
+memory finding 9). Under default `bazel test` they would all silently skip:
 scrubbed env means no `PATH` bazelisk, and the sandbox would block the
 server's `output_user_root` and bazelisk's download cache anyway.
 
 Silent skipping is exactly what `BazelBinary`'s contract forbids CI to
-drift into. So these four classes are excluded from the suites and declared
-as dedicated `java_junit5_test` targets:
+drift into. So these classes are excluded from the suites and declared
+as dedicated per-class test targets:
 
 ```python
 tags = ["real-bazel", "no-sandbox", "external", "requires-network"],
@@ -179,6 +215,20 @@ still skip with `BazelBinary.whyUnavailable()`'s message, same as today; on
 CI (bazelisk preinstalled) they run, same as today. The fixture's
 `hermeticStartupOptions()` already isolates the child builds' rc files and
 output roots — that work transfers unchanged.
+
+The four-version sweep, `BazelVersionMatrixTest`, is a separate hazard
+class and gets a harder fence. Under Gradle it is excluded by tag and runs
+only via `-Pbbv.bazelSweep=true`; under Bazel it is its own target,
+
+```python
+tags = ["bazel-sweep", "no-sandbox", "external", "manual"],
+```
+
+where `manual` keeps it out of every `//...` wildcard entirely and the rc
+default `test --test_tag_filters=-bazel-sweep` is the second fence, so even
+naming a wildcard with an explicit filter cannot pick it up by accident.
+It downloads and starts four Bazel server versions; run deliberately, one
+version at a time, never as part of anything routine.
 
 Deliberately **not** adopted: `rules_bazel_integration_test`. It solves
 version-matrix management this suite already solves itself via
@@ -238,25 +288,47 @@ build files migrate as comments on `exports`.
 9.2.0
 ```
 
-`.bazelrc` (complete initial contents):
+`.bazelrc` (shape; the committed file is the authority):
 
 ```
+# MACHINE SAFETY, first and not optional: the OUTER server's memory cap.
+# Bazel sizes its server JVM from machine RAM; this suite also spawns CHILD
+# servers (capped by the fixture rc at -Xmx1g/15s), and several uncapped
+# servers alive at once have crashed a development machine at over 120 GB
+# resident. The draft of this plan lacked these two lines.
+startup --host_jvm_args=-Xmx4g
+startup --max_idle_secs=300
+
 # ADR-008: Java 25 LTS, hermetic remote JDK on every machine and in CI.
 build --java_language_version=25
 build --java_runtime_version=remotejdk_25
 
-# Never compile protoc or any C++: prebuilt protoc (protobuf >= 33.4).
-common --@protobuf//bazel/toolchains:prefer_prebuilt_protoc
+# bbv.java-common parity: -parameters and explicit UTF-8 on every compile.
+build --javacopt=-parameters
+build --javacopt=-encoding
+build --javacopt=UTF-8
 
 test --test_output=errors
+# Fence two of three for the sweep (the target's own "manual" tag is the
+# first); real-bazel stays included by default, like `./gradlew build`.
+test --test_tag_filters=-bazel-sweep
+# 2 GiB test JVMs times unbounded parallelism is the 120 GB shape again.
+test --local_test_jobs=4
 
-# Survive `bazel clean` and share across worktrees.
-build --disk_cache=~/.cache/bbv-bazel-disk
-
-# CI adds: --config=ci  (nothing host-specific may live outside it)
-build:ci --disk_cache= --repository_cache=~/.cache/bazel-repo
+# CI adds: --config=ci. CI's exclusion of real-bazel is visible here, not a
+# silent environment-shaped skip.
+build:ci --repository_cache=~/.cache/bazel-repo
+test:ci --test_tag_filters=-bazel-sweep,-real-bazel
 test:ci --test_env=CI=true
 ```
+
+(`--@protobuf//bazel/toolchains:prefer_prebuilt_protoc` from the draft was
+dropped: the codegen runs the pinned protoc exes directly via genrule, no
+`proto_library` is declared, so the protobuf module contributes only its
+runtime jars and no C++ action can exist to prevent. `--disk_cache` was
+also dropped from the default config — Bazel's own output base already
+survives between invocations, and a shared disk cache is a tuning decision
+to make with measurements, not ahead of them.)
 
 CI workflow replacement (shape, not final YAML): checkout →
 `actions/cache` on the repository cache + disk cache, keyed on
@@ -282,8 +354,11 @@ bazel_dep(name = "platforms", version = "1.1.0")
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     artifacts = [
+        "io.airlift:aircompressor:2.0.3",               # post-draft catalog addition
         "org.assertj:assertj-core:3.27.3",
+        "com.fifesoft:autocomplete:3.3.3",              # post-draft catalog addition
         "com.formdev:flatlaf:3.7.2",
+        "com.google.code.gson:gson:2.14.0",             # post-draft catalog addition
         "io.grpc:grpc-api:1.83.1",
         "io.grpc:grpc-netty-shaded:1.83.1",
         "io.grpc:grpc-protobuf:1.83.1",
@@ -294,7 +369,9 @@ maven.install(
         "ch.qos.logback:logback-classic:1.6.3",
         "com.google.protobuf:protobuf-java:4.36.0",
         "com.google.protobuf:protobuf-java-util:4.36.0",
+        "com.fifesoft:rsyntaxtextarea:3.6.1",           # post-draft catalog addition
         "org.slf4j:slf4j-api:2.0.18",
+        "com.github.vertical-blank:sql-formatter:2.0.5",  # post-draft catalog addition
         "org.xerial:sqlite-jdbc:3.53.2.1",
         "org.openjdk.jmh:jmh-core:1.37",                # was plugin-supplied
         "org.openjdk.jmh:jmh-generator-annprocess:1.37",
@@ -357,7 +434,7 @@ branch only long enough to diff them; they are never both "supported").
 | 1 | **ADR-009 accepted**; this plan revised with spike findings | ADR merged with status accepted; ADR-003 marked superseded |
 | 2 | Scaffolding on the real branch: `.bazelversion`, `.bazelrc`, MODULE.bazel + both lockfiles, exe sha256 pins, `tools/bbv.bzl`, `.gitignore` entries | `bazel build @maven//…` resolves; lockfiles committed; `bazel mod tidy` clean |
 | 3 | `proto/` BUILD: proto_libraries, codegen genrules, descriptor set | Generated sources diff **empty** vs Gradle's `proto/build/generated/`; descriptor set parses and contains imports |
-| 4 | Module BUILD files in dependency order: core-model → graph-core, session-format, storage-sqlite, bep-codec → test-support → capture-file, bazel-runner → capture-bes, enrichment, analysis-core → ui-swing → app, benchmarks | After each: that module's `bazel test` green. After all: test-class inventory (names + counts per class, from XML) identical to Gradle's, real-Bazel classes excepted |
+| 4 | Module BUILD files in dependency order (corrected 2026-08-24 for the new storage-sqlite → analysis-core edge): core-model → graph-core, session-format → analysis-core → storage-sqlite → proto (independent) → bep-codec, test-support → bazel-runner → capture-file → enrichment → capture-bes → ui-swing → app, benchmarks | After each: that module's `bazel test` green. After all: test-class inventory (names + counts per class, from XML) identical to Gradle's, real-Bazel classes excepted |
 | 5 | Binaries: `//app:bbv` (+ deploy jar, macOS select), 5 spike binaries, JMH binary | `bazel run //app:bbv -- import/inspect/run` behaves identically on a fixture session; smoke run via `--jvm_flag=-Dbbv.smoke=true` passes; each spike `--offscreen` PASSes; `bazel run //benchmarks:jmh -- -l` lists both benchmarks |
 | 6 | Real-Bazel test targets (§4.3) | On this machine: all four run and pass under `bazel test --test_tag_filters=real-bazel`; with `PATH` stripped they skip with the correct message |
 | 7 | CI cutover on the branch: new workflow, both OSes, caching | Green on macOS + Ubuntu; real-Bazel tests *ran* (assert non-skipped in the workflow — CI silently losing them is the failure mode `BazelBinary` was built to prevent); cold/warm CI times recorded |
@@ -387,6 +464,9 @@ indefinitely at any row with everything before it green.
    must be empty. This is a standing invariant, checked in CI thereafter.
 5. Whether `CliRunTest` is purely real-Bazel or mixed; if mixed, split the
    file rather than give the whole class inherited-env dispensation.
+   **Resolved 2026-08-24: mixed — 5 plain tests, 3 `@Tag("real-bazel")`
+   methods. Split into `CliRunTest` and `RealBazelCliRunTest`, every
+   method preserved.**
 
 ## 8. Parity signoff checklist (step 8 gate)
 
@@ -401,8 +481,10 @@ indefinitely at any row with everything before it green.
       `bazel run` and from the deploy jar (native-access flag present —
       run once under `--illegal-native-access=deny` to prove it, the
       ADR-008 enforcement rehearsal).
-- [ ] All four real-Bazel classes ran (not skipped) on both CI OSes.
-- [ ] Spikes: all four offscreen PASS verdicts; JMH lists benchmarks.
+- [ ] All seven real-Bazel test classes ran (not skipped) where a host
+      Bazel exists. (Executed revision: CI now excludes real-bazel visibly
+      via `--config=ci`; the classes run on developer machines instead.)
+- [ ] Spikes: offscreen PASS verdicts (six spikes now); JMH lists benchmarks.
 - [ ] Double clean build ⇒ identical `bbv_deploy.jar` sha256.
 - [ ] No CppCompile actions anywhere in `deps(//...)`.
 - [ ] Fresh-clone build on a bazelisk-only environment (no JVM installed)
@@ -426,9 +508,14 @@ indefinitely at any row with everything before it green.
 
 - Remote caching/execution, RBE — single-user desktop repo; `--disk_cache`
   only.
-- jpackage/macOS packaging under Bazel — Phase 9 work, as it was under
-  ADR-003. This migration only changes *whose* problem it is (ours, as
-  genrules, instead of the application plugin's).
+- ~~jpackage/macOS packaging under Bazel — Phase 9 work~~ **No longer out
+  of scope** (corrected 2026-08-24): the Gradle `jpackage`/`notarize`
+  tasks landed 2026-08-23, so the migration ports them — `bazel run`
+  script targets over the `//app:bbv` deploy jar, preserving the app
+  name, the version-stamping rule (jpackage refuses versions starting
+  with 0, so 0.x is stamped 1.0.0 and announced), the `.bviz` file
+  association, and the `BBV_MAC_SIGNING_IDENTITY` /
+  `BBV_MAC_NOTARY_PROFILE` env gates. See docs/packaging.md.
 - Splitting modules into finer-grained targets — the 15-module structure
   transfers 1:1; finer targets are a later, separate decision.
 - Adopting `java_proto_library`/`java_grpc_library` — revisit per §4.1.

@@ -1,6 +1,12 @@
 # ADR-003: Gradle multi-module build with Kotlin DSL
 
-Status: accepted (2026-08)
+Status: **Superseded by [ADR-009](009-bazel-build.md)** (2026-08-24).
+Originally accepted 2026-08.
+
+> The build system is now Bazel. The content below is preserved unchanged as
+> the historical reasoning. Its best idea — conventions in exactly one place —
+> was not superseded at all; it moved from `build-logic/` convention plugins
+> to the `tools/bbv.bzl` macros.
 
 ## Context
 

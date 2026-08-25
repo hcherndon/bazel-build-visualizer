@@ -1,7 +1,13 @@
 # ADR-009: Bazel as the build system
 
-Status: **proposed** (2026-08-22). Would supersede [ADR-003](003-gradle.md).
-Scope, mechanics, sequencing, and the parity gate live in
+Status: **accepted** (2026-08-24; drafted 2026-08-22 as proposed).
+Supersedes [ADR-003](003-gradle.md), which is marked accordingly. Accepted
+with the migration itself: the version pins were re-verified against the
+Bazel Central Registry on the acceptance date and all resolved unchanged,
+and the plan was revised for two days of drift on `main` (five new catalog
+artifacts, a new module edge, jpackage/notarize tasks now in scope, the
+`bazel-sweep` hazard tag, and a sixth spike binary — details in the plan's
+revision notes). Scope, mechanics, sequencing, and the parity gate live in
 [docs/bazel-migration-plan.md](../bazel-migration-plan.md); this ADR is the
 decision and its costs.
 
@@ -79,10 +85,13 @@ fetches Bazel, Bazel fetches the JDK. Specifically:
   bootstrap. CI loses its setup-java step.
 - Test iteration improves structurally: target-level caching means an edit
   reruns the classes it can affect, not every module's suite.
-- **Phase 9 packaging gets more expensive.** ADR-003 planned to lean on
-  Gradle's application plugin and jpackage integration; under Bazel that
-  becomes owned genrule work around a deploy jar. This cost is accepted
-  now, on the record, so Phase 9 cannot be surprised by it.
+- **Packaging gets more expensive — and the bill is already due.** When
+  this ADR was drafted, jpackage was future Phase 9 work; by acceptance the
+  Gradle `jpackage`/`notarize` tasks existed (landed 2026-08-23), so the
+  migration ports them immediately as owned `bazel run` targets over the
+  deploy jar rather than deferring the cost. The signing/notarization
+  env-gating (`BBV_MAC_SIGNING_IDENTITY` / `BBV_MAC_NOTARY_PROFILE`)
+  carries over unchanged.
 - The IDE story changes: JetBrains' Bazel plugin plus a committed
   `.bazelproject` replaces Gradle import. Watched as the top
   contributor-experience risk during the module-by-module step, while
@@ -106,9 +115,11 @@ fetches Bazel, Bazel fetches the JDK. Specifically:
 - **BCR grpc-java tracks current releases** — readopt the question of
   idiomatic `java_grpc_library` (its shaded-netty blocker has already
   fallen; the version-authority and provenance objections are what remain).
-- **Phase 9 packaging starts** — the jpackage-under-Bazel cost accepted
-  above comes due; budget it then, with this ADR as the reminder that it
-  was priced in.
+- **Packaging grows beyond jpackage app images** — the port above covers
+  what the Gradle tasks did (app-image/dmg/pkg, env-gated signing and
+  notarization); anything more (Windows installers, Linux packages,
+  update channels) is new work, priced against the owned-script approach
+  rather than a Gradle plugin.
 - **Remote execution or a second build platform ever appears** — the
   codegen exes are selected per target platform on the assumption
   host = exec = target, which is true for this desktop repo and must be
