@@ -1,0 +1,128 @@
+# Compiled Bazel protobuf definitions (BEP, spawn log, BES service, …).
+#
+# Vendored proto sources under src/main/proto mirror their upstream repo
+# layouts (Bazel repo root and googleapis root) so that the repo-relative
+# import statements inside the files resolve unchanged. Provenance and pins
+# are documented in PROTO_SOURCES.md; refresh via update-protos.sh.
+#
+# Codegen deliberately does NOT use the BCR grpc-java module (ADR-009 §4.1):
+# it trails the locked gRPC version and substitutes source builds for the
+# audited maven jars. Instead the genrule below runs the exact sha256-pinned
+# binaries the Gradle protobuf plugin resolved — protoc 4.36.0 and
+# protoc-gen-grpc-java 1.83.1 from Maven Central — over the vendored sources,
+# and parity with Gradle's generated tree was byte-diffed at migration time.
+# The runtime classpath stays the audited @maven jars.
+
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# The codegen exes, selected by host platform (host = exec = target for this
+# single-host desktop build; promote to a real toolchain if remote execution
+# ever appears — ADR-009 "revisit when").
+alias(
+    name = "protoc_bin",
+    actual = select({
+        "@platforms//os:macos": "@protoc_bin_osx_aarch64//file",
+        "//conditions:default": "@protoc_bin_linux_x86_64//file",
+    }),
+)
+
+alias(
+    name = "protoc_gen_grpc_java_bin",
+    actual = select({
+        "@platforms//os:macos": "@protoc_gen_grpc_java_osx_aarch64//file",
+        "//conditions:default": "@protoc_gen_grpc_java_linux_x86_64//file",
+    }),
+)
+
+PROTO_SRCS = glob(["src/main/proto/**/*.proto"])
+
+filegroup(
+    name = "vendored_protos",
+    srcs = PROTO_SRCS,
+)
+
+# One protoc run, exactly like Gradle's: java + grpc sources and the
+# descriptor set with imports (downstream tooling reflects over the full BEP
+# schema without re-running protoc). protoc writes jar archives natively when
+# the output path ends in .jar; the mv gives rules_java the .srcjar suffix it
+# expects in srcs. The vendored files expand in glob order (lexicographic),
+# which is also the order the descriptor-set parity diff was verified against.
+#
+# The google/protobuf/* well-known types are include-only, exactly as under
+# Gradle (whose plugin extracted them from the protobuf-java jar): they are
+# on the -I path so imports resolve, but are never passed as compile inputs,
+# so no code is generated for them and the descriptor set matches Gradle's.
+# They come from the protobuf 36.0 BCR module — the same release protobuf-java
+# 4.36.0 ships from.
+genrule(
+    name = "bep_codegen",
+    srcs = [
+        ":vendored_protos",
+        "@protobuf//:well_known_protos",
+    ],
+    outs = [
+        "bep_java.srcjar",
+        "bep_grpc.srcjar",
+        "descriptor_set.desc",
+    ],
+    cmd = """
+        for wkt in $(execpaths @protobuf//:well_known_protos); do
+            wkt_root=$${wkt%/google/protobuf/*}
+            break
+        done
+        $(execpath :protoc_bin) \
+            --plugin=protoc-gen-grpc-java=$(execpath :protoc_gen_grpc_java_bin) \
+            -Iproto/src/main/proto \
+            -I$$wkt_root \
+            --java_out=$(RULEDIR)/bep_java.jar \
+            --grpc-java_out=$(RULEDIR)/bep_grpc.jar \
+            --descriptor_set_out=$(execpath descriptor_set.desc) \
+            --include_imports \
+            $(execpaths :vendored_protos)
+        mv $(RULEDIR)/bep_java.jar $(execpath bep_java.srcjar)
+        mv $(RULEDIR)/bep_grpc.jar $(execpath bep_grpc.srcjar)
+    """,
+    tools = [
+        ":protoc_bin",
+        ":protoc_gen_grpc_java_bin",
+    ],
+)
+
+# The generated classes compile against — and consumers inherit — the same
+# audited maven jars Gradle's api configuration exposed: protobuf-java,
+# grpc-protobuf, grpc-stub, grpc-api. The vendored .proto files ride along
+# as resources, matching the Gradle jar's contents.
+java_library(
+    name = "proto",
+    srcs = [
+        "bep_grpc.srcjar",
+        "bep_java.srcjar",
+    ],
+    resource_strip_prefix = "proto/src/main/proto",
+    resources = PROTO_SRCS,
+    exports = [
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:io_grpc_grpc_api",
+        "@maven//:io_grpc_grpc_protobuf",
+        "@maven//:io_grpc_grpc_stub",
+    ],
+    deps = [
+        "@maven//:com_google_protobuf_protobuf_java",
+        # The generated futures stubs name ListenableFuture; Gradle supplied
+        # guava transitively through grpc-stub's pom, Bazel's strict deps
+        # want it stated. Not exported: first-party code never names guava.
+        "@maven//:com_google_guava_guava",
+        "@maven//:io_grpc_grpc_api",
+        "@maven//:io_grpc_grpc_protobuf",
+        "@maven//:io_grpc_grpc_stub",
+    ],
+)
+
+# The descriptor set as a named target, so downstream tooling can depend on
+# the Gradle-era artifact by label.
+filegroup(
+    name = "descriptor_set",
+    srcs = ["descriptor_set.desc"],
+)
