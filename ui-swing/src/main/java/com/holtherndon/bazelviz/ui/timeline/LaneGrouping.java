@@ -45,6 +45,11 @@ public final class LaneGrouping {
             return displayName;
         }
 
+        @Override
+        public String toString() {
+            return displayName;
+        }
+
         /** True when this grouping has nothing to say without an execution log. */
         public boolean needsExecutionLog() {
             return needsExecutionLog;
@@ -79,6 +84,11 @@ public final class LaneGrouping {
         }
 
         public String displayName() {
+            return displayName;
+        }
+
+        @Override
+        public String toString() {
             return displayName;
         }
     }

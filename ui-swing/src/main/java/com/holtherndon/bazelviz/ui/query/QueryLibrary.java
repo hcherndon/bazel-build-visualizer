@@ -44,10 +44,14 @@ import java.util.Optional;
  * <h2>Threading</h2>
  *
  * <p>Every method does file I/O and blocks; callers keep them off the EDT
- * (QueryView routes them through its library executor). Methods are
- * synchronized so a save racing a list sees whole files.
+ * (QueryView routes them through its library executor). All instances share
+ * one process lock because separate workspace windows intentionally point at
+ * the same library. A save racing a list or another save therefore sees a
+ * whole index instead of overwriting a sibling window's newer entry.
  */
 final class QueryLibrary {
+
+    private static final Object PROCESS_IO_LOCK = new Object();
 
     /** One saved query: a display name and the statement it stands for. */
     record SavedQuery(String name, String sql) { }
@@ -70,48 +74,64 @@ final class QueryLibrary {
 
     // -------------------------------------------------------------- queries
 
-    synchronized List<SavedQuery> queries() {
-        List<SavedQuery> queries = new ArrayList<>();
-        for (Entry entry : entries(queriesDirectory)) {
-            readSql(queriesDirectory, entry)
-                    .ifPresent(sql -> queries.add(new SavedQuery(entry.name(), sql)));
+    List<SavedQuery> queries() {
+        synchronized (PROCESS_IO_LOCK) {
+            List<SavedQuery> queries = new ArrayList<>();
+            for (Entry entry : entries(queriesDirectory)) {
+                readSql(queriesDirectory, entry)
+                        .ifPresent(sql -> queries.add(new SavedQuery(entry.name(), sql)));
+            }
+            return List.copyOf(queries);
         }
-        return List.copyOf(queries);
     }
 
-    synchronized void saveQuery(String name, String sql) {
-        save(queriesDirectory, name, sql);
+    void saveQuery(String name, String sql) {
+        synchronized (PROCESS_IO_LOCK) {
+            save(queriesDirectory, name, sql);
+        }
     }
 
-    synchronized void renameQuery(String oldName, String newName) {
-        rename(queriesDirectory, oldName, newName);
+    void renameQuery(String oldName, String newName) {
+        synchronized (PROCESS_IO_LOCK) {
+            rename(queriesDirectory, oldName, newName);
+        }
     }
 
-    synchronized void deleteQuery(String name) {
-        delete(queriesDirectory, name);
+    void deleteQuery(String name) {
+        synchronized (PROCESS_IO_LOCK) {
+            delete(queriesDirectory, name);
+        }
     }
 
     // ---------------------------------------------------------------- views
 
-    synchronized List<SavedView> views() {
-        List<SavedView> views = new ArrayList<>();
-        for (Entry entry : entries(viewsDirectory)) {
-            readSql(viewsDirectory, entry)
-                    .ifPresent(select -> views.add(new SavedView(entry.name(), select)));
+    List<SavedView> views() {
+        synchronized (PROCESS_IO_LOCK) {
+            List<SavedView> views = new ArrayList<>();
+            for (Entry entry : entries(viewsDirectory)) {
+                readSql(viewsDirectory, entry)
+                        .ifPresent(select -> views.add(new SavedView(entry.name(), select)));
+            }
+            return List.copyOf(views);
         }
-        return List.copyOf(views);
     }
 
-    synchronized void saveView(String name, String select) {
-        save(viewsDirectory, name, select);
+    void saveView(String name, String select) {
+        synchronized (PROCESS_IO_LOCK) {
+            save(viewsDirectory, name, select);
+        }
     }
 
-    synchronized void renameView(String oldName, String newName) {
-        rename(viewsDirectory, oldName, newName);
+    void renameView(String oldName, String newName) {
+        synchronized (PROCESS_IO_LOCK) {
+            rename(viewsDirectory, oldName, newName);
+        }
     }
 
-    synchronized void deleteView(String name) {
-        delete(viewsDirectory, name);
+    void deleteView(String name) {
+        synchronized (PROCESS_IO_LOCK) {
+            delete(viewsDirectory, name);
+        }
     }
 
     /**
@@ -120,7 +140,13 @@ final class QueryLibrary {
      * the directory rather than for the index: deleting your last view leaves
      * the index behind, and the examples stay gone.
      */
-    synchronized void seedExampleViewsIfNeverUsed() {
+    void seedExampleViewsIfNeverUsed() {
+        synchronized (PROCESS_IO_LOCK) {
+            seedExampleViewsIfNeverUsedLocked();
+        }
+    }
+
+    private void seedExampleViewsIfNeverUsedLocked() {
         if (Files.isDirectory(viewsDirectory)) {
             return;
         }

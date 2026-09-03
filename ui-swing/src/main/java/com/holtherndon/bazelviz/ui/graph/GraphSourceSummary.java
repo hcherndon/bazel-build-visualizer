@@ -22,6 +22,17 @@ public final class GraphSourceSummary {
         if (!source.state().equals("SUCCEEDED")) {
             return name + " — unavailable";
         }
+        if (!source.targetScope().permitsExactClaim()) {
+            return name + (source.targetScope()
+                    == com.holtherndon.bazelviz.core.graph.GraphTargetScope.REQUESTED_PATTERNS
+                    ? " — wider target scope" : " — scope unverified");
+        }
+        if (source.configurationMatch().permitsExactClaim()
+                && source.actionGraphCompletenessProblem().isPresent()) {
+            return name + (source.unresolvedArtifacts().isPresent()
+                    && source.unresolvedDepsetReferences().isPresent()
+                    ? " — incomplete" : " — completeness unverified");
+        }
         return switch (source.configurationMatch()) {
             case EXACT -> name;
             case PARTIAL -> name + " — partial";
@@ -52,6 +63,9 @@ public final class GraphSourceSummary {
                     text.setLength(0);
                     text.append(detail);
                 });
+        text.append(' ').append(source.targetScopeDetail()
+                .filter(detail -> !detail.isBlank())
+                .orElseGet(() -> source.targetScope().describe()));
 
         boolean labelGraph = source.graphKind()
                 .filter(kind -> kind == com.holtherndon.bazelviz.core.graph
@@ -72,6 +86,22 @@ public final class GraphSourceSummary {
                     .append(" also ran in this build"));
             text.append('.');
         });
+        if (source.kind().equals("DECLARED_ACTIONS")) {
+            if (source.unresolvedArtifacts().isEmpty()
+                    || source.unresolvedDepsetReferences().isEmpty()) {
+                text.append(" Structural completeness was not recorded for this session,"
+                        + " so dependency-graph completeness is unknown.");
+            } else if (source.unresolvedArtifacts().getAsLong() == 0
+                    && source.unresolvedDepsetReferences().getAsLong() == 0) {
+                text.append(" Every artifact path and depset reference resolved, so the"
+                        + " imported dependency structure is complete.");
+            } else {
+                source.actionGraphCompletenessProblem().ifPresent(problem -> text
+                        .append(' ')
+                        .append(Character.toUpperCase(problem.charAt(0)))
+                        .append(problem.substring(1)).append('.'));
+            }
+        }
         // What a node means, said where the graph is chosen: the two graphs
         // share vertices' names and nothing else, and rule 13 forbids letting
         // a user believe one is the other.
@@ -98,11 +128,21 @@ public final class GraphSourceSummary {
         if (!source.state().equals("SUCCEEDED")) {
             return Optional.of("No graph. " + source.error().orElse("The query did not run."));
         }
-        return source.configurationMatch().permitsExactClaim()
-                ? Optional.empty()
-                : Optional.of("This graph is not confirmed to be this build's — "
+        if (!source.targetScope().permitsExactClaim()) {
+            return Optional.of("This graph is not confirmed to have this build's target scope — "
+                    + source.targetScopeProblem().orElse("target scope is unverified"));
+        }
+        if (!source.configurationMatch().permitsExactClaim()) {
+            String warning = "This graph is not confirmed to be this build's — "
                         + source.configurationMatch().name().toLowerCase(java.util.Locale.ROOT)
-                        + " configuration match.");
+                        + " configuration match.";
+            return Optional.of(source.actionGraphCompletenessProblem()
+                    .map(problem -> warning + " It is also not confirmed complete — "
+                            + problem + ".")
+                    .orElse(warning));
+        }
+        return source.actionGraphCompletenessProblem()
+                .map(problem -> "This graph is not confirmed complete — " + problem + ".");
     }
 
     /**

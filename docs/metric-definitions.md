@@ -57,6 +57,54 @@ and Errors views put on screen.
 
 ---
 
+## Starlark CPU profile
+
+**Sampled Starlark CPU**
+
+- *Definition:* sum of the selected `CPU` sample values across all pprof sample
+  records and Starlark threads.
+- *Units:* microseconds (displayed adaptively).
+- *Source:* managed `--starlark_cpu_profile` gzip pprof.
+- *Completeness:* available only after a validated successful import. A valid
+  zero-sample profile is measured zero; no or failed profile is unavailable.
+- *Caveats:* statistical CPU, not elapsed time. It excludes blocked time and
+  runnable time not scheduled on a CPU; the profiler reports no dropped count.
+
+**Starlark self CPU**
+
+- *Definition:* selected sample values whose leaf frame resolves to a function
+  or source file.
+- *Units:* microseconds and percentage of Sampled Starlark CPU.
+- *Formula:* sum each sample value once for its leaf frame.
+- *Completeness:* function and file coverage are reported separately as exact
+  attributed and unattributed CPU/sample-record partitions. An empty function
+  name or filename is unattributed, not a zero-cost symbol.
+- *Caveats:* a pprof record can aggregate multiple sampling ticks, so its row
+  count is not CPU time.
+
+**Starlark cumulative CPU**
+
+- *Definition:* selected sample values for stacks containing a function or
+  source file.
+- *Units:* microseconds and percentage of Sampled Starlark CPU.
+- *Formula:* add the sample value once to every distinct function and non-empty
+  source file represented by physical or inline frames in the sample.
+  Recursive occurrences remain separate in the physical call-context tree but
+  are de-duplicated in flat function/file totals.
+- *Caveats:* cumulative values overlap by design and must not be summed across
+  functions. The physical call tree uses the first function for each location;
+  its separate context coverage becomes partial for inline, missing, or unnamed
+  symbols. Source lines are navigation hints, not line-level attribution.
+
+**Average sampled Starlark CPU cores**
+
+- *Definition:* sampled Starlark CPU divided by the pprof duration.
+- *Units:* cores (dimensionless).
+- *Completeness:* unavailable if either value is absent or duration is zero.
+- *Caveats:* can exceed one because all Starlark threads contribute.
+
+---
+
 ## Phase 3 catalog
 
 Every number in the Overview, Actions, Tests and Errors views. Where two
@@ -290,7 +338,9 @@ with the counts above.
   retries.
 - *Note:* these do not sum to the total, because the total is measured
   independently. The difference is shown as "unaccounted" rather than folded
-  into execution.
+  into execution only when every component is available. An action-level sum
+  is available only when every attempt reported that component; summing a
+  known subset would make partial work look complete.
 - *Unavailable when:* the spawn ran locally, in which case queue, upload,
   fetch and network were never measured. They render as absent, never as zero.
 
@@ -321,7 +371,15 @@ with the counts above.
 - *Note:* kept as Bazel's own answer and never joined to the actions table —
   its entries identify themselves with a progress message and nothing else.
   The visualizer's own dependency critical path is a separate Phase 6 metric
-  and ADR-009 requires both to survive separately.
+  and ADR-009 requires both to survive separately. The summary reads an exact
+  component count and aggregate duration; descriptions stay in SQLite and are
+  loaded by ordinal in bounded pages.
+- *Trust:* profile components are read only from a currently successful import
+  whose metadata confirms the BEP build id. A failed retry, missing identity,
+  or mismatched build withholds retained components. The independent
+  BuildMetrics total remains available when valid. A profile fallback total
+  requires every component duration to be present and nonnegative, and exact
+  addition must not overflow.
 
 ### Profile span absolute time
 - *Definition:* a span's trace timestamp plus the profile's anchor.
@@ -385,20 +443,39 @@ with the counts above.
   each action by its measured duration.
 - *Source:* the dependency graph plus whichever duration source was used, which
   the result states.
+- *Execution-log weight:* the shortest recorded spawn duration correlated to
+  each action. Dynamic attempts can race in parallel, so the aggregate
+  **Subprocess time** sum is work rather than elapsed gating time and is never
+  used as a path weight. Choosing the shortest attempt is conservative: it may
+  understate an action, but it cannot double-count concurrent attempts and
+  preserves the path's lower-bound meaning.
 - **Not Bazel's critical path.** Bazel writes its own into the profile and
   Phase 5 stores it untouched. The two legitimately disagree: Bazel's includes
   scheduling and machine limits, this one is what the dependencies alone imply.
   ADR-009 keeps both.
 - *Partial when:* any action has no measured duration. Those count as
   instantaneous, so the answer is a lower bound and says so.
+- *Unavailable when:* the aquery import failed, its configurations are not an
+  exact match, its target scope is not exact completed-BEP labels, structural
+  completeness was not recorded, or any artifact path or depset reference was
+  unresolved. Missing targets or references can remove nodes or edges, so
+  computing a shorter path and calling it complete would be unsupported.
+- *Comparison rule:* Bazel's total minus this total is shown only when every
+  graph node was timed. With a partial path, missing action durations are part
+  of the numeric difference, so calling that value scheduling or wait time
+  would be unsupported.
 - *Undefined when:* the graph has a cycle. A producer-to-consumer action graph
   cannot have one, so a cycle means the graph is wrong rather than the build,
-  and the actions stuck in it are named.
+  and the result names every action Kahn's algorithm could not order. That set
+  includes both cycle members and actions downstream of a cycle; it is not
+  presented as exact cycle membership.
 
 ### Slack
 - *Definition:* how much later an action could have started without delaying
   the build, from the backward pass.
-- *Note:* zero for every action on the critical path, by construction.
+- *Note:* zero for every action on any equally longest critical branch. The UI
+  selects one deterministic chain for its table and graph, so zero slack alone
+  does not imply membership in that selected chain.
 
 ### In-flight targets (timeline live band)
 - *Definition:* targets a running capture has seen configured
@@ -434,8 +511,9 @@ and how much of the build it covers.
   build event stream's action start and end, or the execution log's per-spawn
   total time.
 - *Formula:* `bestDurationSource()` counts, in this session, the actions with a
-  usable BEP pair (`end > start`, both present) against the actions with an
-  execution-log total, and picks the larger. Ties go to the execution log.
+  usable BEP pair (`end > start`, both present) against actions for which every
+  correlated attempt in the current successful execution-log import has a
+  nonnegative total, and picks the larger. Ties go to the execution log.
 - *Why it is not a constant:* the event stream publishes no action timestamps on
   Bazel 6.5.0 or 7.6.1, publishes `endTime == startTime` for every action on
   8.4.1, and omits roughly a third of them on 9.2.0; the execution log times
@@ -445,7 +523,9 @@ and how much of the build it covers.
   on screen for that reason — **Action wall duration** from the event stream,
   **Subprocess time** from the log. The second is a sum over an action's
   attempts, so an action raced by the dynamic strategy consumed more of it than
-  it held the wall clock for.
+  it held the wall clock for. Subprocess timing components are not attached to
+  an ActionMetrics row whose selected duration is a BEP wall span; doing so
+  would mix the numerator and denominator of every fraction.
 
 ### Quantile (median, p90, p95, p99)
 
@@ -504,9 +584,10 @@ and how much of the build it covers.
 - *Definition:* how much later an action could have started without making the
   build longer.
 - *Source:* the backward pass of the derived dependency schedule.
-- *Note:* zero for every action on the derived critical path, by construction —
-  which is exactly what distinguishes "on the chain" from "merely slow", and is
-  why the chain finding reports it per contributor.
+- *Note:* zero for every action on any equally longest derived branch. The
+  selected chain is tie-broken deterministically and tracked separately, so a
+  zero-slack action on an alternate equal branch is not labeled as a member of
+  the displayed chain.
 - *Unavailable when:* there is no imported action graph, or the action is not in
   it. An action that ran without being declared by analysis has no slack rather
   than slack of zero.
@@ -555,7 +636,16 @@ and how much of the build it covers.
 ### Coverage figures
 
 - *Definition:* what share of the build each source describes — timing, runner,
-  cache state, input size, output size, action graph, target graph, correlation.
+  cache state, input size, output size, action-graph correlation,
+  action-graph structural completeness, target graph, and BEP/execution-log
+  correlation.
+- *Action-graph correlation:* declared actions matched to executed actions.
+  Cache hits legitimately lower this ratio, so it does not measure graph
+  completeness.
+- *Action-graph completeness:* an all-or-nothing claim over the declared graph.
+  It is complete only when every artifact path and depset reference resolved;
+  otherwise it is unavailable for dependency-derived claims and names the
+  exact unresolved counts.
 - *Note:* every incomplete figure carries the reason. "No aquery output was
   imported" and "an action the graph declares and the build served from cache
   never executed" are different problems with different fixes, and a bare

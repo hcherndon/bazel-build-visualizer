@@ -101,6 +101,10 @@ came here about. The resolver already handled both spellings; nothing was
 reaching it. Found by walking §25 rather than by assuming the launcher matched
 plan 17.1's list.
 
+Post-v1, ADR-011 moved this choice into the initial **Workspaces** screen. This
+section records the Phase 10 launcher as it existed; it is not the current
+startup flow.
+
 ---
 
 ## What the checks did *not* find, and what that is worth

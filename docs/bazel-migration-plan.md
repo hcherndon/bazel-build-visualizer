@@ -8,6 +8,10 @@ re-verified on 2026-08-24 (all resolved unchanged). Main had moved in the
 two days between drafting and execution; the drift is corrected in place
 below and summarized here:
 
+This is the historical cutover record. [ADR-010](adr/010-package-local-bazel-targets.md)
+later replaced its module-wide macro and source-layout choices with
+package-local native targets; the executed evidence below is not rewritten.
+
 - **Five catalog additions the draft predates** (all now in the
   `maven.install` list): `com.fifesoft:rsyntaxtextarea:3.6.1`,
   `com.fifesoft:autocomplete:3.3.3`,

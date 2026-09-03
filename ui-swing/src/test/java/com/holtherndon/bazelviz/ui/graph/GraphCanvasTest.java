@@ -8,9 +8,14 @@ import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.graph.CsrGraph;
+import com.holtherndon.bazelviz.ui.theme.AppTheme;
+import com.holtherndon.bazelviz.ui.theme.Themes;
+import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -52,12 +57,91 @@ final class GraphCanvasTest {
         return GraphModel.of(rendered(nodes), labels, durations);
     }
 
+    private static GraphModel hierarchyDiamond() {
+        CsrGraph graph = CsrBuilder.build(4, visitor -> {
+            visitor.edge(0, 1);
+            visitor.edge(0, 2);
+            visitor.edge(1, 3);
+            visitor.edge(2, 3);
+        });
+        GraphExtract.Result extract = GraphExtract.whole(graph, 100, 100);
+        GraphLayout.Result layout = GraphLayout.hierarchy(extract, RUNNING);
+        return GraphModel.of(
+                new GraphLayoutService.Rendered(
+                        GraphLayoutService.Request.whole(
+                                com.holtherndon.bazelviz.core.graph.GraphKind.DECLARED_ACTIONS,
+                                100,
+                                100),
+                        extract,
+                        layout,
+                        null,
+                        extract.describe()),
+                new String[] {"Genrule — a", "Javac — b", "Javac — c", "Link — out"},
+                new String[] {"//pkg:a", "//pkg:b", "//pkg:c", "//pkg:out"},
+                allTimed(4));
+    }
+
+    private static GraphModel hierarchyWithManyCrossLinks(int branches) {
+        int sink = branches + 1;
+        CsrGraph graph = CsrBuilder.build(sink + 1, visitor -> {
+            for (int child = 1; child <= branches; child++) {
+                visitor.edge(0, child);
+                visitor.edge(child, sink);
+            }
+        });
+        GraphExtract.Result extract = GraphExtract.whole(graph, sink + 1, branches * 2);
+        GraphLayout.Result layout = GraphLayout.hierarchy(extract, RUNNING);
+        return GraphModel.of(
+                new GraphLayoutService.Rendered(
+                        GraphLayoutService.Request.whole(
+                                com.holtherndon.bazelviz.core.graph.GraphKind.DECLARED_ACTIONS,
+                                sink + 1,
+                                branches * 2),
+                        extract,
+                        layout,
+                        null,
+                        extract.describe()),
+                null,
+                null,
+                allTimed(sink + 1));
+    }
+
     private static long[] allTimed(int nodes) {
         long[] durations = new long[nodes];
         for (int i = 0; i < nodes; i++) {
             durations[i] = (i + 1) * 1_000L;
         }
         return durations;
+    }
+
+    @Test
+    @DisplayName("canvas background, labels and edges follow both light and dark themes")
+    void graphPaletteFollowsTheTheme() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                Color previousBackground = null;
+                for (AppTheme theme : new AppTheme[] {AppTheme.LIGHT, AppTheme.DARK}) {
+                    Themes.install(theme);
+                    GraphCanvas canvas = new GraphCanvas();
+                    Color background = canvas.getBackground();
+                    Color label = GraphColours.label();
+                    Color edge = GraphColours.edge();
+
+                    assertThat(background).isEqualTo(UIManager.getColor("Panel.background"));
+                    assertThat(contrast(label, background)).isGreaterThanOrEqualTo(4.5);
+                    assertThat(edge.getRed()).isEqualTo(label.getRed());
+                    assertThat(edge.getGreen()).isEqualTo(label.getGreen());
+                    assertThat(edge.getBlue()).isEqualTo(label.getBlue());
+                    assertThat(edge.getAlpha()).isEqualTo(0x40);
+                    if (previousBackground != null) {
+                        assertThat(background).isNotEqualTo(previousBackground);
+                    }
+                    previousBackground = background;
+                }
+            } finally {
+                Themes.installDefault();
+            }
+        });
     }
 
     @Test
@@ -99,6 +183,62 @@ final class GraphCanvasTest {
 
         assertThat(model.displayLabelAt(1)).isEqualTo("(name not recorded)");
         assertThat(model.displayLabelAt(0)).isEqualTo("//pkg:known");
+    }
+
+    @Test
+    @DisplayName("an action name and its owning target are both visible without conflation")
+    void targetOwnershipIsKeptWithTheActionName() {
+        GraphModel model = GraphModel.of(
+                rendered(3),
+                new String[] {"Javac — Foo.class", "Link — app", null},
+                new String[] {"//java:foo", "//app:app", "//unknown:owner"},
+                allTimed(3));
+
+        assertThat(model.displayLabelAt(0)).isEqualTo("Javac — Foo.class");
+        assertThat(model.ownerLabelAt(0)).contains("//java:foo");
+        assertThat(model.canvasLabelAt(0))
+                .isEqualTo("Javac — Foo.class  ·  target //java:foo");
+        assertThat(model.canvasLabelAt(2))
+                .isEqualTo("(name not recorded)  ·  target //unknown:owner");
+
+        // A configured-target node passes its label as both fields. It is one
+        // target, not an action with an owner, so the text is not repeated.
+        GraphModel targets = GraphModel.of(
+                rendered(3),
+                new String[] {"//java:foo", "//app:app", "//lib:x"},
+                new String[] {"//java:foo", "//app:app", "//lib:x"},
+                allTimed(3));
+        assertThat(targets.canvasLabelAt(0)).isEqualTo("//java:foo");
+        assertThat(targets.ownerLabelAt(0)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("far help describes configured-target nodes as targets, not actions")
+    void farHelpUsesTheGraphNodeKind() {
+        GraphExtract.Result extract = GraphExtract.whole(chain(3), 10, 10);
+        GraphModel targets = GraphModel.of(
+                new GraphLayoutService.Rendered(
+                        GraphLayoutService.Request.whole(
+                                com.holtherndon.bazelviz.core.graph.GraphKind.CONFIGURED_TARGETS,
+                                10,
+                                10),
+                        extract,
+                        GraphLayout.hierarchy(extract, RUNNING),
+                        null,
+                        extract.describe("target")),
+                new String[] {"//pkg:a", "//pkg:b", "//pkg:c"},
+                new String[] {"//pkg:a", "//pkg:b", "//pkg:c"},
+                allTimed(3));
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(400, 300);
+        canvas.setModel(targets);
+        canvas.zoomForTesting(0.01);
+
+        assertThat(canvas.hiddenDetail())
+                .isPresent()
+                .get(org.assertj.core.api.InstanceOfAssertFactories.STRING)
+                .contains("Select a target to see its label")
+                .doesNotContain("action and target");
     }
 
     @Test
@@ -147,6 +287,127 @@ final class GraphCanvasTest {
             assertThat(model.layout().xAt(first[0][e]))
                     .isLessThan(model.layout().xAt(first[1][e]));
         }
+    }
+
+    @Test
+    @DisplayName("the hierarchy keeps every edge but declutters shared links explicitly")
+    void hierarchyCrossLinksAreExplicitAndSelectable() {
+        GraphModel model = hierarchyDiamond();
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(model);
+
+        assertThat(model.edgePositions()[0]).hasSize(4);
+        assertThat(model.hierarchyEdgeCount()).isEqualTo(3);
+        assertThat(model.crossLinkCount()).isEqualTo(1);
+        assertThat(model.crossLinksTouching(java.util.Set.of(0))).isZero();
+        assertThat(model.crossLinksTouching(java.util.Set.of(2))).isEqualTo(1);
+        assertThat(model.crossLinksTouching(java.util.Set.of(2, 3))).isEqualTo(1);
+        assertThat(canvas.edgeDisplay()).isEqualTo(GraphEdgeDisplay.DECLUTTERED);
+        assertThat(canvas.hiddenCrossLinkCount()).isEqualTo(1);
+        assertThat(canvas.hiddenDetail())
+                .isPresent()
+                .get(org.assertj.core.api.InstanceOfAssertFactories.STRING)
+                .contains("1 additional dependency is hidden")
+                .contains("All dependencies");
+        paintOnce(canvas);
+        assertThat(canvas.primaryEdgesDrawnForTesting()).isEqualTo(3);
+        assertThat(canvas.crossLinksDrawnForTesting()).isZero();
+
+        // Node 2 owns the diamond's non-primary 2→3 link. Selecting it brings
+        // that exact link back without changing the layout or the model.
+        canvas.select(2);
+        assertThat(canvas.hiddenCrossLinkCount()).isZero();
+        assertThat(canvas.hiddenDetail()).isEmpty();
+        paintOnce(canvas);
+        assertThat(canvas.primaryEdgesDrawnForTesting()).isEqualTo(3);
+        assertThat(canvas.crossLinksDrawnForTesting()).isEqualTo(1);
+
+        // A marquee selection must not reveal an unbounded union of links.
+        canvas.selectPositionsForTesting(2, 3);
+        assertThat(canvas.hiddenCrossLinkCount()).isEqualTo(1);
+        paintOnce(canvas);
+        assertThat(canvas.crossLinksDrawnForTesting()).isZero();
+
+        canvas.select(-1);
+        canvas.setEdgeDisplay(GraphEdgeDisplay.ALL);
+        assertThat(canvas.hiddenCrossLinkCount()).isZero();
+        assertThat(canvas.model().edgePositions()[0]).hasSize(4);
+        paintOnce(canvas);
+        assertThat(canvas.primaryEdgesDrawnForTesting()).isEqualTo(3);
+        assertThat(canvas.crossLinksDrawnForTesting()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a reciprocal cycle contributes one branch and one closing cross-link")
+    void reciprocalCycleDoesNotDuplicateTheTreeBranch() {
+        CsrGraph graph = CsrBuilder.build(2, visitor -> {
+            visitor.edge(0, 1);
+            visitor.edge(1, 0);
+        });
+        GraphExtract.Result extract = GraphExtract.whole(graph, 10, 10);
+        GraphModel model = GraphModel.of(
+                new GraphLayoutService.Rendered(
+                        GraphLayoutService.Request.whole(
+                                com.holtherndon.bazelviz.core.graph.GraphKind.DECLARED_ACTIONS,
+                                10,
+                                10),
+                        extract,
+                        GraphLayout.hierarchy(extract, RUNNING),
+                        null,
+                        extract.describe()),
+                null,
+                null,
+                allTimed(2));
+
+        assertThat(model.hierarchyEdgeCount()).isEqualTo(1);
+        assertThat(model.crossLinkCount()).isEqualTo(1);
+        assertThat(model.isHierarchyEdge(0)).isNotEqualTo(model.isHierarchyEdge(1));
+    }
+
+    @Test
+    @DisplayName("dependency mode recognises reversed traversal branches in real edge direction")
+    void dependencyHierarchyClassifiesProducerToConsumerEdges() {
+        CsrGraph forward = chain(3);
+        GraphExtract.Result extract = GraphExtract.dependencies(
+                CsrBuilder.reverse(forward), 2, 3, 10);
+        GraphModel model = GraphModel.of(
+                new GraphLayoutService.Rendered(
+                        GraphLayoutService.Request.around(
+                                com.holtherndon.bazelviz.core.graph.GraphKind.DECLARED_ACTIONS,
+                                GraphExtract.Mode.DEPENDENCIES,
+                                2,
+                                3),
+                        extract,
+                        GraphLayout.hierarchy(extract, RUNNING),
+                        null,
+                        extract.describe()),
+                null,
+                null,
+                allTimed(3));
+
+        assertThat(model.hierarchyEdgeCount()).isEqualTo(2);
+        assertThat(model.crossLinkCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("one high-degree selection remains bounded at hierarchy overview scale")
+    void selectedCrossLinksStayBoundedAtFarZoom() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(160, 120);
+        GraphModel model = hierarchyWithManyCrossLinks(1_000);
+        canvas.setModel(model);
+        canvas.select(model.size() - 1);
+
+        paintOnce(canvas);
+
+        int lineBudget = canvas.getWidth() * GraphCanvas.FAR_HIERARCHY_BRANCHES_PER_PIXEL;
+        assertThat(canvas.crossLinksDrawnForTesting()).isLessThanOrEqualTo(lineBudget);
+        assertThat(canvas.hiddenDetail())
+                .isPresent()
+                .get(org.assertj.core.api.InstanceOfAssertFactories.STRING)
+                .contains("selected cross-links are not drawn individually")
+                .contains("Zoom in to restore every selected link");
     }
 
     @Test
@@ -250,6 +511,25 @@ final class GraphCanvasTest {
         int screenY = (int) Math.round(transform.screenY(canvas.model().layout().yAt(7)));
 
         assertThat(canvas.positionAt(screenX, screenY)).hasValue(7);
+    }
+
+    @Test
+    @DisplayName("the visible width of a zoomed hierarchy node remains clickable")
+    void hierarchyCardHitAreaMatchesItsPaintedShape() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(800, 600);
+        canvas.setModel(hierarchyDiamond());
+        canvas.zoomForTesting(4);
+
+        int position = 0;
+        int screenX = screenXOf(canvas, position);
+        int screenY = screenYOf(canvas, position);
+        int insideRightEdge = (int) Math.floor(
+                0.9 * 1.3 * 9 * canvas.model().radiusScaleAt(position)
+                        * canvas.transform().scale());
+
+        assertThat(insideRightEdge).isGreaterThan(12);
+        assertThat(canvas.positionAt(screenX + insideRightEdge, screenY)).hasValue(position);
     }
 
     @Test
@@ -360,6 +640,11 @@ final class GraphCanvasTest {
         assertThat(canvas.declutteredLabelCount()).isPositive();
         assertThat(canvas.paintedLabelPositionsForTesting().size()
                 + canvas.declutteredLabelCount()).isEqualTo(6);
+        assertThat(canvas.hiddenDetail())
+                .isPresent()
+                .get(org.assertj.core.api.InstanceOfAssertFactories.STRING)
+                .contains(canvas.declutteredLabelCount() + " node labels are hidden")
+                .contains("Zoom in or select a node");
     }
 
     @Test
@@ -617,5 +902,24 @@ final class GraphCanvasTest {
 
         // An edge too short on screen for a legible head gets none.
         assertThat(GraphCanvas.arrowTip(0, 0, 10, 0, 5)).isNull();
+    }
+
+    private static double contrast(Color first, Color second) {
+        double light = Math.max(luminance(first), luminance(second));
+        double dark = Math.min(luminance(first), luminance(second));
+        return (light + 0.05) / (dark + 0.05);
+    }
+
+    private static double luminance(Color color) {
+        return 0.2126 * channel(color.getRed())
+                + 0.7152 * channel(color.getGreen())
+                + 0.0722 * channel(color.getBlue());
+    }
+
+    private static double channel(int value) {
+        double normalized = value / 255.0;
+        return normalized <= 0.03928
+                ? normalized / 12.92
+                : Math.pow((normalized + 0.055) / 1.055, 2.4);
     }
 }

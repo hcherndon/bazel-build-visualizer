@@ -4,10 +4,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import com.holtherndon.bazelviz.core.journal.JournalFormat.SourceKind;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.File;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.NamedSetOfFiles;
+import com.holtherndon.bazelviz.ui.files.WorkspaceFileAccess;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -16,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The inspector's two promises: it reads the selected event's payload once,
@@ -147,6 +157,73 @@ class EventInspectorModelTest {
         assertThat(model.selectedEventId()).isEmpty();
     }
 
+    @Test
+    @Timeout(30)
+    @DisplayName("file metadata is untouched until requested, then loaded once off the EDT")
+    void filesAreLazyAndDeduplicated() throws Exception {
+        FakeSessionReader reader = FakeSessionReader.dense(1);
+        BuildEvent event = BuildEvent.newBuilder()
+                .setNamedSetOfFiles(NamedSetOfFiles.newBuilder()
+                        .addFiles(File.newBuilder().setName("artifact.txt").setLength(12)))
+                .build();
+        reader.setPayload(1, event.toByteArray(), SourceKind.BEP_BINARY);
+        EventInspectorModel model =
+                new EventInspectorModel(reader, fetchExecutor, Runnable::run);
+
+        SwingUtilities.invokeAndWait(() -> model.select(1));
+        awaitLoaded(model);
+
+        assertThat(model.fileLoadCount()).isZero();
+        assertThat(model.currentFiles().state()).isEqualTo(EventFileInspection.State.NONE);
+
+        SwingUtilities.invokeAndWait(model::requestFiles);
+        awaitFilesLoaded(model);
+        assertThat(model.fileLoadCount()).isEqualTo(1);
+        assertThat(model.currentFiles().files()).extracting(EventFileInspection.FileEntry::path)
+                .containsExactly("artifact.txt");
+
+        SwingUtilities.invokeAndWait(model::requestFiles);
+        assertThat(model.fileLoadCount()).isEqualTo(1);
+        assertThat(reader.edtCalls()).isZero();
+        assertThat(reader.callingThreads()).containsOnly(FETCH_THREAD);
+    }
+
+    @Test
+    @DisplayName("execution-file detach invalidates a queued load and completes behind it")
+    void executionFileDetachIsABarrier(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("artifact.txt"), "contents");
+        FakeSessionReader reader = FakeSessionReader.dense(1);
+        BuildEvent event = BuildEvent.newBuilder()
+                .setNamedSetOfFiles(NamedSetOfFiles.newBuilder()
+                        .addFiles(File.newBuilder().setName("artifact.txt")))
+                .build();
+        reader.setPayload(1, event.toByteArray(), SourceKind.BEP_BINARY);
+        ArrayDeque<Runnable> fetches = new ArrayDeque<>();
+        EventInspectorModel model = new EventInspectorModel(
+                reader,
+                fetches::add,
+                Runnable::run,
+                WorkspaceFileAccess.local(Optional.of(workspace), Optional.of(workspace)));
+
+        model.select(1);
+        fetches.remove().run();
+        assertThat(model.current().state()).isEqualTo(EventInspection.State.LOADED);
+        model.requestFiles();
+        CompletionStage<Void> detached = model.detachExecutionFileAccessAsync();
+
+        assertThat(fetches).hasSize(2);
+        assertThat(detached.toCompletableFuture()).isNotDone();
+        assertThat(model.currentFiles().state()).isEqualTo(EventFileInspection.State.NONE);
+        fetches.remove().run(); // the old-host file load
+        assertThat(detached.toCompletableFuture()).isNotDone();
+        assertThat(model.currentFiles().state())
+                .as("the old-host result was invalidated")
+                .isEqualTo(EventFileInspection.State.NONE);
+        fetches.remove().run(); // the detach barrier
+
+        assertThat(detached.toCompletableFuture()).isCompleted();
+    }
+
     private static void awaitLoaded(EventInspectorModel model) throws Exception {
         long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
         while (model.current().state() == EventInspection.State.LOADING
@@ -154,6 +231,17 @@ class EventInspectorModelTest {
             if (System.nanoTime() > deadline) {
                 throw new AssertionError("the inspection never left "
                         + model.current().state());
+            }
+            TimeUnit.MILLISECONDS.sleep(5);
+        }
+    }
+
+    private static void awaitFilesLoaded(EventInspectorModel model) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        while (model.currentFiles().state() == EventFileInspection.State.LOADING
+                || model.currentFiles().state() == EventFileInspection.State.NONE) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("file metadata never loaded");
             }
             TimeUnit.MILLISECONDS.sleep(5);
         }

@@ -63,6 +63,17 @@ public interface SessionSource extends AutoCloseable {
     MetricQueries openMetricQueries();
 
     /**
+     * Opens a reader over an imported Starlark CPU profile.
+     *
+     * <p>The default keeps older and synthetic session sources source-compatible while schema and
+     * storage adapters are introduced independently. A real session source overrides it; views
+     * surface this exception as an unavailable profile instead of doing database work themselves.
+     */
+    default StarlarkProfileReader openStarlarkProfileReader() {
+        throw new SessionDataException("Starlark CPU profile reading is not available");
+    }
+
+    /**
      * Opens a reader for user-written SQL over this session.
      *
      * <p>A fifth reader, and the only one whose statements this codebase did

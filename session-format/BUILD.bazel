@@ -1,15 +1,23 @@
-# On-disk session directory layout, journals, manifests.
+load("@rules_java//java:defs.bzl", "java_library")
 
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
-
-bbv_java_library(
+java_library(
     name = "session-format",
-    # api: manifests and layouts speak core-model types.
-    exports = ["//core-model"],
-    deps = ["//core-model"],
+    exports = [
+        "//core-model",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/portable",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json",
+    ],
+    visibility = ["//visibility:public"],
 )
 
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    deps = [":session-format"],
+    tests = [
+        "//session-format/src/test/java/com/holtherndon/bazelviz/format/journal:tests",
+        "//session-format/src/test/java/com/holtherndon/bazelviz/format/portable:tests",
+        "//session-format/src/test/java/com/holtherndon/bazelviz/format/session:tests",
+        "//session-format/src/test/java/com/holtherndon/bazelviz/format/session/json:tests",
+    ],
 )

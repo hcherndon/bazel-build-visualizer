@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.theme;
 
+import java.awt.Dimension;
 import javax.swing.JTextArea;
 import javax.swing.UIManager;
 
@@ -37,11 +38,14 @@ public final class WrappingLabel {
 
     private WrappingLabel() {}
 
-    /** A wrapping, non-editable, {@code JLabel}-styled text area showing {@code text}. */
+    /** A wrapping, selectable, non-editable {@code JLabel}-styled text area. */
     public static JTextArea create(String text) {
         JTextArea area = new JTextArea(text);
         area.setEditable(false);
-        area.setFocusable(false);
+        // Read-only must not mean inert. Inspector values, paths, warnings and
+        // metrics use this component, and standard text selection plus Copy is
+        // essential when moving evidence into an issue or terminal.
+        area.setFocusable(true);
         area.setOpaque(false);
         area.setLineWrap(true);
         area.setWrapStyleWord(true);
@@ -54,6 +58,12 @@ public final class WrappingLabel {
         if (foreground instanceof java.awt.Color labelColor) {
             area.setForeground(labelColor);
         }
+        // A JTextArea's text view otherwise contributes its unwrapped width as
+        // a hard minimum. GridBagLayout may then refuse to make the column any
+        // narrower, defeating lineWrap and pushing a dashboard wider than its
+        // viewport. Height remains the font's minimum; only width yields.
+        Dimension minimum = area.getMinimumSize();
+        area.setMinimumSize(new Dimension(0, minimum.height));
         PlainText.disableHtml(area);
         return area;
     }

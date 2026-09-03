@@ -65,6 +65,7 @@ public final class ProfileImporter {
         boolean previousAutoCommit = connection.getAutoCommit();
         connection.setAutoCommit(false);
         try {
+            clearPreviousProfile();
             Result result = read(file, taskId);
             connection.commit();
             tasks.finish(taskId, EnrichmentTask.State.SUCCEEDED, Optional.of(result.summary()),
@@ -83,6 +84,24 @@ public final class ProfileImporter {
             return Result.failed(message);
         } finally {
             connection.setAutoCommit(previousAutoCommit);
+        }
+    }
+
+    /**
+     * Replaces profile-derived data inside the import transaction.
+     *
+     * <p>A failed retry rolls this deletion back and leaves the last complete
+     * profile intact for recovery, while the FAILED task state prevents readers
+     * from presenting those retained rows as current.
+     */
+    private void clearPreviousProfile() throws SQLException {
+        try (java.sql.Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DELETE FROM profile_spans");
+            statement.executeUpdate("DELETE FROM profile_counters");
+            statement.executeUpdate("DELETE FROM profile_threads");
+            statement.executeUpdate("DELETE FROM build_phases");
+            statement.executeUpdate("DELETE FROM bazel_critical_path");
+            statement.executeUpdate("DELETE FROM profile_metadata");
         }
     }
 

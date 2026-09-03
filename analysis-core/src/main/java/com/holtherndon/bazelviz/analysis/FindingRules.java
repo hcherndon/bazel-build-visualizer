@@ -75,7 +75,7 @@ public final class FindingRules {
 
     // --- rules ------------------------------------------------------------
 
-    /** Plan 16.1: a long derived or Bazel-reported critical path. */
+    /** Plan 16.1: a long visualizer-computed dependency critical path. */
     private static List<Finding> longCriticalChain(FindingInputs inputs) {
         Optional<CriticalPath.Result> derived = inputs.invocation().criticalPaths().derived();
         if (derived.isEmpty() || derived.orElseThrow().outcome() != CriticalPath.Outcome.COMPUTED) {
@@ -90,19 +90,27 @@ public final class FindingRules {
         if (share < inputs.thresholds().criticalPathShare()) {
             return List.of();
         }
+        boolean structurallyComplete = actionGraphCompleteness(inputs)
+                .filter(Coverage::isComplete)
+                .isPresent();
 
+        // MetricQueries already orders these by dependency-node path weight.
+        // Do not re-rank execution-log sessions by aggregate subprocess work:
+        // raced attempts are useful work data but are not elapsed path weight.
         List<ActionMetrics> contributors = inputs.criticalPathActions().stream()
-                .sorted(Comparator.comparingLong(
-                        (ActionMetrics action) -> action.durationMicros().orElse(0)).reversed())
                 .limit(EVIDENCE_LIMIT)
                 .toList();
         List<Evidence> evidence = new ArrayList<>();
         for (ActionMetrics action : contributors) {
-            // Plan 16.1 asks a chain finding to show slack. Every action on the
-            // path has slack of zero by construction, and saying so is what
-            // distinguishes "on the chain" from "merely slow".
+            // Plan 16.1 asks a chain finding to show slack. Membership already
+            // came from the selected path; zero slack alone could also name an
+            // equally long branch that was not selected.
+            String timing = path.durationSource() == CriticalPath.DurationSource.EXECUTION_ATTEMPT
+                    ? "aggregate subprocess work "
+                            + MetricFormat.duration(action.durationMicros())
+                    : "action duration " + MetricFormat.duration(action.durationMicros());
             evidence.add(Evidence.action(action.actionId(), action.displayLabel(),
-                    action.mnemonic() + ", " + MetricFormat.duration(action.durationMicros())
+                    action.mnemonic() + ", " + timing
                             + ", slack " + MetricFormat.duration(action.slackMicros())));
         }
         if (evidence.isEmpty()) {
@@ -119,31 +127,35 @@ public final class FindingRules {
                 "The dependency chain accounts for "
                         + MetricFormat.percent(share) + " of the build's wall time",
                 share >= 0.8 ? Severity.HIGH : Severity.MEDIUM,
-                path.isPartial() ? Confidence.LOW : Confidence.HIGH,
+                path.isPartial() || !structurallyComplete
+                        ? Confidence.LOW : Confidence.HIGH,
                 evidence,
                 List.of(
                         new MetricValue(path.displayName(),
                                 MetricFormat.duration(path.makespanMicros()),
                                 "computed here from the imported action graph, weighted by "
-                                        + path.durationSource().description()),
+                                        + path.durationSource().pathWeightDescription()),
                         new MetricValue("Actions on the chain",
                                 MetricFormat.count(path.path().size()), "computed here"),
                         new MetricValue("Build wall time",
                                 MetricFormat.duration(wall.getAsLong()),
                                 "build event stream"),
-                        // Plan 16.1: "whether graph coverage is complete". The
-                        // chain is only as trustworthy as the graph it walked.
-                        new MetricValue("Action-graph coverage",
-                                graphCoverage(inputs)
-                                        .map(coverage -> MetricFormat.percent(coverage.fraction()))
+                        // The path is withheld unless every artifact path was
+                        // resolved. Correlation is a different measurement:
+                        // cached actions legitimately have no executed row.
+                        new MetricValue("Action-graph completeness",
+                                actionGraphCompleteness(inputs)
+                                        .filter(Coverage::isComplete)
+                                        .map(ignored -> "confirmed")
                                         .orElse(MetricFormat.UNKNOWN),
-                                graphCoverage(inputs).map(Coverage::describe)
-                                        .orElse("no coverage figure was recorded"))),
+                                actionGraphCompleteness(inputs).map(Coverage::describe)
+                                        .orElse("no structural-completeness measurement"
+                                                + " was recorded"))),
                 "at least " + MetricFormat.percent(inputs.thresholds().criticalPathShare())
                         + " of wall time",
-                "A chain this long means the build's shape, rather than the number of jobs, may"
-                        + " be what sets its length; adding machines to a serial chain moves"
-                        + " nothing. The actions listed are the longest links in it.",
+                "A chain this long means dependency-linked actions cannot overlap, regardless of"
+                        + " available parallelism. Their individual durations can still change;"
+                        + " investigate the longest steps separately.",
                 "This chain is what the dependency graph implies, not what Bazel scheduled — the"
                         + " two are separate numbers and are shown separately."
                         + (path.isPartial()
@@ -745,12 +757,12 @@ public final class FindingRules {
 
     /** Plan 16.1: the action graph cannot be reliably correlated with execution. */
     private static List<Finding> graphMismatch(FindingInputs inputs) {
-        Optional<Coverage> coverage =
-                inputs.invocation().coverage().find("Action-graph coverage");
-        if (coverage.isEmpty()) {
+        Optional<Coverage> correlation =
+                inputs.invocation().coverage().find("Action-graph correlation");
+        if (correlation.isEmpty()) {
             return List.of();
         }
-        Coverage graph = coverage.orElseThrow();
+        Coverage graph = correlation.orElseThrow();
         if (graph.total() == 0 || graph.covered() == 0) {
             // No graph at all is not a mismatch; it is an enrichment that was
             // not asked for, and the coverage panel already says so.
@@ -758,7 +770,7 @@ public final class FindingRules {
         }
         OptionalDouble fraction = graph.fraction();
         if (fraction.isEmpty()
-                || fraction.getAsDouble() >= inputs.thresholds().graphCoverageFloor()) {
+                || fraction.getAsDouble() >= inputs.thresholds().graphCorrelationFloor()) {
             return List.of();
         }
         return List.of(new Finding(
@@ -769,13 +781,13 @@ public final class FindingRules {
                 Confidence.HIGH,
                 List.of(Evidence.coverage(graph)),
                 List.of(
-                        new MetricValue("Action-graph coverage",
+                        new MetricValue("Action-graph correlation",
                                 MetricFormat.percent(fraction), graph.describe()),
                         new MetricValue("Graph actions",
                                 MetricFormat.count(graph.total()), "aquery"),
                         new MetricValue("Matched to an executed action",
                                 MetricFormat.count(graph.covered()), "computed here")),
-                "below " + MetricFormat.percent(inputs.thresholds().graphCoverageFloor())
+                "below " + MetricFormat.percent(inputs.thresholds().graphCorrelationFloor())
                         + " of graph actions correlated",
                 "Anything computed from the graph — the dependency chain, fan-out, slack — may"
                         + " describe actions this invocation did not run, so those numbers are"
@@ -792,8 +804,8 @@ public final class FindingRules {
 
     // --- helpers ----------------------------------------------------------
 
-    private static Optional<Coverage> graphCoverage(FindingInputs inputs) {
-        return inputs.invocation().coverage().find("Action-graph coverage");
+    private static Optional<Coverage> actionGraphCompleteness(FindingInputs inputs) {
+        return inputs.invocation().coverage().find("Action-graph completeness");
     }
 
     private static Confidence confidenceFrom(MetricSeries series) {

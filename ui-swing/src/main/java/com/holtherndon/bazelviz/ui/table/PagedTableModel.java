@@ -170,6 +170,11 @@ public final class PagedTableModel<T> extends AbstractTableModel {
         return cache.peek(pageIndex);
     }
 
+    /** Whether this page's last fetch failed and awaits an explicit retry. */
+    public boolean isPageFailed(long pageIndex) {
+        return hasFailed(pageIndex);
+    }
+
     public PageCache.Stats cacheStats() {
         return cache.stats();
     }

@@ -48,6 +48,8 @@ public final class GraphModel {
 
     private final GraphLayoutService.Rendered rendered;
     private final String[] labels;
+    private final String[] ownerLabels;
+    private final String[] canvasLabels;
     private final long[] durations;
     private final GraphSpatialIndex index;
     private final long slowestDuration;
@@ -80,6 +82,7 @@ public final class GraphModel {
      * kind of cost that only shows up as a graph that feels heavy to drag.
      */
     private final int[][] edgePositions;
+    private final HierarchyInfo hierarchy;
 
     /**
      * @param labels one per drawn node, positionally aligned with the layout;
@@ -90,20 +93,26 @@ public final class GraphModel {
     private GraphModel(
             GraphLayoutService.Rendered rendered,
             String[] labels,
+            String[] ownerLabels,
+            String[] canvasLabels,
             long[] durations,
             GraphSpatialIndex index,
             long slowestDuration,
             int[][] edgePositions,
+            HierarchyInfo hierarchy,
             GraphWeight weight,
             long[] weightValues,
             boolean weightTruncated,
             String weightNote) {
         this.rendered = rendered;
         this.labels = labels;
+        this.ownerLabels = ownerLabels;
+        this.canvasLabels = canvasLabels;
         this.durations = durations;
         this.index = index;
         this.slowestDuration = slowestDuration;
         this.edgePositions = edgePositions;
+        this.hierarchy = hierarchy;
         this.weight = weight;
         this.weightValues = weightValues;
         long max = 0;
@@ -134,9 +143,26 @@ public final class GraphModel {
             GraphLayoutService.Rendered rendered,
             String[] labelByNodeIndex,
             long[] durationByNodeIndex) {
+        return of(rendered, labelByNodeIndex, null, durationByNodeIndex);
+    }
+
+    /**
+     * Prepares a drawing with an action name and its owning target kept distinct.
+     *
+     * <p>The action name tells sibling actions apart; the owner answers which
+     * target the node belongs to. The configured-target graph passes the same
+     * label for both, which is collapsed rather than repeated.
+     */
+    public static GraphModel of(
+            GraphLayoutService.Rendered rendered,
+            String[] labelByNodeIndex,
+            String[] ownerByNodeIndex,
+            long[] durationByNodeIndex) {
         Objects.requireNonNull(rendered, "rendered");
         List<Integer> nodes = rendered.layout().nodes();
         String[] labels = new String[nodes.size()];
+        String[] owners = new String[nodes.size()];
+        String[] canvasLabels = new String[nodes.size()];
         long[] durations = new long[nodes.size()];
         long slowest = 0;
 
@@ -149,19 +175,26 @@ public final class GraphModel {
                 GraphClustering.Cluster cluster =
                         rendered.clustering().clusters().get(node);
                 labels[i] = cluster.displayName() + "  (" + cluster.nodeCount() + ")";
+                canvasLabels[i] = labels[i];
                 durations[i] = UNKNOWN_DURATION;
             } else {
                 labels[i] = labelByNodeIndex != null && node < labelByNodeIndex.length
                         ? labelByNodeIndex[node] : null;
+                owners[i] = ownerByNodeIndex != null && node < ownerByNodeIndex.length
+                        ? ownerByNodeIndex[node] : null;
+                canvasLabels[i] = canvasLabel(labels[i], owners[i]);
                 long duration = durationByNodeIndex != null && node < durationByNodeIndex.length
                         ? durationByNodeIndex[node] : UNKNOWN_DURATION;
                 durations[i] = duration;
                 slowest = Math.max(slowest, duration);
             }
         }
+        int[][] edges = edgesAsPositions(rendered);
+        HierarchyInfo hierarchy = hierarchyInfo(
+                rendered.layout(), rendered.extract().mode(), edges);
         return new GraphModel(
-                rendered, labels, durations, GraphSpatialIndex.of(rendered.layout()),
-                slowest, edgesAsPositions(rendered),
+                rendered, labels, owners, canvasLabels, durations,
+                GraphSpatialIndex.of(rendered.layout()), slowest, edges, hierarchy,
                 GraphWeight.DURATION, durations, false, "");
     }
 
@@ -193,14 +226,16 @@ public final class GraphModel {
             }
         }
         return new GraphModel(
-                rendered, labels, durations, index, slowestDuration, edgePositions,
+                rendered, labels, ownerLabels, canvasLabels, durations, index,
+                slowestDuration, edgePositions, hierarchy,
                 newWeight, values, truncated, note);
     }
 
     /** Back to the duration encoding, sharing everything but the weight. */
     public GraphModel withDurationWeight() {
         return new GraphModel(
-                rendered, labels, durations, index, slowestDuration, edgePositions,
+                rendered, labels, ownerLabels, canvasLabels, durations, index,
+                slowestDuration, edgePositions, hierarchy,
                 GraphWeight.DURATION, durations, false, "");
     }
 
@@ -210,18 +245,24 @@ public final class GraphModel {
                 null,
                 new GraphExtract.Result(
                         GraphExtract.Mode.NEIGHBOURHOOD, List.of(), List.of(), 0, 0, false, 0),
-                GraphLayout.Result.empty(GraphLayout.Kind.LAYERED),
+                GraphLayout.Result.empty(GraphLayout.Kind.HIERARCHY),
                 null,
                 "");
         return new GraphModel(
-                nothing, new String[0], new long[0],
+                nothing, new String[0], new String[0], new String[0], new long[0],
                 GraphSpatialIndex.of(nothing.layout()), 0,
-                new int[][] {new int[0], new int[0]},
+                new int[][] {new int[0], new int[0]}, HierarchyInfo.empty(0, 0),
                 GraphWeight.DURATION, new long[0], false, "");
     }
 
     public GraphLayout.Result layout() {
         return rendered.layout();
+    }
+
+    /** What one node is in user-facing copy. */
+    public String nodeNoun() {
+        return rendered.request() == null
+                ? "node" : GraphLayoutService.nounFor(rendered.request().graph());
     }
 
     public GraphExtract.Result extract() {
@@ -259,6 +300,22 @@ public final class GraphModel {
     public String displayLabelAt(int position) {
         String label = labels[position];
         return label == null ? "(name not recorded)" : label;
+    }
+
+    /**
+     * The label painted and shown in the tooltip, including target ownership
+     * when it adds information beyond the action's own name.
+     */
+    public String canvasLabelAt(int position) {
+        String label = canvasLabels[position];
+        return label == null ? "(name and target not recorded)" : label;
+    }
+
+    /** The owning target, when it is known and distinct from the node name. */
+    public java.util.Optional<String> ownerLabelAt(int position) {
+        String owner = ownerLabels[position];
+        return owner == null || owner.equals(labels[position])
+                ? java.util.Optional.empty() : java.util.Optional.of(owner);
     }
 
     /** How long a node took, or empty when nothing measured it. */
@@ -383,6 +440,80 @@ public final class GraphModel {
         return edgePositions;
     }
 
+    /** True when this dependency is one of the hierarchy's primary branches. */
+    public boolean isHierarchyEdge(int edge) {
+        return hierarchy.primary()[edge];
+    }
+
+    /** Primary branches in the hierarchy; every other real edge is a cross-link. */
+    public int hierarchyEdgeCount() {
+        return hierarchy.primaryCount();
+    }
+
+    public int crossLinkCount() {
+        return hierarchy.crossCount();
+    }
+
+    /** The edge-array position of one primary branch, without exposing its index array. */
+    int hierarchyEdgeAt(int ordinal) {
+        return hierarchy.primaryEdges()[ordinal];
+    }
+
+    /** The edge-array position of one cross-link, without an all-edge scan. */
+    int crossLinkEdgeAt(int ordinal) {
+        return hierarchy.crossEdges()[ordinal];
+    }
+
+    /** Cross-links incident to one position; used to reveal a single selected node. */
+    int crossLinkDegreeAt(int position) {
+        int[] offsets = hierarchy.crossOffsets();
+        if (position < 0 || position + 1 >= offsets.length) {
+            return 0;
+        }
+        return offsets[position + 1] - offsets[position];
+    }
+
+    /** One incident cross-link's edge-array position. */
+    int incidentCrossLinkAt(int position, int ordinal) {
+        return hierarchy.incidentCrossEdges()[hierarchy.crossOffsets()[position] + ordinal];
+    }
+
+    /** Exact cross-links touching at least one selected node, without an all-edge scan. */
+    int crossLinksTouching(java.util.Set<Integer> selected) {
+        if (selected.isEmpty() || hierarchy.crossCount() == 0) {
+            return 0;
+        }
+        int revealed = 0;
+        int[] offsets = hierarchy.crossOffsets();
+        int[] incident = hierarchy.incidentCrossEdges();
+        for (int position : selected) {
+            if (position < 0 || position + 1 >= offsets.length) {
+                continue;
+            }
+            for (int at = offsets[position]; at < offsets[position + 1]; at++) {
+                int edge = incident[at];
+                int from = edgePositions[0][edge];
+                int to = edgePositions[1][edge];
+                int other = from == position ? to : from;
+                if (other == position || !selected.contains(other) || position < other) {
+                    revealed++;
+                }
+            }
+        }
+        return revealed;
+    }
+
+    private static String canvasLabel(String label, String owner) {
+        if (owner == null) {
+            return label;
+        }
+        if (owner.equals(label)) {
+            return label;
+        }
+        return (label == null ? "(name not recorded)" : label)
+                + "  ·  target " + owner;
+    }
+
     private static double[] radiusScalesFor(long[] values, long max) {
         double[] scales = new double[values.length];
         java.util.Arrays.fill(scales, 1.0);
@@ -458,5 +589,102 @@ public final class GraphModel {
         return new int[][] {
             java.util.Arrays.copyOf(from, next), java.util.Arrays.copyOf(to, next),
         };
+    }
+
+    private static HierarchyInfo hierarchyInfo(
+            GraphLayout.Result layout, GraphExtract.Mode mode, int[][] edges) {
+        if (layout.kind() != GraphLayout.Kind.HIERARCHY) {
+            return HierarchyInfo.empty(layout.size(), edges[0].length);
+        }
+        boolean[] primary = new boolean[edges[0].length];
+        boolean[] claimedChild = new boolean[layout.size()];
+        int primaryCount = 0;
+        int[] crossDegree = new int[layout.size()];
+        for (int edge = 0; edge < primary.length; edge++) {
+            int from = edges[0][edge];
+            int to = edges[1][edge];
+            int child = primaryChild(layout, mode, from, to);
+            primary[edge] = child >= 0 && !claimedChild[child];
+            if (primary[edge]) {
+                claimedChild[child] = true;
+                primaryCount++;
+            } else {
+                crossDegree[from]++;
+                if (to != from) {
+                    crossDegree[to]++;
+                }
+            }
+        }
+        int[] offsets = new int[layout.size() + 1];
+        for (int node = 0; node < layout.size(); node++) {
+            offsets[node + 1] = offsets[node] + crossDegree[node];
+        }
+        int[] incident = new int[offsets[layout.size()]];
+        int[] cursor = offsets.clone();
+        for (int edge = 0; edge < primary.length; edge++) {
+            if (primary[edge]) {
+                continue;
+            }
+            int from = edges[0][edge];
+            int to = edges[1][edge];
+            incident[cursor[from]++] = edge;
+            if (to != from) {
+                incident[cursor[to]++] = edge;
+            }
+        }
+        int[] primaryEdges = new int[primaryCount];
+        int[] crossEdges = new int[primary.length - primaryCount];
+        int primaryAt = 0;
+        int crossAt = 0;
+        for (int edge = 0; edge < primary.length; edge++) {
+            if (primary[edge]) {
+                primaryEdges[primaryAt++] = edge;
+            } else {
+                crossEdges[crossAt++] = edge;
+            }
+        }
+        return new HierarchyInfo(
+                primary, primaryEdges, crossEdges, primaryCount,
+                primary.length - primaryCount, offsets, incident);
+    }
+
+    /**
+     * The child this real directed edge discovered, or -1 when it is not that
+     * parent/child branch. Only one edge may claim a child, so reciprocal and
+     * parallel edges remain explicit cross-links rather than duplicate branches.
+     */
+    private static int primaryChild(
+            GraphLayout.Result layout, GraphExtract.Mode mode, int from, int to) {
+        return switch (mode) {
+            // Dependency traversal reverses producer→consumer edges: the
+            // producer child points to its consumer parent in the real graph.
+            case DEPENDENCIES -> layout.parentAt(from) == to ? from : -1;
+            // Neighbourhood placement deliberately ignores direction.
+            case NEIGHBOURHOOD -> {
+                if (layout.parentAt(to) == from) {
+                    yield to;
+                }
+                yield layout.parentAt(from) == to ? from : -1;
+            }
+            // These traversals follow the stored producer→consumer direction.
+            case DEPENDENTS, WHOLE, PATH, CRITICAL_PATH, CLUSTERS ->
+                    layout.parentAt(to) == from ? to : -1;
+        };
+    }
+
+    private record HierarchyInfo(
+            boolean[] primary,
+            int[] primaryEdges,
+            int[] crossEdges,
+            int primaryCount,
+            int crossCount,
+            int[] crossOffsets,
+            int[] incidentCrossEdges) {
+
+        private static HierarchyInfo empty(int nodes, int edges) {
+            return new HierarchyInfo(
+                    new boolean[edges], new int[0], new int[0],
+                    0, 0, new int[nodes + 1], new int[0]);
+        }
     }
 }

@@ -7,9 +7,12 @@ import com.holtherndon.bazelviz.analysis.Finding;
 import com.holtherndon.bazelviz.analysis.GroupAggregate;
 import com.holtherndon.bazelviz.analysis.MetricSeries;
 import com.holtherndon.bazelviz.analysis.MetricFormat;
+import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
+import java.awt.CardLayout;
 import java.awt.Component;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
@@ -64,6 +67,8 @@ import org.slf4j.LoggerFactory;
 public final class FindingsView extends JPanel {
 
     private static final long serialVersionUID = 1L;
+    private static final String CARD_EMPTY = "empty";
+    private static final String CARD_CONTENT = "content";
 
     private static final Logger log = LoggerFactory.getLogger(FindingsView.class);
 
@@ -89,8 +94,9 @@ public final class FindingsView extends JPanel {
     private final JPanel catalog = new JPanel();
     private final JLabel headline = new JLabel(" ");
     private final JButton recompute = new JButton("Recompute");
-    private final JLabel empty = PlainText.disableHtml(
-            new JLabel("No session is open.", SwingConstants.CENTER));
+    private final CardLayout cards = new CardLayout();
+    private final JPanel deck = new JPanel(cards);
+    private final EmptyStatePanel emptyState = new EmptyStatePanel("No session is open.");
 
     // Fields, not constructor locals: a scroll pane whose wheel moves 1 pixel
     // per notch (the JScrollBar default) reads as "extremely slow" scrolling
@@ -109,7 +115,6 @@ public final class FindingsView extends JPanel {
         super(new BorderLayout());
 
         PlainText.disableHtml(headline);
-        PlainText.disableHtml(empty);
         headline.setFont(headline.getFont().deriveFont(
                 Font.BOLD, headline.getFont().getSize() + 3f));
 
@@ -146,15 +151,20 @@ public final class FindingsView extends JPanel {
         detailScroll.getVerticalScrollBar().setUnitIncrement(16);
 
         JSplitPane split = new JSplitPane(
-                JSplitPane.HORIZONTAL_SPLIT, listScroll, detailScroll);
+                JSplitPane.HORIZONTAL_SPLIT,
+                new SectionPane("Findings", listScroll),
+                new SectionPane("Finding details", detailScroll));
         split.setDividerLocation(360);
         split.setResizeWeight(0.35);
 
         JSplitPane page = new JSplitPane(
-                JSplitPane.VERTICAL_SPLIT, topScroll, split);
+                JSplitPane.VERTICAL_SPLIT,
+                new SectionPane("Coverage & analysis", topScroll), split);
         page.setDividerLocation(300);
         page.setResizeWeight(0.35);
-        add(page, BorderLayout.CENTER);
+        deck.add(emptyState, CARD_EMPTY);
+        deck.add(page, CARD_CONTENT);
+        add(deck, BorderLayout.CENTER);
 
         recompute.addActionListener(event -> refresh());
         recompute.setEnabled(false);
@@ -199,14 +209,21 @@ public final class FindingsView extends JPanel {
         if (running == null) {
             return;
         }
+        cards.show(deck, CARD_CONTENT);
         headline.setText("Reading the build…");
         recompute.setEnabled(false);
         running.collect(
                 result -> {
+                    if (service != running) {
+                        return;
+                    }
                     recompute.setEnabled(true);
                     show(result);
                 },
                 failure -> {
+                    if (service != running) {
+                        return;
+                    }
                     recompute.setEnabled(true);
                     log.error("could not collect metrics", failure);
                     headline.setText("Could not read the metrics: " + failure.getMessage());
@@ -216,6 +233,7 @@ public final class FindingsView extends JPanel {
     /** Renders a collection. On the EDT; visible so a test can drive it. */
     public void show(MetricsService.Result result) {
         Objects.requireNonNull(result, "result");
+        cards.show(deck, CARD_CONTENT);
         model.clear();
         for (Finding finding : result.findings()) {
             model.addElement(finding);
@@ -255,7 +273,9 @@ public final class FindingsView extends JPanel {
         CriticalPaths paths = invocation.criticalPaths();
         rows.add(new String[] {paths.bazelDisplayName(),
                 paths.bazelReportedMicros().value()
-                        .map(MetricFormat::duration)
+                        .map(value -> MetricFormat.duration(value)
+                                + paths.bazelReportedMicros().warning()
+                                        .map(warning -> " — " + warning).orElse(""))
                         .orElse(MetricFormat.UNKNOWN + " — "
                                 + paths.bazelReportedMicros().warning().orElse("no source"))});
         rows.add(new String[] {paths.derivedDisplayName(),
@@ -263,7 +283,8 @@ public final class FindingsView extends JPanel {
                         .map(derived -> MetricFormat.duration(derived.makespanMicros())
                                 + (derived.isPartial() ? " (a lower bound)" : ""))
                         .orElse(MetricFormat.UNKNOWN
-                                + " — no imported action graph to compute it over")});
+                                + " — " + paths.derivedUnavailableReason().orElse(
+                                        "no imported action graph to compute it over"))});
         paths.schedulingGapMicros().ifPresent(gap -> rows.add(new String[] {
             "Difference between them",
             MetricFormat.duration(Math.abs(gap))
@@ -549,7 +570,7 @@ public final class FindingsView extends JPanel {
         headline.setText(" ");
         catalog.removeAll();
         detail.removeAll();
-        detail.add(empty);
+        cards.show(deck, CARD_EMPTY);
         revalidate();
         repaint();
     }
@@ -594,7 +615,7 @@ public final class FindingsView extends JPanel {
         area.setOpaque(false);
         area.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
         area.setAlignmentX(LEFT_ALIGNMENT);
-        area.setFocusable(false);
+        area.setFocusable(true);
         if (bold) {
             area.setFont(area.getFont().deriveFont(Font.BOLD));
         }
@@ -666,6 +687,11 @@ public final class FindingsView extends JPanel {
     /** Visible for testing: the detail pane's scroll pane. */
     public JScrollPane detailScrollForTest() {
         return detailScroll;
+    }
+
+    /** Visible for testing: the full-pane state shown without a session. */
+    JPanel emptyStateForTest() {
+        return emptyState;
     }
 
     /** Every label in the summary grid, joined. */

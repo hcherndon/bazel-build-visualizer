@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.events;
 
 import com.holtherndon.bazelviz.bepcodec.BepPayloadType;
+import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import com.holtherndon.bazelviz.ui.table.ColumnSpec;
 import java.util.List;
 import java.util.OptionalLong;

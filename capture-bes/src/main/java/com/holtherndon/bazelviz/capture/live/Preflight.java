@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
 import com.holtherndon.bazelviz.runner.plan.PlanRequest;
 import com.holtherndon.bazelviz.runner.workspace.WorkspaceInfo;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * What was learned before anything ran: which Bazel, which workspace, what it
@@ -30,7 +31,8 @@ public record Preflight(
         BazelCapabilities capabilities,
         BesEndpoint endpoint,
         InstrumentationPlan plan,
-        PlanRequest request) {
+        PlanRequest request,
+        Optional<RemoteDetails> remote) {
 
     public Preflight {
         Objects.requireNonNull(executable, "executable");
@@ -39,10 +41,62 @@ public record Preflight(
         Objects.requireNonNull(endpoint, "endpoint");
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(request, "request");
+        remote = Objects.requireNonNull(remote, "remote");
+    }
+
+    /** Compatibility constructor for a local preflight. */
+    public Preflight(
+            BazelExecutable executable,
+            WorkspaceInfo workspace,
+            BazelCapabilities capabilities,
+            BesEndpoint endpoint,
+            InstrumentationPlan plan,
+            PlanRequest request) {
+        this(executable, workspace, capabilities, endpoint, plan, request, Optional.empty());
     }
 
     /** Whether the build may be started as planned. */
     public boolean canLaunch() {
         return plan.canLaunch();
+    }
+
+    public boolean isRemote() {
+        return remote.isPresent();
+    }
+
+    /** SSH-specific values shown before launch. No credentials are included. */
+    public record RemoteDetails(
+            String host,
+            String workingDirectory,
+            Optional<String> workspaceRoot,
+            String localBesListener,
+            String remoteBesBackend,
+            String stagingDirectory) {
+
+        public RemoteDetails {
+            host = requireText(host, "host");
+            workingDirectory = requirePath(workingDirectory, "workingDirectory");
+            workspaceRoot = Objects.requireNonNull(workspaceRoot, "workspaceRoot")
+                    .map(value -> requirePath(value, "workspaceRoot"));
+            localBesListener = requireText(localBesListener, "localBesListener");
+            remoteBesBackend = requireText(remoteBesBackend, "remoteBesBackend");
+            stagingDirectory = requirePath(stagingDirectory, "stagingDirectory");
+        }
+
+        private static String requireText(String value, String name) {
+            String checked = Objects.requireNonNull(value, name).strip();
+            if (checked.isEmpty() || checked.indexOf('\0') >= 0) {
+                throw new IllegalArgumentException(name + " is blank or invalid");
+            }
+            return checked;
+        }
+
+        private static String requirePath(String value, String name) {
+            String checked = Objects.requireNonNull(value, name);
+            if (checked.isBlank() || checked.indexOf('\0') >= 0) {
+                throw new IllegalArgumentException(name + " is blank or invalid");
+            }
+            return checked;
+        }
     }
 }

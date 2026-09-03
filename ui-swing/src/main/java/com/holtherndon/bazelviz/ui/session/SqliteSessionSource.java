@@ -19,6 +19,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Objects;
@@ -55,6 +57,7 @@ public final class SqliteSessionSource implements SessionSource {
     private final List<SqliteSessionReader> readers = new CopyOnWriteArrayList<>();
     private final List<EntityReader> entityReaders = new CopyOnWriteArrayList<>();
     private final List<QueryReader> queryReaders = new CopyOnWriteArrayList<>();
+    private final List<StarlarkProfileReader> starlarkReaders = new CopyOnWriteArrayList<>();
     private volatile boolean closed;
 
     private SqliteSessionSource(
@@ -107,8 +110,35 @@ public final class SqliteSessionSource implements SessionSource {
             }
             throw refused;
         }
-        return new SqliteSessionSource(
-                root, SessionInfo.of(root, manifest), database, layout.rawDirectory());
+        SessionInfo info = invocationPaths(SessionInfo.of(root, manifest), database);
+        return new SqliteSessionSource(root, info, database, layout.rawDirectory());
+    }
+
+    /**
+     * A pure BEP import has no invocation paths in its manifest, but its
+     * BuildStarted row often has both. Read that one row while opening is
+     * already on a worker, so label/file actions work for imports too without
+     * adding SQL to a Swing component.
+     */
+    private static SessionInfo invocationPaths(SessionInfo info, SessionDatabase database) {
+        String sql = "SELECT working_directory, workspace_directory FROM build_invocation"
+                + " WHERE singleton = 1";
+        try (Connection connection = database.newReadConnection();
+                PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rows = statement.executeQuery()) {
+            if (!rows.next()) {
+                return info;
+            }
+            return info.withInvocationPaths(
+                    Optional.ofNullable(rows.getString(1)),
+                    Optional.ofNullable(rows.getString(2)));
+        } catch (SQLException failure) {
+            // Paths are an optional local convenience; a session whose
+            // entities are readable must not fail to open because this one
+            // supplementary row could not be read.
+            log.debug("could not read invocation paths for {}", info.root(), failure);
+            return info;
+        }
     }
 
     /**
@@ -216,6 +246,23 @@ public final class SqliteSessionSource implements SessionSource {
     }
 
     @Override
+    public StarlarkProfileReader openStarlarkProfileReader() {
+        if (closed) {
+            throw new SessionDataException("session " + root + " is closed");
+        }
+        Connection connection;
+        try {
+            connection = database.newReadConnection();
+        } catch (SQLException e) {
+            throw new SessionDataException("cannot open a read connection to " + root, e);
+        }
+        StarlarkProfileReader reader =
+                new SqliteStarlarkProfileReader(root.toString(), connection);
+        starlarkReaders.add(reader);
+        return reader;
+    }
+
+    @Override
     public QueryReader openQueryReader() {
         if (closed) {
             throw new SessionDataException("session " + root + " is closed");
@@ -291,6 +338,14 @@ public final class SqliteSessionSource implements SessionSource {
             }
         }
         queryReaders.clear();
+        for (StarlarkProfileReader reader : starlarkReaders) {
+            try {
+                reader.close();
+            } catch (RuntimeException failure) {
+                log.debug("a Starlark profile reader for {} would not close", root, failure);
+            }
+        }
+        starlarkReaders.clear();
         try {
             database.close();
         } catch (SQLException e) {

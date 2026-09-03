@@ -5,23 +5,67 @@ stated. Written for the Phase 10 release gate; every claim below names the code
 or the test that makes it true, so a reviewer can check rather than believe.
 
 The threat model this is written against: a local single-user desktop tool that
-launches a build on the user's own machine, and that **opens files other people
-sent** — a `.bviz` archive, a BEP file, a session directory. The second half is
-where the interesting exposure is. Nothing here defends against an attacker who
-already runs code as the user.
+launches a build on this computer or on a Linux SSH host the user explicitly
+selects, and that **opens files other people sent** — a `.bviz` archive, a BEP
+file, a session directory. Imported and historical data is the untrusted side:
+it can never initiate that SSH connection or execute a recorded command.
+Nothing here defends against an attacker who already runs code as the user or
+controls a host the user chose to trust through OpenSSH. The optional Workspace
+Discovery script is also user-authorized executable code, not imported data;
+protecting a settings directory already writable by an attacker is outside
+this threat model.
 
 ---
 
-## 22.1 Local-only networking
+## 22.1 Loopback BES and explicit SSH networking
+
+ADR-011 supersedes the historical plan's blanket local-only statement while
+preserving its loopback-listener and no-telemetry requirements.
 
 | Requirement | Status | Evidence |
 |---|---|---|
 | Bind BES to loopback | Met | `BesEndpoint` refuses any host that is not loopback, in its constructor — before a socket exists. `BesEndpoint.LOOPBACK` is `127.0.0.1`. |
 | Reject non-loopback configuration in v1 | Met, with no developer switch | The plan permits a developer-only override; none was written. There is no code path that constructs a non-loopback endpoint, so there is nothing to leave enabled by accident. |
 | Do not expose an HTTP server | Met | No `HttpServer`, no servlet, no embedded web anything. The only listening socket in the application is the gRPC BES endpoint. |
-| Do not send telemetry by default | Met, and not by default either | There is no outbound network code at all: no `HttpClient`, no `URL.openConnection`, no client `Socket`. The application cannot phone home because it has nothing to phone with. |
+| Do not send telemetry by default | Met | There is no telemetry, update or crash-upload client. Built-in networking is the system OpenSSH client after the user explicitly selects or reconnects an SSH Workspace (ADR-011). An optional user-authored discovery script runs locally at boot and can use the user's network permissions by virtue of being executable code; imported session data cannot configure or trigger it. |
 
-**Verified by grep during this review**, not by memory: `grep -rn 'HttpServer\|HttpClient\|openConnection\|Socket('` over every module's main sources returns nothing outside the BES server's own `ServerSocket`.
+The BES listener remains loopback-only. SSH remote mode does not widen it:
+OpenSSH allocates a remote `127.0.0.1` port and reverse-forwards that to the
+desktop listener. The app passes direct argv to `/usr/bin/ssh` and
+`/usr/bin/sftp`, preserves the user's host-key policy, forces batch mode, and
+disables agent/X11 forwarding and SSH local-command hooks. Authentication stays
+in OpenSSH configuration or an agent. Saved Workspaces carry a stable ID and
+label, local/SSH kind, directory, Bazel executable and last-opened time, plus
+only destination and optional port for SSH. They carry no credential,
+authentication option or captured command.
+
+The saved Workspace Discovery script is a separate, bounded settings file. A
+non-empty value must have a shebang and is executed directly on a blocking-I/O
+worker at graphical startup or on explicit request. No application-selected
+shell wraps it. Its time, stdout, stderr, accepted row count and visible
+diagnostics are bounded. Each invocation replaces the complete previous
+discovered set; those profile objects stay in memory and are not written to the
+saved Workspace store. Stdout is parsed as profile data, never as a command.
+Line diagnostics identify the line and reason without echoing its raw text.
+Selecting a discovered SSH row remains the separate action that starts OpenSSH.
+
+Repository-browser icons do not add a networking path. A case-insensitive,
+fixed filename map chooses among classpath resources bundled with the
+application; untrusted repository names are never concatenated into a URL or
+resource path. JSVG parses only the reviewed packaged SVG resources: the fixed
+32-file Material Icon Theme subset and two project-owned SVGs. It does not parse
+repository files, imported event data, or text supplied by a remote host, and
+an unknown type falls back to the packaged text-document icon. The set contains
+no script or external resource reference, and the application never downloads
+icon artwork at runtime.
+
+Repository browsing follows only exact Bazel convenience symlinks that are
+direct children of the selected workspace root. Following happens only when
+the user expands a link, on the existing bounded worker and under the exact
+5,000-visible-entry cap. Ordinary and nested symlinks remain leaves, so a link
+cycle is not traversed recursively. A recognized link may resolve outside the
+workspace root because Bazel's output tree normally does; it has no authority
+beyond the already-selected local or SSH execution filesystem.
 
 ---
 
@@ -42,6 +86,31 @@ what each of the plan's nine sensitive-field categories actually gets.
 | Artifact names | `artifacts.path`, `name`, `path_prefix`, `uri` — all in the inventory. |
 | Credentials passed to actions | The three value rules, applied to `actions.command_line` and to `strings.value`. |
 
+ADR-011 adds two non-credential hostname surfaces outside that nine-row plan
+inventory. Saved local/SSH Workspaces stay in local settings; session manifests
+record SSH display/destination/port as execution provenance. Both may disclose
+internal host or project names and are treated as sensitive local data, even
+though neither contains a password or key.
+
+Workspace Discovery adds a local executable-settings surface. The persisted
+script may contain paths, hostnames or any other text its author puts there.
+Its discovered labels, directories and SSH destinations remain ephemeral, but
+are visible in the current process. Neither the script nor its results enter a
+captured session or portable archive.
+
+Application observability adds a third local hostname/path surface. The GUI
+application log can contain absolute paths, labels, SSH destinations, session
+identifiers, timings, and exception or failure text. Raw command vectors,
+environment values, file and terminal content, authentication material, SFTP
+scripts, and SSH control-socket paths are not intentionally logged, but failure
+text is not a redaction boundary. The log remains in the local application
+support directory and is never uploaded or exported automatically. Its active
+file is limited to 8 MiB; compressed history is limited to seven days and
+64 MiB. An operating-system lock permits only one process to own the rolling
+destination at a time. Embedded control characters are escaped so a hostile
+path or exception cannot forge a second physical log record. Treat the files
+as sensitive local diagnostic data and review them before sharing.
+
 **The inventory is a test.** `SessionRedaction` names 35 columns it rewrites and
 83 it deliberately leaves alone, and `SessionRedactionTest` asserts that every
 `TEXT` column in the schema appears in one list or the other, and that no listed
@@ -55,9 +124,11 @@ inspector exists for. Export is the boundary, and export masks paths.
 
 ### Gaps, stated
 
-- **There is no settings screen**, so the user-editable pattern list of plan
-  22.2 is editable by a caller and not by a user. `RedactionPolicy.withUserPatterns`
-  exists and nothing in the UI calls it.
+- **Preferences currently exposes Theme and Discovery, but not redaction
+  settings**, so the user-editable pattern list of plan 22.2 is still editable
+  by a caller and not by a user. The Workspaces screen is a dedicated
+  execution-profile manager, not that redaction-settings surface.
+  `RedactionPolicy.withUserPatterns` exists and nothing in the UI calls it.
 - **A session directory at rest is unencrypted and unredacted.** That is by
   design (ADR-004, raw-first) and is stated in `docs/privacy.md`; the protection
   is filesystem permissions, the same as any other file the user owns.
@@ -74,12 +145,23 @@ inspector exists for. Export is the boundary, and export masks paths.
 | Use direct argv by default | Met | `BazelLauncher.launch` builds a `ProcessBuilder` from `command.toArgv()`. No shell is involved unless shell mode is on. |
 | Do not interpolate command text into shell scripts | Met by default | The only string-joining path is `shellArgv`, reachable only when `command.shellMode()` is true. |
 | Clearly label explicit shell mode | Met | Shell mode is opt-in, and the argv it produces — `<shell> -c <joined command>` — is displayed verbatim in the instrumentation plan before anything runs. |
+| Keep discovery execution separate from imported data | Met | The persisted Preferences script is invoked directly according to its shebang. The app does not interpolate imported or discovered text into it; stdout becomes bounded profile data only, and opening a discovered profile is still explicit. |
 | **Do not execute commands embedded in imported sessions** | Met | Checked by grep during this review: `manifest.originalCommand()` is read in exactly one place outside `session-format`, by `CatalogEntries`, and only to build a display name for the library list. Nothing constructs a `BazelCommand` from a manifest. |
-| Imported session commands are display-only | Met | As above. The launcher's command comes from the launcher bar, which the user typed. |
+| Imported session commands are display-only | Met | As above. The Console command comes from its editable launcher field, which the user typed; a selected Workspace supplies execution location, never a historical command. |
+
+For SSH execution, local OpenSSH itself is still started through direct argv.
+Remote argv crosses one audited `PosixShell` quoting boundary because OpenSSH's
+remote-command protocol is shell text; arguments are quoted individually and
+the SSH destination validator refuses option injection. The primary build uses
+a forced TTY and the dialog discloses its merged stdout/stderr. Probes and
+binary query streams are non-TTY. Cancellation targets the reported remote
+process group rather than assuming that closing a local transport stopped it.
 
 This is the clause most worth re-checking whenever the session library grows a
-feature: an "open recent and re-run" button would violate it, and it is exactly
-the kind of convenience that looks obviously good.
+feature: an "open recent and re-run" button would violate it. The recent
+Workspace menu is safe precisely because Workspace records contain execution
+location but no captured command, and opening a recent captured session does
+not select or reconnect a Workspace.
 
 ---
 

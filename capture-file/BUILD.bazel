@@ -1,40 +1,27 @@
-# Importing existing BEP files.
+"""Compatibility facade for the package-local BEP file targets."""
 
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+load("@rules_java//java:defs.bzl", "java_library")
 
-bbv_java_library(
+java_library(
     name = "capture-file",
-    # api: the import pipeline (`importer/`) is the component that joins the
-    # Phase 1 parts together, so this module reaches the session and storage
-    # layers. Both are exported rather than plain deps because BepImporter's
-    # signatures name their types: it takes a SessionManager and returns an
-    # ImportResult carrying EventWriter.IngestSummary, so a caller cannot use
-    # the importer without them on its own compile classpath.
     exports = [
-        "//core-model",
-        "//session-format",
-        "//storage-sqlite",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/binary:binary",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/detect:detect",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/export:export",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer:importer",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/json:json",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/normalize:normalize",
     ],
-    deps = [
-        "//core-model",
-        "//session-format",
-        "//storage-sqlite",
-        # implementation:
-        "//bep-codec",
-        # JSON BEP files are protobuf-JSON, so decoding a record needs
-        # JsonFormat/TypeRegistry from protobuf-java-util (plan 9.5). Not
-        # exported: no public type in this module exposes JsonFormat.
-        "@maven//:com_google_protobuf_protobuf_java_util",
-    ],
+    visibility = ["//visibility:public"],
 )
 
-# Importer tests are the Phase 1 exit criteria in executable form, so they
-# run against the real generated fixtures rather than hand-built bytes.
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    deps = [
-        ":capture-file",
-        "//bep-codec",
-        "//test-support",
+    tests = [
+        "//capture-file/src/test/java/com/holtherndon/bazelviz/capture/file/binary:tests",
+        "//capture-file/src/test/java/com/holtherndon/bazelviz/capture/file/detect:tests",
+        "//capture-file/src/test/java/com/holtherndon/bazelviz/capture/file/export:tests",
+        "//capture-file/src/test/java/com/holtherndon/bazelviz/capture/file/importer:tests",
+        "//capture-file/src/test/java/com/holtherndon/bazelviz/capture/file/json:tests",
     ],
 )

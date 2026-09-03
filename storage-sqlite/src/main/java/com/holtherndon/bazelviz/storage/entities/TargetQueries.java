@@ -73,6 +73,46 @@ public final class TargetQueries implements AutoCloseable {
     private static final String BY_LABEL =
             "SELECT " + COLUMNS + FROM + " WHERE l.value = ? ORDER BY t.aspect ASC, c.bep_id ASC";
 
+    private static final String TOP_LEVEL_LABEL_FROM =
+            " FROM targets t JOIN labels l ON l.id = t.label_id";
+
+    private static final String TOP_LEVEL_LABEL_COUNT =
+            "SELECT COUNT(DISTINCT t.label_id)" + TOP_LEVEL_LABEL_FROM;
+
+    private static final String TOP_LEVEL_LABELS_FIRST =
+            "SELECT l.value" + TOP_LEVEL_LABEL_FROM
+                    + " GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
+
+    private static final String TOP_LEVEL_LABELS_AFTER =
+            "SELECT l.value" + TOP_LEVEL_LABEL_FROM
+                    + " WHERE l.value > ? GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
+
+    private static final String CONFIGURED_FROM =
+            " FROM configured_target_nodes n JOIN labels l ON l.id = n.label_id";
+
+    private static final String LABEL_SUMMARY_COLUMNS =
+            "l.value, COUNT(DISTINCT COALESCE(n.configuration_checksum, '')), COUNT(*)";
+
+    private static final String LABELS_FIRST =
+            "SELECT " + LABEL_SUMMARY_COLUMNS + CONFIGURED_FROM
+                    + " GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
+
+    private static final String LABELS_AFTER =
+            "SELECT " + LABEL_SUMMARY_COLUMNS + CONFIGURED_FROM
+                    + " WHERE l.value > ? GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
+
+    private static final String LABEL_COUNT =
+            "SELECT COUNT(DISTINCT n.label_id)" + CONFIGURED_FROM;
+
+    private static final String CONFIGURED_BY_LABEL =
+            "SELECT n.id, l.value, n.configuration_checksum, n.rule_class"
+                    + CONFIGURED_FROM + " WHERE l.value = ?"
+                    + " ORDER BY COALESCE(n.configuration_checksum, ''), n.id";
+
+    private static final String CONFIGURED_SOURCE =
+            "SELECT state, configuration_match, mismatch_detail, error_excerpt"
+                    + " FROM graph_sources WHERE kind = 'CONFIGURED_TARGETS'";
+
     private static final String BY_ID = "SELECT " + COLUMNS + FROM + " WHERE t.id = ?";
 
     private static final String TAGS =
@@ -114,6 +154,101 @@ public final class TargetQueries implements AutoCloseable {
         try (PreparedStatement statement = connection.prepareStatement(BY_LABEL)) {
             statement.setString(1, label);
             return readRows(statement);
+        }
+    }
+
+    /** Exact distinct-label count in the build event stream's top-level target set. */
+    public long topLevelLabelCount() throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(TOP_LEVEL_LABEL_COUNT);
+                ResultSet rows = statement.executeQuery()) {
+            return rows.next() ? rows.getLong(1) : 0;
+        }
+    }
+
+    /** First alphabetical page of top-level labels. */
+    public List<String> firstTopLevelLabelPage(int limit) throws SQLException {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        try (PreparedStatement statement = connection.prepareStatement(TOP_LEVEL_LABELS_FIRST)) {
+            statement.setInt(1, limit);
+            return readLabels(statement);
+        }
+    }
+
+    /** Alphabetical page after an exact top-level label boundary. */
+    public List<String> topLevelLabelPageAfter(String label, int limit) throws SQLException {
+        Objects.requireNonNull(label, "label");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        try (PreparedStatement statement = connection.prepareStatement(TOP_LEVEL_LABELS_AFTER)) {
+            statement.setString(1, label);
+            statement.setInt(2, limit);
+            return readLabels(statement);
+        }
+    }
+
+    /** Exact number of distinct fully-qualified target labels. */
+    public long labelCount() throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(LABEL_COUNT);
+                ResultSet rows = statement.executeQuery()) {
+            return rows.next() ? rows.getLong(1) : 0;
+        }
+    }
+
+    /** First page of distinct labels for the All Targets explorer. */
+    public List<LabelSummary> firstLabelPage(int limit) throws SQLException {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        try (PreparedStatement statement = connection.prepareStatement(LABELS_FIRST)) {
+            statement.setInt(1, limit);
+            return readLabelSummaries(statement);
+        }
+    }
+
+    /** Distinct label page after the previous page's exact label boundary. */
+    public List<LabelSummary> labelPageAfter(String label, int limit) throws SQLException {
+        Objects.requireNonNull(label, "label");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        try (PreparedStatement statement = connection.prepareStatement(LABELS_AFTER)) {
+            statement.setString(1, label);
+            statement.setInt(2, limit);
+            return readLabelSummaries(statement);
+        }
+    }
+
+    /** Configured-target query rows for one exact label. */
+    public List<ConfiguredTarget> configuredByLabel(String label) throws SQLException {
+        Objects.requireNonNull(label, "label");
+        List<ConfiguredTarget> configured = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(CONFIGURED_BY_LABEL)) {
+            statement.setString(1, label);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    configured.add(new ConfiguredTarget(
+                            rows.getLong(1),
+                            rows.getString(2),
+                            Optional.ofNullable(rows.getString(3)),
+                            Optional.ofNullable(rows.getString(4))));
+                }
+            }
+        }
+        return configured;
+    }
+
+    /** The cquery import whose rows All Targets lists, when one was attempted. */
+    public Optional<ConfiguredSource> configuredSource() throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(CONFIGURED_SOURCE);
+                ResultSet rows = statement.executeQuery()) {
+            return rows.next() ? Optional.of(new ConfiguredSource(
+                    rows.getString(1),
+                    rows.getString(2),
+                    Optional.ofNullable(rows.getString(3)),
+                    Optional.ofNullable(rows.getString(4)))) : Optional.empty();
         }
     }
 
@@ -176,6 +311,37 @@ public final class TargetQueries implements AutoCloseable {
      */
     public record PackageSummary(String path, long targets, long failed, long notCompleted) {}
 
+    /** One distinct label and the configured variants stored beneath it. */
+    public record LabelSummary(String label, long configurations, long rows) {
+        public LabelSummary {
+            Objects.requireNonNull(label, "label");
+        }
+    }
+
+    /** One label/configuration pair declared by the imported cquery output. */
+    public record ConfiguredTarget(
+            long id, String label, Optional<String> configuration, Optional<String> ruleClass) {
+        public ConfiguredTarget {
+            Objects.requireNonNull(label, "label");
+            Objects.requireNonNull(configuration, "configuration");
+            Objects.requireNonNull(ruleClass, "ruleClass");
+        }
+    }
+
+    /** Honest status of the cquery source behind the configured target rows. */
+    public record ConfiguredSource(
+            String state,
+            String configurationMatch,
+            Optional<String> mismatchDetail,
+            Optional<String> error) {
+        public ConfiguredSource {
+            Objects.requireNonNull(state, "state");
+            Objects.requireNonNull(configurationMatch, "configurationMatch");
+            Objects.requireNonNull(mismatchDetail, "mismatchDetail");
+            Objects.requireNonNull(error, "error");
+        }
+    }
+
     /** A tag and the event that supplied it. */
     public record Tag(String tag, String fromEvent) {}
 
@@ -200,6 +366,28 @@ public final class TargetQueries implements AutoCloseable {
             }
         }
         return rows;
+    }
+
+    private static List<LabelSummary> readLabelSummaries(PreparedStatement statement)
+            throws SQLException {
+        List<LabelSummary> summaries = new ArrayList<>();
+        try (ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                summaries.add(new LabelSummary(
+                        rows.getString(1), rows.getLong(2), rows.getLong(3)));
+            }
+        }
+        return summaries;
+    }
+
+    private static List<String> readLabels(PreparedStatement statement) throws SQLException {
+        List<String> labels = new ArrayList<>();
+        try (ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                labels.add(rows.getString(1));
+            }
+        }
+        return labels;
     }
 
     /** {@code ''} is the storage spelling of "not an aspect"; the model says absent. */

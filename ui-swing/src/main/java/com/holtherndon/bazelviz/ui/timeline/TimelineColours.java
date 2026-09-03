@@ -45,7 +45,7 @@ public final class TimelineColours {
     public static final Color CACHE_HIT = new Color(0x34, 0xA8, 0x53);
     public static final Color CACHE_MISS = new Color(0xF2, 0x8B, 0x30);
 
-    public static final Color LOCAL = new Color(0x42, 0x85, 0xF4);
+    public static final Color LOCAL = new Color(0x00, 0x88, 0x7A);
     public static final Color REMOTE = new Color(0x9C, 0x5C, 0xD1);
 
     /** The critical-path overlay. Drawn over, never instead of, a span's colour. */
@@ -67,6 +67,11 @@ public final class TimelineColours {
         }
 
         public String displayName() {
+            return displayName;
+        }
+
+        @Override
+        public String toString() {
             return displayName;
         }
 

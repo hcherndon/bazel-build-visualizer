@@ -18,6 +18,8 @@ import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import javax.swing.Icon;
 import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JLabel;
@@ -161,6 +163,11 @@ public final class TableHeaderInteractions {
     private ColumnStateStore store;
     private Executor ioExecutor;
     private ColumnState lastSaved = ColumnState.empty();
+    private long persistenceGeneration;
+    private boolean closed;
+    private CompletableFuture<Void> persistenceOperations =
+            CompletableFuture.completedFuture(null);
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
     private final javax.swing.Timer saveDebounce =
             new javax.swing.Timer(SAVE_DELAY_MILLIS, event -> flushSave());
 
@@ -537,11 +544,19 @@ public final class TableHeaderInteractions {
 
     /** As above with an explicit store and executor; tests pass a direct one. */
     public void attachPersistence(ColumnStateStore newStore, Executor io) {
+        if (closed) {
+            return;
+        }
         this.store = Objects.requireNonNull(newStore, "newStore");
         this.ioExecutor = Objects.requireNonNull(io, "io");
-        io.execute(() -> {
+        long wanted = ++persistenceGeneration;
+        submitPersistence(io, () -> {
             ColumnState loaded = newStore.load();
-            SwingUtilities.invokeLater(() -> adopt(loaded));
+            SwingUtilities.invokeLater(() -> {
+                if (!closed && wanted == persistenceGeneration && store == newStore) {
+                    adopt(loaded);
+                }
+            });
         });
     }
 
@@ -584,14 +599,14 @@ public final class TableHeaderInteractions {
 
     /** Schedules a debounced save, when there is anywhere to save to. */
     private void markDirty() {
-        if (store == null) {
+        if (closed || store == null) {
             return;
         }
         saveDebounce.restart();
     }
 
     private void flushSave() {
-        if (store == null) {
+        if (closed || store == null) {
             return;
         }
         captureNow();
@@ -601,7 +616,63 @@ public final class TableHeaderInteractions {
         }
         lastSaved = snapshot;
         ColumnStateStore target = store;
-        ioExecutor.execute(() -> target.save(snapshot));
+        submitPersistence(ioExecutor, () -> target.save(snapshot));
+    }
+
+    /**
+     * Flushes the final column state and completes after every accepted load/save has settled.
+     * Late load callbacks are invalidated before the stage is exposed.
+     */
+    public CompletionStage<Void> closeAsync() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::beginClose);
+            return closeCompletion;
+        }
+        beginClose();
+        return closeCompletion;
+    }
+
+    private void beginClose() {
+        if (closed) {
+            return;
+        }
+        saveDebounce.stop();
+        captureNow();
+        ColumnStateStore target = store;
+        Executor targetExecutor = ioExecutor;
+        ColumnState snapshot = snapshotState();
+        closed = true;
+        persistenceGeneration++;
+        store = null;
+        ioExecutor = null;
+        if (target != null && !snapshot.equals(lastSaved)) {
+            lastSaved = snapshot;
+            submitPersistence(targetExecutor, () -> target.save(snapshot));
+        }
+        persistenceOperations.whenComplete((ignored, failure) -> {
+            if (failure == null) {
+                closeCompletion.complete(null);
+            } else {
+                closeCompletion.completeExceptionally(failure);
+            }
+        });
+    }
+
+    private void submitPersistence(Executor executor, Runnable operation) {
+        CompletableFuture<Void> submitted = new CompletableFuture<>();
+        persistenceOperations = CompletableFuture.allOf(persistenceOperations, submitted);
+        try {
+            executor.execute(() -> {
+                try {
+                    operation.run();
+                    submitted.complete(null);
+                } catch (Throwable failure) {
+                    submitted.completeExceptionally(failure);
+                }
+            });
+        } catch (RuntimeException failure) {
+            submitted.completeExceptionally(failure);
+        }
     }
 
     /** The current state as a value — what a save would write. */

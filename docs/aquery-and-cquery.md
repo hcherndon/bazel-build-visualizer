@@ -150,6 +150,27 @@ graph has no actions". Since `aquery` on a workspace with no analysable targets
 would also produce a nearly-empty container, the exit status — not the file
 size — is what distinguishes them.
 
+### Q8a — A query wildcard is not the build's selected-target set ⚠
+
+Measured with Bazel 9.2.0 in Bazel's own workspace: `bazel test
+//src/java_tools/...` succeeded with 151 top-level targets, while cquery over
+the same wildcard attempted 163 and failed on a `manual` bootstrap helper the
+test invocation had skipped. Even `tests(...)` inside cquery did not help,
+because cquery configured the wildcard universe before applying the expression.
+The cquery succeeded when given the exact 151 labels recorded in the BEP. A
+real fixture with one broken `manual` target now pins the same scope rule for
+both aquery and cquery: both succeed over the BEP-recorded `//:good` label and
+neither imports the unselected manual target.
+
+Capture therefore streams those exact normalized top-level labels into a
+session-local, quoted `deps(set(...))` query file for each command after the build. This also
+handles legal labels containing `+`, which are not valid as unquoted query
+words. If no target was reported by a partial build, the requested-pattern
+fallback is disclosed rather than presented as the exact build scope. A
+nonempty label set is exact only when `build_invocation.saw_last_message` proves
+the BEP completed; labels retained from a truncated stream are used for utility
+but persisted as an unverified scope.
+
 ---
 
 ## 3. Field-level version differences

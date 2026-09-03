@@ -18,10 +18,12 @@ import java.util.List;
  *
  * <p>Plan 13.6 offers "export" as one of the three things a user may do when a
  * graph is too large to draw, and the Phase 7 task list asks for "export of
- * visible and complete filtered graphs". {@link #visible} writes exactly what is
- * on screen; {@link #whole} writes every node and edge the session holds,
- * whether or not any of it could be drawn. The second is the one that makes the
- * limit acceptable: the drawing is bounded, the data never is.
+ * visible and complete filtered graphs". {@link #visible} writes every node in
+ * the current extracted view and every dependency among those nodes, including
+ * cross-links hidden only by drawing detail. {@link #whole} writes every node
+ * and edge the session holds, whether or not any of it could be extracted for
+ * the canvas. The second is the one that makes the limit acceptable: the
+ * drawing is bounded, the data never is.
  *
  * <h2>Streamed, never materialised</h2>
  *
@@ -75,7 +77,8 @@ public final class GraphExport {
     }
 
     /** What was written, and where. */
-    public record Result(List<Path> files, long nodes, long edges, String summary) {
+    public record Result(
+            List<Path> files, long nodes, long edges, String summary, String nodeNoun) {
 
         public Result {
             files = List.copyOf(files);
@@ -90,16 +93,18 @@ public final class GraphExport {
             String where = files.size() == 1
                     ? primary().getFileName().toString()
                     : files.size() + " files beside " + primary().getFileName();
-            return "Wrote " + nodes + (nodes == 1 ? " action and " : " actions and ")
+            return "Wrote " + nodes + " " + plural(nodeNoun, nodes) + " and "
                     + edges + (edges == 1 ? " dependency to " : " dependencies to ") + where + ".";
         }
     }
 
     /**
-     * Writes exactly what is on screen.
+     * Writes the current extracted node set and all dependencies among it.
      *
      * <p>Including its description, which is the part that says how much of the
-     * build this is.
+     * build this is. Paint-only detail such as hierarchy cross-link decluttering
+     * is deliberately reversed in the file, and the provenance says so: export
+     * should not turn a readability choice into data loss.
      *
      * <p>The node-name column is headed {@code name}, not {@code label},
      * because it holds what the canvas draws — for action graphs that is the
@@ -110,7 +115,8 @@ public final class GraphExport {
      */
     public static Result visible(GraphModel model, Path target, Format format)
             throws IOException {
-        String provenance = "Visible graph. " + model.description();
+        String provenance = "Visible graph. Includes all dependencies among these nodes,"
+                + " including links hidden only by drawing detail. " + model.description();
         int nodes = model.size();
         int[][] edges = model.edgePositions();
 
@@ -119,7 +125,7 @@ public final class GraphExport {
             writeAtomically(file, out -> {
                 dotHeader(out, provenance);
                 for (int i = 0; i < nodes; i++) {
-                    dotNode(out, i, model.displayLabelAt(i),
+                    dotNode(out, i, model.canvasLabelAt(i),
                             model.durationAt(i).isPresent()
                                     ? model.durationAt(i).getAsLong() : -1);
                 }
@@ -128,7 +134,8 @@ public final class GraphExport {
                 }
                 out.write("}\n");
             });
-            return new Result(List.of(file), nodes, edges[0].length, provenance);
+            return new Result(
+                    List.of(file), nodes, edges[0].length, provenance, model.nodeNoun());
         }
 
         Path nodeFile = sibling(target, "-nodes.csv");
@@ -140,7 +147,7 @@ public final class GraphExport {
             // Bazel label. The complete export is the one that writes labels.
             out.write("id,name,duration_micros\n");
             for (int i = 0; i < nodes; i++) {
-                out.write(i + "," + csv(model.displayLabelAt(i)) + ","
+                out.write(i + "," + csv(model.canvasLabelAt(i)) + ","
                         + (model.durationAt(i).isPresent()
                                 ? Long.toString(model.durationAt(i).getAsLong()) : "")
                         + "\n");
@@ -153,7 +160,9 @@ public final class GraphExport {
                 out.write(edges[0][e] + "," + edges[1][e] + "\n");
             }
         });
-        return new Result(List.of(nodeFile, edgeFile), nodes, edges[0].length, provenance);
+        return new Result(
+                List.of(nodeFile, edgeFile), nodes, edges[0].length,
+                provenance, model.nodeNoun());
     }
 
     /**
@@ -174,9 +183,24 @@ public final class GraphExport {
             Path target,
             Format format)
             throws IOException {
+        return whole(
+                forward, labelsByNodeIndex, durationsByNodeIndex,
+                target, format, "action");
+    }
+
+    /** Complete export with the graph source's truthful node noun. */
+    public static Result whole(
+            CsrGraph forward,
+            String[] labelsByNodeIndex,
+            long[] durationsByNodeIndex,
+            Path target,
+            Format format,
+            String nodeNoun)
+            throws IOException {
         long nodes = forward.nodeCount();
         long edges = forward.edgeCount();
-        String provenance = "Complete graph: all " + nodes + " actions and " + edges
+        String provenance = "Complete graph: all " + nodes + " "
+                + plural(nodeNoun, nodes) + " and " + edges
                 + " dependencies this session holds, drawn or not.";
 
         if (format == Format.DOT) {
@@ -199,7 +223,7 @@ public final class GraphExport {
                 }
                 out.write("}\n");
             });
-            return new Result(List.of(file), nodes, edges, provenance);
+            return new Result(List.of(file), nodes, edges, provenance, nodeNoun);
         }
 
         Path nodeFile = sibling(target, "-nodes.csv");
@@ -227,7 +251,12 @@ public final class GraphExport {
                 });
             }
         });
-        return new Result(List.of(nodeFile, edgeFile), nodes, edges, provenance);
+        return new Result(List.of(nodeFile, edgeFile), nodes, edges, provenance, nodeNoun);
+    }
+
+    private static String plural(String noun, long count) {
+        String safe = noun == null || noun.isBlank() ? "node" : noun;
+        return count == 1 ? safe : safe + "s";
     }
 
     private static String nameOf(String[] labels, int node) {

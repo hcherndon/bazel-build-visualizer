@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.capture.file.importer.ImportResult;
 import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.testsupport.bep.BepBinaryWriter;
 import com.holtherndon.bazelviz.testsupport.bep.SyntheticBepStream;
+import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import java.awt.GraphicsEnvironment;

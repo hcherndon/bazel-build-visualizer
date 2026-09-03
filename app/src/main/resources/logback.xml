@@ -13,6 +13,14 @@
   <statusListener class="ch.qos.logback.core.status.NopStatusListener"/>
 
   <!--
+    Stop appenders through Logback's normal lifecycle when the JVM exits. The
+    graphical application adds its rolling file appender programmatically,
+    after the platform-specific application directory is known; this hook also
+    drains that bounded asynchronous writer on System.exit and desktop quit.
+  -->
+  <shutdownHook class="ch.qos.logback.core.hook.DefaultShutdownHook"/>
+
+  <!--
     Logs go to stderr, never stdout. stdout is a subcommand's result: the json
     option on `bbv run` and `bbv import` produces a document meant to be piped
     into a consumer, and a log line landing in the middle of it makes the
@@ -21,7 +29,16 @@
   -->
   <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
     <target>System.err</target>
-    <encoder>
+    <!--
+      With no override this admits every record the logger hierarchy admits.
+      Graphical startup sets bbv.log.console.level=WARN before Logback
+      initializes: detailed application records then go to the rolling file
+      without crowding a terminal that launched the desktop application.
+    -->
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>${bbv.log.console.level:-TRACE}</level>
+    </filter>
+    <encoder class="com.holtherndon.bazelviz.app.logging.ControlSafePatternLayoutEncoder">
       <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
     </encoder>
   </appender>
@@ -32,9 +49,13 @@
     from this application between two of Bazel's progress repaints is noise in
     the middle of the thing the user is actually reading.
 
-    Raise it when diagnosing, with the JVM property bbv.log.level=DEBUG.
+    bbv.log.level changes only this application's namespace. Dependency
+    internals remain at WARN even during application Debug or Trace diagnostics.
+    Main validates the property before a headless command initializes SLF4J.
   -->
-  <root level="${bbv.log.level:-WARN}">
+  <logger name="com.holtherndon.bazelviz" level="${bbv.log.level:-WARN}"/>
+
+  <root level="WARN">
     <appender-ref ref="STDERR"/>
   </root>
 </configuration>

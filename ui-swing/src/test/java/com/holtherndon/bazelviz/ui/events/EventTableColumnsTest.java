@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import com.holtherndon.bazelviz.storage.events.RawLocation;
+import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import com.holtherndon.bazelviz.ui.table.ColumnSpec;
 import java.util.List;
 import java.util.Optional;

@@ -56,13 +56,15 @@ final class GraphCanvasScaleTest {
         assertThat(extract.nodes()).as("the fixture must fit inside the plan's limits")
                 .hasSize(NODES);
 
-        GraphLayout.Result layout = GraphLayout.layered(extract, RUNNING);
+        GraphLayout.Result layout = GraphLayout.hierarchy(extract, RUNNING);
         assertThat(layout.cancelled()).isFalse();
 
         String[] labels = new String[NODES];
+        String[] ownerLabels = new String[NODES];
         long[] durations = new long[NODES];
         for (int i = 0; i < NODES; i++) {
-            labels[i] = "//synthetic/package" + (i % 400) + ":target" + i;
+            labels[i] = "Compile — output" + i + ".o";
+            ownerLabels[i] = "//synthetic/package" + (i % 400) + ":target" + i;
             durations[i] = i % 97 == 0 ? GraphModel.UNKNOWN_DURATION : (i % 5_000) * 100L;
         }
         return GraphModel.of(
@@ -72,7 +74,7 @@ final class GraphCanvasScaleTest {
                                 GraphExtract.DEFAULT_NODE_LIMIT,
                                 GraphExtract.DEFAULT_EDGE_LIMIT),
                         extract, layout, null, extract.describe()),
-                labels, durations);
+                labels, ownerLabels, durations);
     }
 
     @Test
@@ -116,6 +118,23 @@ final class GraphCanvasScaleTest {
     }
 
     @Test
+    @DisplayName("revealing a selected node's cross-links does not scan the whole edge set")
+    void selectionUsesTheCrossLinkIndex() {
+        GraphCanvas canvas = new GraphCanvas();
+        canvas.setSize(1_600, 1_000);
+        canvas.setModel(bigModel());
+
+        long start = System.nanoTime();
+        canvas.select(NODES / 2);
+        long millis = (System.nanoTime() - start) / 1_000_000;
+
+        assertThat(canvas.selectedPositions()).containsExactly(NODES / 2);
+        assertThat(millis)
+                .as("selecting one node and counting its cross-links took %dms", millis)
+                .isLessThan(200);
+    }
+
+    @Test
     @DisplayName("culling makes a zoomed-in viewport cost the viewport, not the graph")
     void cullingCostsTheViewport() {
         GraphModel model = bigModel();
@@ -123,8 +142,15 @@ final class GraphCanvasScaleTest {
         // A window covering roughly a hundredth of the world in each direction.
         double width = (box[2] - box[0]) / 100;
         double height = (box[3] - box[1]) / 100;
+        int anchor = NODES / 2;
+        double centreX = model.layout().xAt(anchor);
+        double centreY = model.layout().yAt(anchor);
 
-        int[] visible = model.index().within(box[0], box[1], box[0] + width, box[1] + height);
+        int[] visible = model.index().within(
+                centreX - width / 2,
+                centreY - height / 2,
+                centreX + width / 2,
+                centreY + height / 2);
 
         assertThat(visible.length)
                 .as("a hundredth of the world should not return most of the graph")
@@ -155,6 +181,7 @@ final class GraphCanvasScaleTest {
         GraphCanvas canvas = new GraphCanvas();
         canvas.setSize(1_600, 1_000);
         canvas.setModel(bigModel());
+        canvas.setEdgeDisplay(GraphEdgeDisplay.ALL);
         // Zoom until the near band, where labels and every visible edge are
         // drawn -- the most expensive thing the canvas ever does per node.
         while (canvas.detail() != GraphCanvas.Detail.NEAR) {
@@ -172,21 +199,47 @@ final class GraphCanvasScaleTest {
     }
 
     @Test
-    @DisplayName("edges omitted at far zoom are reported, not silently dropped")
-    void omissionIsReported() {
+    @DisplayName("the hierarchy backbone remains visible when far zoom hides cross-links")
+    void hierarchyBackboneSurvivesFarZoom() {
         GraphCanvas canvas = new GraphCanvas();
         canvas.setSize(1_600, 1_000);
         canvas.setModel(bigModel());
 
-        // Plan 13.6's rule applied to the one thing the canvas legitimately
-        // leaves out. A blank area that looked edgeless would be a claim about
-        // the build, and a false one.
+        // A hierarchy with no branches at overview scale would repeat the old
+        // failure: thousands of boxes that do not look like a graph. Only the
+        // non-tree cross-links are decluttered, and that exact choice is named.
         assertThat(canvas.detail()).isEqualTo(GraphCanvas.Detail.FAR);
         assertThat(canvas.hiddenDetail())
                 .isPresent()
                 .get(org.assertj.core.api.InstanceOfAssertFactories.STRING)
-                .contains("not drawn at this zoom")
-                .contains("Zoom in");
+                .contains("additional dependencies are hidden")
+                .contains("Decluttered edges")
+                .contains("primary branches are not drawn individually")
+                .contains("Zoom in to restore every branch");
+
+        slowestFrameOf(canvas, 1_600, 1_000);
+        assertThat(canvas.primaryEdgesDrawnForTesting()).isPositive();
+        assertThat(canvas.crossLinksDrawnForTesting()).isZero();
+    }
+
+    @Test
+    @DisplayName("Fit contains a fifty-thousand-node hierarchy even when it is one deep chain")
+    void deepestValidHierarchyStillFits() {
+        CsrGraph chain = CsrBuilder.build(NODES, visitor -> {
+            for (int node = 0; node + 1 < NODES; node++) {
+                visitor.edge(node, node + 1);
+            }
+        });
+        GraphExtract.Result extract = GraphExtract.whole(
+                chain, GraphExtract.DEFAULT_NODE_LIMIT, GraphExtract.DEFAULT_EDGE_LIMIT);
+        GraphLayout.Result layout = GraphLayout.hierarchy(extract, RUNNING);
+
+        GraphTransform fitted = GraphTransform.fit(
+                layout.bounds().orElseThrow(), 600, 400, 24);
+
+        assertThat(fitted.screenY(layout.yAt(0))).isBetween(23.0, 377.0);
+        assertThat(fitted.screenY(layout.yAt(NODES - 1))).isBetween(23.0, 377.0);
+        assertThat(fitted.scale()).isGreaterThan(GraphTransform.MIN_SCALE);
     }
 
     private static long slowestFrameOf(GraphCanvas canvas, int width, int height) {

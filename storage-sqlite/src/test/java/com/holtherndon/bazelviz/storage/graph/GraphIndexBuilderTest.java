@@ -43,8 +43,10 @@ final class GraphIndexBuilderTest {
         MigrationRunner.standard().migrate(database);
         connection = database.writerConnection();
         indexDirectory = tempDir.resolve("indexes");
-        exec("INSERT INTO graph_sources (id, kind, state, configuration_match)"
-                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT')");
+        exec("INSERT INTO graph_sources"
+                + " (id, kind, state, configuration_match, unresolved_artifacts,"
+                + " unresolved_depset_references)"
+                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT', 0, 0)");
         // A diamond: 1 feeds 2 and 3, both feed 4.
         for (int i = 1; i <= 4; i++) {
             exec("INSERT INTO labels (id, value) VALUES (" + i + ", '//d:t" + i + "')");
@@ -80,6 +82,31 @@ final class GraphIndexBuilderTest {
         assertThat(forward.degree(3)).isZero();
         assertThat(reverse.degree(3)).isEqualTo(2);
         assertThat(reverse.degree(0)).isZero();
+        assertThat(scalar("SELECT count(*) FROM graph_indexes"
+                + " WHERE kind = 'DECLARED' AND source_id = 1")).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("observed action indexes point to the declared-action query source")
+    void observedIndexesCarryActionSource() throws Exception {
+        GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
+
+        builder.build(EdgeDerivation.OBSERVED).orElseThrow();
+
+        assertThat(scalar("SELECT count(*) FROM graph_indexes"
+                + " WHERE kind = 'OBSERVED' AND source_id = 1")).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("an index tied to a failed graph source is unavailable")
+    void failedSourceCannotServeItsIndex() throws Exception {
+        GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
+        builder.build(EdgeDerivation.DECLARED).orElseThrow();
+
+        exec("UPDATE graph_sources SET state = 'FAILED' WHERE id = 1");
+
+        assertThat(builder.load(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
+        assertThat(builder.load(EdgeDerivation.DECLARED, "REVERSE")).isEmpty();
     }
 
     @Test

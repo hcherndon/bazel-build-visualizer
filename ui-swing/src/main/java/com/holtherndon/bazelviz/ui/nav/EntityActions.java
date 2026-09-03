@@ -14,6 +14,8 @@ import javax.swing.JMenuItem;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JTable;
+import javax.swing.JTree;
+import javax.swing.tree.TreePath;
 
 /**
  * The shared cross-view navigation actions: one vocabulary of "take me to this
@@ -66,6 +68,10 @@ public final class EntityActions {
     public enum Command {
         /** Show the label in the Targets tab, expanded and selected. */
         OPEN_TARGET("Open target"),
+        /** Select this exact checksum in the Configurations tab. */
+        VIEW_CONFIGURATION("View Configuration"),
+        /** Open the main-workspace BUILD file that owns this label. */
+        OPEN_BUILD_FILE("Open Build File…"),
         /** Show the entity in the dependency tree view (post-split name of today's Graph card). */
         OPEN_IN_TREE("Open in tree"),
         /** Show the entity in the dependency graph view (today: the Graph card). */
@@ -95,7 +101,9 @@ public final class EntityActions {
         /** Whether this command can act on {@code ref} at all. */
         public boolean appliesTo(EntityRef ref) {
             return switch (this) {
-                case OPEN_TARGET, SHOW_ACTIONS_FOR_LABEL, SHOW_EVENTS_FOR_LABEL ->
+                case VIEW_CONFIGURATION -> ref instanceof EntityRef.ConfigurationChecksum;
+                case OPEN_TARGET, OPEN_BUILD_FILE, SHOW_ACTIONS_FOR_LABEL,
+                        SHOW_EVENTS_FOR_LABEL ->
                         ref instanceof EntityRef.TargetLabel;
                 // The widening this switch was written expecting: the tree and
                 // the canvas take a target label as well as an action, because
@@ -253,6 +261,56 @@ public final class EntityActions {
                     return;
                 }
                 menu.show(table, event.getX(), event.getY());
+            }
+        });
+    }
+
+    /**
+     * Installs the same selection-first context menu on a tree. The resolver
+     * receives the already-materialized path and must only inspect its node
+     * value; it runs on the EDT and may not query or touch the filesystem.
+     */
+    public void installTreeMenu(
+            JTree tree,
+            java.util.function.Function<TreePath, List<EntityRef>> refsAtPath,
+            Set<Command> omit) {
+        Set<Command> omitted = omit.isEmpty() ? Set.of() : EnumSet.copyOf(omit);
+        installTreeMenu(tree, refsAtPath, path -> omitted);
+    }
+
+    /** Tree menu variant whose omissions can differ for package and leaf rows. */
+    public void installTreeMenu(
+            JTree tree,
+            java.util.function.Function<TreePath, List<EntityRef>> refsAtPath,
+            java.util.function.Function<TreePath, Set<Command>> omissionsAtPath) {
+        Objects.requireNonNull(tree, "tree");
+        Objects.requireNonNull(refsAtPath, "refsAtPath");
+        Objects.requireNonNull(omissionsAtPath, "omissionsAtPath");
+        tree.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent event) {
+                maybeShow(event);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent event) {
+                maybeShow(event);
+            }
+
+            private void maybeShow(MouseEvent event) {
+                if (!event.isPopupTrigger()) {
+                    return;
+                }
+                TreePath path = tree.getPathForLocation(event.getX(), event.getY());
+                if (path == null) {
+                    return;
+                }
+                tree.setSelectionPath(path);
+                Set<Command> omitted = omissionsAtPath.apply(path);
+                JPopupMenu menu = popupFor(refsAtPath.apply(path), omitted);
+                if (menu.getComponentCount() > 0) {
+                    menu.show(tree, event.getX(), event.getY());
+                }
             }
         });
     }

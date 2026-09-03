@@ -121,10 +121,71 @@ final class GraphLayoutServiceTest {
                 await(GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 2, 1));
 
         assertThat(rendered.extract().nodes()).contains(1, 2, 3);
-        assertThat(rendered.layout().kind()).isEqualTo(GraphLayout.Kind.RADIAL);
+        assertThat(rendered.layout().kind()).isEqualTo(GraphLayout.Kind.HIERARCHY);
         assertThat(rendered.layout().size()).isEqualTo(rendered.extract().nodes().size());
         assertThat(rendered.description()).contains("from a graph of 6");
         assertThat(rendered.isCluster()).isFalse();
+    }
+
+    @Test
+    @DisplayName("model preparation runs off EDT and returns to EDT")
+    void preparationKeepsLinearModelWorkOffTheEventThread() throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean workWasEdt =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.atomic.AtomicBoolean callbackWasEdt =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        CountDownLatch done = new CountDownLatch(1);
+
+        service.prepare(
+                () -> {
+                    workWasEdt.set(SwingUtilities.isEventDispatchThread());
+                    return 42;
+                },
+                value -> {
+                    callbackWasEdt.set(SwingUtilities.isEventDispatchThread());
+                    assertThat(value).isEqualTo(42);
+                    done.countDown();
+                },
+                failure -> done.countDown());
+
+        assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(workWasEdt).isFalse();
+        assertThat(callbackWasEdt).isTrue();
+    }
+
+    @Test
+    @DisplayName("a newer model preparation suppresses the stale preparation callback")
+    void stalePreparationDoesNotInstall() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch newestDone = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger staleCallbacks =
+                new java.util.concurrent.atomic.AtomicInteger();
+        AtomicReference<Integer> installed = new AtomicReference<>();
+
+        service.prepare(
+                () -> {
+                    started.countDown();
+                    assertThat(release.await(10, TimeUnit.SECONDS)).isTrue();
+                    return 1;
+                },
+                value -> staleCallbacks.incrementAndGet(),
+                failure -> staleCallbacks.incrementAndGet());
+        assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+
+        service.prepare(
+                () -> 2,
+                value -> {
+                    installed.set(value);
+                    newestDone.countDown();
+                },
+                failure -> newestDone.countDown());
+        release.countDown();
+
+        assertThat(newestDone.await(10, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> { });
+        assertThat(staleCallbacks).hasValue(0);
+        assertThat(installed).hasValue(2);
     }
 
     @Test
@@ -166,16 +227,18 @@ final class GraphLayoutServiceTest {
     @Test
     @DisplayName("changing only the layout is a different cache entry")
     void settingsArePartOfTheKey() throws Exception {
-        GraphLayoutService.Request radial =
+        GraphLayoutService.Request hierarchy =
                 GraphLayoutService.Request.around(GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 2);
 
-        GraphLayoutService.Rendered ringed = await(radial);
-        GraphLayoutService.Rendered layered = await(radial.withLayout(GraphLayout.Kind.LAYERED));
+        GraphLayoutService.Rendered tree = await(hierarchy);
+        GraphLayoutService.Rendered layered =
+                await(hierarchy.withLayout(GraphLayout.Kind.LAYERED));
 
         // Plan 13.7 says cached by query AND settings. The same neighbourhood
         // drawn two ways is two pictures, and a query-only key would hand back
         // the wrong one.
-        assertThat(layered).isNotSameAs(ringed);
+        assertThat(tree.layout().kind()).isEqualTo(GraphLayout.Kind.HIERARCHY);
+        assertThat(layered).isNotSameAs(tree);
         assertThat(layered.layout().kind()).isEqualTo(GraphLayout.Kind.LAYERED);
         assertThat(service.cachedCount()).isEqualTo(2);
     }
@@ -215,6 +278,22 @@ final class GraphLayoutServiceTest {
         assertThat(rendered.clustering().clusteredNodes()).isEqualTo(6);
         assertThat(rendered.description()).contains("covering all 6 actions");
         assertThat(rendered.layout().kind()).isEqualTo(GraphLayout.Kind.GRID);
+    }
+
+    @Test
+    @DisplayName("a raised group budget makes a previously refused grouping drawable")
+    void clusterLimitCanBeRaisedExplicitly() throws Exception {
+        GraphLayoutService.Request tight = GraphLayoutService.Request.clustered(
+                        GraphKind.DECLARED_ACTIONS, GraphClustering.By.PACKAGE)
+                .withClusterLimit(1);
+
+        GraphLayoutService.Rendered refused = await(tight);
+        GraphLayoutService.Rendered raised = await(tight.withClusterLimit(2));
+
+        assertThat(refused.refused()).isTrue();
+        assertThat(refused.description()).contains("2 groups").contains("more than the 1");
+        assertThat(raised.refused()).isFalse();
+        assertThat(raised.clustering().clusters()).hasSize(2);
     }
 
     @Test

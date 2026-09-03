@@ -176,6 +176,7 @@ public record MetricSeries(
             case BES_ENVELOPE -> "BES envelope";
             case EXECUTION_LOG -> "execution log";
             case PROFILE -> "trace profile";
+            case STARLARK_CPU_PROFILE -> "Starlark CPU profile";
             case AQUERY -> "aquery";
             case CQUERY -> "cquery";
             case QUERY -> "query";

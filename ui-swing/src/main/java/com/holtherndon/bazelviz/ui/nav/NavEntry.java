@@ -9,9 +9,9 @@ import java.util.Locale;
  * deliverable" lists in docs/product-plan.md section 24 — change them there
  * first, then here.
  *
- * <h2>Twelve entries, and not the plan's eleven</h2>
+ * <h2>Eighteen entries, and not the plan's eleven</h2>
  *
- * <p>Four departures from plan 17.1's list, all from use rather than from
+ * <p>The departures from plan 17.1's list came from use rather than from
  * design:
  *
  * <ul>
@@ -42,14 +42,36 @@ import java.util.Locale;
  *       card behind an embedded sub-tab, which hid the canvas behind a control
  *       nothing pointed at and made "open in graph" ambiguous between two
  *       different answers.
+ *   <li><b>Targets is two entries.</b> {@code TARGETS} keeps the build's
+ *       package-oriented top-level targets. {@code ALL_TARGETS} is the lazy,
+ *       fully-qualified label explorer, with configurations beneath a label.
+ *   <li><b>Configurations has its own entry.</b> Once cquery supplied effective
+ *       option sets, putting their detail and two-way comparison beneath one
+ *       target made the build-wide question impossible to ask.
+ *   <li><b>Critical Path has its own entry.</b> The Overview totals and Graph
+ *       overlay could show that a chain was long, but not put Bazel's reported
+ *       components beside the dependency-only lower bound or expose every
+ *       chain step for inspection.
+ *   <li><b>Starlark Profile has its own entry.</b> Sampled Starlark CPU call
+ *       stacks answer a source-level performance question that neither the
+ *       build timeline nor the action dependency graph represents.
+ *   <li><b>Repository and Terminal are workspace tools.</b> Both use the
+ *       explicitly selected local or SSH workspace, never an imported
+ *       session's recorded path. Terminal opens its shell when selected.
  * </ul>
  */
 public enum NavEntry {
     BUILD("Console", 2),
+    TERMINAL("Terminal", 10),
+    REPOSITORY("Browse Repository", 10),
     OVERVIEW("Overview", 3),
     TIMELINE("Timeline", 6),
+    CRITICAL_PATH("Critical Path", 8),
+    STARLARK_PROFILE("Starlark Profile", 10),
     ACTIONS("Actions", 3),
-    TARGETS("Targets", 3),
+    TARGETS("Top Level Targets", 3),
+    ALL_TARGETS("All Targets", 3),
+    CONFIGURATIONS("Configurations", 5),
     GRAPH("Graph", 7),
     TREE("Tree", 5),
     TESTS("Tests", 3),
@@ -78,6 +100,6 @@ public enum NavEntry {
 
     /** Stable CardLayout identifier for this entry's center card. */
     public String cardName() {
-        return name().toLowerCase(Locale.ROOT);
+        return name().toLowerCase(Locale.ROOT).replace("_", "");
     }
 }

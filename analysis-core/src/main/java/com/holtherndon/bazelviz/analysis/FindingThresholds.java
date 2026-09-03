@@ -37,7 +37,7 @@ package com.holtherndon.bazelviz.analysis;
  * @param highInputBytes an action reading more than this
  * @param highOutputBytes an action producing more than this
  * @param repeatedAttempts attempts at or above this on one action
- * @param graphCoverageFloor below this share of the action graph correlated,
+ * @param graphCorrelationFloor below this share of the action graph correlated,
  *     graph-derived findings are unreliable and one says so
  * @param minimumGroupActions a group smaller than this is not reported at all —
  *     a rate over three actions is noise wearing a percentage sign
@@ -56,7 +56,7 @@ public record FindingThresholds(
         long highInputBytes,
         long highOutputBytes,
         long repeatedAttempts,
-        double graphCoverageFloor,
+        double graphCorrelationFloor,
         long minimumGroupActions) {
 
     /** The defaults, all of them round numbers rather than measured constants. */
@@ -75,7 +75,7 @@ public record FindingThresholds(
                 /* highInputBytes= */ 512L * 1024 * 1024,
                 /* highOutputBytes= */ 256L * 1024 * 1024,
                 /* repeatedAttempts= */ 2,
-                /* graphCoverageFloor= */ 0.5,
+                /* graphCorrelationFloor= */ 0.5,
                 /* minimumGroupActions= */ 10);
     }
 }

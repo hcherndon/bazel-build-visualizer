@@ -139,6 +139,8 @@ public final class SessionManager {
     }
 
     private void publish(SessionStateChange change) {
+        log.info("session {} state {} -> {} ({}) at {}",
+                change.sessionId(), change.from(), change.to(), change.reason(), change.sessionRoot());
         for (SessionStateListener listener : listeners) {
             try {
                 listener.sessionStateChanged(change);
@@ -177,6 +179,8 @@ public final class SessionManager {
             throws IOException {
         Objects.requireNonNull(sessionId, "sessionId");
         ManagedSessionLayout layout = ManagedSessionLayout.forSession(sessionsRoot, sessionId);
+        log.debug("creating session {} at {} with {} capture directorie(s)",
+                sessionId, layout.root(), directories.size());
         if (layout.isManagedSession()) {
             throw new SessionFormatException("a session already exists at " + layout.root());
         }
@@ -222,6 +226,8 @@ public final class SessionManager {
     private ManagedSession open(Path sessionRoot, boolean breakStaleLock) throws IOException {
         ManagedSessionLayout layout = ManagedSessionLayout.at(sessionRoot);
         SessionManifest manifest = readManifest(layout);
+        log.debug("opening session {} at {} (break stale lock: {})",
+                manifest.sessionId(), layout.root(), breakStaleLock);
         SessionLock lock = SessionLock.acquire(layout, ownerDescription(), breakStaleLock, clock.nowMicros(), host);
         return new ManagedSession(layout, codec, lock, manifest, publisher, clock);
     }
@@ -293,6 +299,8 @@ public final class SessionManager {
                         sessionRoot, manifest.sessionId(), manifest.state(), lockState));
             }
         }
+        log.debug("interrupted-session scan under {} found {} candidate(s)",
+                sessionsRoot, candidates.size());
         return List.copyOf(candidates);
     }
 
@@ -339,6 +347,8 @@ public final class SessionManager {
 
         RecoveryReport report = new RecoveryReport(
                 layout.root(), session.id(), found, session.state(), lockState.status(), decision, warning);
+        log.info("recovered session {} from {} to {} using {} (lock {})",
+                session.id(), found, session.state(), decision, lockState.status());
         if (decision == RecoveryDecision.MARK_INCOMPLETE) {
             session.close();
             return new Recovered(report, Optional.empty());

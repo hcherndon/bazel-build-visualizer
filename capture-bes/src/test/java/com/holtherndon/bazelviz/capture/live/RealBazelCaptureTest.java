@@ -13,6 +13,7 @@ import com.holtherndon.bazelviz.runner.proc.CancellationMode;
 import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.events.EventQueries;
+import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import com.holtherndon.bazelviz.testsupport.bazel.BazelBinary;
 import com.holtherndon.bazelviz.testsupport.bazel.BazelWorkspaceFixture;
 import java.nio.file.Files;
@@ -114,6 +115,11 @@ class RealBazelCaptureTest {
                 .anyMatch(flag -> flag.startsWith("--bes_backend="));
         assertThat(manifest.bazelVersion()).isPresent();
         assertThat(manifest.eventCount().orElse(-1)).isEqualTo(summary.normalized());
+        assertThat(manifest.schemaVersion()).hasValue(MigrationRunner.LATEST_VERSION);
+        try (SessionDatabase database = SessionDatabase.open(layout.databaseFile())) {
+            assertThat(MigrationRunner.currentVersion(database.writerConnection()))
+                    .isEqualTo(manifest.schemaVersion().orElseThrow());
+        }
     }
 
     @Test

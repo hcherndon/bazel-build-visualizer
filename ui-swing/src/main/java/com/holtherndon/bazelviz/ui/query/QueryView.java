@@ -5,6 +5,7 @@ import com.holtherndon.bazelviz.storage.query.ReadOnlySql;
 import com.holtherndon.bazelviz.storage.query.SchemaTable;
 import com.holtherndon.bazelviz.storage.query.SqlNotAllowedException;
 import com.holtherndon.bazelviz.storage.query.TempViewDefinition;
+import com.holtherndon.bazelviz.ui.lifecycle.ExecutorClose;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
@@ -15,6 +16,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
@@ -69,7 +72,7 @@ import org.slf4j.LoggerFactory;
  * guarantees, lifted only for the one statement shape ({@code CREATE TEMP
  * VIEW}) that writes the connection's own temp schema and nothing else.
  */
-public final class QueryView extends JPanel {
+public final class QueryView extends JPanel implements AutoCloseable {
 
     private static final long serialVersionUID = 1L;
 
@@ -147,9 +150,11 @@ public final class QueryView extends JPanel {
      * session, the library files), and the EDT is not where that happens.
      */
     private final ExecutorService io;
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
 
     private SessionSource source;
     private QueryLibrary library;
+    private volatile boolean closed;
 
     /**
      * Where the tabs' shared column state lives once {@link #attachColumnState}
@@ -181,12 +186,16 @@ public final class QueryView extends JPanel {
     };
 
     public QueryView() {
-        super(new BorderLayout());
-        this.io = Executors.newSingleThreadExecutor(runnable -> {
+        this(Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "bbv-query-library");
             thread.setDaemon(true);
             return thread;
-        });
+        }));
+    }
+
+    QueryView(ExecutorService io) {
+        super(new BorderLayout());
+        this.io = Objects.requireNonNull(io, "io");
         this.libraryPanel = new QueryLibraryPanel(new PanelHost());
 
         PlainText.disableHtml(tabNotice);
@@ -242,6 +251,9 @@ public final class QueryView extends JPanel {
      */
     public void attachLibrary(Path settingsDirectory) {
         Objects.requireNonNull(settingsDirectory, "settingsDirectory");
+        if (closed) {
+            return;
+        }
         this.library = new QueryLibrary(settingsDirectory);
         QueryLibrary lib = this.library;
         io.execute(() -> {
@@ -273,6 +285,9 @@ public final class QueryView extends JPanel {
     /** Opens a session in every tab. Returns immediately. */
     public void openSession(SessionSource newSource) {
         Objects.requireNonNull(newSource, "newSource");
+        if (closed) {
+            return;
+        }
         source = newSource;
         for (QueryTab tab : allTabs()) {
             tab.openSession(newSource);
@@ -281,11 +296,65 @@ public final class QueryView extends JPanel {
 
     /** Lets go of the session in every tab, off the EDT. */
     public void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches every tab immediately and completes after all tab readers have stopped. */
+    public CompletionStage<Void> closeSessionAsync() {
         source = null;
+        List<CompletableFuture<Void>> closes = new ArrayList<>();
         for (QueryTab tab : allTabs()) {
-            tab.closeSession();
+            closes.add(tab.closeSessionAsync().toCompletableFuture());
         }
         schema.clear();
+        return CompletableFuture.allOf(closes.toArray(CompletableFuture[]::new));
+    }
+
+    @Override
+    public void close() {
+        closeAsync();
+    }
+
+    /**
+     * Stops this view permanently and completes after accepted query-library writes have drained.
+     *
+     * <p>Tab connections begin their existing asynchronous cancellation immediately. Library
+     * callbacks are invalidated before its executor is shut down, and executor waiting happens on
+     * a virtual thread rather than the EDT.
+     */
+    public CompletionStage<Void> closeAsync() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::beginClose);
+            return closeCompletion;
+        }
+        beginClose();
+        return closeCompletion;
+    }
+
+    private void beginClose() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        library = null;
+        source = null;
+        schema.clear();
+        List<CompletableFuture<Void>> tabCloses = new ArrayList<>();
+        for (QueryTab tab : allTabs()) {
+            tabCloses.add(tab.closeAsync().toCompletableFuture());
+        }
+        CompletionStage<Void> tabsClose =
+                CompletableFuture.allOf(tabCloses.toArray(CompletableFuture[]::new));
+        CompletionStage<Void> libraryClose = ExecutorClose.drainAsync(io, "bbv-query-library");
+        CompletableFuture.allOf(
+                        tabsClose.toCompletableFuture(), libraryClose.toCompletableFuture())
+                .whenComplete((ignored, failure) -> {
+                    if (failure == null) {
+                        closeCompletion.complete(null);
+                    } else {
+                        closeCompletion.completeExceptionally(failure);
+                    }
+                });
     }
 
     // -------------------------------------------------------------------- tabs
@@ -322,7 +391,7 @@ public final class QueryView extends JPanel {
             return;
         }
         tabNotice.setText(" ");
-        selected.closeSession();
+        selected.closeAsync();
         tabs.remove(selected);
         newTabButton.setEnabled(tabs.getTabCount() < MAX_TABS);
         QueryTab now = selectedTab();
@@ -390,21 +459,28 @@ public final class QueryView extends JPanel {
             List<QueryLibrary.SavedQuery> queries = lib.queries();
             List<QueryLibrary.SavedView> views = lib.views();
             SwingUtilities.invokeLater(() -> {
-                if (library == lib) {
+                if (!closed && library == lib) {
                     libraryPanel.showQueries(queries);
                     libraryPanel.showViews(views);
                 }
             });
         } catch (RuntimeException failure) {
             log.warn("could not read the query library", failure);
-            SwingUtilities.invokeLater(() -> libraryPanel.showProblem(
-                    "The library could not be read: " + failure.getMessage()));
+            SwingUtilities.invokeLater(() -> {
+                if (!closed && library == lib) {
+                    libraryPanel.showProblem(
+                            "The library could not be read: " + failure.getMessage());
+                }
+            });
         }
     }
 
     private void afterViewsChanged(QueryLibrary lib) {
         refreshLibraryLists(lib);
         SwingUtilities.invokeLater(() -> {
+            if (closed || library != lib) {
+                return;
+            }
             for (QueryTab tab : allTabs()) {
                 tab.reapplySavedViews();
             }
@@ -479,6 +555,9 @@ public final class QueryView extends JPanel {
 
         private void onLibrary(
                 Consumer<QueryLibrary> action, Consumer<String> problem, boolean viewsChanged) {
+            if (closed) {
+                return;
+            }
             QueryLibrary lib = library;
             if (lib == null) {
                 problem.accept("No settings directory is attached, so nothing can be"
@@ -489,8 +568,11 @@ public final class QueryView extends JPanel {
                 try {
                     action.accept(lib);
                 } catch (RuntimeException failure) {
-                    SwingUtilities.invokeLater(() -> problem.accept(
-                            String.valueOf(failure.getMessage())));
+                    SwingUtilities.invokeLater(() -> {
+                        if (!closed && library == lib) {
+                            problem.accept(String.valueOf(failure.getMessage()));
+                        }
+                    });
                     return;
                 }
                 if (viewsChanged) {

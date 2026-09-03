@@ -35,6 +35,8 @@ import java.util.Optional;
  */
 public final class GraphIndexBuilder {
 
+    private static final String DECLARED_ACTIONS_SOURCE_KIND = "DECLARED_ACTIONS";
+
     /**
      * The {@code graph_indexes.kind} under which the configured-target label
      * graph is registered.
@@ -128,6 +130,35 @@ public final class GraphIndexBuilder {
         this.connection = connection;
         this.directory = directory;
         this.clock = clock;
+    }
+
+    /**
+     * Removes every index derived from the declared-action import.
+     *
+     * <p>Called before a replacement aquery file is parsed. The CSR files may
+     * remain until the next atomic rebuild, but without registry rows no reader
+     * can mistake those files for the replacement graph if parsing or rebuilding
+     * later fails.
+     */
+    public static void invalidateActionIndexes(Connection connection) throws SQLException {
+        invalidate(connection, EdgeDerivation.DECLARED.name(), EdgeDerivation.OBSERVED.name());
+    }
+
+    /** See {@link #invalidateActionIndexes}; this is the cquery label-graph form. */
+    public static void invalidateConfiguredTargetIndexes(Connection connection)
+            throws SQLException {
+        invalidate(connection, CONFIGURED_TARGETS_KIND);
+    }
+
+    private static void invalidate(Connection connection, String... kinds) throws SQLException {
+        String placeholders = String.join(", ", java.util.Collections.nCopies(kinds.length, "?"));
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM graph_indexes WHERE kind IN (" + placeholders + ")")) {
+            for (int i = 0; i < kinds.length; i++) {
+                statement.setString(i + 1, kinds[i]);
+            }
+            statement.executeUpdate();
+        }
     }
 
     /**
@@ -265,6 +296,7 @@ public final class GraphIndexBuilder {
     private void register(
             String kind, String direction, Path file, CsrGraph graph, long checksum)
             throws SQLException {
+        Long sourceId = sourceIdFor(kind);
         try (PreparedStatement statement = connection.prepareStatement(REGISTER)) {
             statement.setString(1, kind);
             statement.setString(2, direction);
@@ -274,9 +306,29 @@ public final class GraphIndexBuilder {
             statement.setLong(6, graph.edgeCount());
             statement.setString(7, Long.toHexString(checksum));
             statement.setLong(8, clock.getAsLong());
-            statement.setNull(9, java.sql.Types.INTEGER);
+            if (sourceId == null) {
+                statement.setNull(9, java.sql.Types.INTEGER);
+            } else {
+                statement.setLong(9, sourceId);
+            }
             statement.executeUpdate();
         }
+    }
+
+    private Long sourceIdFor(String indexKind) throws SQLException {
+        String sourceKind = sourceKindFor(indexKind);
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT id FROM graph_sources WHERE kind = ?")) {
+            statement.setString(1, sourceKind);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? rows.getLong(1) : null;
+            }
+        }
+    }
+
+    private static String sourceKindFor(String indexKind) {
+        return CONFIGURED_TARGETS_KIND.equals(indexKind)
+                ? CONFIGURED_TARGETS_KIND : DECLARED_ACTIONS_SOURCE_KIND;
     }
 
     /**
@@ -300,12 +352,21 @@ public final class GraphIndexBuilder {
     private Optional<CsrGraph> load(String kind, String direction)
             throws SQLException, IOException {
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT file_name, node_count, edge_count, checksum FROM graph_indexes"
-                        + " WHERE kind = ? AND direction = ?")) {
+                "SELECT gi.file_name, gi.node_count, gi.edge_count, gi.checksum,"
+                        + " gi.source_id, gs.kind AS source_kind, gs.state AS source_state"
+                        + " FROM graph_indexes gi"
+                        + " LEFT JOIN graph_sources gs ON gs.id = gi.source_id"
+                        + " WHERE gi.kind = ? AND gi.direction = ?")) {
             statement.setString(1, kind);
             statement.setString(2, direction);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) {
+                    return Optional.empty();
+                }
+                rows.getLong("source_id");
+                if (!rows.wasNull()
+                        && (!sourceKindFor(kind).equals(rows.getString("source_kind"))
+                                || !"SUCCEEDED".equals(rows.getString("source_state")))) {
                     return Optional.empty();
                 }
                 Path file = directory.resolve(rows.getString("file_name"));

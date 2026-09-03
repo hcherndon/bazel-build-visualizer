@@ -6,6 +6,7 @@ import com.holtherndon.bazelviz.core.domain.TargetOutcome;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetRow;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -87,6 +88,13 @@ class TargetInspectionTest {
         // is said out loud rather than left to a colour.
         assertThat(valueOf(inspection, "default"))
                 .hasValueSatisfying(text -> assertThat(text).contains("incomplete"));
+    }
+
+    @Test
+    @DisplayName("a configured target carries its checksum into shared context actions")
+    void configurationIsNavigable() {
+        assertThat(TargetInspection.of(built(), List.of(), List.of()).refs())
+                .contains(new EntityRef.ConfigurationChecksum("cfg-1"));
     }
 
     private static TargetRow built() {

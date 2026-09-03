@@ -109,9 +109,11 @@ final class LaneGroupingTest {
     void everythingIsWorded() {
         for (LaneGrouping.By by : LaneGrouping.By.values()) {
             assertThat(by.displayName()).as("%s", by).isNotBlank().doesNotContain("_");
+            assertThat(by.toString()).isEqualTo(by.displayName());
         }
         for (LaneGrouping.SortBy sortBy : LaneGrouping.SortBy.values()) {
             assertThat(sortBy.displayName()).as("%s", sortBy).isNotBlank().doesNotContain("_");
+            assertThat(sortBy.toString()).isEqualTo(sortBy.displayName());
         }
     }
 

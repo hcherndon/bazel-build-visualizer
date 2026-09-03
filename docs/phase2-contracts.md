@@ -8,14 +8,14 @@ just this document — the code is authoritative and this page explains it:
 
 | Contract | Implemented in |
 |---|---|
-| Structured command model | `bazel-runner` `runner.command.BazelCommand` |
-| Environment inheritance | `bazel-runner` `runner.command.EnvironmentInheritance` |
-| Executable identity | `bazel-runner` `runner.exec.BazelExecutable` |
-| Workspace detection result | `bazel-runner` `runner.workspace.WorkspaceInfo` |
-| Capability vocabulary | `bazel-runner` `runner.caps.Capability`, `CapabilityStatus`, `FlagSpec`, `BazelCapabilities` |
-| Capture presets | `bazel-runner` `runner.plan.CapturePreset` |
-| Instrumentation plan | `bazel-runner` `runner.plan.InstrumentationPlan` and the `plan` package |
-| Launch and cancellation | `bazel-runner` `runner.proc.LaunchRequest`, `CancellationMode`, `ConsoleSink`, `ProcessOutcome` |
+| Structured command model | `runner` `runner.command.BazelCommand` |
+| Environment inheritance | `runner` `runner.command.EnvironmentInheritance` |
+| Executable identity | `runner` `runner.exec.BazelExecutable` |
+| Workspace detection result | `runner` `runner.workspace.WorkspaceInfo` |
+| Capability vocabulary | `runner` `runner.caps.Capability`, `CapabilityStatus`, `FlagSpec`, `BazelCapabilities` |
+| Capture presets | `runner` `runner.plan.CapturePreset` |
+| Instrumentation plan | `runner` `runner.plan.InstrumentationPlan` and the `plan` package |
+| Launch and cancellation | `runner` `runner.launch.LaunchRequest`; `runner.proc.CancellationMode`, `ConsoleSink`, `ProcessOutcome` |
 | BES endpoint and stream identity | `capture-bes` `capture.bes.BesEndpoint`, `BesStreamKey` |
 | BES stream state | `capture-bes` `capture.bes.BesStreamState` |
 | Raw handoff | `capture-bes` `capture.bes.RawEventSink`, `RawBesEvent` |
@@ -230,7 +230,7 @@ writing the manifest on the cancellation path, not only on the happy path.
 - `BazelCommand.toArgv()` emits argv elements; nothing is shell-quoted, and
   shell mode is a separate explicit flag (plan 22.3).
 - Imported session commands are display-only and are never executed (plan 22.3,
-  rule 15). Nothing in `bazel-runner` reads a command out of a session.
+  rule 15). Nothing in `runner` reads a command out of a session.
 
 ## 10. What Phase 2 does not do
 

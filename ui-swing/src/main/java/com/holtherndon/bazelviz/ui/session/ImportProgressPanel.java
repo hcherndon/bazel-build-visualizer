@@ -1,7 +1,7 @@
 package com.holtherndon.bazelviz.ui.session;
 
 import com.holtherndon.bazelviz.capture.file.importer.ImportPhase;
-import com.holtherndon.bazelviz.ui.events.EventValueFormat;
+import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.GridLayout;

@@ -6,12 +6,14 @@ import com.holtherndon.bazelviz.analysis.FindingRules;
 import com.holtherndon.bazelviz.analysis.FindingThresholds;
 import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
 import com.holtherndon.bazelviz.storage.metrics.SessionMetrics;
+import com.holtherndon.bazelviz.ui.lifecycle.ExecutorClose;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import javax.swing.SwingUtilities;
@@ -44,7 +46,10 @@ public final class MetricsService implements AutoCloseable {
     private final AtomicLong generation = new AtomicLong();
 
     private final List<Consumer<Result>> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<Consumer<Throwable>> errorListeners =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
     private final FindingThresholds thresholds;
+    private CompletableFuture<Void> closeStage;
 
     public MetricsService(SessionSource source) {
         this(source, SwingUtilities::invokeLater, FindingThresholds.defaults());
@@ -82,6 +87,11 @@ public final class MetricsService implements AutoCloseable {
         listeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
+    /** Observes a failed collection on the UI thread, for passive sibling views. */
+    public void addErrorListener(Consumer<Throwable> listener) {
+        errorListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
     /**
      * Collects the whole catalog and runs every rule.
      *
@@ -105,6 +115,13 @@ public final class MetricsService implements AutoCloseable {
                     return;
                 }
                 onEventThread.accept(() -> {
+                    // Closing or replacing a service can happen after this
+                    // Runnable was queued but before the UI thread reaches it.
+                    // Check at delivery time too, or an old session can
+                    // repopulate views that have already been cleared.
+                    if (generation.get() != mine) {
+                        return;
+                    }
                     onDone.accept(result);
                     for (Consumer<Result> listener : listeners) {
                         listener.accept(result);
@@ -112,7 +129,14 @@ public final class MetricsService implements AutoCloseable {
                 });
             } catch (Exception failure) {
                 if (generation.get() == mine) {
-                    onEventThread.accept(() -> onError.accept(failure));
+                    onEventThread.accept(() -> {
+                        if (generation.get() == mine) {
+                            onError.accept(failure);
+                            for (Consumer<Throwable> listener : errorListeners) {
+                                listener.accept(failure);
+                            }
+                        }
+                    });
                 }
             }
         });
@@ -125,13 +149,16 @@ public final class MetricsService implements AutoCloseable {
 
     @Override
     public void close() {
+        closeAsync().toCompletableFuture().join();
+    }
+
+    /** Cancels collection without blocking the EDT and reports incomplete teardown. */
+    public synchronized CompletionStage<Void> closeAsync() {
         cancel();
-        worker.shutdownNow();
-        try {
-            worker.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
+        if (closeStage == null) {
+            closeStage = ExecutorClose.cancelAsync(worker, "bbv-metrics").toCompletableFuture();
         }
+        return closeStage;
     }
 
     /**

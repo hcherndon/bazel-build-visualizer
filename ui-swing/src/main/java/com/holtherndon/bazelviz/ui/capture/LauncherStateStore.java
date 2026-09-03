@@ -10,6 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import javax.swing.SwingUtilities;
@@ -27,7 +29,9 @@ import org.slf4j.LoggerFactory;
 public final class LauncherStateStore {
 
     private static final Logger log = LoggerFactory.getLogger(LauncherStateStore.class);
-    private static final String FORMAT = "1";
+    private static final String FORMAT = "3";
+    private static final String LEGACY_FORMAT_1 = "1";
+    private static final String LEGACY_FORMAT_2 = "2";
 
     private final Path file;
     private final Replacer replacer;
@@ -56,7 +60,10 @@ public final class LauncherStateStore {
         try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             Properties values = new Properties();
             values.load(reader);
-            if (!FORMAT.equals(values.getProperty("format"))) {
+            String format = values.getProperty("format");
+            if (!FORMAT.equals(format)
+                    && !LEGACY_FORMAT_1.equals(format)
+                    && !LEGACY_FORMAT_2.equals(format)) {
                 throw new IllegalArgumentException("unknown launcher settings format");
             }
             CapturePreset preset = CapturePreset.valueOf(required(values, "preset"));
@@ -71,12 +78,21 @@ public final class LauncherStateStore {
             for (int i = 0; i < count; i++) {
                 history.add(required(values, "history." + i));
             }
+            boolean hasRemoteSettings = !LEGACY_FORMAT_1.equals(format);
+            List<SshConnectionProfile> profiles = FORMAT.equals(format)
+                    ? readProfiles(values) : List.of();
             return new State(
                     required(values, "workspace"),
                     required(values, "bazel"),
                     preset,
                     required(values, "command"),
-                    history);
+                    history,
+                    hasRemoteSettings
+                            ? ExecutionHost.valueOf(required(values, "executionHost"))
+                            : ExecutionHost.LOCAL,
+                    hasRemoteSettings ? required(values, "sshDestination") : "",
+                    hasRemoteSettings ? required(values, "sshPort") : "",
+                    profiles);
         } catch (IOException | RuntimeException unreadable) {
             log.warn("launcher settings at {} could not be read; using defaults", file, unreadable);
             return State.defaults();
@@ -102,6 +118,18 @@ public final class LauncherStateStore {
             values.setProperty("bazel", state.bazelExecutable());
             values.setProperty("preset", state.preset().name());
             values.setProperty("command", state.command());
+            values.setProperty("executionHost", state.executionHost().name());
+            values.setProperty("sshDestination", state.sshDestination());
+            values.setProperty("sshPort", state.sshPort());
+            values.setProperty("sshProfiles.count", Integer.toString(state.sshProfiles().size()));
+            for (int i = 0; i < state.sshProfiles().size(); i++) {
+                SshConnectionProfile profile = state.sshProfiles().get(i);
+                String prefix = "sshProfiles." + i + ".";
+                values.setProperty(prefix + "destination", profile.destination());
+                values.setProperty(prefix + "port", profile.port());
+                values.setProperty(prefix + "workspace", profile.workingDirectory());
+                values.setProperty(prefix + "bazel", profile.bazelExecutable());
+            }
             values.setProperty("history.count", Integer.toString(state.history().size()));
             for (int i = 0; i < state.history().size(); i++) {
                 values.setProperty("history." + i, state.history().get(i));
@@ -149,9 +177,43 @@ public final class LauncherStateStore {
         return value;
     }
 
+    private static List<SshConnectionProfile> readProfiles(Properties values) {
+        int count = Integer.parseInt(required(values, "sshProfiles.count"));
+        if (count < 0 || count > SshConnectionProfile.MAX_SAVED_PROFILES) {
+            throw new IllegalArgumentException("invalid SSH profile count " + count);
+        }
+        java.util.ArrayList<SshConnectionProfile> profiles = new java.util.ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            String prefix = "sshProfiles." + i + ".";
+            profiles.add(new SshConnectionProfile(
+                    required(values, prefix + "destination"),
+                    required(values, prefix + "port"),
+                    required(values, prefix + "workspace"),
+                    required(values, prefix + "bazel")));
+        }
+        return List.copyOf(profiles);
+    }
+
     private static void requireBackgroundThread() {
         if (SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("launcher settings I/O must not run on the EDT");
+        }
+    }
+
+    /** Where the requested command should run. */
+    public enum ExecutionHost {
+        LOCAL("This computer"),
+        SSH("SSH host");
+
+        private final String displayName;
+
+        ExecutionHost(String displayName) {
+            this.displayName = displayName;
+        }
+
+        @Override
+        public String toString() {
+            return displayName;
         }
     }
 
@@ -161,16 +223,57 @@ public final class LauncherStateStore {
             String bazelExecutable,
             CapturePreset preset,
             String command,
-            List<String> history) {
+            List<String> history,
+            ExecutionHost executionHost,
+            String sshDestination,
+            String sshPort,
+            List<SshConnectionProfile> sshProfiles) {
 
         public State {
             workspace = Objects.requireNonNull(workspace, "workspace");
             bazelExecutable = Objects.requireNonNull(bazelExecutable, "bazelExecutable");
             preset = Objects.requireNonNull(preset, "preset");
             command = Objects.requireNonNull(command, "command");
+            executionHost = Objects.requireNonNull(executionHost, "executionHost");
+            sshDestination = Objects.requireNonNull(sshDestination, "sshDestination");
+            sshPort = Objects.requireNonNull(sshPort, "sshPort");
+            Map<String, SshConnectionProfile> uniqueProfiles = new LinkedHashMap<>();
+            for (SshConnectionProfile profile : Objects.requireNonNull(
+                    sshProfiles, "sshProfiles")) {
+                uniqueProfiles.putIfAbsent(profile.key(), profile);
+                if (uniqueProfiles.size() == SshConnectionProfile.MAX_SAVED_PROFILES) {
+                    break;
+                }
+            }
+            sshProfiles = List.copyOf(uniqueProfiles.values());
             LauncherHistory normalized = new LauncherHistory();
             normalized.replaceNewestFirst(Objects.requireNonNull(history, "history"));
             history = normalized.entries();
+        }
+
+        /** Compatibility constructor for local-only callers and older tests. */
+        public State(
+                String workspace,
+                String bazelExecutable,
+                CapturePreset preset,
+                String command,
+                List<String> history) {
+            this(workspace, bazelExecutable, preset, command, history,
+                    ExecutionHost.LOCAL, "", "", List.of());
+        }
+
+        /** Compatibility constructor from the first remote-settings format. */
+        public State(
+                String workspace,
+                String bazelExecutable,
+                CapturePreset preset,
+                String command,
+                List<String> history,
+                ExecutionHost executionHost,
+                String sshDestination,
+                String sshPort) {
+            this(workspace, bazelExecutable, preset, command, history,
+                    executionHost, sshDestination, sshPort, List.of());
         }
 
         public static State defaults() {
@@ -178,6 +281,10 @@ public final class LauncherStateStore {
                     System.getProperty("user.dir", ""),
                     "bazel",
                     CapturePreset.defaultPreset(),
+                    "",
+                    List.of(),
+                    ExecutionHost.LOCAL,
+                    "",
                     "",
                     List.of());
         }

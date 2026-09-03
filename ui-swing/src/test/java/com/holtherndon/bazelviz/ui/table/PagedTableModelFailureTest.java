@@ -88,6 +88,8 @@ final class PagedTableModelFailureTest {
                 .isEqualTo(PagedTableModel.ERROR_PLACEHOLDER);
         assertThat(model.failedFetchCount()).isEqualTo(1);
         assertThat(model.lastFailure()).isInstanceOf(IllegalStateException.class);
+        assertThat(model.isPageFailed(0)).isTrue();
+        assertThat(model.isPageFailed(1)).isFalse();
     }
 
     @Test
@@ -126,6 +128,7 @@ final class PagedTableModelFailureTest {
 
         source.failing = false;
         SwingUtilities.invokeAndWait(model::retryFailedPages);
+        assertThat(model.isPageFailed(0)).isFalse();
 
         assertThat(model.getValueAt(0, 0)).isEqualTo(PagedTableModel.PLACEHOLDER);
         executor.runAll();

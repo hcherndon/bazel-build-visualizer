@@ -10,6 +10,7 @@ import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
 import com.holtherndon.bazelviz.storage.entities.ErrorRow;
+import com.holtherndon.bazelviz.storage.entities.ConfigurationQueries;
 import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetRow;
@@ -96,6 +97,26 @@ public interface EntityReader extends AutoCloseable {
      */
     List<TargetRow> targetsByLabel(String label);
 
+    /** Exact distinct-label count in the BEP top-level target set. */
+    long topLevelTargetLabelCount();
+
+    /** Top-level labels for the flat view, keyset-paged alphabetically. */
+    List<String> firstTopLevelTargetLabels(int limit);
+
+    List<String> topLevelTargetLabelsAfter(String label, int limit);
+
+    /** Exact distinct-label count behind the All Targets explorer. */
+    long targetLabelCount();
+
+    /** Distinct fully-qualified labels, keyset-paged for incremental browsing. */
+    List<TargetQueries.LabelSummary> firstTargetLabels(int limit);
+
+    List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit);
+
+    List<TargetQueries.ConfiguredTarget> configuredTargetsByLabel(String label);
+
+    Optional<TargetQueries.ConfiguredSource> configuredTargetSource();
+
     Optional<TargetRow> target(long id);
 
     /** A target's tags, each carrying the event that supplied it. */
@@ -103,6 +124,29 @@ public interface EntityReader extends AutoCloseable {
 
     /** A configured target's output groups, including their incomplete flags. */
     List<TargetQueries.OutputGroup> outputGroups(long configuredTargetId);
+
+    // --- configurations --------------------------------------------------
+
+    long configurationCount();
+
+    List<ConfigurationQueries.Summary> configurations(long offset, int limit);
+
+    Optional<ConfigurationQueries.Summary> configuration(String checksum);
+
+    /** Zero-based position in the checksum-ordered configuration list. */
+    OptionalLong configurationPosition(String checksum);
+
+    Optional<ConfigurationQueries.Source> configurationSource();
+
+    long configurationValueCount(String checksum);
+
+    List<ConfigurationQueries.Value> configurationValues(
+            String checksum, long offset, int limit);
+
+    long configurationDifferenceCount(String baseline, String candidate);
+
+    List<ConfigurationQueries.Difference> configurationDifferences(
+            String baseline, String candidate, long offset, int limit);
 
     // --- tests ------------------------------------------------------------
 

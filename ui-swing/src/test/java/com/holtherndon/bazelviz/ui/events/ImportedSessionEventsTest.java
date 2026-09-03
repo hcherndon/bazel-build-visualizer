@@ -68,6 +68,13 @@ class ImportedSessionEventsTest {
             assertThat(opened.info().state())
                     .isIn(SessionState.READY, SessionState.READY_WITH_WARNINGS);
             assertThat(opened.info().isPartial()).isFalse();
+            // A file-only import has no live-capture paths in its manifest.
+            // The source recovers both from BuildStarted so label and log
+            // actions can still resolve files on the machine that built it.
+            assertThat(opened.info().workingDirectory())
+                    .contains(Path.of("/home/builder/workspace"));
+            assertThat(opened.info().workspaceRoot())
+                    .contains(Path.of("/home/builder/workspace"));
 
             SessionReader pageReader = opened.openReader();
             EventRowSource rows = EventRowSource.open(pageReader, PAGE_SIZE);

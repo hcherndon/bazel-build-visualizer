@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.util.List;
 
 /**
@@ -34,6 +35,11 @@ public final class TargetInspection {
                 .subtitle(target.outcome().map(Enum::name)
                         .orElse(target.analysisOutcome().name() + ", never completed"))
                 .sourceEvent(target.bepEventId());
+        builder.ref(new EntityRef.TargetLabel(target.label()));
+        target.configurationId().ifPresent(checksum ->
+                builder.ref(new EntityRef.ConfigurationChecksum(checksum)));
+        target.bepEventId().ifPresent(eventId ->
+                builder.ref(new EntityRef.EventId(eventId)));
 
         builder.section("Target")
                 .field("Label", target.label())

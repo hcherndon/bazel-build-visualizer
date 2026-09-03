@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 import java.awt.GraphicsEnvironment;
+import java.awt.event.InputEvent;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeAll;
@@ -100,10 +101,12 @@ final class TimelineLiveBandTest {
         // The user pans: following turns off and the transform is theirs.
         java.awt.event.MouseEvent press = new java.awt.event.MouseEvent(
                 view.canvasForTest(), java.awt.event.MouseEvent.MOUSE_PRESSED,
-                0, 0, 500, 10, 1, false);
+                0, InputEvent.BUTTON1_DOWN_MASK, 500, 10, 1, false,
+                java.awt.event.MouseEvent.BUTTON1);
         java.awt.event.MouseEvent drag = new java.awt.event.MouseEvent(
                 view.canvasForTest(), java.awt.event.MouseEvent.MOUSE_DRAGGED,
-                0, 0, 450, 10, 1, false);
+                0, InputEvent.BUTTON1_DOWN_MASK, 450, 10, 1, false,
+                java.awt.event.MouseEvent.NOBUTTON);
         view.canvasForTest().getMouseListeners()[0].mousePressed(press);
         view.canvasForTest().getMouseMotionListeners()[0].mouseDragged(drag);
         TimelineTransform navigated = view.viewport().orElseThrow().transform();

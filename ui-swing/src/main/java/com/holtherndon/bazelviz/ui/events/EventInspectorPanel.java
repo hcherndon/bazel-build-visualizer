@@ -1,9 +1,14 @@
 package com.holtherndon.bazelviz.ui.events;
 
+import com.holtherndon.bazelviz.runner.files.ExecutionPath;
+import com.holtherndon.bazelviz.core.journal.JournalFormat.SourceKind;
 import com.holtherndon.bazelviz.storage.events.RawLocation;
+import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
+import com.holtherndon.bazelviz.ui.theme.SyntaxTextTheme;
+import com.holtherndon.bazelviz.ui.theme.SelectableLabel;
 import java.awt.BorderLayout;
 import java.awt.Font;
 import java.awt.GridLayout;
@@ -11,6 +16,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.nio.file.Path;
+import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -18,7 +25,11 @@ import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JTextArea;
+import javax.swing.JTextField;
 import javax.swing.SwingConstants;
+import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea;
+import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
+import org.fife.ui.rtextarea.RTextScrollPane;
 
 /**
  * The raw protobuf inspector (plan 17.11): the selected event's stored columns,
@@ -43,16 +54,21 @@ public final class EventInspectorPanel extends JPanel {
      * headers narrow the same way.
      */
     private final InspectorHeader header = new InspectorHeader();
-    private final JLabel typeValue = value();
-    private final JLabel decodeValue = value();
-    private final JLabel identityValue = value();
-    private final JLabel locationValue = value();
-    private final JLabel sizeValue = value();
-    private final JLabel timeValue = value();
+    private final JTextField typeValue = value();
+    private final JTextField decodeValue = value();
+    private final JTextField identityValue = value();
+    private final JTextField locationValue = value();
+    private final JTextField sizeValue = value();
+    private final JTextField timeValue = value();
     private final JTextArea notices = monospaced();
-    private final JTextArea decoded = monospaced();
+    private final RSyntaxTextArea decoded = decodedText();
+    private final RTextScrollPane decodedScroll = new RTextScrollPane(decoded);
     private final JTextArea hex = monospaced();
     private final JScrollPane noticesScroll;
+    private final JTabbedPane panes = new JTabbedPane();
+    private final EventFilesPanel files = new EventFilesPanel();
+    private Runnable filesRequested = () -> { };
+    private EventInspection displayed = EventInspection.none();
 
     public EventInspectorPanel() {
         super(new BorderLayout());
@@ -80,9 +96,12 @@ public final class EventInspectorPanel extends JPanel {
         noticesScroll.setVisible(false);
         noticesScroll.setBorder(BorderFactory.createTitledBorder("Notices"));
 
-        JTabbedPane panes = new JTabbedPane();
-        panes.addTab("Decoded", new JScrollPane(decoded));
+        decodedScroll.setLineNumbersEnabled(true);
+        SyntaxTextTheme.apply(decoded, decodedScroll);
+        panes.addTab("Decoded", decodedScroll);
         panes.addTab("Raw bytes (hex)", new JScrollPane(hex));
+        panes.addTab("Files", files);
+        panes.addChangeListener(event -> requestFilesIfVisible());
 
         JSplitPane body = new JSplitPane(JSplitPane.VERTICAL_SPLIT, noticesScroll, panes);
         body.setResizeWeight(0);
@@ -104,37 +123,74 @@ public final class EventInspectorPanel extends JPanel {
         header.installEntityActions(actions, Set.of());
     }
 
+    public void onFilesRequested(Runnable handler) {
+        filesRequested = Objects.requireNonNull(handler, "handler");
+    }
+
+    public void onCopyFilePath(Consumer<String> handler) {
+        files.onCopyPath(handler);
+    }
+
+    public void onRevealFile(Consumer<Path> handler) {
+        files.onRevealFile(handler);
+    }
+
+    public void onOpenFile(Consumer<Path> handler) {
+        files.onOpenFile(handler);
+    }
+
+    public void onOpenExecutionFile(Consumer<ExecutionPath> handler) {
+        files.onOpenExecutionFile(handler);
+    }
+
+    public void showFiles(EventFileInspection inspection) {
+        files.show(inspection);
+    }
+
     /** Renders one inspector state. */
     public void show(EventInspection inspection) {
         Objects.requireNonNull(inspection, "inspection");
+        displayed = inspection;
         switch (inspection.state()) {
             case NONE -> {
                 headline("Select an event to inspect its raw bytes.");
                 clearFields();
-                decoded.setText("");
+                setDecodedText("", SyntaxConstants.SYNTAX_STYLE_NONE);
                 hex.setText("");
                 setNotices(List.of());
+                files.show(EventFileInspection.none());
             }
             case LOADING -> {
                 headline("Reading event " + inspection.eventId().getAsLong()
                         + " from the journal…");
                 clearFields();
-                decoded.setText("");
+                setDecodedText("", SyntaxConstants.SYNTAX_STYLE_NONE);
                 hex.setText("");
                 setNotices(List.of());
+                files.show(EventFileInspection.none());
             }
             case FAILED -> {
                 headline("Event " + inspection.eventId().getAsLong()
                         + " could not be inspected.");
                 clearFields();
-                decoded.setText(inspection.loadFailure().orElse(EventValueFormat.UNKNOWN));
+                setDecodedText(inspection.loadFailure().orElse(EventValueFormat.UNKNOWN),
+                        SyntaxConstants.SYNTAX_STYLE_NONE);
                 hex.setText("");
                 setNotices(List.of());
+                files.show(EventFileInspection.none());
             }
             case LOADED -> showLoaded(inspection);
         }
         decoded.setCaretPosition(0);
         hex.setCaretPosition(0);
+        requestFilesIfVisible();
+    }
+
+    private void requestFilesIfVisible() {
+        if (panes.getSelectedComponent() == files
+                && displayed.state() == EventInspection.State.LOADED) {
+            filesRequested.run();
+        }
     }
 
     private void showLoaded(EventInspection inspection) {
@@ -167,9 +223,17 @@ public final class EventInspectorPanel extends JPanel {
         rendered.decodeFailure().ifPresent(failure ->
                 text.append("Decode failed: ").append(failure).append("\n\n"));
         text.append(rendered.text());
-        decoded.setText(text.toString());
+        String syntax = inspection.payload().orElseThrow().sourceKind() == SourceKind.BEP_JSON_RECORD
+                ? SyntaxConstants.SYNTAX_STYLE_JSON
+                : SyntaxConstants.SYNTAX_STYLE_PROTO;
+        setDecodedText(text.toString(), syntax);
         hex.setText(inspection.hexDump().orElse(""));
         setNotices(rendered.notices());
+    }
+
+    private void setDecodedText(String text, String syntax) {
+        decoded.setSyntaxEditingStyle(syntax);
+        decoded.setText(text);
     }
 
     /** A state that names no entity: a message, and nothing to act on. */
@@ -180,6 +244,24 @@ public final class EventInspectorPanel extends JPanel {
     /** Visible for testing: the shared header, with its subtitle and overflow menu. */
     InspectorHeader headerForTest() {
         return header;
+    }
+
+    /** Visible for testing: the read-only Protocol Buffer text surface. */
+    RSyntaxTextArea decodedForTest() {
+        return decoded;
+    }
+
+    /** Visible for testing: the syntax surface's themed line-number gutter. */
+    RTextScrollPane decodedScrollForTest() {
+        return decodedScroll;
+    }
+
+    JTabbedPane panesForTest() {
+        return panes;
+    }
+
+    EventFilesPanel filesForTest() {
+        return files;
     }
 
     private void setNotices(List<String> messages) {
@@ -208,8 +290,8 @@ public final class EventInspectorPanel extends JPanel {
         return label;
     }
 
-    private static JLabel value() {
-        return new JLabel(EventValueFormat.UNKNOWN);
+    private static JTextField value() {
+        return SelectableLabel.create(EventValueFormat.UNKNOWN);
     }
 
     private static JTextArea monospaced() {
@@ -219,4 +301,24 @@ public final class EventInspectorPanel extends JPanel {
         area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         return area;
     }
+
+    /**
+     * Protocol Buffer text is close enough to a {@code .proto} source file for
+     * the existing lexer to distinguish structure, quoted strings and numbers.
+     * This is paint-only: decoding stays in {@link EventInspectorModel}
+     * and only the selected event reaches this component.
+     */
+    private static RSyntaxTextArea decodedText() {
+        RSyntaxTextArea area = new RSyntaxTextArea();
+        area.setEditable(false);
+        area.setLineWrap(false);
+        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        area.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_PROTO);
+        area.setHighlightCurrentLine(false);
+        area.setBracketMatchingEnabled(true);
+        area.setAnimateBracketMatching(false);
+        area.setToolTipText("Decoded Protocol Buffer text or JSON with syntax highlighting.");
+        return area;
+    }
+
 }

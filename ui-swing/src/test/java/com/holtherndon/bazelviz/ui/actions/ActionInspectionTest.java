@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.holtherndon.bazelviz.core.entity.ActionTiming;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.core.domain.ActionOutcome;
+import com.holtherndon.bazelviz.ui.files.FileLink;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -50,6 +52,12 @@ class ActionInspectionTest {
                 .hasValue("[0] /bin/sh  [1] -c  [2] exit 7");
         assertThat(valueOf(inspection, "Failure category")).hasValue("spawn/NON_ZERO_EXIT");
         assertThat(inspection.sourceEventId()).hasValue(900L);
+        assertThat(fieldOf(inspection, "Primary output").orElseThrow().fileLink())
+                .contains(FileLink.actionOutput("bazel-out/bin/pkg/out.txt"));
+        assertThat(inspection.refs()).contains(
+                new EntityRef.ActionId(7),
+                new EntityRef.TargetLabel("//pkg:boom"),
+                new EntityRef.EventId(900));
     }
 
     @Test

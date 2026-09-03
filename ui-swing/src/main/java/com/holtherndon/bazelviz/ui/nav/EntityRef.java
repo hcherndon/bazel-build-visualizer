@@ -3,13 +3,13 @@ package com.holtherndon.bazelviz.ui.nav;
 import java.util.Objects;
 
 /**
- * A cross-view reference to one build entity: a target label, an action, or
- * an event.
+ * A cross-view reference to one build entity: a target label, configuration,
+ * action, or event.
  *
  * <p>This is the identity the plan's {@code SelectionService} promised
  * (product-plan section 7): views hand each other one of these rather than a
  * view-specific row index or a bare {@code long} whose meaning the receiver
- * has to remember. It is deliberately small — the three identities the views
+ * has to remember. It is deliberately small — the identities the views
  * navigate by today — and deliberately a value: an {@code EntityRef} carries
  * no reader, no executor and no way to block, so it can cross any boundary,
  * including onto the EDT.
@@ -26,6 +26,16 @@ public sealed interface EntityRef {
             Objects.requireNonNull(label, "label");
             if (label.isBlank()) {
                 throw new IllegalArgumentException("a label ref needs a label");
+            }
+        }
+    }
+
+    /** An exact Bazel configuration checksum reported by BEP or cquery. */
+    record ConfigurationChecksum(String checksum) implements EntityRef {
+        public ConfigurationChecksum {
+            Objects.requireNonNull(checksum, "checksum");
+            if (checksum.isBlank()) {
+                throw new IllegalArgumentException("a configuration ref needs a checksum");
             }
         }
     }

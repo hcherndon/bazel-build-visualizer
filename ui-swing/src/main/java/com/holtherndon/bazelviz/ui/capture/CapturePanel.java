@@ -1,10 +1,14 @@
 package com.holtherndon.bazelviz.ui.capture;
 
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
 import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
@@ -36,24 +40,30 @@ public final class CapturePanel extends JPanel {
     private final JButton cancel = new JButton("Cancel Build");
     private final JButton terminate = new JButton("Terminate");
     private final JButton forceKill = new JButton("Force Kill");
+    private final JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+    private final JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
 
     private Consumer<CancellationMode> stopAction = mode -> {};
 
     public CapturePanel() {
-        super(new BorderLayout(0, 8));
-        setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+        super(new BorderLayout(8, 0));
+        setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder("Build status"),
+                BorderFactory.createEmptyBorder(2, 8, 4, 8)));
 
-        phase.setFont(phase.getFont().deriveFont(Font.BOLD, phase.getFont().getSize2D() + 2f));
+        PlainText.disableHtml(phase);
+        PlainText.disableHtml(counters);
+        PlainText.disableHtml(detail);
+        phase.setFont(phase.getFont().deriveFont(Font.BOLD));
         counters.setFont(new Font(Font.MONOSPACED, Font.PLAIN, counters.getFont().getSize()));
         activity.setIndeterminate(false);
-        activity.setPreferredSize(new Dimension(240, 6));
+        activity.setPreferredSize(new Dimension(120, 6));
+        detail.setMinimumSize(new Dimension(0, detail.getPreferredSize().height));
 
-        JPanel status = new JPanel();
-        status.setLayout(new javax.swing.BoxLayout(status, javax.swing.BoxLayout.Y_AXIS));
-        status.add(phase);
-        status.add(counters);
-        status.add(detail);
-        status.add(activity);
+        JPanel status = new JPanel(new GridBagLayout());
+        status.add(phase, statusConstraints(0, 0));
+        status.add(counters, statusConstraints(1, 0));
+        status.add(detail, statusConstraints(2, 1));
 
         cancel.setToolTipText(
                 "Ask Bazel to stop as Ctrl-C would. The build finishes its event stream, so the"
@@ -68,14 +78,26 @@ public final class CapturePanel extends JPanel {
         terminate.addActionListener(event -> stopAction.accept(CancellationMode.TERMINATE));
         forceKill.addActionListener(event -> stopAction.accept(CancellationMode.FORCE_KILL));
 
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         buttons.add(cancel);
         buttons.add(terminate);
         buttons.add(forceKill);
 
-        add(status, BorderLayout.NORTH);
-        add(buttons, BorderLayout.CENTER);
+        actions.add(activity);
+        actions.add(buttons);
+
+        add(status, BorderLayout.CENTER);
+        add(actions, BorderLayout.EAST);
         show(CaptureStatusModel.idle());
+    }
+
+    private static GridBagConstraints statusConstraints(int x, double weightX) {
+        GridBagConstraints constraints = new GridBagConstraints();
+        constraints.gridx = x;
+        constraints.weightx = weightX;
+        constraints.fill = weightX > 0 ? GridBagConstraints.HORIZONTAL : GridBagConstraints.NONE;
+        constraints.anchor = GridBagConstraints.WEST;
+        constraints.insets = new Insets(0, x == 0 ? 0 : 10, 0, 0);
+        return constraints;
     }
 
     /** What the stop buttons do. */
@@ -88,11 +110,40 @@ public final class CapturePanel extends JPanel {
         assert SwingUtilities.isEventDispatchThread() : "capture status must be shown on the EDT";
         phase.setText(model.phase().label());
         counters.setText(model.counterLine());
-        detail.setText(model.detail().isEmpty() ? " " : model.detail());
-        activity.setIndeterminate(!model.phase().isTerminal()
-                && model.phase() != CaptureStatusModel.Phase.IDLE);
+        String context = model.detail().isEmpty() ? " " : model.detail();
+        detail.setText(context);
+        detail.setToolTipText(model.detail().isEmpty()
+                ? null : PlainText.tooltip(model.detail()));
+        detail.getAccessibleContext().setAccessibleDescription(
+                model.detail().isEmpty() ? null : model.detail());
+        boolean active = !model.phase().isTerminal()
+                && model.phase() != CaptureStatusModel.Phase.IDLE;
+        activity.setIndeterminate(active);
+        activity.setVisible(active);
         cancel.setEnabled(model.cancellable());
         terminate.setEnabled(model.cancellable());
         forceKill.setEnabled(model.cancellable());
+        buttons.setVisible(model.cancellable());
+        actions.setVisible(active || model.cancellable());
+    }
+
+    JLabel phaseForTest() {
+        return phase;
+    }
+
+    JLabel countersForTest() {
+        return counters;
+    }
+
+    JLabel detailForTest() {
+        return detail;
+    }
+
+    JProgressBar activityForTest() {
+        return activity;
+    }
+
+    JPanel buttonsForTest() {
+        return buttons;
     }
 }

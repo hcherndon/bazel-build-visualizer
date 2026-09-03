@@ -120,8 +120,10 @@ final class OpenRequestTest {
                 .isEqualTo("{\"formatVersion\":1}");
         assertThat(result.redacted()).isFalse();
         // No staging directory is left behind.
-        assertThat(Files.exists(library.resolve(
-                "session-0193f0aa-1111-7000-8000-000000000000.incoming"))).isFalse();
+        try (var entries = Files.list(library)) {
+            assertThat(entries.map(path -> path.getFileName().toString()))
+                    .noneMatch(name -> name.contains(".incoming"));
+        }
     }
 
     @Test

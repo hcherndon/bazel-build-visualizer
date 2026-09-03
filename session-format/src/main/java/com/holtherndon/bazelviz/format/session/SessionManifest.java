@@ -48,6 +48,7 @@ public record SessionManifest(
         SessionState state,
         Optional<String> workingDirectory,
         Optional<String> workspaceRoot,
+        Optional<ExecutionLocation> executionLocation,
         Optional<String> bazelExecutable,
         Optional<String> bazelVersion,
         Optional<List<String>> originalCommand,
@@ -74,6 +75,7 @@ public record SessionManifest(
         finalizedMicros = Objects.requireNonNull(finalizedMicros, "finalizedMicros");
         workingDirectory = Objects.requireNonNull(workingDirectory, "workingDirectory");
         workspaceRoot = Objects.requireNonNull(workspaceRoot, "workspaceRoot");
+        executionLocation = Objects.requireNonNull(executionLocation, "executionLocation");
         bazelExecutable = Objects.requireNonNull(bazelExecutable, "bazelExecutable");
         bazelVersion = Objects.requireNonNull(bazelVersion, "bazelVersion");
         originalCommand = copyOptionalList(originalCommand);
@@ -158,6 +160,58 @@ public record SessionManifest(
         }
     }
 
+    /**
+     * Where the live command ran. This is provenance, never an instruction to
+     * reconnect: imported manifests remain display-only and cannot start SSH.
+     *
+     * @param kind local desktop process or an explicitly selected SSH host
+     * @param displayName safe, human-readable host/profile label
+     * @param sshDestination OpenSSH Host alias or {@code user@host}; absent for local
+     * @param sshPort explicitly selected SSH port; absent means the SSH config/default
+     */
+    public record ExecutionLocation(
+            Kind kind,
+            String displayName,
+            Optional<String> sshDestination,
+            OptionalInt sshPort) {
+
+        public enum Kind {
+            LOCAL,
+            SSH
+        }
+
+        public ExecutionLocation {
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(displayName, "displayName");
+            sshDestination = Objects.requireNonNull(sshDestination, "sshDestination");
+            sshPort = Objects.requireNonNull(sshPort, "sshPort");
+            if (displayName.isBlank()) {
+                throw new IllegalArgumentException("execution location display name is blank");
+            }
+            if (kind == Kind.LOCAL && (sshDestination.isPresent() || sshPort.isPresent())) {
+                throw new IllegalArgumentException("a local execution location cannot carry SSH fields");
+            }
+            if (kind == Kind.SSH && sshDestination.filter(value -> !value.isBlank()).isEmpty()) {
+                throw new IllegalArgumentException("an SSH execution location needs a destination");
+            }
+            if (sshPort.isPresent()
+                    && (sshPort.getAsInt() < 1 || sshPort.getAsInt() > 65_535)) {
+                throw new IllegalArgumentException("SSH port must be in 1..65535");
+            }
+        }
+
+        public static ExecutionLocation local() {
+            return new ExecutionLocation(
+                    Kind.LOCAL, "This computer", Optional.empty(), OptionalInt.empty());
+        }
+
+        public static ExecutionLocation ssh(
+                String displayName, String destination, OptionalInt port) {
+            return new ExecutionLocation(
+                    Kind.SSH, displayName, Optional.of(destination), port);
+        }
+    }
+
     /** An enrichment command run alongside the build (plan 8.6, 10.3). */
     public record AuxiliaryCommand(String label, List<String> argv) {
         public AuxiliaryCommand {
@@ -200,6 +254,7 @@ public record SessionManifest(
         private SessionState state = SessionState.NEW;
         private Optional<String> workingDirectory = Optional.empty();
         private Optional<String> workspaceRoot = Optional.empty();
+        private Optional<ExecutionLocation> executionLocation = Optional.empty();
         private Optional<String> bazelExecutable = Optional.empty();
         private Optional<String> bazelVersion = Optional.empty();
         private Optional<List<String>> originalCommand = Optional.empty();
@@ -230,6 +285,7 @@ public record SessionManifest(
             this.state = source.state;
             this.workingDirectory = source.workingDirectory;
             this.workspaceRoot = source.workspaceRoot;
+            this.executionLocation = source.executionLocation;
             this.bazelExecutable = source.bazelExecutable;
             this.bazelVersion = source.bazelVersion;
             this.originalCommand = source.originalCommand;
@@ -292,6 +348,11 @@ public record SessionManifest(
 
         public Builder workspaceRoot(Optional<String> value) {
             this.workspaceRoot = value;
+            return this;
+        }
+
+        public Builder executionLocation(Optional<ExecutionLocation> value) {
+            this.executionLocation = Objects.requireNonNull(value, "value");
             return this;
         }
 
@@ -415,6 +476,7 @@ public record SessionManifest(
                     state,
                     workingDirectory,
                     workspaceRoot,
+                    executionLocation,
                     bazelExecutable,
                     bazelVersion,
                     originalCommand,

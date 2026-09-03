@@ -12,15 +12,27 @@ import com.holtherndon.bazelviz.capture.live.CaptureRequest;
 import com.holtherndon.bazelviz.capture.live.CaptureResult;
 import com.holtherndon.bazelviz.capture.live.CaptureSummary;
 import com.holtherndon.bazelviz.capture.live.Preflight;
+import com.holtherndon.bazelviz.capture.live.RemoteExecution;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
 import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
+import com.holtherndon.bazelviz.runner.files.ExecutionFileSystem;
+import com.holtherndon.bazelviz.runner.files.LocalExecutionFileSystem;
+import com.holtherndon.bazelviz.runner.runtime.LocalCommandExecutor;
+import com.holtherndon.bazelviz.runner.ssh.SshTarget;
+import com.holtherndon.bazelviz.runner.workspace.WorkspaceDetector;
+import com.holtherndon.bazelviz.runner.workspace.WorkspaceInfo;
 import com.holtherndon.bazelviz.ui.capture.CapturePanel;
+import com.holtherndon.bazelviz.ui.capture.CaptureLeaseKey;
+import com.holtherndon.bazelviz.ui.capture.CaptureLeaseOwner;
+import com.holtherndon.bazelviz.ui.capture.CaptureLeaseRegistry;
 import com.holtherndon.bazelviz.ui.capture.CaptureStatusModel;
 import com.holtherndon.bazelviz.ui.capture.ConsoleView;
 import com.holtherndon.bazelviz.ui.capture.InstrumentationPlanDialog;
 import com.holtherndon.bazelviz.ui.capture.LaunchController;
 import com.holtherndon.bazelviz.ui.capture.LauncherPanel;
-import com.holtherndon.bazelviz.ui.events.EventValueFormat;
+import com.holtherndon.bazelviz.ui.configurations.ConfigurationsView;
+import com.holtherndon.bazelviz.ui.criticalpath.CriticalPathView;
+import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import com.holtherndon.bazelviz.ui.actions.ActionsView;
 import com.holtherndon.bazelviz.ui.events.EventsView;
 import com.holtherndon.bazelviz.ui.enrich.CoverageView;
@@ -28,9 +40,15 @@ import com.holtherndon.bazelviz.ui.errors.ErrorsView;
 import com.holtherndon.bazelviz.ui.graph.GraphExplorerView;
 import com.holtherndon.bazelviz.ui.graph.TreeView;
 import com.holtherndon.bazelviz.ui.query.QueryView;
+import com.holtherndon.bazelviz.ui.repository.RepositoryBrowserView;
+import com.holtherndon.bazelviz.ui.terminal.TerminalView;
 import com.holtherndon.bazelviz.ui.timeline.TimelineController;
 import com.holtherndon.bazelviz.ui.overview.OverviewPanel;
+import com.holtherndon.bazelviz.ui.preferences.PreferencesPanel;
+import com.holtherndon.bazelviz.ui.preferences.ThemePreferencesPanel;
+import com.holtherndon.bazelviz.ui.preferences.WorkspaceDiscoveryPreferencesPanel;
 import com.holtherndon.bazelviz.ui.targets.TargetsView;
+import com.holtherndon.bazelviz.ui.targets.AllTargetsView;
 import com.holtherndon.bazelviz.ui.tests.TestsView;
 import com.holtherndon.bazelviz.analysis.Finding;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
@@ -43,8 +61,18 @@ import com.holtherndon.bazelviz.storage.catalog.RetentionPolicy;
 import com.holtherndon.bazelviz.storage.catalog.SessionCatalog;
 import com.holtherndon.bazelviz.storage.export.TableExport;
 import com.holtherndon.bazelviz.ui.export.ExportController;
+import com.holtherndon.bazelviz.ui.files.FileEditorManager;
+import com.holtherndon.bazelviz.ui.files.FileLink;
+import com.holtherndon.bazelviz.ui.files.WorkspaceFileAccess;
+import com.holtherndon.bazelviz.ui.logging.LoggingMenu;
+import com.holtherndon.bazelviz.ui.logging.LoggingPreferenceWriter;
+import com.holtherndon.bazelviz.ui.logging.LoggingRuntime;
+import com.holtherndon.bazelviz.ui.logging.LoggingSettingsStore;
+import com.holtherndon.bazelviz.ui.logging.LogVerbosity;
 import com.holtherndon.bazelviz.ui.session.CatalogEntries;
+import com.holtherndon.bazelviz.ui.session.CatalogAccess;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
@@ -53,27 +81,54 @@ import com.holtherndon.bazelviz.ui.session.OpenRequest;
 import com.holtherndon.bazelviz.ui.session.ImportController;
 import com.holtherndon.bazelviz.ui.session.ImportProgressModel;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
+import com.holtherndon.bazelviz.ui.session.SessionMutationCoordinator;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
+import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
+import com.holtherndon.bazelviz.ui.starlark.StarlarkProfileView;
+import com.holtherndon.bazelviz.ui.theme.AppTheme;
+import com.holtherndon.bazelviz.ui.theme.ThemePreferenceWriter;
+import com.holtherndon.bazelviz.ui.theme.ThemeSettingsStore;
+import com.holtherndon.bazelviz.ui.theme.Themes;
+import com.holtherndon.bazelviz.ui.workspace.WorkspaceProfile;
+import com.holtherndon.bazelviz.ui.workspace.WorkspaceDiscovery;
+import com.holtherndon.bazelviz.ui.workspace.WorkspaceDiscoveryScriptStore;
+import com.holtherndon.bazelviz.ui.workspace.WorkspaceSelectionPanel;
+import com.holtherndon.bazelviz.ui.workspace.WorkspaceStore;
+import com.holtherndon.bazelviz.ui.workspace.WorkspaceUiSettings;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Component;
 import java.awt.Dimension;
+import java.awt.Dialog;
 import java.awt.FlowLayout;
 import java.awt.Toolkit;
 import java.awt.event.KeyEvent;
 import java.io.File;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
+import javax.swing.DefaultListModel;
 import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
+import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JMenu;
@@ -113,6 +168,55 @@ public final class MainWindow extends JFrame {
 
     private static final Logger log = LoggerFactory.getLogger(MainWindow.class);
 
+    /** Cooperative grace for import checkpoints and ordinary worker-lane completion. */
+    public static final Duration WORKER_SHUTDOWN_GRACE = Duration.ofSeconds(10);
+
+    /** Reap grace after interrupting worker work that ignored cooperative shutdown. */
+    public static final Duration WORKER_FORCED_SHUTDOWN_GRACE = Duration.ofSeconds(2);
+
+    /**
+     * Process-level workspace/window operations supplied by the desktop application.
+     *
+     * <p>A {@code MainWindow} still owns one connected workspace and one analysis
+     * session. This host owns the list of windows and the process-global workspace
+     * chooser and preferences lifecycle. Compatibility constructors leave the host
+     * absent and retain the original single-window behaviour.
+     */
+    public interface ApplicationHost {
+        void openWorkspace(WorkspaceProfile profile, boolean discovered);
+
+        void showWorkspaceManager();
+
+        void showNewWorkspace();
+
+        void editWorkspace(WorkspaceProfile profile);
+
+        boolean workspaceUpdated(WorkspaceProfile profile);
+
+        boolean workspaceRemoved(WorkspaceProfile profile);
+
+        void workspaceRemovalPersisted(WorkspaceProfile profile);
+
+        List<WorkspaceProfile> availableWorkspaces();
+
+        boolean isDiscoveredWorkspace(WorkspaceProfile profile);
+
+        void workspaceChoicesChanged(boolean startupRestoreEligible);
+
+        void workspaceWindowClosing(String workspaceId);
+
+        void showPreferences();
+
+        boolean selectLogVerbosity(LogVerbosity verbosity);
+
+        void themeChanged();
+
+        CaptureLeaseRegistry.Acquisition tryAcquireCaptureLease(
+                CaptureLeaseKey key, CaptureLeaseOwner owner);
+
+        SessionMutationCoordinator sessionMutationCoordinator();
+    }
+
     /**
      * Recorded into every session this window creates. Duplicated from the
      * application module's {@code AppInfo} because {@code :app} depends on this
@@ -131,6 +235,8 @@ public final class MainWindow extends JFrame {
     private final OverviewPanel overviewPanel = new OverviewPanel();
     private final ActionsView actionsView = new ActionsView();
     private final TargetsView targetsView = new TargetsView();
+    private final AllTargetsView allTargetsView = new AllTargetsView();
+    private final ConfigurationsView configurationsView = new ConfigurationsView();
     private final TestsView testsView = new TestsView();
     private final ErrorsView errorsView = new ErrorsView();
     private final CoverageView coverageView = new CoverageView();
@@ -145,6 +251,8 @@ public final class MainWindow extends JFrame {
     private final TreeView treeView = new TreeView();
 
     private final GraphExplorerView graphExplorerView = new GraphExplorerView();
+    private final CriticalPathView criticalPathView = new CriticalPathView();
+    private final StarlarkProfileView starlarkProfileView = new StarlarkProfileView();
     private final FindingsView findingsView = new FindingsView();
 
     /**
@@ -157,6 +265,32 @@ public final class MainWindow extends JFrame {
      * write.
      */
     private final QueryView queryView = new QueryView();
+    private final RepositoryBrowserView repositoryBrowserView = new RepositoryBrowserView();
+    private final TerminalView terminalView;
+    private final WorkspaceSelectionPanel workspaceSelectionPanel;
+    private final WorkspaceStore workspaceStore;
+    private final WorkspaceDiscoveryScriptStore workspaceDiscoveryScriptStore;
+    private final WorkspaceDiscovery workspaceDiscovery;
+    private List<WorkspaceProfile> workspaceProfiles;
+    private List<WorkspaceProfile> discoveredWorkspaceProfiles = List.of();
+    private WorkspaceProfile activeWorkspace;
+    private boolean activeWorkspaceDiscovered;
+    private ExecutionFileSystem repositoryFileSystem;
+    private CaptureLeaseKey captureLeaseKey;
+    private final AtomicReference<CaptureLeaseRegistry.CaptureLease> activeCaptureLease =
+            new AtomicReference<>();
+    private RemoteExecution activeRemoteExecution;
+    private long workspaceConnectionGeneration;
+    private boolean workspaceContextTransition;
+    private CompletableFuture<Void> workspaceSave = CompletableFuture.completedFuture(null);
+    private CompletableFuture<Void> workspaceDiscoveryOperations =
+            CompletableFuture.completedFuture(null);
+    private long workspaceDiscoveryGeneration;
+    private JDialog preferencesDialog;
+    private PreferencesPanel preferencesPanel;
+    private WorkspaceDiscoveryPreferencesPanel discoveryPreferencesPanel;
+    private final ApplicationHost applicationHost;
+    private final boolean workspaceManagerWindow;
     private final TimelineController timeline = new TimelineController();
 
     /**
@@ -186,6 +320,8 @@ public final class MainWindow extends JFrame {
     static java.util.Set<EntityActions.Command> wiredCommands() {
         return java.util.EnumSet.of(
                 EntityActions.Command.OPEN_TARGET,
+                EntityActions.Command.VIEW_CONFIGURATION,
+                EntityActions.Command.OPEN_BUILD_FILE,
                 EntityActions.Command.OPEN_IN_TREE,
                 EntityActions.Command.OPEN_IN_GRAPH,
                 EntityActions.Command.SHOW_ACTIONS_FOR_LABEL,
@@ -226,8 +362,15 @@ public final class MainWindow extends JFrame {
      */
     private SessionSource liveSource;
     private final Path catalogDirectory;
+    private final SessionMutationCoordinator sessionMutations;
     private final ExportController exports;
     private final JMenu recentMenu = new JMenu("Open Recent");
+    /** Last completed catalog read; menu rendering itself never touches SQLite. */
+    private List<CatalogEntry> recentCatalogEntries = List.of();
+    private boolean recentCatalogLoaded;
+    private boolean recentCatalogLoadInProgress;
+    private String recentCatalogFailure;
+    private long recentCatalogLoadGeneration;
     private MetricsService metricsService;
     /**
      * The derived chain's node indices, from the last metric collection.
@@ -238,19 +381,42 @@ public final class MainWindow extends JFrame {
      * findings describe.
      */
     private List<Integer> derivedCriticalPath = List.of();
+    private final ExecutorService blockingIo;
+    private final ScheduledExecutorService terminalScheduler;
     private final ExecutorService worker;
     private final ExecutorService captureWorker;
     private final ImportController importController;
+    private final FileEditorManager fileEditors;
+    private final ThemePreferenceWriter themePreferences;
+    private final LoggingRuntime loggingRuntime;
+    private final LoggingPreferenceWriter loggingPreferences;
+    private CompletableFuture<Void> viewCloseOperations =
+            CompletableFuture.completedFuture(null);
+    private CompletableFuture<Void> sourceCloseOperations =
+            CompletableFuture.completedFuture(null);
+    private CompletableFuture<Void> remoteCloseOperations =
+            CompletableFuture.completedFuture(null);
+    private CompletableFuture<Void> workspaceConnectionOperations =
+            CompletableFuture.completedFuture(null);
+    private CompletableFuture<Void> recentCatalogOperations =
+            CompletableFuture.completedFuture(null);
+    private final CompletableFuture<Void> disposalCompletion = new CompletableFuture<>();
+    /** Serialises path classification without tying it to the long-running import lane. */
+    private CompletableFuture<Void> openPathOperations = CompletableFuture.completedFuture(null);
+    private volatile boolean disposalStarted;
+    private boolean disposalFinished;
 
     private final JLabel sessionStatus = new JLabel("Session: none");
+    private final JLabel workspaceStatus = new JLabel("Workspace: none");
     private final JLabel eventStatus = new JLabel("Events: " + UNKNOWN);
     private final JLabel actionStatus = new JLabel("Actions: " + UNKNOWN);
     private final JMenuItem cancelImportItem = new JMenuItem("Cancel Import");
     private final JMenuItem closeSessionItem = new JMenuItem("Close Session");
-    private final JList<NavEntry> nav = new JList<>(NavEntry.values());
+    private final DefaultListModel<NavEntry> navModel = new DefaultListModel<>();
+    private final JList<NavEntry> nav = new JList<>(navModel);
 
     private final LauncherPanel launcherPanel = new LauncherPanel(
-            this::startLaunch, this::chooseWorkingDirectory, this::chooseBazelExecutable);
+            this::startLaunch, this::showWorkspaceHome, this::chooseBazelExecutable);
     private final CapturePanel capturePanel = new CapturePanel();
     private final ConsoleView consoleView = new ConsoleView();
 
@@ -270,6 +436,11 @@ public final class MainWindow extends JFrame {
 
     private final CardLayout cardLayout = new CardLayout();
     private final JPanel cards = new JPanel(cardLayout);
+    private final CardLayout rootCardLayout = new CardLayout();
+    private final JPanel rootCards = new JPanel(rootCardLayout);
+
+    private static final String ROOT_WORKSPACES = "workspaces";
+    private static final String ROOT_SHELL = "shell";
 
     private Path lastChooserDirectory;
 
@@ -288,11 +459,180 @@ public final class MainWindow extends JFrame {
      *     session because it is about all of them
      */
     public MainWindow(Path sessionsRoot, Path catalogDirectory) {
+        this(sessionsRoot, catalogDirectory, sessionsRoot.resolveSibling("settings"));
+    }
+
+    /**
+     * @param settingsDirectory exact application settings directory; unlike
+     *     the compatibility constructors, this does not infer it from the
+     *     managed-session path
+     */
+    public MainWindow(Path sessionsRoot, Path catalogDirectory, Path settingsDirectory) {
+        this(sessionsRoot, catalogDirectory, settingsDirectory, LoggingRuntime.unavailable());
+    }
+
+    /**
+     * Production constructor with the application-owned logging backend.
+     *
+     * <p>The runtime operations are in-memory and safe on the EDT. Preference
+     * writes use this window's shared blocking-I/O executor.
+     */
+    public MainWindow(
+            Path sessionsRoot,
+            Path catalogDirectory,
+            Path settingsDirectory,
+            LoggingRuntime loggingRuntime) {
+        this(
+                sessionsRoot,
+                catalogDirectory,
+                settingsDirectory,
+                loggingRuntime,
+                new WorkspaceStore(settingsDirectory),
+                List.of());
+    }
+
+    /** Production constructor with workspaces loaded before Swing starts. */
+    public MainWindow(
+            Path sessionsRoot,
+            Path catalogDirectory,
+            Path settingsDirectory,
+            LoggingRuntime loggingRuntime,
+            WorkspaceStore workspaceStore,
+            List<WorkspaceProfile> workspaces) {
+        this(
+                sessionsRoot,
+                catalogDirectory,
+                settingsDirectory,
+                loggingRuntime,
+                workspaceStore,
+                workspaces,
+                null,
+                true,
+                null,
+                false);
+    }
+
+    /**
+     * Creates the process-global workspace manager/analysis window.
+     *
+     * <p>The supplied host opens workspaces in separate native windows. This
+     * manager remains the sole owner of workspace discovery and preference
+     * persistence.
+     */
+    public MainWindow(
+            Path sessionsRoot,
+            Path catalogDirectory,
+            Path settingsDirectory,
+            LoggingRuntime loggingRuntime,
+            WorkspaceStore workspaceStore,
+            List<WorkspaceProfile> workspaces,
+            ApplicationHost applicationHost) {
+        this(
+                sessionsRoot,
+                catalogDirectory,
+                settingsDirectory,
+                loggingRuntime,
+                workspaceStore,
+                workspaces,
+                java.util.Objects.requireNonNull(applicationHost, "applicationHost"),
+                true,
+                null,
+                false);
+    }
+
+    /** Creates one application-managed native window for a workspace. */
+    public MainWindow(
+            Path sessionsRoot,
+            Path catalogDirectory,
+            Path settingsDirectory,
+            LoggingRuntime loggingRuntime,
+            WorkspaceProfile workspace,
+            boolean discovered,
+            ApplicationHost applicationHost) {
+        this(
+                sessionsRoot,
+                catalogDirectory,
+                settingsDirectory,
+                loggingRuntime,
+                null,
+                List.of(),
+                java.util.Objects.requireNonNull(applicationHost, "applicationHost"),
+                false,
+                java.util.Objects.requireNonNull(workspace, "workspace"),
+                discovered);
+    }
+
+    private MainWindow(
+            Path sessionsRoot,
+            Path catalogDirectory,
+            Path settingsDirectory,
+            LoggingRuntime loggingRuntime,
+            WorkspaceStore workspaceStore,
+            List<WorkspaceProfile> workspaces,
+            ApplicationHost applicationHost,
+            boolean workspaceManagerWindow,
+            WorkspaceProfile initialWorkspace,
+            boolean initialWorkspaceDiscovered) {
         super("Bazel Build Visualizer");
         this.sessionsRoot = sessionsRoot;
         this.catalogDirectory = java.util.Objects.requireNonNull(
                 catalogDirectory, "catalogDirectory");
+        settingsDirectory = java.util.Objects.requireNonNull(
+                settingsDirectory, "settingsDirectory");
+        Path windowSettingsDirectory;
+        if (applicationHost == null) {
+            windowSettingsDirectory = settingsDirectory;
+        } else if (workspaceManagerWindow) {
+            windowSettingsDirectory = WorkspaceUiSettings.manager(settingsDirectory);
+        } else {
+            windowSettingsDirectory = WorkspaceUiSettings.forWorkspaceWindow(
+                            settingsDirectory,
+                            java.util.Objects.requireNonNull(
+                                    initialWorkspace, "initialWorkspace").id(),
+                            initialWorkspaceDiscovered)
+                    .orElse(null);
+        }
+        this.loggingRuntime = java.util.Objects.requireNonNull(loggingRuntime, "loggingRuntime");
+        this.applicationHost = applicationHost;
+        this.workspaceManagerWindow = workspaceManagerWindow;
+        this.sessionMutations = applicationHost == null
+                ? new SessionMutationCoordinator()
+                : java.util.Objects.requireNonNull(
+                        applicationHost.sessionMutationCoordinator(),
+                        "applicationHost.sessionMutationCoordinator()");
+        this.workspaceStore = workspaceStore;
+        this.workspaceDiscoveryScriptStore = workspaceManagerWindow
+                ? new WorkspaceDiscoveryScriptStore(settingsDirectory)
+                : null;
+        this.workspaceDiscovery = workspaceManagerWindow
+                ? new WorkspaceDiscovery(workspaceDiscoveryScriptStore)
+                : null;
+        this.workspaceProfiles = List.copyOf(
+                java.util.Objects.requireNonNull(workspaces, "workspaces"));
+        this.workspaceSelectionPanel = new WorkspaceSelectionPanel();
         this.sessions = new SessionManager(sessionsRoot, APP_VERSION);
+        this.blockingIo = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("bbv-io-", 0).factory());
+        ScheduledThreadPoolExecutor terminalTimer = new ScheduledThreadPoolExecutor(
+                1, Thread.ofVirtual().name("bbv-terminal-timer-", 0).factory());
+        terminalTimer.setRemoveOnCancelPolicy(true);
+        terminalTimer.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        terminalTimer.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
+        this.terminalScheduler = terminalTimer;
+        this.terminalView = new TerminalView(blockingIo, terminalScheduler);
+        if (workspaceManagerWindow) {
+            configureWorkspaceSelection();
+        }
+        this.themePreferences = workspaceManagerWindow
+                ? new ThemePreferenceWriter(
+                        new ThemeSettingsStore(settingsDirectory), blockingIo,
+                        this::showThemePersistenceFailure)
+                : null;
+        this.loggingPreferences = workspaceManagerWindow
+                ? new LoggingPreferenceWriter(
+                        new LoggingSettingsStore(settingsDirectory), blockingIo,
+                        this::showLoggingPersistenceFailure)
+                : null;
         this.worker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "bbv-import");
             thread.setDaemon(true);
@@ -310,25 +650,41 @@ public final class MainWindow extends JFrame {
             return thread;
         });
         this.launchController = new LaunchController(
-                captureWorker, SwingUtilities::invokeLater, new CaptureListener());
+                captureWorker,
+                SwingUtilities::invokeLater,
+                new CaptureListener(),
+                this::releaseCaptureLease);
         this.exports = new ExportController(worker, SwingUtilities::invokeLater);
-        // The Query card's saved queries and views live under the settings
-        // directory, resolved as a sibling the same way the single-argument
-        // constructor resolves the catalog. Path arithmetic only; the library
-        // creates directories lazily on its own I/O thread.
-        Path settingsDirectory = sessionsRoot.resolveSibling("settings");
-        launcherPanel.attachPersistence(settingsDirectory);
+        this.fileEditors = new FileEditorManager(this);
+        // The Query card's saved queries and views use the caller-resolved
+        // settings directory. Compatibility constructors still infer that
+        // directory for older tests and embedders. The libraries create their
+        // files lazily on their own I/O threads.
+        if (windowSettingsDirectory != null) {
+            launcherPanel.attachPersistence(windowSettingsDirectory);
+        }
         queryView.attachLibrary(settingsDirectory);
         // The entity tables' per-view column state (widths, visibility,
         // order, sort) lives in the same settings directory, one JSON file
         // per view, loaded and saved on the shared column-state I/O thread.
-        actionsView.attachColumnState(settingsDirectory);
-        errorsView.attachColumnState(settingsDirectory);
-        eventsView.attachColumnState(settingsDirectory);
-        testsView.attachColumnState(settingsDirectory);
-        queryView.attachColumnState(settingsDirectory);
+        if (windowSettingsDirectory != null) {
+            actionsView.attachColumnState(windowSettingsDirectory);
+            errorsView.attachColumnState(windowSettingsDirectory);
+            eventsView.attachColumnState(windowSettingsDirectory);
+            testsView.attachColumnState(windowSettingsDirectory);
+            queryView.attachColumnState(windowSettingsDirectory);
+        }
 
-        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        boolean managedWorkspaceWindow = applicationHost != null && !workspaceManagerWindow;
+        setDefaultCloseOperation(managedWorkspaceWindow ? DO_NOTHING_ON_CLOSE : DISPOSE_ON_CLOSE);
+        if (managedWorkspaceWindow) {
+            addWindowListener(new java.awt.event.WindowAdapter() {
+                @Override
+                public void windowClosing(java.awt.event.WindowEvent event) {
+                    requestWorkspaceWindowClose();
+                }
+            });
+        }
         setMinimumSize(new Dimension(960, 640));
         setSize(1280, 840);
         setLocationByPlatform(true);
@@ -341,10 +697,18 @@ public final class MainWindow extends JFrame {
         split.setDividerLocation(180);
         split.setResizeWeight(0);
 
-        JPanel content = new JPanel(new BorderLayout());
-        content.add(split, BorderLayout.CENTER);
-        content.add(buildStatusBar(), BorderLayout.SOUTH);
-        setContentPane(content);
+        JPanel shell = new JPanel(new BorderLayout());
+        shell.add(split, BorderLayout.CENTER);
+        shell.add(buildStatusBar(), BorderLayout.SOUTH);
+        rootCards.add(workspaceSelectionPanel, ROOT_WORKSPACES);
+        rootCards.add(shell, ROOT_SHELL);
+        setContentPane(rootCards);
+        if (workspaceManagerWindow) {
+            refreshWorkspaceChoices();
+            rootCardLayout.show(rootCards, ROOT_WORKSPACES);
+        } else {
+            rootCardLayout.show(rootCards, ROOT_SHELL);
+        }
         setJMenuBar(buildMenuBar());
 
         eventsView.progressPanel().setCancelAction(importController::cancel);
@@ -355,15 +719,40 @@ public final class MainWindow extends JFrame {
         // menu and inspector, all dispatch into this::navigate.
         actionsView.installEntityActions(entityActions);
         eventsView.installEntityActions(entityActions);
-        // The Targets card adopts through a header toolbar rather than a row
-        // menu: its selection is a tree node, and the toolbar can say why an
-        // action is unavailable, which a menu that simply omits it cannot.
+        // The Targets card keeps its explanatory header toolbar and also uses
+        // the shared row menu for label actions such as Open Build File.
         targetsView.installEntityActions(entityActions);
+        allTargetsView.installEntityActions(entityActions);
+        testsView.installEntityActions(entityActions);
+        errorsView.installEntityActions(entityActions);
+        treeView.installEntityActions(entityActions);
+        graphExplorerView.installEntityActions(entityActions);
+        criticalPathView.installEntityActions(entityActions);
+        starlarkProfileView.onOpenSource(this::openStarlarkSource);
+        actionsView.onOpenFile(this::openFile);
+        actionsView.onClearExternalRange(timeline::clearRange);
+        testsView.onOpenFile(this::openFile);
+        eventsView.onCopyFilePath(fileEditors::copyPath);
+        eventsView.onOpenFile(fileEditors::openLocal);
+        eventsView.onOpenExecutionFile(path -> {
+            ExecutionFileSystem files = repositoryFileSystem;
+            if (files != null && files.executionId().equals(path.executionId())) {
+                fileEditors.open(files, path);
+            }
+        });
+        eventsView.onRevealFile(fileEditors::reveal);
+        repositoryBrowserView.onOpenFile(path -> {
+            ExecutionFileSystem files = repositoryFileSystem;
+            if (files != null) {
+                fileEditors.open(files, path, true);
+            }
+        });
         // The timeline's inline inspector adopts the same vocabulary: a
         // clicked span's details offer the same jumps a table row does, and
         // they land in the same navigate() switch.
         timeline.installEntityActions(entityActions);
         graphExplorerView.onActionSelected(this::followGraphSelection);
+        criticalPathView.onOpenGraph(this::openGraphOnDerivedPath);
         // A finding points at records; these are the two ways it does so.
         // Selecting the evidence opens the action; following a link opens the
         // view the rule named, filtered the way the rule filtered it.
@@ -387,6 +776,7 @@ public final class MainWindow extends JFrame {
         overviewPanel.onSnapshot(snapshot -> actionStatus.setText(
                 "Actions: " + EventValueFormat.count(snapshot.actions())));
         targetsView.onShowSourceEvent(this::revealEvent);
+        allTargetsView.onShowSourceEvent(this::revealEvent);
         testsView.onShowSourceEvent(this::revealEvent);
         errorsView.onShowSourceEvent(this::revealEvent);
         // The manifest's event count is absent for a session whose import never
@@ -402,7 +792,16 @@ public final class MainWindow extends JFrame {
         // application was closed is the case this exists for, and reconciling
         // it here means the first time the library is opened it is already
         // right rather than right after the second look.
-        reconcileLibrary();
+        if (workspaceManagerWindow || applicationHost == null) {
+            reconcileLibrary();
+        }
+        if (workspaceManagerWindow) {
+            startWorkspaceDiscovery(false, null);
+        }
+        if (initialWorkspace != null) {
+            openWorkspace(initialWorkspace, false, initialWorkspaceDiscovered);
+            setTitle("Bazel Build Visualizer — " + initialWorkspace.label());
+        }
     }
 
     /** The directory imported sessions are written into. */
@@ -410,27 +809,403 @@ public final class MainWindow extends JFrame {
         return sessionsRoot;
     }
 
+    /** Records recency through the one process-global workspace manager. */
+    public java.util.Optional<WorkspaceProfile> recordWorkspaceOpened(
+            WorkspaceProfile requested, boolean discovered) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("workspace records must change on the EDT");
+        }
+        if (!workspaceManagerWindow || workspaceStore == null) {
+            throw new IllegalStateException("this window does not own workspace settings");
+        }
+        WorkspaceProfile profile = java.util.Objects.requireNonNull(requested, "requested")
+                .openedAt(System.currentTimeMillis() * 1_000L);
+        if (discovered) {
+            discoveredWorkspaceProfiles = discoveredWorkspaceProfiles.stream()
+                    .map(candidate -> candidate.id().equals(profile.id()) ? profile : candidate)
+                    .toList();
+            refreshWorkspaceChoices();
+            return java.util.Optional.of(profile);
+        }
+        return upsertWorkspace(profile)
+                ? java.util.Optional.of(profile)
+                : java.util.Optional.empty();
+    }
+
+    /** Immutable current saved/discovered workspace menu, newest first. */
+    public List<WorkspaceProfile> applicationWorkspaces() {
+        return availableWorkspaceProfiles();
+    }
+
+    /** Whether the profile is ephemeral discovery output rather than saved configuration. */
+    public boolean applicationWorkspaceIsDiscovered(WorkspaceProfile profile) {
+        return isDiscoveredWorkspace(profile);
+    }
+
+    /** Shows the manager's recent-workspace card and brings its frame forward. */
+    public void showWorkspaceManagerWindow() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::showWorkspaceManagerWindow);
+            return;
+        }
+        refreshWorkspaceChoices();
+        rootCardLayout.show(rootCards, ROOT_WORKSPACES);
+        setVisible(true);
+        setState(JFrame.NORMAL);
+        toFront();
+        requestFocus();
+    }
+
+    /** Shows the central manager directly in its new-workspace editor. */
+    public void showNewWorkspaceWindow() {
+        showWorkspaceManagerWindow();
+        workspaceSelectionPanel.showNewWorkspaceForm();
+    }
+
+    /** Shows the central manager directly in the editor for one saved workspace. */
+    public void showEditWorkspaceWindow(WorkspaceProfile profile) {
+        showWorkspaceManagerWindow();
+        workspaceSelectionPanel.showEditWorkspaceForm(profile);
+    }
+
+    /** Shows previously open ephemeral IDs that startup discovery did not resolve. */
+    public void showUnavailableWorkspaceRestores(
+            List<String> workspaceIds, Runnable forgetAction) {
+        if (!workspaceManagerWindow) {
+            throw new IllegalStateException("only the Workspace manager owns restore notices");
+        }
+        workspaceSelectionPanel.setUnavailableRestoreIds(workspaceIds, forgetAction);
+    }
+
+    /** Clears a restored command draft without removing launcher history. */
+    public void clearCommandOnInitialLoad() {
+        launcherPanel.clearCommandOnInitialLoad();
+    }
+
+    /** Applies one process-global logging choice through the manager-owned writer. */
+    public boolean selectApplicationLogVerbosity(LogVerbosity verbosity) {
+        return selectLogVerbosity(verbosity);
+    }
+
+    /** Refreshes the terminal renderer after a process-global look-and-feel change. */
+    public void refreshTerminalTheme() {
+        try {
+            terminalView.refreshTheme();
+        } catch (RuntimeException failure) {
+            log.warn("terminal theme refresh failed", failure);
+        }
+    }
+
+    /** Applies an edited open profile only when its current resources can transition safely. */
+    public boolean updateManagedWorkspace(WorkspaceProfile profile, boolean discovered) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("workspace updates must run on the EDT");
+        }
+        if (disposalStarted || activeWorkspace == null) {
+            return false;
+        }
+        if (workspaceContextTransition) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Wait for the current Workspace connection change to finish before editing it.",
+                    "Workspace is changing",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return false;
+        }
+        if (launchController.isBusy()) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Finish or cancel the running Bazel command before editing this Workspace.",
+                    "Build in progress",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return false;
+        }
+        boolean executionContextChanges = !sameConnection(activeWorkspace, profile);
+        if (executionContextChanges && !fileEditors.confirmContextChangeAllowed()) {
+            return false;
+        }
+        openWorkspace(profile, executionContextChanges, discovered);
+        setTitle("Bazel Build Visualizer — " + profile.label());
+        return true;
+    }
+
+    /**
+     * Handles an explicit close request for one workspace window.
+     *
+     * <p>A running capture is never silently cancelled by the title-bar close
+     * button or Workspaces menu. The user chooses between cancelling it and
+     * keeping the workspace open.
+     */
+    public void requestWorkspaceWindowClose() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::requestWorkspaceWindowClose);
+            return;
+        }
+        requestWorkspaceWindowCloseIfAllowed();
+    }
+
+    /** Returns whether the close was accepted and asynchronous teardown started. */
+    public boolean requestWorkspaceWindowCloseIfAllowed() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("workspace close confirmation must run on the EDT");
+        }
+        if (disposalStarted) {
+            return true;
+        }
+        // Ask before stopping a build. If the user keeps unsaved editor
+        // content, the workspace and its running command stay untouched.
+        if (!fileEditors.confirmCloseAllowed()) {
+            return false;
+        }
+        if (launchController.isBusy()) {
+            Object[] options = {"Cancel Build and Close", "Keep Workspace Open"};
+            int choice = JOptionPane.showOptionDialog(
+                    this,
+                    "A Bazel command is still running in this workspace.",
+                    "Close workspace",
+                    JOptionPane.DEFAULT_OPTION,
+                    JOptionPane.WARNING_MESSAGE,
+                    null,
+                    options,
+                    options[1]);
+            if (choice != 0) {
+                return false;
+            }
+            launchController.cancel(
+                    com.holtherndon.bazelviz.runner.proc.CancellationMode.CANCEL);
+        }
+        disposeAsync();
+        return true;
+    }
+
+    /** Checks dirty modeless editors without changing this window. EDT-only. */
+    public boolean confirmApplicationCloseAllowed() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("application close confirmation must run on the EDT");
+        }
+        return fileEditors.confirmCloseAllowed();
+    }
+
+    /** Whether application quit would need to cancel this window's capture. */
+    public boolean hasActiveCapture() {
+        return launchController.isBusy();
+    }
+
+    /** Requests cancellation after the process-level quit confirmation succeeds. */
+    public void cancelCaptureForApplicationClose() {
+        launchController.cancel(
+                com.holtherndon.bazelviz.runner.proc.CancellationMode.CANCEL);
+    }
+
     @Override
     public void dispose() {
-        launcherPanel.close();
-        // Every view, not just the events one: since this window took ownership
-        // of the session source, closing only one view left the other five
-        // holding executors and JDBC connections, and left the source open.
-        releaseViews();
-        SessionSource closing = currentSource;
+        disposeAsync();
+    }
+
+    /**
+     * Starts disposal and completes after final preference saves and frame cleanup.
+     *
+     * <p>Callers that must terminate the JVM or answer a desktop quit request
+     * use this stage instead of cutting off the shared I/O executor.
+     */
+    public CompletionStage<Void> disposeAsync() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::beginDisposal);
+            return disposalCompletion;
+        }
+        beginDisposal();
+        return disposalCompletion;
+    }
+
+    private void beginDisposal() {
+        if (disposalStarted) {
+            return;
+        }
+        disposalStarted = true;
+        ++workspaceConnectionGeneration;
+        if (applicationHost != null && !workspaceManagerWindow && activeWorkspace != null) {
+            applicationHost.workspaceWindowClosing(activeWorkspace.id());
+        }
+        log.info("main window disposal started");
+        CompletableFuture<Void> discoveryClose = workspaceDiscovery == null
+                ? CompletableFuture.completedFuture(null)
+                : CompletableFuture.runAsync(workspaceDiscovery::close, blockingIo);
+        JDialog closingPreferences = preferencesDialog;
+        if (closingPreferences != null) {
+            closingPreferences.dispose();
+        }
+        setEnabled(false);
+        setVisible(false);
+        CompletableFuture<Void> launcherClose =
+                launcherPanel.closeAsync().toCompletableFuture();
+        importController.cancel();
+        CompletableFuture<Void> workerClose = shutdownWorkerAsync(
+                worker,
+                blockingIo,
+                WORKER_SHUTDOWN_GRACE,
+                WORKER_FORCED_SHUTDOWN_GRACE).toCompletableFuture();
+
+        // Detach the UI while its executors are still alive. Closing the
+        // sources themselves can block behind an in-flight read, so that work
+        // joins the asynchronous shutdown below.
+        CompletableFuture<Void> viewsClose = releaseViews().toCompletableFuture();
+        SessionSource closingLive = liveSource;
+        liveSource = null;
+        SessionSource closingSource = currentSource;
         currentSource = null;
-        closeSource(closing);
-        // Suppress every later UI callback first. Pending preflight resources
-        // are released on the capture worker; a running build is asked to stop
-        // and still finalizes there. Neither path waits on the EDT.
-        launchController.close();
-        worker.shutdownNow();
+        if (closingSource == closingLive) {
+            closingSource = null;
+        }
+        CompletableFuture<Void> sourceClose = CompletableFuture.allOf(
+                closeSourceAfter(closingLive, viewsClose),
+                closeSourceAfter(closingSource, viewsClose));
+        CompletableFuture<Void> repositoryClose =
+                repositoryBrowserView.closeAsync().toCompletableFuture();
+        CompletableFuture<Void> editorClose = fileEditors.closeAsync().toCompletableFuture();
+        CompletableFuture<Void> entityViewsClose = CompletableFuture.allOf(
+                eventsView.closeAsync().toCompletableFuture(),
+                actionsView.closeAsync().toCompletableFuture(),
+                testsView.closeAsync().toCompletableFuture(),
+                errorsView.closeAsync().toCompletableFuture());
+        CompletableFuture<Void> queryClose = queryView.closeAsync().toCompletableFuture();
+
+        RemoteExecution closingRemote = activeRemoteExecution;
+        activeRemoteExecution = null;
+        CompletionStage<Void> captureClose = launchController.closeAsync();
+        CompletionStage<Void> terminalClose = terminalView.closeAsync();
+        // Preference saves use blockingIo. Keep both its virtual-thread executor
+        // and this last displayable frame alive until the newest choice has
+        // reached the atomic settings store. The completion only schedules
+        // the ordinary cleanup; it never waits on the EDT.
+        CompletableFuture<Void> themeClose = themePreferences == null
+                ? CompletableFuture.completedFuture(null)
+                : themePreferences.closeAsync().toCompletableFuture();
+        CompletableFuture<Void> loggingClose = loggingPreferences == null
+                ? CompletableFuture.completedFuture(null)
+                : loggingPreferences.closeAsync().toCompletableFuture();
+        CompletableFuture<Void> resourceClose = CompletableFuture.allOf(
+                themeClose,
+                loggingClose,
+                workspaceSave,
+                workspaceDiscoveryOperations,
+                workspaceConnectionOperations,
+                openPathOperations,
+                recentCatalogOperations,
+                discoveryClose,
+                viewCloseOperations,
+                sourceCloseOperations,
+                remoteCloseOperations,
+                sourceClose,
+                launcherClose,
+                viewsClose,
+                repositoryClose,
+                editorClose,
+                entityViewsClose,
+                queryClose,
+                workerClose,
+                captureClose.toCompletableFuture(),
+                terminalClose.toCompletableFuture());
+
+        // The selected SSH execution is the transport used by both capture
+        // and Terminal. Release it only after both owners report that their
+        // bounded teardown has finished. A failure in an earlier close is
+        // logged but cannot skip the transport close.
+        resourceClose.handle((ignored, failure) -> {
+            if (failure != null) {
+                log.warn("a workspace resource did not close cleanly", failure);
+            }
+            return null;
+        }).thenRunAsync(() -> {
+            if (closingRemote != null) {
+                closingRemote.close();
+            }
+        }, blockingIo).whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                log.warn("workspace execution did not close cleanly", failure);
+            }
+            SwingUtilities.invokeLater(this::finishDisposal);
+        });
+    }
+
+    private void finishDisposal() {
+        if (disposalFinished) {
+            return;
+        }
+        // A connection completion already queued on the EDT can discover the
+        // disposal generation and enqueue one final transport close after the
+        // first snapshot above. Drain that close (and the analogous late
+        // source close) before shutting down their executor.
+        CompletableFuture<Void> lateClose = CompletableFuture.allOf(
+                sourceCloseOperations, remoteCloseOperations);
+        if (!lateClose.isDone()) {
+            lateClose.whenComplete((ignored, failure) -> {
+                if (failure != null) {
+                    log.warn("a late workspace resource did not close cleanly", failure);
+                }
+                SwingUtilities.invokeLater(this::finishDisposal);
+            });
+            return;
+        }
+        disposalFinished = true;
+        // Capture and Terminal have completed before this point, so shutting
+        // their executors down cannot strand a tunnel, PTY, or journal flush.
+        terminalScheduler.shutdown();
+        blockingIo.shutdown();
+        // The shared import/archive/export/catalog lane reached its bounded
+        // shutdown stage before this EDT cleanup.
         // Deliberately not shutdownNow(): interrupting the capture thread is
         // what loses the staged journal buffer. The thread is a daemon, so it
         // does not hold the JVM open, and shutdown() lets an in-flight
         // finalization finish.
         captureWorker.shutdown();
+        releaseCaptureLease();
         super.dispose();
+        log.info("main window disposal finished");
+        disposalCompletion.complete(null);
+    }
+
+    /**
+     * Stops accepting worker work, gives cooperative tasks time to finish, then interrupts once.
+     *
+     * <p>The waits run only on {@code waiter}; calling this method from the EDT is non-blocking.
+     * The returned stage fails after both bounded waits if a task ignores interruption, allowing
+     * application shutdown to continue while making that incomplete teardown observable.
+     */
+    static CompletionStage<Void> shutdownWorkerAsync(
+            ExecutorService worker,
+            Executor waiter,
+            Duration gracefulWait,
+            Duration forcedWait) {
+        Objects.requireNonNull(worker, "worker");
+        Objects.requireNonNull(waiter, "waiter");
+        requirePositive(gracefulWait, "gracefulWait");
+        requirePositive(forcedWait, "forcedWait");
+        worker.shutdown();
+        return CompletableFuture.runAsync(() -> {
+            try {
+                if (worker.awaitTermination(gracefulWait.toNanos(), TimeUnit.NANOSECONDS)) {
+                    return;
+                }
+                List<Runnable> abandoned = worker.shutdownNow();
+                log.warn("worker shutdown interrupted active work and abandoned {} queued task(s)",
+                        abandoned.size());
+                if (!worker.awaitTermination(forcedWait.toNanos(), TimeUnit.NANOSECONDS)) {
+                    throw new IllegalStateException(
+                            "background work did not stop after bounded shutdown waits");
+                }
+            } catch (InterruptedException interrupted) {
+                worker.shutdownNow();
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CompletionException(interrupted);
+            }
+        }, waiter);
+    }
+
+    private static void requirePositive(Duration duration, String name) {
+        Objects.requireNonNull(duration, name);
+        if (duration.isZero() || duration.isNegative()) {
+            throw new IllegalArgumentException(name + " must be positive");
+        }
     }
 
     // ----------------------------------------------------------------- menus
@@ -468,6 +1243,10 @@ public final class MainWindow extends JFrame {
             @Override
             public void menuCanceled(javax.swing.event.MenuEvent event) { }
         });
+        // Warm the in-memory menu model without delaying window construction.
+        // A very fast click may briefly see the loading row; normal openings
+        // render the completed cache immediately and refresh it in background.
+        requestRecentSessions();
 
         JMenuItem cleanUp = new JMenuItem("Clean Up Sessions…");
         cleanUp.addActionListener(event -> cleanUpSessions());
@@ -484,9 +1263,514 @@ public final class MainWindow extends JFrame {
         file.add(cancelImportItem);
         file.add(closeSessionItem);
 
+        JMenuItem preferences = new JMenuItem("Preferences…");
+        preferences.addActionListener(event -> showPreferences());
+        JMenu settings = new JMenu("Settings");
+        settings.add(preferences);
+
         JMenuBar bar = new JMenuBar();
+        bar.add(buildWorkspacesMenu());
         bar.add(file);
+        bar.add(settings);
+        bar.add(LoggingMenu.create(
+                loggingRuntime,
+                this::selectLogVerbosity,
+                this::openApplicationLog,
+                this::revealApplicationLog));
         return bar;
+    }
+
+    private JMenu buildWorkspacesMenu() {
+        JMenuItem choose = new JMenuItem("Choose Workspace…");
+        choose.addActionListener(event -> showWorkspaceHome());
+
+        JMenuItem create = new JMenuItem("New Workspace…");
+        create.addActionListener(event -> {
+            if (applicationHost != null && !workspaceManagerWindow) {
+                applicationHost.showNewWorkspace();
+            } else if (showWorkspaceHome()) {
+                workspaceSelectionPanel.showNewWorkspaceForm();
+            }
+        });
+
+        JMenuItem edit = new JMenuItem("Edit Current Workspace…");
+        edit.addActionListener(event -> editCurrentWorkspace());
+
+        JMenuItem reconnect = new JMenuItem("Reconnect Current Workspace");
+        reconnect.addActionListener(event -> reconnectCurrentWorkspace());
+
+        JMenuItem close = new JMenuItem("Close Current Workspace");
+        close.addActionListener(event -> {
+            if (applicationHost != null && !workspaceManagerWindow) {
+                requestWorkspaceWindowClose();
+            } else {
+                closeCurrentWorkspace(true);
+            }
+        });
+
+        JMenu recent = new JMenu("Available Workspaces");
+        JMenu workspaces = new JMenu("Workspaces");
+        workspaces.addMenuListener(new javax.swing.event.MenuListener() {
+            @Override
+            public void menuSelected(javax.swing.event.MenuEvent event) {
+                boolean selected = activeWorkspace != null;
+                edit.setEnabled(selected && !activeWorkspaceDiscovered
+                        && !launchController.isBusy());
+                reconnect.setEnabled(selected && !launchController.isBusy());
+                close.setEnabled(selected
+                        && (applicationHost != null || !launchController.isBusy()));
+                recent.removeAll();
+                List<WorkspaceProfile> available = applicationHost == null
+                        ? availableWorkspaceProfiles()
+                        : applicationHost.availableWorkspaces();
+                if (available.isEmpty()) {
+                    JMenuItem empty = new JMenuItem("No available workspaces");
+                    empty.setEnabled(false);
+                    recent.add(empty);
+                } else {
+                    for (WorkspaceProfile profile : available) {
+                        boolean discovered = applicationHost == null
+                                ? isDiscoveredWorkspace(profile)
+                                : applicationHost.isDiscoveredWorkspace(profile);
+                        JMenuItem item = new JMenuItem(
+                                profile.label()
+                                        + (discovered ? " [Discovered]" : "")
+                                        + " — " + profile.machineDisplayName());
+                        item.setToolTipText(PlainText.tooltip(profile.workingDirectory()));
+                        item.addActionListener(ignored -> {
+                            if (applicationHost == null) {
+                                openWorkspace(profile, false, discovered);
+                            } else {
+                                applicationHost.openWorkspace(profile, discovered);
+                            }
+                        });
+                        recent.add(item);
+                    }
+                }
+            }
+
+            @Override public void menuDeselected(javax.swing.event.MenuEvent event) { }
+            @Override public void menuCanceled(javax.swing.event.MenuEvent event) { }
+        });
+        workspaces.add(choose);
+        workspaces.add(create);
+        workspaces.add(recent);
+        workspaces.addSeparator();
+        workspaces.add(edit);
+        workspaces.add(reconnect);
+        workspaces.add(close);
+        return workspaces;
+    }
+
+    /** Opens the application Preferences window; desktop app-menu handlers use this route too. */
+    public void showPreferences() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::showPreferences);
+            return;
+        }
+        if (applicationHost != null && !workspaceManagerWindow) {
+            applicationHost.showPreferences();
+            return;
+        }
+        if (disposalStarted) {
+            return;
+        }
+        JDialog existing = preferencesDialog;
+        if (existing != null && existing.isDisplayable()) {
+            existing.setVisible(true);
+            existing.toFront();
+            return;
+        }
+
+        JDialog dialog = new JDialog(this, "Preferences", Dialog.ModalityType.MODELESS);
+        WorkspaceDiscoveryPreferencesPanel discoveryPanel =
+                new WorkspaceDiscoveryPreferencesPanel(
+                        "",
+                        script -> saveWorkspaceDiscoveryScript(script, false),
+                        script -> saveWorkspaceDiscoveryScript(script, true));
+        ThemePreferencesPanel themePanel =
+                new ThemePreferencesPanel(Themes.current(), this::selectTheme);
+        PreferencesPanel panel =
+                new PreferencesPanel(themePanel, discoveryPanel, dialog::dispose);
+        preferencesDialog = dialog;
+        preferencesPanel = panel;
+        discoveryPreferencesPanel = discoveryPanel;
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        dialog.setContentPane(panel);
+        dialog.setMinimumSize(new Dimension(740, 520));
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosed(java.awt.event.WindowEvent event) {
+                if (preferencesDialog == dialog) {
+                    preferencesDialog = null;
+                    preferencesPanel = null;
+                    discoveryPreferencesPanel = null;
+                }
+            }
+        });
+        discoveryPanel.setOperationState(true, "Loading discovery script…");
+        dialog.setVisible(true);
+
+        try {
+            CompletableFuture<Void> load = CompletableFuture.runAsync(() -> {
+                WorkspaceDiscoveryScriptStore.LoadResult loaded =
+                        workspaceDiscoveryScriptStore.loadWithDiagnostics();
+                SwingUtilities.invokeLater(() ->
+                        installLoadedDiscoveryScript(discoveryPanel, loaded));
+            }, blockingIo);
+            workspaceDiscoveryOperations = CompletableFuture.allOf(
+                    workspaceDiscoveryOperations, load);
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            discoveryPanel.setOperationState(
+                    false, "Preferences are unavailable while the app closes.");
+        }
+    }
+
+    private void installLoadedDiscoveryScript(
+            WorkspaceDiscoveryPreferencesPanel panel,
+            WorkspaceDiscoveryScriptStore.LoadResult loaded) {
+        if (!isCurrentPreferencesPanel(panel)) {
+            return;
+        }
+        panel.setScript(loaded.script());
+        String status = loaded.diagnostics().isEmpty()
+                ? " "
+                : loaded.diagnostics().getFirst();
+        panel.setOperationState(false, status);
+    }
+
+    private void saveWorkspaceDiscoveryScript(String script, boolean discoverAfterSave) {
+        WorkspaceDiscoveryPreferencesPanel panel = discoveryPreferencesPanel;
+        if (panel == null) {
+            return;
+        }
+        panel.setOperationState(
+                true,
+                discoverAfterSave ? "Saving, then running discovery…" : "Saving…");
+        long wanted = discoverAfterSave ? beginWorkspaceDiscovery() : 0;
+        workspaceDiscoveryOperations = workspaceDiscoveryOperations
+                .handle((ignored, priorFailure) -> null)
+                .thenRunAsync(() -> {
+                    WorkspaceDiscoveryScriptStore.SaveResult saved =
+                            workspaceDiscoveryScriptStore.saveWithDiagnostics(script);
+                    if (!saved.saved()) {
+                        SwingUtilities.invokeLater(() ->
+                                discoveryScriptSaveFailed(panel, saved, discoverAfterSave, wanted));
+                        return;
+                    }
+                    if (!discoverAfterSave) {
+                        SwingUtilities.invokeLater(() -> {
+                            if (isCurrentPreferencesPanel(panel)) {
+                                panel.setOperationState(false, "Saved.");
+                            }
+                        });
+                        return;
+                    }
+                    runWorkspaceDiscovery(wanted, true, panel);
+                }, blockingIo);
+    }
+
+    private void discoveryScriptSaveFailed(
+            WorkspaceDiscoveryPreferencesPanel panel,
+            WorkspaceDiscoveryScriptStore.SaveResult saved,
+            boolean discoveryRequested,
+            long wanted) {
+        String detail = saved.diagnostics().isEmpty()
+                ? "The workspace discovery script could not be saved."
+                : String.join("\n", saved.diagnostics());
+        if (discoveryRequested && wanted == workspaceDiscoveryGeneration) {
+            workspaceSelectionPanel.setDiscoveryStatus(
+                    "Discovery did not run because its script could not be saved.");
+        }
+        if (isCurrentPreferencesPanel(panel)) {
+            panel.setOperationState(false, detail);
+            showSelectableMessage(
+                    preferencesDialog,
+                    detail,
+                    "Workspace Discovery",
+                    JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    private void startWorkspaceDiscovery(
+            boolean userRequested,
+            WorkspaceDiscoveryPreferencesPanel panel) {
+        long wanted = beginWorkspaceDiscovery();
+        workspaceDiscoveryOperations = workspaceDiscoveryOperations
+                .handle((ignored, priorFailure) -> null)
+                .thenRunAsync(() -> runWorkspaceDiscovery(wanted, userRequested, panel), blockingIo);
+    }
+
+    private long beginWorkspaceDiscovery() {
+        long wanted = ++workspaceDiscoveryGeneration;
+        discoveredWorkspaceProfiles = List.of();
+        refreshWorkspaceChoices();
+        workspaceSelectionPanel.setDiscoveryStatus("Discovering workspaces…");
+        return wanted;
+    }
+
+    private void runWorkspaceDiscovery(
+            long wanted,
+            boolean userRequested,
+            WorkspaceDiscoveryPreferencesPanel panel) {
+        try {
+            WorkspaceDiscovery.DiscoveryResult result = workspaceDiscovery.discover();
+            SwingUtilities.invokeLater(() ->
+                    installWorkspaceDiscovery(result, wanted, userRequested, panel));
+        } catch (RuntimeException failure) {
+            log.warn("workspace discovery failed unexpectedly", failure);
+            SwingUtilities.invokeLater(() -> workspaceDiscoveryFailed(
+                    wanted, userRequested, panel,
+                    "Workspace discovery failed unexpectedly: " + describeFailure(failure)));
+        }
+    }
+
+    private void installWorkspaceDiscovery(
+            WorkspaceDiscovery.DiscoveryResult result,
+            long wanted,
+            boolean userRequested,
+            WorkspaceDiscoveryPreferencesPanel panel) {
+        if (disposalStarted || wanted != workspaceDiscoveryGeneration) {
+            return;
+        }
+        discoveredWorkspaceProfiles = result.workspaces().stream()
+                .filter(discovered -> workspaceProfiles.stream()
+                        .noneMatch(saved -> saved.id().equals(discovered.id())))
+                .toList();
+        int hiddenIdCollisions = result.workspaces().size()
+                - discoveredWorkspaceProfiles.size();
+        refreshWorkspaceChoices();
+        if (applicationHost != null) {
+            applicationHost.workspaceChoicesChanged(!userRequested);
+        }
+        String summary = workspaceDiscoverySummary(result);
+        if (hiddenIdCollisions > 0) {
+            summary += " " + hiddenIdCollisions + " discovered workspace"
+                    + (hiddenIdCollisions == 1 ? "" : "s")
+                    + " conflicted with a saved workspace ID and "
+                    + (hiddenIdCollisions == 1 ? "was" : "were") + " not shown.";
+        }
+        workspaceSelectionPanel.setDiscoveryStatus(summary);
+        if (isCurrentPreferencesPanel(panel)) {
+            panel.setOperationState(false, summary);
+        }
+        boolean hasProblems = result.timedOut()
+                || (result.exitCode().isPresent() && result.exitCode().getAsInt() != 0)
+                || !result.diagnostics().isEmpty()
+                || !result.stderr().isBlank();
+        if (userRequested && hasProblems && isCurrentPreferencesPanel(panel)) {
+            showDiscoveryDiagnostics(result);
+        }
+    }
+
+    private void workspaceDiscoveryFailed(
+            long wanted,
+            boolean userRequested,
+            WorkspaceDiscoveryPreferencesPanel panel,
+            String detail) {
+        if (disposalStarted || wanted != workspaceDiscoveryGeneration) {
+            return;
+        }
+        discoveredWorkspaceProfiles = List.of();
+        refreshWorkspaceChoices();
+        if (applicationHost != null) {
+            applicationHost.workspaceChoicesChanged(!userRequested);
+        }
+        workspaceSelectionPanel.setDiscoveryStatus(detail);
+        if (isCurrentPreferencesPanel(panel)) {
+            panel.setOperationState(false, detail);
+            if (userRequested) {
+                showSelectableMessage(
+                        preferencesDialog,
+                        detail,
+                        "Workspace Discovery",
+                        JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private static String workspaceDiscoverySummary(
+            WorkspaceDiscovery.DiscoveryResult result) {
+        String summary;
+        if (result.exitCode().isEmpty()
+                && !result.timedOut()
+                && result.diagnostics().isEmpty()) {
+            summary = "Workspace discovery is not configured.";
+        } else if (result.workspaces().isEmpty()) {
+            summary = "Workspace discovery found no workspaces.";
+        } else if (result.workspaces().size() == 1) {
+            summary = "Workspace discovery found 1 workspace.";
+        } else {
+            summary = "Workspace discovery found " + result.workspaces().size()
+                    + " workspaces.";
+        }
+        if (!result.diagnostics().isEmpty()) {
+            summary += " " + result.diagnostics().getFirst();
+            if (result.diagnostics().size() > 1) {
+                summary += " (" + (result.diagnostics().size() - 1) + " more)";
+            }
+        }
+        return summary;
+    }
+
+    private void showDiscoveryDiagnostics(WorkspaceDiscovery.DiscoveryResult result) {
+        StringBuilder detail = new StringBuilder();
+        for (String diagnostic : result.diagnostics()) {
+            if (!detail.isEmpty()) {
+                detail.append('\n');
+            }
+            detail.append(diagnostic);
+        }
+        if (!result.stderr().isBlank()) {
+            if (!detail.isEmpty()) {
+                detail.append("\n\n");
+            }
+            detail.append("Script stderr:\n").append(result.stderr().stripTrailing());
+        }
+        showSelectableMessage(
+                preferencesDialog,
+                detail.toString(),
+                "Workspace Discovery",
+                result.timedOut()
+                                || (result.exitCode().isPresent()
+                                        && result.exitCode().getAsInt() != 0)
+                        ? JOptionPane.WARNING_MESSAGE
+                        : JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private static void showSelectableMessage(
+            Component parent,
+            String detail,
+            String title,
+            int messageType) {
+        JTextArea text = new JTextArea(detail, 12, 72);
+        text.setEditable(false);
+        text.setLineWrap(true);
+        text.setWrapStyleWord(true);
+        text.setCaretPosition(0);
+        JScrollPane scroll = new JScrollPane(text);
+        scroll.setPreferredSize(new Dimension(700, 260));
+        JOptionPane.showMessageDialog(parent, scroll, title, messageType);
+    }
+
+    private boolean isCurrentPreferencesPanel(WorkspaceDiscoveryPreferencesPanel panel) {
+        return panel != null
+                && panel == discoveryPreferencesPanel
+                && preferencesDialog != null
+                && preferencesDialog.isDisplayable();
+    }
+
+    /** Applies a colour theme immediately, then persists it away from the EDT. */
+    private boolean selectTheme(AppTheme theme) {
+        if (themePreferences == null) {
+            return false;
+        }
+        if (theme == Themes.current()) {
+            return true;
+        }
+        try {
+            Themes.install(theme);
+        } catch (RuntimeException failure) {
+            log.error("could not apply theme {}", theme.id(), failure);
+            JOptionPane.showMessageDialog(
+                    this,
+                    "The " + theme.displayName() + " theme could not be applied.",
+                    "Theme unavailable",
+                    JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+        // JediTerm owns its renderer and snapshots Swing colours; unlike
+        // ordinary Swing components it needs an explicit palette refresh.
+        // A renderer fault must not undo a look and feel that is already live
+        // or prevent that successful selection from being persisted.
+        try {
+            terminalView.refreshTheme();
+        } catch (RuntimeException refreshFailure) {
+            log.warn("the active terminal did not refresh for theme {}",
+                    theme.id(), refreshFailure);
+        }
+        themePreferences.save(theme);
+        if (applicationHost != null) {
+            applicationHost.themeChanged();
+        }
+        return true;
+    }
+
+    private void showThemePersistenceFailure(ThemePreferenceWriter.SaveFailure failure) {
+        Runnable show = () -> {
+            log.warn("could not persist theme {}", failure.theme().id(), failure.cause());
+            if (!disposalStarted && isDisplayable()) {
+                JOptionPane.showMessageDialog(
+                        this,
+                        "The theme changed for this session, but it could not be saved."
+                                + " It may reset the next time the app starts.",
+                        "Theme not saved",
+                        JOptionPane.WARNING_MESSAGE);
+            }
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            show.run();
+        } else {
+            SwingUtilities.invokeLater(show);
+        }
+    }
+
+    /** Applies logging detail immediately, then persists it away from the EDT. */
+    private boolean selectLogVerbosity(LogVerbosity verbosity) {
+        if (loggingPreferences == null && applicationHost != null) {
+            return applicationHost.selectLogVerbosity(verbosity);
+        }
+        if (!loggingRuntime.available()) {
+            return false;
+        }
+        try {
+            loggingRuntime.setVerbosity(verbosity);
+        } catch (RuntimeException failure) {
+            log.error("could not apply logging verbosity {}", verbosity.id(), failure);
+            JOptionPane.showMessageDialog(
+                    this,
+                    "The " + verbosity.displayName() + " logging level could not be applied.",
+                    "Logging unavailable",
+                    JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+        log.info("application logging verbosity changed to {}", verbosity.id());
+        loggingPreferences.save(verbosity);
+        return true;
+    }
+
+    private void openApplicationLog() {
+        if (loggingRuntime.available()) {
+            fileEditors.openLocal(loggingRuntime.currentLog());
+        }
+    }
+
+    private void revealApplicationLog() {
+        if (loggingRuntime.available()) {
+            fileEditors.reveal(loggingRuntime.currentLog());
+        }
+    }
+
+    private void showLoggingPersistenceFailure(LoggingPreferenceWriter.SaveFailure failure) {
+        Runnable show = () -> {
+            log.warn("could not persist logging verbosity {}",
+                    failure.verbosity().id(), failure.cause());
+            if (!disposalStarted && isDisplayable()) {
+                JOptionPane.showMessageDialog(
+                        this,
+                        "The logging level changed for this session, but it could not be saved."
+                                + " It may reset the next time the app starts.",
+                        "Logging level not saved",
+                        JOptionPane.WARNING_MESSAGE);
+            }
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            show.run();
+        } else {
+            SwingUtilities.invokeLater(show);
+        }
     }
 
     /** Everything a session can be turned into, and what each one carries. */
@@ -614,6 +1898,9 @@ public final class MainWindow extends JFrame {
      * matched, so the decision to share rests on something a person read.
      */
     private boolean confirmRedaction(RedactionReport report) {
+        if (disposalStarted) {
+            return false;
+        }
         JTextArea text = new JTextArea(String.join("\n", report.lines()));
         text.setEditable(false);
         text.setRows(Math.min(20, report.lines().size() + 2));
@@ -643,6 +1930,9 @@ public final class MainWindow extends JFrame {
 
     private void showExportResult(String title, String message) {
         log.info("{}: {}", title, message);
+        if (disposalStarted) {
+            return;
+        }
         JTextArea text = new JTextArea(message);
         text.setEditable(false);
         text.setLineWrap(true);
@@ -655,72 +1945,143 @@ public final class MainWindow extends JFrame {
 
     private void showExportFailure(Throwable failure) {
         log.error("export failed", failure);
+        if (disposalStarted) {
+            return;
+        }
         JOptionPane.showMessageDialog(this, String.valueOf(failure.getMessage()),
                 "Export failed", JOptionPane.ERROR_MESSAGE);
     }
 
     // ----------------------------------------------------------- the library
 
-    /**
-     * Rebuilds the Open Recent menu from the catalog.
-     *
-     * <p>Reads on the EDT, deliberately: it is one indexed query returning at
-     * most a dozen small rows, and a menu that populated asynchronously would
-     * open empty and fill in under the user's cursor.
-     */
+    /** Rebuilds the Open Recent menu from the last background catalog read. */
     private void refreshRecentMenu() {
         recentMenu.removeAll();
-        try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
-            java.util.List<CatalogEntry> entries = catalog.recent(12);
-            if (entries.isEmpty()) {
-                JMenuItem none = new JMenuItem("No sessions yet");
-                none.setEnabled(false);
-                recentMenu.add(none);
-                return;
-            }
-            for (CatalogEntry entry : entries) {
-                JMenu submenu = new JMenu((entry.pinned() ? "\u2605 " : "")
-                        + entry.displayName() + (entry.missing() ? "  (not found)" : ""));
-                submenu.setToolTipText(PlainText.tooltip(entry.directory().toString()
-                        + entry.summary().map(text -> " — " + text).orElse("")));
+        if (!recentCatalogLoaded) {
+            addDisabledRecentItem("Loading recent sessions…");
+        } else if (recentCatalogFailure != null) {
+            addDisabledRecentItem("The session library could not be read");
+        } else if (recentCatalogEntries.isEmpty()) {
+            addDisabledRecentItem("No sessions yet");
+        } else {
+            addRecentEntries(recentCatalogEntries);
+        }
+        requestRecentSessions();
+    }
 
-                JMenuItem open = new JMenuItem("Open");
-                // A session whose directory is gone is listed and not offered:
-                // seeing that it existed is the point of keeping the row.
-                open.setEnabled(!entry.missing());
-                open.addActionListener(event -> openPath(entry.directory()));
-                submenu.add(open);
+    private void addDisabledRecentItem(String text) {
+        JMenuItem item = new JMenuItem(text);
+        item.setEnabled(false);
+        recentMenu.add(item);
+    }
 
-                // Pinning is the only way a user can say "this one matters",
-                // and it is what retention refuses to override. Without a
-                // control for it the protection exists and nobody can use it.
-                JMenuItem pin = new JMenuItem(entry.pinned() ? "Unpin" : "Pin");
-                pin.addActionListener(event ->
-                        setPinned(entry.sessionUuid(), !entry.pinned()));
-                submenu.add(pin);
+    private void addRecentEntries(List<CatalogEntry> entries) {
+        for (CatalogEntry entry : entries) {
+            JMenu submenu = new JMenu((entry.pinned() ? "\u2605 " : "")
+                    + entry.displayName() + (entry.missing() ? "  (not found)" : ""));
+            submenu.setToolTipText(PlainText.tooltip(entry.directory().toString()
+                    + entry.summary().map(text -> " — " + text).orElse("")));
 
-                JMenuItem forget = new JMenuItem("Remove from Recent");
-                forget.setToolTipText(PlainText.tooltip(
-                        "Takes it off this list. The session stays on disk."));
-                forget.addActionListener(event -> forgetSession(entry.sessionUuid()));
-                submenu.add(forget);
+            JMenuItem open = new JMenuItem("Open");
+            // A session whose directory is gone is listed and not offered:
+            // seeing that it existed is the point of keeping the row.
+            open.setEnabled(!entry.missing());
+            open.addActionListener(event -> openPath(entry.directory()));
+            submenu.add(open);
 
-                recentMenu.add(submenu);
-            }
-        } catch (Exception failure) {
+            // Pinning is the only way a user can say "this one matters",
+            // and it is what retention refuses to override. Without a
+            // control for it the protection exists and nobody can use it.
+            JMenuItem pin = new JMenuItem(entry.pinned() ? "Unpin" : "Pin");
+            pin.addActionListener(event -> setPinned(entry.sessionUuid(), !entry.pinned()));
+            submenu.add(pin);
+
+            JMenuItem forget = new JMenuItem("Remove from Recent");
+            forget.setToolTipText(PlainText.tooltip(
+                    "Takes it off this list. The session stays on disk."));
+            forget.addActionListener(event -> forgetSession(entry.sessionUuid()));
+            submenu.add(forget);
+
+            recentMenu.add(submenu);
+        }
+    }
+
+    /** Starts one catalog read; only its small immutable result returns to Swing. */
+    private void requestRecentSessions() {
+        if (recentCatalogLoadInProgress || disposalStarted) {
+            return;
+        }
+        recentCatalogLoadInProgress = true;
+        long generation = ++recentCatalogLoadGeneration;
+        CompletableFuture<Void> read = readRecentSessionsAsync(catalogDirectory, blockingIo)
+                .handle((entries, failure) -> {
+                    SwingUtilities.invokeLater(() -> acceptRecentSessions(
+                            generation, entries, failure));
+                    return (Void) null;
+                }).toCompletableFuture();
+        recentCatalogOperations = CompletableFuture.allOf(recentCatalogOperations, read);
+    }
+
+    private void acceptRecentSessions(
+            long generation, List<CatalogEntry> entries, Throwable failure) {
+        if (disposalStarted || generation != recentCatalogLoadGeneration) {
+            return;
+        }
+        recentCatalogLoadInProgress = false;
+        recentCatalogLoaded = true;
+        if (failure == null) {
+            recentCatalogEntries = List.copyOf(entries);
+            recentCatalogFailure = null;
+        } else {
+            recentCatalogEntries = List.of();
+            recentCatalogFailure = String.valueOf(failure.getMessage());
             log.warn("could not read the session catalog", failure);
-            JMenuItem broken = new JMenuItem("The session library could not be read");
-            broken.setEnabled(false);
-            recentMenu.add(broken);
+        }
+        // Do not mutate an open popup underneath the pointer. The constructor
+        // prefetch normally makes the cache ready for the first opening; if it
+        // is still loading, the completed result appears on the next opening.
+    }
+
+    /** Catalog access for Open Recent. The supplied executor must not be the EDT. */
+    static CompletionStage<List<CatalogEntry>> readRecentSessionsAsync(
+            Path directory, Executor executor) {
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(executor, "executor");
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return CatalogAccess.withCatalog(directory, catalog -> catalog.recent(12));
+            } catch (Exception failure) {
+                throw new java.util.concurrent.CompletionException(failure);
+            }
+        }, executor);
+    }
+
+    /** Queues ordinary background work only while this window can still consume its result. */
+    private boolean executeWorker(Runnable action) {
+        if (disposalStarted) {
+            return false;
+        }
+        try {
+            worker.execute(action);
+            return true;
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            if (!disposalStarted) {
+                log.warn("background work was rejected before window disposal", rejected);
+            }
+            return false;
         }
     }
 
     /** Reconciles the catalog against the directories that are actually there. */
     private void reconcileLibrary() {
-        worker.execute(() -> {
-            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
-                SessionCatalog.RescanResult result = catalog.rescan(sessionsRoot,
-                        directory -> CatalogEntries.read(directory, sessions::readManifest));
+        executeWorker(() -> {
+            try {
+                SessionCatalog.RescanResult result = CatalogAccess.withCatalog(
+                        catalogDirectory,
+                        catalog -> catalog.rescan(
+                                sessionsRoot,
+                                directory -> CatalogEntries.read(
+                                        directory, sessions::readManifest)));
                 log.info("session library: {}", result.describe());
             } catch (Exception failure) {
                 log.warn("could not reconcile the session library", failure);
@@ -729,9 +2090,12 @@ public final class MainWindow extends JFrame {
     }
 
     private void setPinned(String sessionUuid, boolean pinned) {
-        worker.execute(() -> {
-            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
-                catalog.setPinned(sessionUuid, pinned);
+        executeWorker(() -> {
+            try {
+                CatalogAccess.withCatalog(catalogDirectory, catalog -> {
+                    catalog.setPinned(sessionUuid, pinned);
+                    return null;
+                });
             } catch (Exception failure) {
                 log.warn("could not change the pin on {}", sessionUuid, failure);
             }
@@ -739,9 +2103,12 @@ public final class MainWindow extends JFrame {
     }
 
     private void forgetSession(String sessionUuid) {
-        worker.execute(() -> {
-            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
-                catalog.forget(sessionUuid);
+        executeWorker(() -> {
+            try {
+                CatalogAccess.withCatalog(catalogDirectory, catalog -> {
+                    catalog.forget(sessionUuid);
+                    return null;
+                });
             } catch (Exception failure) {
                 log.warn("could not forget {}", sessionUuid, failure);
             }
@@ -789,10 +2156,12 @@ public final class MainWindow extends JFrame {
                     ((Number) gigabytes.getValue()).longValue() * 1_024L * 1_024 * 1_024);
         }
         RetentionPolicy chosen = policy;
-        worker.execute(() -> {
-            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
-                RetentionPolicy.Plan plan = catalog.plan(
-                        chosen, System.currentTimeMillis() * 1_000L);
+        executeWorker(() -> {
+            try {
+                RetentionPolicy.Plan plan = CatalogAccess.withCatalog(
+                        catalogDirectory,
+                        catalog -> catalog.plan(
+                                chosen, System.currentTimeMillis() * 1_000L));
                 SwingUtilities.invokeLater(() -> confirmSweep(plan));
             } catch (Exception failure) {
                 log.error("could not plan a cleanup", failure);
@@ -802,6 +2171,9 @@ public final class MainWindow extends JFrame {
     }
 
     private void confirmSweep(RetentionPolicy.Plan plan) {
+        if (disposalStarted) {
+            return;
+        }
         JTextArea text = new JTextArea(String.join("\n", plan.lines()));
         text.setEditable(false);
         text.setRows(Math.min(20, plan.lines().size() + 1));
@@ -816,10 +2188,12 @@ public final class MainWindow extends JFrame {
                 != JOptionPane.OK_OPTION) {
             return;
         }
-        worker.execute(() -> {
-            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
-                // The plan, not the policy: what is deleted is what was shown.
-                SessionCatalog.SweepResult result = catalog.apply(plan);
+        executeWorker(() -> {
+            try {
+                // The plan, not the policy: what is deleted is what was shown. Active-session,
+                // pin and relocation state is rechecked under the process mutation lock.
+                SessionCatalog.SweepResult result =
+                        sessionMutations.applyCleanup(catalogDirectory, plan);
                 SwingUtilities.invokeLater(() ->
                         showExportResult("Cleanup complete", result.describe()));
             } catch (Exception failure) {
@@ -831,14 +2205,18 @@ public final class MainWindow extends JFrame {
 
     /** Records an opened session in the library, off the event thread. */
     private void recordInCatalog(Path sessionRoot) {
-        worker.execute(() -> {
-            try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
+        executeWorker(() -> {
+            try {
                 java.util.Optional<CatalogEntry> entry =
                         CatalogEntries.read(sessionRoot, sessions::readManifest);
                 if (entry.isPresent()) {
-                    catalog.record(entry.orElseThrow());
-                    catalog.touch(entry.orElseThrow().sessionUuid(),
-                            System.currentTimeMillis() * 1_000L);
+                    CatalogEntry opened = entry.orElseThrow();
+                    CatalogAccess.withCatalog(catalogDirectory, catalog -> {
+                        catalog.record(opened);
+                        catalog.touch(opened.sessionUuid(),
+                                System.currentTimeMillis() * 1_000L);
+                        return null;
+                    });
                 }
             } catch (Exception failure) {
                 // The library is a convenience. A session that opens perfectly
@@ -920,13 +2298,68 @@ public final class MainWindow extends JFrame {
      * about what they actually did.
      */
     public void openPath(Path path) {
-        OpenRequest request = OpenRequest.classify(path);
-        switch (request.kind()) {
-            case SESSION_DIRECTORY -> openSessionDirectory(path, true);
-            case PORTABLE_ARCHIVE -> importArchive(path);
-            case BEP_FILE -> startImport(path);
-            case UNSUPPORTED -> showSessionFailure(request.describeUnsupported());
+        Objects.requireNonNull(path, "path");
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> openPath(path));
+            return;
         }
+        if (disposalStarted) {
+            return;
+        }
+        rootCardLayout.show(rootCards, ROOT_SHELL);
+        openPathOperations = openPathOperations
+                .handle((ignored, previousFailure) -> null)
+                .thenCompose(ignored -> inspectOpenPathAsync(path, blockingIo))
+                .handle((inspection, failure) -> {
+                    SwingUtilities.invokeLater(() -> finishOpenPath(inspection, failure));
+                    return null;
+                });
+    }
+
+    private void finishOpenPath(OpenPathInspection inspection, Throwable failure) {
+        if (disposalStarted) {
+            return;
+        }
+        if (failure != null) {
+            log.warn("could not inspect path before opening it", failure);
+            showSessionFailure(String.valueOf(failure.getMessage()));
+            return;
+        }
+        OpenRequest request = inspection.request();
+        switch (request.kind()) {
+            case SESSION_DIRECTORY -> openSessionDirectory(request.path(), true);
+            case PORTABLE_ARCHIVE -> importArchive(request.path());
+            case BEP_FILE -> startImport(request.path());
+            case UNSUPPORTED -> showSessionFailure(inspection.unsupportedDescription());
+        }
+    }
+
+    /** Everything the UI needs after one background-only path inspection. */
+    record OpenPathInspection(OpenRequest request, String unsupportedDescription) {
+
+        OpenPathInspection {
+            Objects.requireNonNull(request, "request");
+            if (request.kind() == OpenRequest.Kind.UNSUPPORTED) {
+                Objects.requireNonNull(unsupportedDescription, "unsupportedDescription");
+            }
+        }
+    }
+
+    /** Performs all path metadata reads on the supplied background executor. */
+    static CompletionStage<OpenPathInspection> inspectOpenPathAsync(
+            Path path, Executor executor) {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(executor, "executor");
+        return CompletableFuture.supplyAsync(() -> {
+            if (SwingUtilities.isEventDispatchThread()) {
+                throw new IllegalStateException("open-path metadata must not be read on the EDT");
+            }
+            OpenRequest request = OpenRequest.classify(path);
+            String description = request.kind() == OpenRequest.Kind.UNSUPPORTED
+                    ? request.describeUnsupported()
+                    : null;
+            return new OpenPathInspection(request, description);
+        }, executor);
     }
 
     /**
@@ -937,14 +2370,20 @@ public final class MainWindow extends JFrame {
      * the EDT does (rule 8).
      */
     private void importArchive(Path archive) {
+        if (disposalStarted) {
+            return;
+        }
         showEventsCard();
         eventsView.showEmpty("Checking " + archive.getFileName() + "…");
-        worker.execute(() -> {
+        executeWorker(() -> {
             try {
-                ArchiveImport.Result result =
-                        ArchiveImport.into(archive, sessionsRoot, BvizLimits.defaults());
+                ArchiveImport.Result result = sessionMutations.importArchive(
+                        archive, sessionsRoot, BvizLimits.defaults());
                 log.info("imported archive: {}", result.describe());
                 SwingUtilities.invokeLater(() -> {
+                    if (disposalStarted) {
+                        return;
+                    }
                     if (result.redacted()) {
                         // The user is about to look at a session whose raw
                         // capture is deliberately absent. Saying so once, here,
@@ -963,6 +2402,9 @@ public final class MainWindow extends JFrame {
     }
 
     private void startImport(Path source) {
+        if (disposalStarted) {
+            return;
+        }
         showEventsCard();
         eventsView.closeSession();
         eventsView.showImportProgress();
@@ -978,6 +2420,9 @@ public final class MainWindow extends JFrame {
     }
 
     private void resumeImport(Path sessionRoot) {
+        if (disposalStarted) {
+            return;
+        }
         showEventsCard();
         eventsView.closeSession();
         eventsView.showImportProgress();
@@ -993,16 +2438,25 @@ public final class MainWindow extends JFrame {
 
         @Override
         public void importStarted(Path source, boolean resuming) {
+            if (disposalStarted) {
+                return;
+            }
             eventsView.progressPanel().beginRun(source, resuming);
         }
 
         @Override
         public void importProgress(ImportProgressModel.Snapshot snapshot) {
+            if (disposalStarted) {
+                return;
+            }
             eventsView.progressPanel().update(snapshot);
         }
 
         @Override
         public void importFinished(ImportResult result) {
+            if (disposalStarted) {
+                return;
+            }
             cancelImportItem.setEnabled(false);
             eventsView.progressPanel().finish(summarize(result));
             if (result.outcome() != ImportOutcome.COMPLETE) {
@@ -1016,6 +2470,9 @@ public final class MainWindow extends JFrame {
 
         @Override
         public void importFailed(Path source, Throwable failure) {
+            if (disposalStarted) {
+                return;
+            }
             cancelImportItem.setEnabled(false);
             eventsView.progressPanel().finish("Import failed.");
             eventsView.showEmpty("Import failed. Nothing was indexed.");
@@ -1055,17 +2512,24 @@ public final class MainWindow extends JFrame {
      *     wants and opening it silently would hide that the capture is partial
      */
     private void openSessionDirectory(Path root, boolean offerResume) {
+        if (disposalStarted) {
+            return;
+        }
         showEventsCard();
         eventsView.showEmpty("Opening " + root + "…");
-        worker.execute(() -> {
+        executeWorker(() -> {
             try {
                 SessionManifest manifest = sessions.readManifest(root);
                 if (offerResume && !manifest.state().isTerminal()) {
                     SwingUtilities.invokeLater(() -> promptResume(root, manifest));
                     return;
                 }
-                SqliteSessionSource opened = SqliteSessionSource.open(sessions, root);
+                SessionSource opened = openProtectedSession(root, manifest);
                 SwingUtilities.invokeLater(() -> {
+                    if (disposalStarted) {
+                        closeSource(opened);
+                        return;
+                    }
                     installSession(opened);
                     showSessionInfo(opened.info());
                 });
@@ -1077,7 +2541,36 @@ public final class MainWindow extends JFrame {
         });
     }
 
+    /** Takes the process lease before opening any database handle for this session. */
+    private SessionSource openProtectedSession(Path root, SessionManifest manifest)
+            throws InterruptedException {
+        SessionMutationCoordinator.ActiveSession active =
+                sessionMutations.activate(manifest.sessionId().toString(), root);
+        SessionSource opened = null;
+        try {
+            opened = SqliteSessionSource.open(sessions, root);
+            return active.guard(opened);
+        } catch (RuntimeException | Error failure) {
+            try {
+                if (opened != null) {
+                    opened.close();
+                }
+            } finally {
+                active.close();
+            }
+            throw failure;
+        }
+    }
+
+    /** Reads the live manifest before taking its lease; callers already run on a worker. */
+    private SessionSource openProtectedSession(Path root) throws Exception {
+        return openProtectedSession(root, sessions.readManifest(root));
+    }
+
     private void promptResume(Path root, SessionManifest manifest) {
+        if (disposalStarted) {
+            return;
+        }
         Object[] options = {"Resume import", "Open as it is", "Cancel"};
         int choice = JOptionPane.showOptionDialog(this,
                 "This session is in state " + manifest.state()
@@ -1096,59 +2589,763 @@ public final class MainWindow extends JFrame {
     /**
      * Hands one session to every view and takes ownership of it.
      *
-     * <p>The previous source is closed only after the views have let go of it,
-     * which they do synchronously here — their own teardown continues on
-     * background threads, but each has already stopped issuing new queries.
+     * <p>The next session is installed immediately. The previous source closes
+     * asynchronously only after every old view reader has finished its bounded
+     * teardown, so replacing a session never closes SQLite under accepted work.
      */
     private void installSession(SessionSource opened) {
-        releaseViews();
+        if (disposalStarted) {
+            closeSource(opened);
+            return;
+        }
+        CompletionStage<Void> released = releaseViews();
         SessionSource previous = currentSource;
+        SessionSource previousLive = liveSource;
+        liveSource = null;
         currentSource = opened;
-        eventsView.openSession(opened, this::showSessionFailure);
+        openEventsSession(opened);
         overviewPanel.openSession(opened);
         actionsView.openSession(opened);
         targetsView.openSession(opened);
+        allTargetsView.openSession(opened);
+        configurationsView.openSession(opened);
+        if (nav.getSelectedValue() == NavEntry.ALL_TARGETS) {
+            allTargetsView.activate();
+        } else if (nav.getSelectedValue() == NavEntry.CONFIGURATIONS) {
+            configurationsView.activate();
+        }
         testsView.openSession(opened);
         errorsView.openSession(opened);
         coverageView.openSession(opened);
         treeView.openSession(opened);
         graphExplorerView.openSession(opened);
+        criticalPathView.openSession(opened);
+        starlarkProfileView.openSession(opened);
         timeline.openSession(opened);
         // One metric collection feeds both the findings card and the overview's
         // cards, so opening a session scans its actions once rather than twice.
         metricsService = new MetricsService(opened);
         metricsService.addListener(overviewPanel::showMetrics);
+        metricsService.addListener(criticalPathView::show);
+        metricsService.addErrorListener(criticalPathView::showFailure);
         metricsService.addListener(result -> derivedCriticalPath =
                 result.metrics().invocation().criticalPaths().derived()
                         .map(com.holtherndon.bazelviz.analysis.CriticalPath.Result::path)
                         .orElse(List.of()));
         findingsView.attach(metricsService);
         queryView.openSession(opened);
-        closeSource(previous);
+        closeSourceAfter(previous, released);
+        if (previousLive != previous) {
+            closeSourceAfter(previousLive, released);
+        }
+    }
+
+    private void configureWorkspaceSelection() {
+        workspaceSelectionPanel.onOpen(profile -> {
+            if (applicationHost == null) {
+                openWorkspace(profile);
+            } else {
+                applicationHost.openWorkspace(profile, isDiscoveredWorkspace(profile));
+            }
+        });
+        workspaceSelectionPanel.onCreate(profile -> {
+            if (applicationHost == null) {
+                openWorkspace(profile);
+            } else {
+                applicationHost.openWorkspace(profile, false);
+            }
+        });
+        workspaceSelectionPanel.onUpdate(profile -> {
+            boolean active = applicationHost == null
+                    && activeWorkspace != null
+                    && activeWorkspace.id().equals(profile.id());
+            if (active) {
+                return updateManagedWorkspace(profile, activeWorkspaceDiscovered);
+            }
+            if (applicationHost != null) {
+                return applyWorkspaceUpdateBeforePersistence(
+                        profile, applicationHost::workspaceUpdated, this::upsertWorkspace);
+            }
+            return upsertWorkspace(profile);
+        });
+        workspaceSelectionPanel.onRemove(this::removeWorkspace);
+    }
+
+    private void refreshWorkspaceChoices() {
+        workspaceSelectionPanel.setWorkspaces(
+                workspaceProfiles, discoveredWorkspaceProfiles);
+    }
+
+    private List<WorkspaceProfile> availableWorkspaceProfiles() {
+        return availableWorkspaceProfiles(workspaceProfiles, discoveredWorkspaceProfiles);
+    }
+
+    static List<WorkspaceProfile> availableWorkspaceProfiles(
+            List<WorkspaceProfile> savedProfiles,
+            List<WorkspaceProfile> discoveredProfiles) {
+        ArrayList<WorkspaceProfile> available = new ArrayList<>(
+                savedProfiles.size() + discoveredProfiles.size());
+        available.addAll(savedProfiles);
+        for (WorkspaceProfile discovered : discoveredProfiles) {
+            if (savedProfiles.stream()
+                    .noneMatch(saved -> saved.id().equals(discovered.id()))) {
+                available.add(discovered);
+            }
+        }
+        available.sort(WorkspaceProfile.RECENT_FIRST);
+        return List.copyOf(available);
+    }
+
+    private boolean isDiscoveredWorkspace(WorkspaceProfile profile) {
+        return isDiscoveredWorkspace(workspaceProfiles, discoveredWorkspaceProfiles, profile);
+    }
+
+    static boolean isDiscoveredWorkspace(
+            List<WorkspaceProfile> savedProfiles,
+            List<WorkspaceProfile> discoveredProfiles,
+            WorkspaceProfile profile) {
+        if (savedProfiles.stream().anyMatch(saved -> saved.id().equals(profile.id()))) {
+            return false;
+        }
+        return discoveredProfiles.stream()
+                .anyMatch(discovered -> discovered.id().equals(profile.id()));
+    }
+
+    /** Shows the startup workspace menu without disconnecting the current workspace. */
+    private boolean showWorkspaceHome() {
+        if (applicationHost != null && !workspaceManagerWindow) {
+            applicationHost.showWorkspaceManager();
+            return true;
+        }
+        if (launchController.isBusy()) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Finish or cancel the running build before changing workspaces.",
+                    "Build in progress",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return false;
+        }
+        refreshWorkspaceChoices();
+        rootCardLayout.show(rootCards, ROOT_WORKSPACES);
+        return true;
+    }
+
+    private void editCurrentWorkspace() {
+        WorkspaceProfile current = activeWorkspace;
+        if (current != null && applicationHost != null && !workspaceManagerWindow) {
+            if (!activeWorkspaceDiscovered && !launchController.isBusy()) {
+                applicationHost.editWorkspace(current);
+            }
+        } else if (current != null && !activeWorkspaceDiscovered && showWorkspaceHome()) {
+            workspaceSelectionPanel.showEditWorkspaceForm(current);
+        }
+    }
+
+    private void reconnectCurrentWorkspace() {
+        WorkspaceProfile current = activeWorkspace;
+        if (current != null) {
+            openWorkspace(current, true, activeWorkspaceDiscovered);
+        }
+    }
+
+    private boolean upsertWorkspace(WorkspaceProfile profile) {
+        java.util.Objects.requireNonNull(profile, "profile");
+        boolean existing = workspaceProfiles.stream()
+                .anyMatch(candidate -> candidate.id().equals(profile.id()));
+        if (!existing && workspaceProfiles.size() >= WorkspaceStore.MAX_SAVED_WORKSPACES) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "At most " + WorkspaceStore.MAX_SAVED_WORKSPACES
+                            + " workspaces can be saved. Remove one before adding another.",
+                    "Workspace limit reached",
+                    JOptionPane.WARNING_MESSAGE);
+            return false;
+        }
+        ArrayList<WorkspaceProfile> updated = new ArrayList<>(workspaceProfiles.size() + 1);
+        updated.add(profile);
+        for (WorkspaceProfile candidate : workspaceProfiles) {
+            if (!candidate.id().equals(profile.id())) {
+                updated.add(candidate);
+            }
+        }
+        updated.sort(WorkspaceProfile.RECENT_FIRST);
+        workspaceProfiles = List.copyOf(updated);
+        refreshWorkspaceChoices();
+        queueWorkspaceSave();
+        return true;
+    }
+
+    private void removeWorkspace(WorkspaceProfile profile) {
+        int choice = JOptionPane.showConfirmDialog(
+                this,
+                "Remove ‘" + profile.label() + "’ from saved workspaces?\n"
+                        + "Its command history and table layout settings will also be removed.\n"
+                        + "No repository files or captured sessions will be deleted.",
+                "Remove workspace",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.WARNING_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION) {
+            return;
+        }
+        if (applicationHost != null && !applicationHost.workspaceRemoved(profile)) {
+            return;
+        }
+        workspaceProfiles = workspaceProfiles.stream()
+                .filter(candidate -> !candidate.id().equals(profile.id()))
+                .toList();
+        refreshWorkspaceChoices();
+        queueWorkspaceSave(applicationHost == null
+                ? () -> { }
+                : () -> applicationHost.workspaceRemovalPersisted(profile));
+        if (activeWorkspace != null && activeWorkspace.id().equals(profile.id())) {
+            closeCurrentWorkspace(false);
+        }
+    }
+
+    private void queueWorkspaceSave() {
+        queueWorkspaceSave(() -> { });
+    }
+
+    private void queueWorkspaceSave(Runnable afterSuccessfulSave) {
+        if (workspaceStore == null) {
+            return;
+        }
+        Objects.requireNonNull(afterSuccessfulSave, "afterSuccessfulSave");
+        List<WorkspaceProfile> snapshot = List.copyOf(workspaceProfiles);
+        workspaceSave = workspaceSave.handle((ignored, priorFailure) -> null)
+                .thenComposeAsync(ignored -> {
+                    WorkspaceStore.SaveResult result = workspaceStore.saveWithDiagnostics(snapshot);
+                    CompletableFuture<Void> accepted = new CompletableFuture<>();
+                    if (!result.saved()) {
+                        String detail = result.diagnostics().isEmpty()
+                                ? "Workspaces could not be saved."
+                                : String.join("\n", result.diagnostics());
+                        completeOnEventThread(
+                                accepted, () -> showWorkspacePersistenceFailure(detail));
+                    } else {
+                        completeOnEventThread(accepted, afterSuccessfulSave);
+                    }
+                    return accepted;
+                }, blockingIo);
+    }
+
+    private void showWorkspacePersistenceFailure(String detail) {
+        if (!disposalStarted && isDisplayable()) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    detail + "\nYour in-memory workspace list is still available in this window.",
+                    "Workspaces not saved",
+                    JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    private void openWorkspace(WorkspaceProfile requested) {
+        openWorkspace(requested, false, isDiscoveredWorkspace(requested));
+    }
+
+    private void openWorkspace(WorkspaceProfile requested, boolean forceReconnect) {
+        boolean discovered = activeWorkspace != null
+                && activeWorkspace.id().equals(requested.id())
+                ? activeWorkspaceDiscovered
+                : isDiscoveredWorkspace(requested);
+        openWorkspace(requested, forceReconnect, discovered);
+    }
+
+    private void openWorkspace(
+            WorkspaceProfile requested,
+            boolean forceReconnect,
+            boolean discovered) {
+        if (launchController.isBusy() || workspaceContextTransition) {
+            showWorkspaceHome();
+            return;
+        }
+        WorkspaceProfile profile = workspaceManagerWindow
+                ? requested.openedAt(System.currentTimeMillis() * 1_000L)
+                : requested;
+        if (workspaceManagerWindow) {
+            if (discovered) {
+                discoveredWorkspaceProfiles = discoveredWorkspaceProfiles.stream()
+                        .map(candidate -> candidate.id().equals(profile.id()) ? profile : candidate)
+                        .toList();
+                refreshWorkspaceChoices();
+            } else if (!upsertWorkspace(profile)) {
+                return;
+            }
+        }
+        WorkspaceProfile previousProfile = activeWorkspace;
+        activeWorkspace = profile;
+        activeWorkspaceDiscovered = discovered;
+        launcherPanel.useManagedWorkspace(
+                profile.label(),
+                profile.kind() == WorkspaceProfile.Kind.LOCAL
+                        ? com.holtherndon.bazelviz.ui.capture.LauncherStateStore.ExecutionHost.LOCAL
+                        : com.holtherndon.bazelviz.ui.capture.LauncherStateStore.ExecutionHost.SSH,
+                profile.workingDirectory(),
+                profile.bazelExecutable(),
+                profile.destination().orElse(""),
+                profile.port().isPresent() ? Integer.toString(profile.port().getAsInt()) : "");
+        launcherPanel.setRunEnabled(false);
+        rootCardLayout.show(rootCards, ROOT_SHELL);
+        showCard(NavEntry.BUILD);
+
+        if (!forceReconnect
+                && repositoryFileSystem != null
+                && sameConnection(previousProfile, profile)) {
+            workspaceStatus.setText("Workspace: ready — " + profile.label());
+            launcherPanel.setRunEnabled(true);
+            rebuildNavigation(true);
+            return;
+        }
+
+        long wanted = ++workspaceConnectionGeneration;
+        RemoteExecution previous = activeRemoteExecution;
+        activeRemoteExecution = null;
+        workspaceContextTransition = true;
+        CompletionStage<Void> detached = clearExecutionViewsAsync(true);
+        CompletableFuture<Void> oldExecutionClosed = closeRemoteAfter(previous, detached);
+        workspaceStatus.setText("Workspace: connecting — " + profile.label());
+        CompletableFuture<Void> transition = new CompletableFuture<>();
+        oldExecutionClosed.whenComplete((ignored, failure) -> completeOnEventThread(
+                transition,
+                () -> {
+                    if (failure != null) {
+                        log.warn("the previous Workspace execution did not close cleanly", failure);
+                    }
+                    if (!isCurrentWorkspace(profile, wanted)) {
+                        workspaceContextTransition = false;
+                        return;
+                    }
+                    workspaceContextTransition = false;
+                    if (profile.kind() == WorkspaceProfile.Kind.LOCAL) {
+                        connectLocalWorkspace(profile, wanted);
+                    } else {
+                        connectSshWorkspace(profile, wanted);
+                    }
+                }));
+        workspaceConnectionOperations = CompletableFuture.allOf(
+                workspaceConnectionOperations, transition);
+    }
+
+    static boolean sameConnection(
+            WorkspaceProfile current, WorkspaceProfile requested) {
+        return current != null
+                && current.id().equals(requested.id())
+                && current.kind() == requested.kind()
+                && current.destination().equals(requested.destination())
+                && current.port().equals(requested.port())
+                && current.workingDirectory().equals(requested.workingDirectory());
+    }
+
+    /** The open window must accept an edit before the manager may save it. */
+    static boolean applyWorkspaceUpdateBeforePersistence(
+            WorkspaceProfile profile,
+            java.util.function.Predicate<WorkspaceProfile> apply,
+            java.util.function.Predicate<WorkspaceProfile> persist) {
+        Objects.requireNonNull(profile, "profile");
+        Objects.requireNonNull(apply, "apply");
+        Objects.requireNonNull(persist, "persist");
+        return apply.test(profile) && persist.test(profile);
+    }
+
+    private void connectLocalWorkspace(WorkspaceProfile profile, long wanted) {
+        CompletableFuture<Void> installed = new CompletableFuture<>();
+        CompletableFuture<Void> workerCompletion = CompletableFuture.runAsync(() -> {
+            try {
+                Path working = Path.of(profile.workingDirectory()).toAbsolutePath().normalize();
+                if (!java.nio.file.Files.isDirectory(working)) {
+                    throw new java.io.IOException(
+                            "the working directory does not exist: " + working);
+                }
+                WorkspaceInfo detected = WorkspaceDetector.detect(working);
+                Path repository = detected.workspaceRoot().orElse(working).toRealPath();
+                completeOnEventThread(installed,
+                        () -> installLocalWorkspace(profile, wanted, working, repository));
+            } catch (java.io.IOException | RuntimeException failure) {
+                completeOnEventThread(installed,
+                        () -> workspaceConnectionFailed(profile, wanted, failure));
+            }
+        }, blockingIo);
+        workerCompletion.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                installed.completeExceptionally(failure);
+            }
+        });
+        workspaceConnectionOperations = CompletableFuture.allOf(
+                workspaceConnectionOperations, installed);
+    }
+
+    private void installLocalWorkspace(
+            WorkspaceProfile profile, long wanted, Path working, Path repository) {
+        if (!isCurrentWorkspace(profile, wanted)) {
+            return;
+        }
+        LocalExecutionFileSystem files = new LocalExecutionFileSystem(
+                "local-workspace-" + profile.id());
+        repositoryFileSystem = files;
+        captureLeaseKey = CaptureLeaseKey.localRealPath(repository);
+        repositoryBrowserView.openRepository(
+                profile.label() + " · This computer", files, files.path(repository));
+        terminalView.bind(
+                profile.label() + " · This computer",
+                working.toString(),
+                LocalCommandExecutor.INSTANCE);
+        workspaceReady(profile);
+    }
+
+    private void connectSshWorkspace(WorkspaceProfile profile, long wanted) {
+        CompletableFuture<Void> installed = new CompletableFuture<>();
+        CompletableFuture<Void> workerCompletion = CompletableFuture.runAsync(() -> {
+            RemoteExecution connected = null;
+            try {
+                OptionalInt port = profile.port();
+                SshTarget target = port.isPresent()
+                        ? SshTarget.of(profile.destination().orElseThrow(), port.getAsInt())
+                        : SshTarget.of(profile.destination().orElseThrow());
+                connected = RemoteExecution.connect(
+                        target, profile.workingDirectory(), java.time.Duration.ofSeconds(30));
+                if (disposalStarted) {
+                    connected.close();
+                    installed.complete(null);
+                    return;
+                }
+                RemoteExecution completed = connected;
+                connected = null;
+                completeOnEventThread(installed,
+                        () -> installRemoteWorkspace(profile, wanted, completed));
+            } catch (java.io.IOException | InterruptedException | RuntimeException failure) {
+                if (failure instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                if (connected != null) {
+                    connected.close();
+                }
+                completeOnEventThread(installed,
+                        () -> workspaceConnectionFailed(profile, wanted, failure));
+            }
+        }, blockingIo);
+        workerCompletion.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                installed.completeExceptionally(failure);
+            }
+        });
+        workspaceConnectionOperations = CompletableFuture.allOf(
+                workspaceConnectionOperations, installed);
+    }
+
+    /** Completes only after a posted workspace transition has run on Swing's event thread. */
+    static void completeOnEventThread(
+            CompletableFuture<Void> completion, Runnable transition) {
+        SwingUtilities.invokeLater(() -> {
+            try {
+                transition.run();
+                completion.complete(null);
+            } catch (Throwable failure) {
+                completion.completeExceptionally(failure);
+            }
+        });
+    }
+
+    private void installRemoteWorkspace(
+            WorkspaceProfile profile, long wanted, RemoteExecution remote) {
+        if (!isCurrentWorkspace(profile, wanted)) {
+            closeRemoteOffEdt(remote);
+            return;
+        }
+        activeRemoteExecution = remote;
+        try {
+            repositoryFileSystem = remote.fileSystem();
+            captureLeaseKey = CaptureLeaseKey.ssh(
+                    profile.destination().orElseThrow(),
+                    profile.port(),
+                    remote.repositoryRootText());
+            repositoryBrowserView.openRepository(
+                    profile.label() + " · " + remote.displayName(),
+                    repositoryFileSystem,
+                    remote.repositoryRoot());
+            terminalView.bind(
+                    profile.label() + " · " + remote.displayName(),
+                    remote.workingDirectory(),
+                    remote.commandExecutor());
+            workspaceReady(profile);
+            if (currentSource != null) {
+                openEventsSession(currentSource);
+            }
+        } catch (java.io.IOException | RuntimeException failure) {
+            activeRemoteExecution = null;
+            closeRemoteOffEdt(remote);
+            workspaceConnectionFailed(profile, wanted, failure);
+        }
+    }
+
+    private void workspaceReady(WorkspaceProfile profile) {
+        rebuildNavigation(true);
+        launcherPanel.setRunEnabled(true);
+        workspaceStatus.setText("Workspace: ready — " + profile.label());
+        log.info("workspace ready kind={} label={} workingDirectory={}",
+                profile.kind(), profile.label(), profile.workingDirectory());
+        if (nav.getSelectedValue() == NavEntry.TERMINAL) {
+            terminalView.activate();
+        }
+    }
+
+    private void workspaceConnectionFailed(
+            WorkspaceProfile profile, long wanted, Throwable failure) {
+        if (!isCurrentWorkspace(profile, wanted)) {
+            return;
+        }
+        clearExecutionViewsAsync(false);
+        launcherPanel.setRunEnabled(false);
+        workspaceStatus.setText("Workspace: connection failed — " + profile.label());
+        log.warn("workspace connection failed kind={} label={} failureType={}",
+                profile.kind(), profile.label(), failure.getClass().getSimpleName());
+        JOptionPane.showMessageDialog(
+                this,
+                "The workspace could not be opened:\n" + describeFailure(failure)
+                        + "\n\nUse Workspaces ▸ Reconnect Current Workspace to try again.",
+                "Cannot open workspace",
+                JOptionPane.ERROR_MESSAGE);
+    }
+
+    private boolean isCurrentWorkspace(WorkspaceProfile profile, long wanted) {
+        return !disposalStarted
+                && wanted == workspaceConnectionGeneration
+                && activeWorkspace != null
+                && activeWorkspace.id().equals(profile.id());
+    }
+
+    private static String describeFailure(Throwable failure) {
+        String message = failure.getMessage();
+        return message == null || message.isBlank()
+                ? failure.getClass().getSimpleName()
+                : message;
+    }
+
+    private CompletionStage<Void> clearExecutionViewsAsync(boolean closeEditors) {
+        repositoryFileSystem = null;
+        captureLeaseKey = null;
+        CompletionStage<Void> repository = repositoryBrowserView.clearRepositoryAsync();
+        CompletionStage<Void> terminal = terminalView.clearBindingAsync();
+        CompletionStage<Void> editors = closeEditors
+                ? fileEditors.closeEditorsForContextChangeAsync()
+                : CompletableFuture.completedFuture(null);
+        CompletionStage<Void> eventFiles = eventsView.detachExecutionFileAccessAsync();
+        rebuildNavigation(false);
+        return executionContextReleased(repository, terminal, editors, eventFiles);
+    }
+
+    /** The old execution remains owned until every context-backed UI consumer settles. */
+    @SafeVarargs
+    static CompletionStage<Void> executionContextReleased(CompletionStage<Void>... consumers) {
+        Objects.requireNonNull(consumers, "consumers");
+        CompletableFuture<?>[] futures = new CompletableFuture<?>[consumers.length];
+        for (int index = 0; index < consumers.length; index++) {
+            futures[index] = Objects.requireNonNull(consumers[index], "consumer")
+                    .toCompletableFuture();
+        }
+        return CompletableFuture.allOf(futures);
+    }
+
+    private void closeCurrentWorkspace(boolean showHome) {
+        if (launchController.isBusy() || workspaceContextTransition) {
+            showWorkspaceHome();
+            return;
+        }
+        ++workspaceConnectionGeneration;
+        activeWorkspace = null;
+        activeWorkspaceDiscovered = false;
+        launcherPanel.clearManagedWorkspace();
+        launcherPanel.setRunEnabled(false);
+        RemoteExecution previous = activeRemoteExecution;
+        activeRemoteExecution = null;
+        workspaceContextTransition = true;
+        long wanted = workspaceConnectionGeneration;
+        CompletableFuture<Void> closed = closeRemoteAfter(
+                previous, clearExecutionViewsAsync(true));
+        closed.whenComplete((ignored, failure) -> SwingUtilities.invokeLater(() -> {
+            if (wanted == workspaceConnectionGeneration) {
+                workspaceContextTransition = false;
+            }
+            if (failure != null) {
+                log.warn("the closed Workspace execution did not shut down cleanly", failure);
+            }
+        }));
+        workspaceStatus.setText("Workspace: none");
+        if (showHome) {
+            refreshWorkspaceChoices();
+            rootCardLayout.show(rootCards, ROOT_WORKSPACES);
+        }
+    }
+
+    private void closeRemoteOffEdt(RemoteExecution remote) {
+        if (remote == null) {
+            return;
+        }
+        if (!SwingUtilities.isEventDispatchThread()) {
+            remote.close();
+            return;
+        }
+        CompletableFuture<Void> close;
+        try {
+            close = CompletableFuture.runAsync(remote::close, blockingIo);
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            try {
+                close = CompletableFuture.runAsync(remote::close, captureWorker);
+            } catch (java.util.concurrent.RejectedExecutionException alsoRejected) {
+                // A connection can finish racing with the last disposal
+                // callback after both owned executors stopped accepting work.
+                // It still needs a bounded transport close; a one-shot virtual
+                // thread cannot retain the Swing window or block the EDT.
+                close = new CompletableFuture<>();
+                CompletableFuture<Void> fallback = close;
+                Thread.ofVirtual().name("bbv-remote-close-fallback").start(() -> {
+                    try {
+                        remote.close();
+                        fallback.complete(null);
+                    } catch (Throwable failure) {
+                        fallback.completeExceptionally(failure);
+                    }
+                });
+            }
+        }
+        remoteCloseOperations = CompletableFuture.allOf(remoteCloseOperations, close);
+    }
+
+    /** Closes an execution only after every old-context consumer has released it. */
+    private CompletableFuture<Void> closeRemoteAfter(
+            RemoteExecution remote, CompletionStage<Void> consumersClosed) {
+        CompletionStage<Void> observed = consumersClosed.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                log.warn("an old Workspace consumer did not release cleanly", failure);
+            }
+        });
+        CompletableFuture<Void> close = remote == null
+                ? observed.handle((ignored, failure) -> (Void) null).toCompletableFuture()
+                : runAfterCompletion(observed, remote::close, blockingIo)
+                        .toCompletableFuture();
+        remoteCloseOperations = CompletableFuture.allOf(remoteCloseOperations, close);
+        return close;
+    }
+
+    /** Compatibility path for a controller-created connection. */
+    private void installRemoteExecution(RemoteExecution remote) {
+        WorkspaceProfile profile = activeWorkspace;
+        if (profile == null || profile.kind() != WorkspaceProfile.Kind.SSH) {
+            closeRemoteOffEdt(remote);
+            return;
+        }
+        installRemoteWorkspace(profile, workspaceConnectionGeneration, remote);
+    }
+
+    private void openEventsSession(SessionSource source) {
+        liveRemoteFileAccess(source.info()).ifPresentOrElse(
+                access -> eventsView.openSession(source, access, this::showSessionFailure),
+                () -> eventsView.openSession(source, this::showSessionFailure));
+    }
+
+    /** Uses a recorded SSH path only through the matching explicit live connection. */
+    private java.util.Optional<WorkspaceFileAccess> liveRemoteFileAccess(SessionInfo info) {
+        RemoteExecution remote = activeRemoteExecution;
+        if (remote == null || info.executionLocation().isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        try {
+            if (!info.executionLocation().orElseThrow().equals(remote.provenance())) {
+                return java.util.Optional.empty();
+            }
+            if (info.executionWorkingDirectory()
+                    .filter(remote.workingDirectory()::equals).isEmpty()) {
+                return java.util.Optional.empty();
+            }
+            if (info.executionWorkspaceRoot().isPresent()
+                    && !info.executionWorkspaceRoot().equals(remote.workspaceRoot())) {
+                return java.util.Optional.empty();
+            }
+            ExecutionFileSystem files = remote.fileSystem();
+            return java.util.Optional.of(new WorkspaceFileAccess(
+                    files,
+                    info.executionWorkspaceRoot().map(value -> pathUnchecked(files, value)),
+                    info.executionWorkingDirectory().map(value -> pathUnchecked(files, value))));
+        } catch (RuntimeException failure) {
+            log.warn("the live SSH filesystem could not be matched to session {}",
+                    info.sessionId(), failure);
+            return java.util.Optional.empty();
+        }
+    }
+
+    private static com.holtherndon.bazelviz.runner.files.ExecutionPath pathUnchecked(
+            ExecutionFileSystem files, String value) {
+        try {
+            return files.path(value);
+        } catch (java.io.IOException failure) {
+            throw new IllegalArgumentException("invalid execution path: " + value, failure);
+        }
+    }
+
+    private void closeActiveRemoteExecution() {
+        RemoteExecution previous = activeRemoteExecution;
+        activeRemoteExecution = null;
+        closeRemoteOffEdt(previous);
     }
 
     /** Tells every view to let go, without closing the source. */
-    private void releaseViews() {
-        eventsView.closeSession();
-        overviewPanel.closeSession();
-        actionsView.closeSession();
-        targetsView.closeSession();
-        testsView.closeSession();
-        errorsView.closeSession();
-        coverageView.closeSession();
-        treeView.closeSession();
-        graphExplorerView.closeSession();
-        timeline.closeSession();
-        queryView.closeSession();
+    private CompletionStage<Void> releaseViews() {
+        List<CompletableFuture<Void>> closes = new ArrayList<>();
+        closes.add(eventsView.closeSessionAsync().toCompletableFuture());
+        closes.add(overviewPanel.closeSessionAsync().toCompletableFuture());
+        closes.add(actionsView.closeSessionAsync().toCompletableFuture());
+        closes.add(targetsView.closeSessionAsync().toCompletableFuture());
+        closes.add(allTargetsView.closeSessionAsync().toCompletableFuture());
+        closes.add(configurationsView.closeSessionAsync().toCompletableFuture());
+        closes.add(testsView.closeSessionAsync().toCompletableFuture());
+        closes.add(errorsView.closeSessionAsync().toCompletableFuture());
+        closes.add(coverageView.closeSessionAsync().toCompletableFuture());
+        closes.add(treeView.closeSessionAsync().toCompletableFuture());
+        closes.add(graphExplorerView.closeSessionAsync().toCompletableFuture());
+        closes.add(criticalPathView.closeSessionAsync().toCompletableFuture());
+        closes.add(starlarkProfileView.closeSessionAsync().toCompletableFuture());
+        closes.add(timeline.closeSessionAsync().toCompletableFuture());
+        closes.add(queryView.closeSessionAsync().toCompletableFuture());
         findingsView.detach();
         derivedCriticalPath = List.of();
         MetricsService closing = metricsService;
         metricsService = null;
         if (closing != null) {
-            Thread closer = new Thread(closing::close, "bbv-metrics-close");
-            closer.setDaemon(true);
-            closer.start();
+            // Invalidate a delivery already queued for the EDT before the
+            // potentially blocking worker shutdown is handed to background I/O.
+            closing.cancel();
+            closes.add(closing.closeAsync().toCompletableFuture());
         }
+        CompletableFuture<Void> close =
+                CompletableFuture.allOf(closes.toArray(CompletableFuture[]::new));
+        viewCloseOperations = CompletableFuture.allOf(viewCloseOperations, close);
+        return close;
+    }
+
+    /** Runs cleanup after a prerequisite settles, even when that prerequisite failed. */
+    static CompletionStage<Void> runAfterCompletion(
+            CompletionStage<Void> prerequisite, Runnable cleanup, Executor executor) {
+        Objects.requireNonNull(prerequisite, "prerequisite");
+        Objects.requireNonNull(cleanup, "cleanup");
+        Objects.requireNonNull(executor, "executor");
+        return prerequisite.handle((ignored, failure) -> null).thenRunAsync(cleanup, executor);
+    }
+
+    /** Schedules one source close after all views that used it have settled. */
+    private CompletableFuture<Void> closeSourceAfter(
+            SessionSource source, CompletionStage<Void> viewsClose) {
+        if (source == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        CompletableFuture<Void> close = viewsClose.thenRunAsync(source::close, blockingIo)
+                .toCompletableFuture();
+        close.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                log.warn("view cleanup did not finish; leaving its session source open rather"
+                        + " than closing it beneath an active query", failure);
+            }
+        });
+        sourceCloseOperations = CompletableFuture.allOf(sourceCloseOperations, close);
+        return close;
     }
 
     /**
@@ -1162,9 +3359,22 @@ public final class MainWindow extends JFrame {
         if (source == null) {
             return;
         }
-        Thread closer = new Thread(source::close, "bbv-source-close");
-        closer.setDaemon(true);
-        closer.start();
+        CompletableFuture<Void> close;
+        try {
+            close = CompletableFuture.runAsync(source::close, blockingIo);
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            close = new CompletableFuture<>();
+            CompletableFuture<Void> fallback = close;
+            Thread.ofVirtual().name("bbv-source-close-fallback").start(() -> {
+                try {
+                    source.close();
+                    fallback.complete(null);
+                } catch (Throwable failure) {
+                    fallback.completeExceptionally(failure);
+                }
+            });
+        }
+        sourceCloseOperations = CompletableFuture.allOf(sourceCloseOperations, close);
     }
 
     private void showSessionInfo(SessionInfo info) {
@@ -1180,6 +3390,9 @@ public final class MainWindow extends JFrame {
     }
 
     private void showSessionFailure(String message) {
+        if (disposalStarted) {
+            return;
+        }
         eventsView.showEmpty("The session could not be opened.");
         sessionStatus.setText("Session: none");
         closeSessionItem.setEnabled(false);
@@ -1190,15 +3403,18 @@ public final class MainWindow extends JFrame {
     private void closeSession() {
         SessionSource live = liveSource;
         liveSource = null;
-        closeSource(live);
-        releaseViews();
         SessionSource closing = currentSource;
         currentSource = null;
-        closeSource(closing);
+        CompletionStage<Void> released = releaseViews();
+        closeSourceAfter(live, released);
+        if (closing != live) {
+            closeSourceAfter(closing, released);
+        }
         eventsView.showEmpty("No session is open. Use File ▸ Open BEP File… or"
                 + " File ▸ Open Session…");
         actionsView.showEmpty("No session is open.");
         targetsView.showEmpty("No session is open.");
+        allTargetsView.showEmpty("No session is open.");
         testsView.showEmpty("No session is open.");
         errorsView.showEmpty("No session is open.");
         sessionStatus.setText("Session: none");
@@ -1260,8 +3476,8 @@ public final class MainWindow extends JFrame {
     /**
      * Opens the graph with the derived dependency chain drawn on it.
      *
-     * <p>The only overview card that points at the graph is the derived-path
-     * one, so arriving there from the overview means the same request.
+     * <p>Used by the Critical Path page and the finding that explicitly asks
+     * to draw the dependency chain. Overview now opens the analysis page first.
      */
     private void openGraphOnDerivedPath() {
         showCard(NavEntry.GRAPH);
@@ -1292,6 +3508,12 @@ public final class MainWindow extends JFrame {
                 showCard(NavEntry.TARGETS);
                 targetsView.revealLabel(((EntityRef.TargetLabel) ref).label());
             }
+            case VIEW_CONFIGURATION -> {
+                showCard(NavEntry.CONFIGURATIONS);
+                configurationsView.revealChecksum(
+                        ((EntityRef.ConfigurationChecksum) ref).checksum());
+            }
+            case OPEN_BUILD_FILE -> openBuildFile(((EntityRef.TargetLabel) ref).label());
             case SHOW_ACTIONS_FOR_LABEL -> {
                 showCard(NavEntry.ACTIONS);
                 actionsView.filterToLabel(((EntityRef.TargetLabel) ref).label());
@@ -1325,10 +3547,36 @@ public final class MainWindow extends JFrame {
         }
     }
 
+    private void openBuildFile(String label) {
+        SessionSource open = currentSource;
+        if (open != null) {
+            liveRemoteFileAccess(open.info()).ifPresentOrElse(
+                    access -> fileEditors.openBuildFile(label, access),
+                    () -> fileEditors.openBuildFile(label, open.info()));
+        }
+    }
+
+    private void openFile(FileLink link) {
+        SessionSource open = currentSource;
+        if (open != null) {
+            liveRemoteFileAccess(open.info()).ifPresentOrElse(
+                    access -> fileEditors.open(link, access),
+                    () -> fileEditors.open(link, open.info()));
+        }
+    }
+
+    /** Opens a profile source hint through the same local/SSH-safe resolver as other files. */
+    private void openStarlarkSource(StarlarkProfileReader.SourceLocation source) {
+        String title = source.line().isPresent()
+                ? "Starlark source · definition line " + source.line().getAsInt()
+                : "Starlark source";
+        openFile(new FileLink(title, source.path(), FileLink.Base.WORKSPACE));
+    }
+
     /** Shows one action in the actions table, selected. */
     private void revealAction(long actionId) {
         showCard(NavEntry.ACTIONS);
-        actionsView.selectAction(actionId);
+        actionsView.revealAction(actionId);
     }
 
     private void followGraphSelection(long actionId) {
@@ -1387,6 +3635,9 @@ public final class MainWindow extends JFrame {
      * conflict has to be answered by a person, not defaulted past.
      */
     private void startLaunch() {
+        if (disposalStarted) {
+            return;
+        }
         if (launchController.isBusy()) {
             JOptionPane.showMessageDialog(this,
                     "A build is already running. Cancel it before starting another.",
@@ -1400,30 +3651,132 @@ public final class MainWindow extends JFrame {
                     "Nothing to run", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        Path workingDirectory;
-        try {
-            workingDirectory = Path.of(launcherPanel.workspace().strip()).toAbsolutePath().normalize();
-        } catch (java.nio.file.InvalidPathException bad) {
+        WorkspaceProfile workspace = activeWorkspace;
+        if (workspace == null || repositoryFileSystem == null) {
             JOptionPane.showMessageDialog(this,
-                    "That is not a usable directory: " + launcherPanel.workspace(),
-                    "Cannot launch", JOptionPane.ERROR_MESSAGE);
+                    "Choose and connect a workspace before running a Bazel command.",
+                    "No workspace", JOptionPane.INFORMATION_MESSAGE);
+            showWorkspaceHome();
             return;
         }
-        String executable = launcherPanel.bazelExecutable().strip();
-        if (executable.isEmpty()) {
-            executable = "bazel";
+        String workingDirectoryText = workspace.workingDirectory();
+        String executable = workspace.bazelExecutable();
+        List<String> arguments =
+                com.holtherndon.bazelviz.runner.command.CommandLineParser.tokenize(typed);
+        CaptureRequest request;
+        if (workspace.kind() == WorkspaceProfile.Kind.SSH) {
+            RemoteExecution remote = activeRemoteExecution;
+            if (remote == null) {
+                JOptionPane.showMessageDialog(this,
+                        "The SSH workspace is not connected. Reconnect it and try again.",
+                        "Workspace disconnected", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            try {
+                java.util.OptionalInt port = workspace.port();
+                SshTarget target = port.isPresent()
+                        ? SshTarget.of(workspace.destination().orElseThrow(), port.getAsInt())
+                        : SshTarget.of(workspace.destination().orElseThrow());
+                request = CaptureRequest.remote(
+                        sessionsRoot,
+                        APP_VERSION,
+                        executable,
+                        workingDirectoryText,
+                        arguments,
+                        target)
+                        .withConnectedRemote(remote);
+            } catch (IllegalArgumentException invalid) {
+                JOptionPane.showMessageDialog(this,
+                        invalid.getMessage(), "Cannot connect", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+        } else {
+            Path workingDirectory;
+            try {
+                workingDirectory = Path.of(workingDirectoryText).toAbsolutePath().normalize();
+            } catch (java.nio.file.InvalidPathException bad) {
+                JOptionPane.showMessageDialog(this,
+                        "That is not a usable directory: " + workingDirectoryText,
+                        "Cannot launch", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            request = CaptureRequest.of(
+                    sessionsRoot, APP_VERSION, executable, workingDirectory, arguments);
         }
-        CaptureRequest request = CaptureRequest.of(
-                        sessionsRoot, APP_VERSION, executable, workingDirectory,
-                        com.holtherndon.bazelviz.runner.command.CommandLineParser.tokenize(typed))
-                .withPreset(launcherPanel.preset());
+        request = request.withPreset(launcherPanel.preset());
+
+        if (!acquireCaptureLease(workspace)) {
+            return;
+        }
 
         launcherPanel.rememberCommand(typed);
         launcherPanel.setRunEnabled(false);
         setCaptureStatus(captureStatus.withPhase(
                 CaptureStatusModel.Phase.PREPARING, "Resolving Bazel and probing capabilities…"));
         showCard(NavEntry.BUILD);
-        launchController.preflight(request);
+        try {
+            launchController.preflight(request);
+        } catch (RuntimeException failure) {
+            releaseCaptureLease();
+            launcherPanel.setRunEnabled(true);
+            setCaptureStatus(captureStatus.withPhase(
+                    CaptureStatusModel.Phase.FAILED, describeFailure(failure)));
+            log.warn("capture preflight could not be queued", failure);
+            JOptionPane.showMessageDialog(
+                    this,
+                    describeFailure(failure),
+                    "Cannot capture",
+                    JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    /** Reserves this canonical repository until its accepted coordinator closes. */
+    private boolean acquireCaptureLease(WorkspaceProfile workspace) {
+        if (applicationHost == null) {
+            return true;
+        }
+        CaptureLeaseKey key = captureLeaseKey;
+        if (key == null) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "The workspace repository identity is not ready. Reconnect and try again.",
+                    "Workspace not ready",
+                    JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+        CaptureLeaseRegistry.Acquisition acquisition =
+                applicationHost.tryAcquireCaptureLease(
+                        key, new CaptureLeaseOwner(workspace.id(), workspace.label()));
+        if (acquisition instanceof CaptureLeaseRegistry.Conflict conflict) {
+            CaptureLeaseOwner owner = conflict.activeLease().owner();
+            JOptionPane.showMessageDialog(
+                    this,
+                    "‘" + owner.displayName() + "’ is already capturing this repository. "
+                            + "Finish or cancel that capture before starting another one.",
+                    "Repository capture in progress",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return false;
+        }
+        CaptureLeaseRegistry.CaptureLease lease =
+                ((CaptureLeaseRegistry.Granted) acquisition).lease();
+        if (!activeCaptureLease.compareAndSet(null, lease)) {
+            lease.close();
+            JOptionPane.showMessageDialog(
+                    this,
+                    "This workspace already owns a capture reservation.",
+                    "Capture in progress",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return false;
+        }
+        return true;
+    }
+
+    /** Called on the capture worker after tunnels, listeners, and staging close. */
+    private void releaseCaptureLease() {
+        CaptureLeaseRegistry.CaptureLease lease = activeCaptureLease.getAndSet(null);
+        if (lease != null) {
+            lease.close();
+        }
     }
 
     private void chooseBazelExecutable() {
@@ -1472,6 +3825,11 @@ public final class MainWindow extends JFrame {
     private final class CaptureListener implements LaunchController.Listener {
 
         @Override
+        public void remoteConnected(RemoteExecution remote) {
+            installRemoteExecution(remote);
+        }
+
+        @Override
         public void planReady(Preflight preflight) {
             InstrumentationPlanDialog dialog =
                     new InstrumentationPlanDialog(MainWindow.this, preflight);
@@ -1481,7 +3839,9 @@ public final class MainWindow extends JFrame {
                     consoleView.clear();
                     setCaptureStatus(captureStatus.withPhase(
                             CaptureStatusModel.Phase.WAITING,
-                            "Listening on " + preflight.endpoint().besBackendUri()));
+                            "Listening on " + preflight.remote()
+                                    .map(Preflight.RemoteDetails::remoteBesBackend)
+                                    .orElseGet(() -> preflight.endpoint().besBackendUri())));
                     launchController.launch();
                 }
                 case RESOLVE -> {
@@ -1523,15 +3883,17 @@ public final class MainWindow extends JFrame {
             if (root == null) {
                 return;
             }
-            worker.execute(() -> {
+            executeWorker(() -> {
                 try {
-                    SqliteSessionSource opened = SqliteSessionSource.open(sessions, root);
+                    SessionSource opened = openProtectedSession(root);
                     SwingUtilities.invokeLater(() -> {
-                        if (liveSource != null || !launchController.isBusy()) {
+                        if (disposalStarted
+                                || liveSource != null
+                                || !launchController.isBusy()) {
                             // A later tick won the race, or the capture ended
                             // while this was opening and the real source is
                             // about to arrive.
-                            opened.close();
+                            closeSource(opened);
                             return;
                         }
                         liveSource = opened;
@@ -1550,9 +3912,12 @@ public final class MainWindow extends JFrame {
                         // It keeps its own ticker (EventsView.startTicker),
                         // exactly like the timeline's, so it stays current even
                         // on a quiet build with no progress ticks.
-                        eventsView.openSession(opened, MainWindow.this::showSessionFailure);
+                        openEventsSession(opened);
                     });
-                } catch (RuntimeException notYet) {
+                } catch (Exception notYet) {
+                    if (notYet instanceof InterruptedException) {
+                        Thread.currentThread().interrupt();
+                    }
                     // The manifest or the database is still being written. The
                     // next progress tick tries again; there is nothing to
                     // report, because nothing is wrong.
@@ -1604,13 +3969,10 @@ public final class MainWindow extends JFrame {
                             ? CaptureStatusModel.Phase.DONE
                             : CaptureStatusModel.Phase.FAILED;
             setCaptureStatus(captureStatus.withPhase(phase, describe(result)));
-            // The live view is replaced by the real one, which every view gets.
-            overviewPanel.closeSession();
-            SessionSource live = liveSource;
-            liveSource = null;
-            closeSource(live);
             // Opened whatever the outcome: a cancelled or partial capture is
-            // still a session, and being able to look at it is the point.
+            // still a session, and being able to look at it is the point. The
+            // live source remains attached until installSession can atomically
+            // detach all live readers and order its close behind their stages.
             openSessionDirectory(result.sessionRoot(), false);
         }
 
@@ -1654,6 +4016,7 @@ public final class MainWindow extends JFrame {
     // ------------------------------------------------------------------ shell
 
     private JComponent buildNavigation() {
+        rebuildNavigation(false);
         nav.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         nav.setCellRenderer(new DefaultListCellRenderer() {
             private static final long serialVersionUID = 1L;
@@ -1674,11 +4037,39 @@ public final class MainWindow extends JFrame {
             }
             NavEntry selected = nav.getSelectedValue();
             if (selected != null) {
+                log.trace("showing navigation card {}", selected.cardName());
                 cardLayout.show(cards, selected.cardName());
+                if (selected == NavEntry.ALL_TARGETS) {
+                    allTargetsView.activate();
+                } else if (selected == NavEntry.CONFIGURATIONS) {
+                    configurationsView.activate();
+                } else if (selected == NavEntry.TERMINAL) {
+                    terminalView.activate();
+                }
             }
         });
         nav.setSelectedIndex(0);
         return new JScrollPane(nav);
+    }
+
+    /** Sidebar entries for the selected workspace; imported sessions never imply one. */
+    static List<NavEntry> visibleNavigation(boolean workspaceSelected) {
+        return java.util.Arrays.stream(NavEntry.values())
+                .filter(entry -> workspaceSelected || entry != NavEntry.TERMINAL)
+                .toList();
+    }
+
+    private void rebuildNavigation(boolean workspaceSelected) {
+        NavEntry selected = nav.getSelectedValue();
+        navModel.clear();
+        for (NavEntry entry : visibleNavigation(workspaceSelected)) {
+            navModel.addElement(entry);
+        }
+        if (selected != null && visibleNavigation(workspaceSelected).contains(selected)) {
+            nav.setSelectedValue(selected, true);
+        } else if (!navModel.isEmpty()) {
+            nav.setSelectedIndex(0);
+        }
     }
 
     /** The real view for an entry whose phase has arrived, else a placeholder. */
@@ -1687,15 +4078,21 @@ public final class MainWindow extends JFrame {
             case OVERVIEW -> overviewCard;
             case ACTIONS -> actionsView;
             case TARGETS -> targetsView;
+            case ALL_TARGETS -> allTargetsView;
+            case CONFIGURATIONS -> configurationsView;
             case TESTS -> testsView;
             case ERRORS -> errorsView;
             case GRAPH -> graphExplorerView;
             case TREE -> treeView;
             case TIMELINE -> timeline.view();
+            case CRITICAL_PATH -> criticalPathView;
+            case STARLARK_PROFILE -> starlarkProfileView;
             case EVENTS -> eventsView;
             case BUILD -> buildCard;
             case FINDINGS -> findingsView;
             case QUERY -> queryView;
+            case REPOSITORY -> repositoryBrowserView;
+            case TERMINAL -> terminalView;
             default -> placeholderCard(entry);
         };
     }
@@ -1712,8 +4109,20 @@ public final class MainWindow extends JFrame {
 
     /** Stacks the build summary above the coverage panel, split and resizable. */
     private JComponent buildOverviewCard() {
+        return overviewSections(overviewPanel, coverageView);
+    }
+
+    /**
+     * Gives the Overview split two visible, named regions.
+     *
+     * <p>Package-private so the boundary can be checked headlessly without
+     * constructing this {@link JFrame}.
+     */
+    static JSplitPane overviewSections(JComponent summary, JComponent coverage) {
         JSplitPane split = new JSplitPane(
-                JSplitPane.VERTICAL_SPLIT, overviewPanel, coverageView);
+                JSplitPane.VERTICAL_SPLIT,
+                new SectionPane("Build summary", summary),
+                new SectionPane("Coverage & enrichment", coverage));
         split.setResizeWeight(0.62);
         split.setBorder(null);
         return split;
@@ -1726,12 +4135,13 @@ public final class MainWindow extends JFrame {
         controls.add(launcherPanel, BorderLayout.NORTH);
         controls.add(capturePanel, BorderLayout.CENTER);
         card.add(controls, BorderLayout.NORTH);
-        card.add(consoleView, BorderLayout.CENTER);
+        card.add(new SectionPane("Build output", consoleView), BorderLayout.CENTER);
         return card;
     }
 
     private JComponent buildStatusBar() {
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 16, 4));
+        bar.add(workspaceStatus);
         bar.add(sessionStatus);
         bar.add(eventStatus);
         bar.add(actionStatus);

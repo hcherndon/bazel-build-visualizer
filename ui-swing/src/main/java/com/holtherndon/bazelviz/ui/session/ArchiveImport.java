@@ -69,13 +69,23 @@ public final class ArchiveImport {
      * @throws BvizFormatException when the archive cannot be trusted, or when
      *     the session it holds is already in the library
      */
-    public static Result into(Path archive, Path sessionsRoot, BvizLimits limits)
+    static Result into(Path archive, Path sessionsRoot, BvizLimits limits)
             throws IOException {
         Objects.requireNonNull(archive, "archive");
         Objects.requireNonNull(sessionsRoot, "sessionsRoot");
 
         // Nothing is written by this call; it is the whole archive, checked.
         BvizReader.Validation validation = BvizReader.validate(archive, limits);
+        return into(validation, sessionsRoot, limits);
+    }
+
+    /** Extracts a validation already produced by the process mutation coordinator. */
+    static Result into(
+            BvizReader.Validation validation, Path sessionsRoot, BvizLimits limits)
+            throws IOException {
+        Objects.requireNonNull(validation, "validation");
+        Objects.requireNonNull(sessionsRoot, "sessionsRoot");
+        Objects.requireNonNull(limits, "limits");
         String uuid = validation.index().sessionId();
         Path destination = sessionsRoot.resolve("session-" + uuid);
         if (Files.exists(destination)) {
@@ -86,11 +96,14 @@ public final class ArchiveImport {
                             + " agree and names that do not.");
         }
         Files.createDirectories(sessionsRoot);
-        Path staging = sessionsRoot.resolve("session-" + uuid + ".incoming");
-        deleteRecursively(staging);
+        // A unique staging directory is defence in depth around the process coordinator. A
+        // caller that bypasses it still cannot delete another import's partially extracted data.
+        // Keep the prefix outside "session-*" too, so a crash residue can never look like a
+        // managed session to catalog reconciliation.
+        Path staging = Files.createTempDirectory(sessionsRoot, ".incoming-session-" + uuid + "-");
         boolean ok = false;
         try {
-            BvizReader.extract(archive, staging, limits);
+            BvizReader.extract(validation.archive(), staging, limits);
             Files.move(staging, destination);
             ok = true;
         } finally {

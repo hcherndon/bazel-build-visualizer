@@ -5,8 +5,10 @@ Originally accepted 2026-08.
 
 > The build system is now Bazel. The content below is preserved unchanged as
 > the historical reasoning. Its best idea — conventions in exactly one place —
-> was not superseded at all; it moved from `build-logic/` convention plugins
-> to the `tools/bbv.bzl` macros.
+> was not superseded at all. ADR-009 first moved it from `build-logic/`
+> convention plugins to `tools/bbv.bzl`; ADR-010 later replaced those target
+> generators with package-local explicit rules and values-only
+> `tools/java_test_settings.bzl` policy.
 
 ## Context
 

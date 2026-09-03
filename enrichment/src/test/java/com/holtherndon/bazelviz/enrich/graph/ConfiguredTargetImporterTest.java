@@ -3,7 +3,13 @@ package com.holtherndon.bazelviz.enrich.graph;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.core.graph.ConfigurationMatch;
+import com.holtherndon.bazelviz.core.graph.GraphTargetScope;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.Configuration;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.CqueryResult;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.FragmentOptions;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.Option;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
+import com.holtherndon.bazelviz.storage.graph.GraphIndexBuilder;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import java.io.IOException;
 import java.io.InputStream;
@@ -61,6 +67,9 @@ final class ConfiguredTargetImporterTest {
         assertThat(result.nodes()).isEqualTo(6);
         // 22 rule_input entries across the six rules, on every version.
         assertThat(result.edges()).isPositive();
+        assertThat(text("SELECT target_scope FROM graph_sources"
+                + " WHERE kind = 'CONFIGURED_TARGETS'"))
+                .isEqualTo("EXACT_BEP_TARGETS");
     }
 
     @Test
@@ -99,6 +108,64 @@ final class ConfiguredTargetImporterTest {
                 + " WHERE configuration_checksum IS NOT NULL")).isEqualTo(6);
         assertThat(text("SELECT configuration_checksum FROM configured_target_nodes LIMIT 1"))
                 .hasSize(64);
+    }
+
+    @Test
+    @DisplayName("Bazel 9 cquery options are retained for configuration comparison")
+    void currentCqueryOptionsSurvive() throws Exception {
+        importFixture("bazel920");
+
+        assertThat(scalar("SELECT count(*) FROM queried_configurations")).isPositive();
+        assertThat(scalar("SELECT count(*) FROM queried_configuration_fragments")).isPositive();
+        assertThat(scalar("SELECT count(*) FROM queried_configuration_options")).isPositive();
+        assertThat(scalar("SELECT count(*) FROM queried_configurations"
+                + " WHERE options_available = 1")).isPositive();
+    }
+
+    @Test
+    @DisplayName("older cquery records that effective options were not published")
+    void oldCqueryOptionAbsenceIsExplicit() throws Exception {
+        importFixture("bazel761");
+
+        assertThat(scalar("SELECT count(*) FROM queried_configurations")).isPositive();
+        assertThat(scalar("SELECT count(*) FROM queried_configuration_options")).isZero();
+        assertThat(scalar("SELECT count(*) FROM queried_configurations"
+                + " WHERE options_available = 0"))
+                .isEqualTo(scalar("SELECT count(*) FROM queried_configurations"));
+    }
+
+    @Test
+    @DisplayName("reimport replaces option details instead of retaining stale values")
+    void reimportReplacesConfigurationDetails() throws Exception {
+        importFixture("bazel920");
+        assertThat(scalar("SELECT count(*) FROM queried_configuration_options")).isPositive();
+
+        importFixture("bazel761");
+
+        assertThat(scalar("SELECT count(*) FROM queried_configuration_options")).isZero();
+        assertThat(scalar("SELECT count(*) FROM queried_configurations")).isPositive();
+    }
+
+    @Test
+    @DisplayName("secret-named effective options are withheld with explicit presence")
+    void optionSecretsAreWithheld() throws Exception {
+        Path query = tempDir.resolve("secret-cquery.proto");
+        CqueryResult payload = CqueryResult.newBuilder()
+                .addConfigurations(Configuration.newBuilder()
+                        .setId(1)
+                        .setChecksum("abc")
+                        .addFragmentOptions(FragmentOptions.newBuilder()
+                                .setName("RemoteOptions")
+                                .addOptions(Option.newBuilder()
+                                        .setName("remote_header")
+                                        .setValue("Authorization=Bearer secret"))))
+                .build();
+        Files.write(query, payload.toByteArray());
+
+        assertThat(new ConfiguredTargetImporter(connection)
+                .importFrom(query, List.of("cquery")).succeeded()).isTrue();
+        assertThat(scalar("SELECT redacted FROM queried_configuration_options")).isEqualTo(1);
+        assertThat(text("SELECT option_value FROM queried_configuration_options")).isNull();
     }
 
     @Test
@@ -147,11 +214,58 @@ final class ConfiguredTargetImporterTest {
     }
 
     @Test
+    @DisplayName("a failed replacement cannot expose the preceding configured-target index")
+    void failedReplacementInvalidatesConfiguredTargetIndex() throws Exception {
+        importFixture("bazel920");
+        Path indexDirectory = tempDir.resolve("indexes");
+        GraphIndexBuilder indexes = new GraphIndexBuilder(connection, indexDirectory);
+        GraphIndexBuilder.Result previous = indexes.buildConfiguredTargets().orElseThrow();
+        assertThat(indexes.loadConfiguredTargets("FORWARD")).isPresent();
+
+        Path garbage = tempDir.resolve("replacement-garbage.proto");
+        Files.write(garbage, new byte[] {(byte) 0xff, (byte) 0xff, (byte) 0xff});
+
+        ConfiguredTargetImporter.Result result = new ConfiguredTargetImporter(connection)
+                .importFrom(garbage, List.of("cquery"));
+
+        assertThat(result.succeeded()).isFalse();
+        assertThat(scalar("SELECT count(*) FROM graph_indexes"
+                + " WHERE kind = 'CONFIGURED_TARGETS'")).isZero();
+        assertThat(indexes.loadConfiguredTargets("FORWARD")).isEmpty();
+        // Registry invalidation is sufficient; the next successful build
+        // atomically replaces this now-orphaned file.
+        assertThat(previous.forwardFile()).exists();
+    }
+
+    @Test
+    @DisplayName("a failed cquery process is a visible graph source without a protobuf")
+    void processFailureIsRecorded() throws Exception {
+        Path empty = Files.createFile(tempDir.resolve("failed-cquery.proto"));
+
+        ConfiguredTargetImporter.Result result = new ConfiguredTargetImporter(connection)
+                .recordFailure(empty, List.of("bazel", "cquery"), "analysis failed on //bad");
+
+        assertThat(result.succeeded()).isFalse();
+        assertThat(text("SELECT state FROM graph_sources WHERE kind = 'CONFIGURED_TARGETS'"))
+                .isEqualTo("FAILED");
+        assertThat(text("SELECT error_excerpt FROM graph_sources"
+                + " WHERE kind = 'CONFIGURED_TARGETS'"))
+                .contains("analysis failed on //bad");
+        assertThat(scalar("SELECT raw_output_bytes FROM graph_sources"
+                + " WHERE kind = 'CONFIGURED_TARGETS'"))
+                .isZero();
+    }
+
+    @Test
     @DisplayName("the action graph and the configured-target graph are separate sources")
     void twoGraphsTwoSources() throws Exception {
         importFixture("bazel920");
         new ActionGraphImporter(connection)
-                .importFrom(fixture("bazel920-aquery.proto"), List.of("aquery"));
+                .importFrom(
+                        fixture("bazel920-aquery.proto"),
+                        List.of("aquery"),
+                        GraphTargetScope.EXACT_BEP_TARGETS,
+                        "fixture uses the build's exact top-level labels");
 
         // Plan 24: a failed auxiliary query leaves the rest usable, which needs
         // the two to be independent rows rather than one status.
@@ -164,7 +278,11 @@ final class ConfiguredTargetImporterTest {
 
     private ConfiguredTargetImporter.Result importFixture(String name) throws Exception {
         return new ConfiguredTargetImporter(connection)
-                .importFrom(fixture(name + "-cquery.proto"), List.of("cquery", "//pkg:all"));
+                .importFrom(
+                        fixture(name + "-cquery.proto"),
+                        List.of("cquery", "//pkg:all"),
+                        GraphTargetScope.EXACT_BEP_TARGETS,
+                        "fixture uses the build's exact top-level labels");
     }
 
     private Path fixture(String name) throws IOException {

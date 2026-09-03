@@ -1,9 +1,12 @@
 package com.holtherndon.bazelviz.analysis;
 
 import com.holtherndon.bazelviz.graph.CsrGraph;
-import java.util.ArrayList;
+import java.util.AbstractList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.RandomAccess;
 
 /**
  * The longest weighted path through an action graph: what the build could not
@@ -56,6 +59,9 @@ public final class CriticalPath {
      *     result because plan 13.4 requires the answer to say
      */
     public static Result compute(CsrGraph forward, long[] durationMicros, DurationSource source) {
+        Objects.requireNonNull(forward, "forward");
+        Objects.requireNonNull(durationMicros, "durationMicros");
+        Objects.requireNonNull(source, "source");
         int nodeCount = Math.toIntExact(forward.nodeCount());
         if (durationMicros.length != nodeCount) {
             throw new IllegalArgumentException(
@@ -65,16 +71,29 @@ public final class CriticalPath {
         if (nodeCount == 0) {
             return Result.empty(source);
         }
-
-        int[] order = topologicalOrder(forward, nodeCount);
-        if (order == null) {
-            return Result.cyclic(source, cyclicNodes(forward, nodeCount));
+        if (source == DurationSource.NONE) {
+            throw new IllegalArgumentException(
+                    "DurationSource.NONE cannot weight a non-empty dependency graph");
         }
 
-        long untimed = 0;
-        for (long duration : durationMicros) {
-            if (duration == UNKNOWN_DURATION) {
-                untimed++;
+        for (int node = 0; node < nodeCount; node++) {
+            long duration = durationMicros[node];
+            if (duration < 0 && duration != UNKNOWN_DURATION) {
+                throw new IllegalArgumentException(
+                        "duration for node " + node + " must be nonnegative or UNKNOWN_DURATION");
+            }
+        }
+
+        Topology topology = topologicalOrder(forward, nodeCount);
+        if (!topology.isAcyclic()) {
+            return Result.cyclic(source, nodeCount, topology.unorderedNodes());
+        }
+        int[] order = topology.order();
+
+        BitSet untimedNodes = new BitSet(nodeCount);
+        for (int node = 0; node < nodeCount; node++) {
+            if (durationMicros[node] == UNKNOWN_DURATION) {
+                untimedNodes.set(node);
             }
         }
 
@@ -84,22 +103,37 @@ public final class CriticalPath {
         long[] earliestStart = new long[nodeCount];
         long[] earliestFinish = new long[nodeCount];
         int[] predecessor = new int[nodeCount];
+        int[] pathDepth = new int[nodeCount];
         Arrays.fill(predecessor, NO_PREDECESSOR);
+        Arrays.fill(pathDepth, 1);
 
         for (int node : order) {
-            earliestFinish[node] = earliestStart[node] + weight(durationMicros, node);
+            earliestFinish[node] = Math.addExact(
+                    earliestStart[node], weight(durationMicros, node));
             long finish = earliestFinish[node];
-            forward.forEachNeighbor(node, successor -> {
-                if (finish > earliestStart[successor]) {
+            int candidateDepth = Math.addExact(pathDepth[node], 1);
+            long edgeEnd = forward.neighborsEnd(node);
+            for (long edge = forward.neighborsBegin(node); edge < edgeEnd; edge++) {
+                int successor = forward.neighborAt(edge);
+                int currentPredecessor = predecessor[successor];
+                if (finish > earliestStart[successor]
+                        || (finish == earliestStart[successor]
+                                && (candidateDepth > pathDepth[successor]
+                                        || (candidateDepth == pathDepth[successor]
+                                                && (currentPredecessor == NO_PREDECESSOR
+                                                        || node < currentPredecessor))))) {
                     earliestStart[successor] = finish;
                     predecessor[successor] = node;
+                    pathDepth[successor] = candidateDepth;
                 }
-            });
+            }
         }
 
         int last = 0;
         for (int node = 1; node < nodeCount; node++) {
-            if (earliestFinish[node] > earliestFinish[last]) {
+            if (earliestFinish[node] > earliestFinish[last]
+                    || (earliestFinish[node] == earliestFinish[last]
+                            && pathDepth[node] > pathDepth[last])) {
                 last = node;
             }
         }
@@ -111,31 +145,36 @@ public final class CriticalPath {
         Arrays.fill(latestFinish, makespan);
         for (int i = order.length - 1; i >= 0; i--) {
             int node = order[i];
-            long[] earliest = {Long.MAX_VALUE};
-            forward.forEachNeighbor(node, successor -> {
-                long successorStart = latestFinish[successor] - weight(durationMicros, successor);
-                if (successorStart < earliest[0]) {
-                    earliest[0] = successorStart;
+            long earliest = Long.MAX_VALUE;
+            long edgeEnd = forward.neighborsEnd(node);
+            for (long edge = forward.neighborsBegin(node); edge < edgeEnd; edge++) {
+                int successor = forward.neighborAt(edge);
+                long successorStart = Math.subtractExact(
+                        latestFinish[successor], weight(durationMicros, successor));
+                if (successorStart < earliest) {
+                    earliest = successorStart;
                 }
-            });
-            if (earliest[0] != Long.MAX_VALUE) {
-                latestFinish[node] = earliest[0];
+            }
+            if (earliest != Long.MAX_VALUE) {
+                latestFinish[node] = earliest;
             }
         }
         long[] slack = new long[nodeCount];
         for (int node = 0; node < nodeCount; node++) {
-            slack[node] = (latestFinish[node] - weight(durationMicros, node)) - earliestStart[node];
+            slack[node] = Math.subtractExact(
+                    Math.subtractExact(latestFinish[node], weight(durationMicros, node)),
+                    earliestStart[node]);
         }
 
-        List<Integer> path = new ArrayList<>();
+        int[] path = new int[pathDepth[last]];
+        int pathIndex = path.length - 1;
         for (int node = last; node != NO_PREDECESSOR; node = predecessor[node]) {
-            path.add(node);
+            path[pathIndex--] = node;
         }
-        java.util.Collections.reverse(path);
 
         return new Result(
-                Outcome.COMPUTED, source, List.copyOf(path), makespan,
-                earliestStart, earliestFinish, slack, untimed, nodeCount, List.of());
+                Outcome.COMPUTED, source, path, makespan,
+                earliestStart, earliestFinish, slack, untimedNodes, nodeCount, new int[0]);
     }
 
     /** A node nothing measured. Distinct from a node measured at zero. */
@@ -155,11 +194,14 @@ public final class CriticalPath {
         return duration == UNKNOWN_DURATION ? 0 : duration;
     }
 
-    /** Kahn's algorithm; null when the graph has a cycle. */
-    private static int[] topologicalOrder(CsrGraph forward, int nodeCount) {
+    /** Kahn's algorithm, retaining its residual nodes when the graph has a cycle. */
+    private static Topology topologicalOrder(CsrGraph forward, int nodeCount) {
         int[] inDegree = new int[nodeCount];
         for (int node = 0; node < nodeCount; node++) {
-            forward.forEachNeighbor(node, successor -> inDegree[successor]++);
+            long edgeEnd = forward.neighborsEnd(node);
+            for (long edge = forward.neighborsBegin(node); edge < edgeEnd; edge++) {
+                inDegree[forward.neighborAt(edge)]++;
+            }
         }
         int[] queue = new int[nodeCount];
         int head = 0;
@@ -169,62 +211,38 @@ public final class CriticalPath {
                 queue[tail++] = node;
             }
         }
-        int[] order = new int[nodeCount];
-        int emitted = 0;
         while (head < tail) {
             int node = queue[head++];
-            order[emitted++] = node;
-            int[] cursor = {tail};
-            forward.forEachNeighbor(node, successor -> {
+            long edgeEnd = forward.neighborsEnd(node);
+            for (long edge = forward.neighborsBegin(node); edge < edgeEnd; edge++) {
+                int successor = forward.neighborAt(edge);
                 if (--inDegree[successor] == 0) {
-                    queue[cursor[0]++] = successor;
+                    queue[tail++] = successor;
                 }
-            });
-            tail = cursor[0];
+            }
         }
-        return emitted == nodeCount ? order : null;
+        if (tail == nodeCount) {
+            // The queue is already the topological order, so keep it instead
+            // of allocating and filling a duplicate O(V) array.
+            return new Topology(queue, new int[0]);
+        }
+        // At Kahn termination, every node with residual in-degree is in or
+        // downstream of a cycle. Retain only primitive ids and reuse this
+        // first pass instead of rerunning the whole algorithm on bad input.
+        int[] stuck = new int[nodeCount - tail];
+        int stuckIndex = 0;
+        for (int node = 0; node < nodeCount; node++) {
+            if (inDegree[node] > 0) {
+                stuck[stuckIndex++] = node;
+            }
+        }
+        return new Topology(null, stuck);
     }
 
-    /**
-     * The nodes that never reached in-degree zero, which is exactly the set in
-     * or downstream of a cycle.
-     *
-     * <p>Reported rather than a bare "there is a cycle", because a graph that
-     * should be acyclic and is not is a bug someone has to find.
-     */
-    private static List<Integer> cyclicNodes(CsrGraph forward, int nodeCount) {
-        int[] inDegree = new int[nodeCount];
-        for (int node = 0; node < nodeCount; node++) {
-            forward.forEachNeighbor(node, successor -> inDegree[successor]++);
+    private record Topology(int[] order, int[] unorderedNodes) {
+        boolean isAcyclic() {
+            return order != null;
         }
-        boolean[] removed = new boolean[nodeCount];
-        int[] queue = new int[nodeCount];
-        int head = 0;
-        int tail = 0;
-        for (int node = 0; node < nodeCount; node++) {
-            if (inDegree[node] == 0) {
-                queue[tail++] = node;
-                removed[node] = true;
-            }
-        }
-        while (head < tail) {
-            int node = queue[head++];
-            int[] cursor = {tail};
-            forward.forEachNeighbor(node, successor -> {
-                if (!removed[successor] && --inDegree[successor] == 0) {
-                    removed[successor] = true;
-                    queue[cursor[0]++] = successor;
-                }
-            });
-            tail = cursor[0];
-        }
-        List<Integer> stuck = new ArrayList<>();
-        for (int node = 0; node < nodeCount; node++) {
-            if (!removed[node]) {
-                stuck.add(node);
-            }
-        }
-        return List.copyOf(stuck);
     }
 
     /** Which measurement the node weights came from. */
@@ -246,6 +264,16 @@ public final class CriticalPath {
         public String description() {
             return description;
         }
+
+        /** The precise node-weight interpretation used by the dependency path. */
+        public String pathWeightDescription() {
+            return switch (this) {
+                case BEP_ACTION -> description;
+                case EXECUTION_ATTEMPT ->
+                        "shortest recorded spawn duration per action from the execution log";
+                case NONE -> description;
+            };
+        }
     }
 
     /** How the computation ended. */
@@ -262,14 +290,14 @@ public final class CriticalPath {
      *
      * <h2>Why this is a class and not a record</h2>
      *
-     * <p>It holds three arrays with one entry per node, and a Tier 3 session
-     * has five million of them. A record would mandate public accessors
-     * returning those arrays, which leaves two options and no third: hand out
-     * the live array so any caller can rewrite the schedule, or clone forty
-     * megabytes for a caller that wanted the slack of the one action it has
-     * selected. The Phase 7 audit reached the same conclusion about
-     * {@link GraphLayout.Result} for the same reason. Per-node accessors cost
-     * nothing and cannot be misused.
+     * <p>It holds three arrays and two compact bit sets with an entry per node,
+     * and a Tier 3 session has five million of them. A record would mandate
+     * public accessors returning those mutable structures, which leaves two
+     * options and no third: hand out the live data so any caller can rewrite
+     * the schedule, or clone tens of megabytes for a caller that wanted one
+     * action's slack or timing presence. The Phase 7 audit reached the same
+     * conclusion about {@link GraphLayout.Result} for the same reason.
+     * Per-node accessors cost nothing and cannot be misused.
      */
     public static final class Result {
 
@@ -280,41 +308,48 @@ public final class CriticalPath {
         private final long[] earliestStartMicros;
         private final long[] earliestFinishMicros;
         private final long[] slackMicros;
+        private final BitSet untimedNodesByIndex;
+        private final BitSet selectedPathNodesByIndex;
         private final long untimedNodes;
         private final long nodeCount;
-        private final List<Integer> cyclicNodes;
+        private final List<Integer> unorderedNodes;
 
-        Result(
+        private Result(
                 Outcome outcome,
                 DurationSource durationSource,
-                List<Integer> path,
+                int[] pathNodes,
                 long makespanMicros,
                 long[] earliestStartMicros,
                 long[] earliestFinishMicros,
                 long[] slackMicros,
-                long untimedNodes,
+                BitSet untimedNodesByIndex,
                 long nodeCount,
-                List<Integer> cyclicNodes) {
+                int[] unorderedNodeIndices) {
             this.outcome = outcome;
             this.durationSource = durationSource;
-            this.path = List.copyOf(path);
+            this.path = new IntArrayListView(pathNodes);
             this.makespanMicros = makespanMicros;
             this.earliestStartMicros = earliestStartMicros;
             this.earliestFinishMicros = earliestFinishMicros;
             this.slackMicros = slackMicros;
-            this.untimedNodes = untimedNodes;
+            this.untimedNodesByIndex = untimedNodesByIndex;
+            this.selectedPathNodesByIndex = new BitSet(slackMicros.length);
+            for (int node : pathNodes) {
+                this.selectedPathNodesByIndex.set(node);
+            }
+            this.untimedNodes = untimedNodesByIndex.cardinality();
             this.nodeCount = nodeCount;
-            this.cyclicNodes = List.copyOf(cyclicNodes);
+            this.unorderedNodes = new IntArrayListView(unorderedNodeIndices);
         }
 
         static Result empty(DurationSource source) {
-            return new Result(Outcome.EMPTY, source, List.of(), 0,
-                    new long[0], new long[0], new long[0], 0, 0, List.of());
+            return new Result(Outcome.EMPTY, source, new int[0], 0,
+                    new long[0], new long[0], new long[0], new BitSet(), 0, new int[0]);
         }
 
-        static Result cyclic(DurationSource source, List<Integer> stuck) {
-            return new Result(Outcome.CYCLIC, source, List.of(), 0,
-                    new long[0], new long[0], new long[0], 0, 0, stuck);
+        static Result cyclic(DurationSource source, long nodeCount, int[] stuck) {
+            return new Result(Outcome.CYCLIC, source, new int[0], 0,
+                    new long[0], new long[0], new long[0], new BitSet(), nodeCount, stuck);
         }
 
         /** How the computation ended. */
@@ -345,22 +380,51 @@ public final class CriticalPath {
             return untimedNodes;
         }
 
+        /**
+         * True when nothing measured this node's duration.
+         *
+         * <p>This is distinct from a measured duration of zero. The compact
+         * bit set keeps that distinction available per node without retaining
+         * a second {@code long[]} for Tier 3 graphs.
+         */
+        public boolean isUntimedAt(int node) {
+            Objects.checkIndex(node, scheduledNodes());
+            return untimedNodesByIndex.get(node);
+        }
+
         /** Nodes in the graph this was computed over. */
         public long nodeCount() {
             return nodeCount;
         }
 
-        /** When {@link Outcome#CYCLIC}, the nodes that could not be ordered. */
+        /**
+         * When {@link Outcome#CYCLIC}, nodes that could not be topologically ordered.
+         *
+         * <p>This includes both cycle members and nodes downstream of a cycle;
+         * Kahn's algorithm cannot distinguish those sets by itself.
+         */
+        public List<Integer> unorderedNodes() {
+            return unorderedNodes;
+        }
+
+        /**
+         * Compatibility alias for {@link #unorderedNodes()}.
+         *
+         * @deprecated the returned nodes may be downstream of a cycle rather
+         *     than members of the cycle itself
+         */
+        @Deprecated
         public List<Integer> cyclicNodes() {
-            return cyclicNodes;
+            return unorderedNodes;
         }
 
         /**
          * The earliest one action could have started, given its dependencies.
          *
-         * <p>Not when it did start. This is the schedule the graph alone
-         * implies, so the difference between this and the observed start is how
-         * much the machine, and not the build's shape, held the action up.
+         * <p>Not when it did start: this is an idealized offset from the
+         * dependency schedule's own zero. It cannot be subtracted from an
+         * absolute observed timestamp unless the caller first puts both on a
+         * proven common origin, and any remaining gap is not causal evidence.
          */
         public long earliestStartAt(int node) {
             return earliestStartMicros[node];
@@ -375,18 +439,28 @@ public final class CriticalPath {
          * How much later one action could have started without making the
          * build longer.
          *
-         * <p>Zero for every action on the critical path, by construction: that
-         * is what puts them on it. Plan 13.4 requires complete timing and a
-         * complete graph for this to mean what it says, so a caller showing it
-         * must show {@link #isPartial()} beside it.
+         * <p>Zero for every action on any equally longest branch. Membership
+         * in the one selected, tie-broken chain is tracked separately by
+         * {@link #isOnPath(int)}. Plan 13.4 requires complete timing and a
+         * complete graph for slack to mean what it says, so a caller showing
+         * it must show {@link #isPartial()} beside it.
          */
         public long slackAt(int node) {
             return slackMicros[node];
         }
 
-        /** True when {@code node} lies on the critical path, which is slack of zero. */
+        /**
+         * True when {@code node} lies on the one tie-broken path returned by {@link #path()}.
+         *
+         * <p>A zero-slack node can lie on another equally long branch and still be absent from
+         * the selected path, so membership cannot be inferred from slack alone.
+         */
         public boolean isOnPath(int node) {
-            return outcome == Outcome.COMPUTED && slackMicros[node] == 0;
+            if (outcome != Outcome.COMPUTED) {
+                return false;
+            }
+            Objects.checkIndex(node, scheduledNodes());
+            return selectedPathNodesByIndex.get(node);
         }
 
         /** How many nodes carry a schedule. Zero unless the outcome is computed. */
@@ -404,8 +478,11 @@ public final class CriticalPath {
         }
 
         /**
-         * True when some of the graph or some of the timings were missing, so
-         * the answer is a lower bound rather than the answer.
+         * True when some node timings were missing, so the answer is a lower
+         * bound rather than the answer.
+         *
+         * <p>This result cannot prove that the imported graph itself was
+         * complete. Callers must verify graph-source completeness separately.
          */
         public boolean isPartial() {
             return untimedNodes > 0;
@@ -415,15 +492,17 @@ public final class CriticalPath {
         public String describe() {
             return switch (outcome) {
                 case EMPTY -> "There is no dependency graph to compute a critical path over.";
-                case CYCLIC -> "The dependency graph has a cycle involving " + cyclicNodes.size()
-                        + " actions, so there is no longest path through it. An action graph"
+                case CYCLIC -> "The dependency graph contains a cycle, so "
+                        + unorderedNodes.size() + " of " + nodeCount
+                        + " actions could not be ordered; those actions are in or downstream"
+                        + " of the cycle. There is no longest path through it. An action graph"
                         + " derived from producer and consumer relationships cannot have one,"
                         + " so this means the graph is wrong rather than the build.";
                 case COMPUTED -> {
                     StringBuilder text = new StringBuilder(displayName())
                             .append(": ").append(path.size()).append(" actions totalling ")
-                            .append(makespanMicros / 1000).append(" ms, using ")
-                            .append(durationSource.description()).append('.');
+                            .append(MetricFormat.duration(makespanMicros)).append(", using ")
+                            .append(durationSource.pathWeightDescription()).append('.');
                     if (isPartial()) {
                         text.append(' ').append(untimedNodes).append(" of ").append(nodeCount)
                                 .append(" actions have no measured duration and were counted as"
@@ -432,6 +511,27 @@ public final class CriticalPath {
                     yield text.toString();
                 }
             };
+        }
+    }
+
+    /** Read-only {@link List} compatibility over primitive path storage. */
+    private static final class IntArrayListView extends AbstractList<Integer>
+            implements RandomAccess {
+
+        private final int[] values;
+
+        private IntArrayListView(int[] values) {
+            this.values = Objects.requireNonNull(values, "values");
+        }
+
+        @Override
+        public Integer get(int index) {
+            return values[Objects.checkIndex(index, values.length)];
+        }
+
+        @Override
+        public int size() {
+            return values.length;
         }
     }
 }

@@ -162,7 +162,7 @@ final class FindingRulesTest {
     }
 
     @Test
-    @DisplayName("the chain finding says it is the derived one and states its coverage")
+    @DisplayName("the chain finding says it is derived and uses structural completeness")
     void longCriticalChainNamesItself() {
         CsrGraph chain = CsrBuilder.build(2, visitor -> visitor.edge(0, 1));
         CriticalPath.Result path = CriticalPath.compute(
@@ -172,16 +172,55 @@ final class FindingRulesTest {
                 Measured.unknown(DataSource.PROFILE, Completeness.UNAVAILABLE, "no profile"),
                 List.of(), Optional.of(path));
 
+        Coverage completeGraph = Coverage.of(
+                "Action-graph completeness", 2, 2, DataSource.AQUERY,
+                "every artifact path and depset reference resolved");
         Finding finding = run(new FindingInputs(
-                invocation(OptionalLong.of(600_000), Optional.empty(), paths, List.of()),
+                invocation(OptionalLong.of(600_000), Optional.empty(), paths,
+                        List.of(completeGraph)),
                 Map.of(), List.of(), List.of(), List.of(), THRESHOLDS)).getFirst();
 
         assertThat(finding.metrics()).extracting(Finding.MetricValue::name)
-                .contains("Visualizer-computed dependency critical path");
+                .contains("Visualizer-computed dependency critical path")
+                .contains("Action-graph completeness")
+                .doesNotContain("Action-graph correlation");
+        assertThat(finding.metrics().stream()
+                .filter(metric -> metric.name().equals("Action-graph completeness"))
+                .findFirst().orElseThrow().value()).isEqualTo("confirmed");
         assertThat(finding.caveats())
                 .contains("not what Bazel scheduled")
                 .contains("counted as instantaneous");
         assertThat(finding.confidence()).isEqualTo(Finding.Confidence.LOW);
+    }
+
+    @Test
+    @DisplayName("a fully timed chain needs verified graph structure for high confidence")
+    void criticalChainConfidenceNeedsStructuralCompleteness() {
+        CsrGraph chain = CsrBuilder.build(2, visitor -> visitor.edge(0, 1));
+        CriticalPath.Result path = CriticalPath.compute(
+                chain, new long[] {300_000, 300_000},
+                CriticalPath.DurationSource.BEP_ACTION);
+        CriticalPaths paths = new CriticalPaths(
+                Measured.unknown(DataSource.PROFILE, Completeness.UNAVAILABLE, "no profile"),
+                List.of(), Optional.of(path));
+
+        Finding withoutProof = run(new FindingInputs(
+                invocation(OptionalLong.of(700_000), Optional.empty(), paths, List.of()),
+                Map.of(), List.of(), List.of(), List.of(), THRESHOLDS)).getFirst();
+        Coverage completeGraph = Coverage.of(
+                "Action-graph completeness", 2, 2, DataSource.AQUERY,
+                "every artifact path and depset reference resolved");
+        Finding withProof = run(new FindingInputs(
+                invocation(OptionalLong.of(700_000), Optional.empty(), paths,
+                        List.of(completeGraph)),
+                Map.of(), List.of(), List.of(), List.of(), THRESHOLDS)).getFirst();
+
+        assertThat(withoutProof.confidence()).isEqualTo(Finding.Confidence.LOW);
+        assertThat(withProof.confidence()).isEqualTo(Finding.Confidence.HIGH);
+        assertThat(withProof.whyItMayMatter())
+                .contains("cannot overlap")
+                .contains("individual durations can still change")
+                .doesNotContain("adding machines");
     }
 
     @Test
@@ -338,7 +377,8 @@ final class FindingRulesTest {
     @Test
     @DisplayName("a poorly correlated action graph is reported, an absent one is not")
     void graphMismatch() {
-        Coverage poor = Coverage.of("Action-graph coverage", 100, 1_000, DataSource.AQUERY, "why");
+        Coverage poor = Coverage.of(
+                "Action-graph correlation", 100, 1_000, DataSource.AQUERY, "why");
         assertThat(ruleIds(run(new FindingInputs(
                 invocation(OptionalLong.of(10_000), Optional.empty(), noPaths(), List.of(poor)),
                 Map.of(), List.of(), List.of(), List.of(), THRESHOLDS))))
@@ -346,7 +386,7 @@ final class FindingRulesTest {
 
         // No graph is not a mismatch: nothing was claimed, so nothing is wrong.
         Coverage absent = Coverage.unavailable(
-                "Action-graph coverage", 1_000, DataSource.AQUERY, "no aquery output");
+                "Action-graph correlation", 1_000, DataSource.AQUERY, "no aquery output");
         assertThat(ruleIds(run(new FindingInputs(
                 invocation(OptionalLong.of(10_000), Optional.empty(), noPaths(), List.of(absent)),
                 Map.of(), List.of(), List.of(), List.of(), THRESHOLDS))))
@@ -406,7 +446,7 @@ final class FindingRulesTest {
 
     private static ActionMetrics withTransfer(ActionMetrics base, long micros) {
         return copy(base, base.durationMicros(), base.queueMicros(), OptionalLong.of(micros),
-                OptionalLong.empty(), OptionalLong.empty(), base.inputBytes(), base.outputBytes(),
+                OptionalLong.of(0), OptionalLong.of(0), base.inputBytes(), base.outputBytes(),
                 base.attempts(), base.directConsumers(), base.startMicros(), base.endMicros());
     }
 

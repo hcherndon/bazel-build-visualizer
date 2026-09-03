@@ -3,6 +3,8 @@ package com.holtherndon.bazelviz.ui.errors;
 import com.holtherndon.bazelviz.storage.entities.ErrorRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.files.WorkspaceFileResolver;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.util.List;
 import java.util.Objects;
 
@@ -103,6 +105,13 @@ public final class ErrorInspection {
         Inspection.Builder builder = new Inspection.Builder(row.subject())
                 .subtitle(row.kind().title())
                 .sourceEvent(row.bepEventId());
+        if (row.kind() == ErrorRow.Kind.ACTION) {
+            builder.ref(new EntityRef.ActionId(row.id()));
+        }
+        WorkspaceFileResolver.mainRepositoryLabel(row.subject())
+                .ifPresent(label -> builder.ref(new EntityRef.TargetLabel(label)));
+        row.bepEventId().ifPresent(eventId ->
+                builder.ref(new EntityRef.EventId(eventId)));
 
         builder.section("Failure")
                 .field("Kind", row.kind().title())

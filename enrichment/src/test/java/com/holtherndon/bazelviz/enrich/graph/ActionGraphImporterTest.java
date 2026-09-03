@@ -3,7 +3,15 @@ package com.holtherndon.bazelviz.enrich.graph;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.core.graph.ConfigurationMatch;
+import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.core.graph.GraphTargetScope;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.Action;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.ActionGraphContainer;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.Artifact;
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2.DepSetOfFiles;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
+import com.holtherndon.bazelviz.storage.graph.ActionEdgeDeriver;
+import com.holtherndon.bazelviz.storage.graph.GraphIndexBuilder;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import java.io.IOException;
 import java.io.InputStream;
@@ -79,8 +87,62 @@ final class ActionGraphImporterTest {
         // declared after their children (Q4). Any unresolved artifact means
         // the two-pass resolution did not happen.
         assertThat(result.unresolvedArtifacts()).isZero();
+        assertThat(result.unresolvedDepsetReferences()).isZero();
+        assertThat(scalar("SELECT unresolved_artifacts FROM graph_sources"
+                + " WHERE kind = 'DECLARED_ACTIONS'")).isZero();
+        assertThat(scalar("SELECT unresolved_depset_references FROM graph_sources"
+                + " WHERE kind = 'DECLARED_ACTIONS'")).isZero();
+        assertThat(text("SELECT target_scope FROM graph_sources"
+                + " WHERE kind = 'DECLARED_ACTIONS'"))
+                .isEqualTo("EXACT_BEP_TARGETS");
         assertThat(scalar("SELECT count(*) FROM declared_actions"
                 + " WHERE primary_output_id IS NULL")).isZero();
+    }
+
+    @Test
+    @DisplayName("an unresolved artifact is retained as exact graph completeness metadata")
+    void unresolvedArtifactCountIsPersisted() throws Exception {
+        Path graph = tempDir.resolve("unresolved.pb");
+        ActionGraphContainer container = ActionGraphContainer.newBuilder()
+                .addArtifacts(Artifact.newBuilder().setId(1).setPathFragmentId(404))
+                .build();
+        Files.write(graph, container.toByteArray());
+
+        ActionGraphImporter.Result result = new ActionGraphImporter(connection)
+                .importFrom(graph, List.of("bazel", "aquery", "//..."));
+
+        assertThat(result.succeeded()).isTrue();
+        assertThat(result.unresolvedArtifacts()).isEqualTo(1);
+        assertThat(scalar("SELECT unresolved_artifacts FROM graph_sources"
+                + " WHERE kind = 'DECLARED_ACTIONS'")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("dangling artifact and depset references cannot disappear during import")
+    void danglingReferencesArePersisted() throws Exception {
+        Path graph = tempDir.resolve("dangling.pb");
+        ActionGraphContainer container = ActionGraphContainer.newBuilder()
+                .addDepSetOfFiles(DepSetOfFiles.newBuilder()
+                        .setId(1)
+                        .addTransitiveDepSetIds(91)
+                        .addDirectArtifactIds(81))
+                .addActions(Action.newBuilder()
+                        .addInputDepSetIds(92)
+                        .addOutputIds(82)
+                        .setPrimaryOutputId(83))
+                .build();
+        Files.write(graph, container.toByteArray());
+
+        ActionGraphImporter.Result result = new ActionGraphImporter(connection)
+                .importFrom(graph, List.of("bazel", "aquery", "//..."));
+
+        assertThat(result.succeeded()).isTrue();
+        assertThat(result.unresolvedArtifacts()).isEqualTo(3);
+        assertThat(result.unresolvedDepsetReferences()).isEqualTo(2);
+        assertThat(scalar("SELECT unresolved_artifacts FROM graph_sources"
+                + " WHERE kind = 'DECLARED_ACTIONS'")).isEqualTo(3);
+        assertThat(scalar("SELECT unresolved_depset_references FROM graph_sources"
+                + " WHERE kind = 'DECLARED_ACTIONS'")).isEqualTo(2);
     }
 
     @Test
@@ -203,6 +265,63 @@ final class ActionGraphImporterTest {
         assertThat(scalar("SELECT count(*) FROM declared_actions")).isZero();
         assertThat(text("SELECT state FROM graph_sources")).isEqualTo("FAILED");
         assertThat(text("SELECT error_excerpt FROM graph_sources")).isNotBlank();
+        assertThat(text("SELECT unresolved_artifacts FROM graph_sources")).isNull();
+    }
+
+    @Test
+    @DisplayName("a failed replacement cannot expose indexes from the preceding action graph")
+    void failedReplacementInvalidatesActionIndexes() throws Exception {
+        importFixture("bazel920");
+        new ActionEdgeDeriver(connection).deriveAll();
+        Path indexDirectory = tempDir.resolve("indexes");
+        GraphIndexBuilder indexes = new GraphIndexBuilder(connection, indexDirectory);
+        GraphIndexBuilder.Result declared =
+                indexes.build(EdgeDerivation.DECLARED).orElseThrow();
+        indexes.build(EdgeDerivation.OBSERVED).orElseThrow();
+        assertThat(indexes.load(EdgeDerivation.DECLARED, "FORWARD")).isPresent();
+        assertThat(indexes.load(EdgeDerivation.OBSERVED, "FORWARD")).isPresent();
+
+        Path garbage = tempDir.resolve("replacement-garbage.proto");
+        Files.write(garbage, new byte[] {(byte) 0xff, (byte) 0xff, (byte) 0xff});
+
+        ActionGraphImporter.Result result =
+                new ActionGraphImporter(connection).importFrom(garbage, List.of("aquery"));
+
+        assertThat(result.succeeded()).isFalse();
+        assertThat(scalar("SELECT count(*) FROM graph_indexes"
+                + " WHERE kind IN ('DECLARED', 'OBSERVED')")).isZero();
+        assertThat(indexes.load(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
+        assertThat(indexes.load(EdgeDerivation.OBSERVED, "FORWARD")).isEmpty();
+        // Files are harmless without a registry row and can be atomically
+        // replaced by the next successful index build.
+        assertThat(declared.forwardFile()).exists();
+    }
+
+    @Test
+    @DisplayName("a failed aquery process invalidates old indexes and marks the source failed")
+    void processFailureInvalidatesActionIndexes() throws Exception {
+        importFixture("bazel920");
+        new ActionEdgeDeriver(connection).deriveAll();
+        GraphIndexBuilder indexes =
+                new GraphIndexBuilder(connection, tempDir.resolve("process-failure-indexes"));
+        indexes.build(EdgeDerivation.DECLARED).orElseThrow();
+        indexes.build(EdgeDerivation.OBSERVED).orElseThrow();
+        Path empty = Files.createFile(tempDir.resolve("failed-aquery.proto"));
+
+        ActionGraphImporter.Result result = new ActionGraphImporter(connection)
+                .recordFailure(empty, List.of("bazel", "aquery"), "analysis failed on //bad");
+
+        assertThat(result.succeeded()).isFalse();
+        assertThat(scalar("SELECT count(*) FROM graph_indexes"
+                + " WHERE kind IN ('DECLARED', 'OBSERVED')")).isZero();
+        assertThat(text("SELECT state FROM graph_sources WHERE kind = 'DECLARED_ACTIONS'"))
+                .isEqualTo("FAILED");
+        assertThat(text("SELECT error_excerpt FROM graph_sources"
+                + " WHERE kind = 'DECLARED_ACTIONS'"))
+                .contains("analysis failed on //bad");
+        assertThat(text("SELECT raw_output_path FROM graph_sources"
+                + " WHERE kind = 'DECLARED_ACTIONS'"))
+                .isEqualTo(empty.toString());
     }
 
     @Test
@@ -245,7 +364,11 @@ final class ActionGraphImporterTest {
 
     private ActionGraphImporter.Result importFixture(String name) throws Exception {
         return new ActionGraphImporter(connection)
-                .importFrom(fixture(name + "-aquery.proto"), List.of("aquery", "//pkg:all"));
+                .importFrom(
+                        fixture(name + "-aquery.proto"),
+                        List.of("aquery", "//pkg:all"),
+                        GraphTargetScope.EXACT_BEP_TARGETS,
+                        "fixture uses the build's exact top-level labels");
     }
 
     /**

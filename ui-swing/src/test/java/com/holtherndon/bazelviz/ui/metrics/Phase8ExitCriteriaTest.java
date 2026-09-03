@@ -24,6 +24,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -68,17 +69,23 @@ final class Phase8ExitCriteriaTest {
                 + " raw_offset, raw_length, decode_status, event_micros, receive_micros)"
                 + " VALUES (1, 1, 1, 3, 0, 0, 8, 'OK', 1000, 1200)");
         exec("INSERT INTO mnemonics (id, value) VALUES (1, 'Javac'), (2, 'CppCompile')");
-        exec("INSERT INTO enrichment_tasks (id, kind, state) VALUES (1, 'EXEC_LOG', 'DONE')");
-        exec("INSERT INTO graph_sources (id, kind, state, configuration_match)"
-                + " VALUES (1, 'AQUERY', 'COMPLETE', 'EXACT')");
+        exec("INSERT INTO enrichment_tasks (id, kind, state)"
+                + " VALUES (1, 'EXECUTION_LOG', 'SUCCEEDED')");
+        exec("INSERT INTO graph_sources"
+                + " (id, kind, state, configuration_match, target_scope, unresolved_artifacts,"
+                + " unresolved_depset_references)"
+                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT',"
+                + " 'EXACT_BEP_TARGETS', 0, 0)");
 
         for (int i = 0; i < ACTIONS; i++) {
             long id = i + 1;
+            long actionStart = 10_000 + i * 100_000L;
             exec("INSERT INTO labels (id, value) VALUES (" + id + ", '//pkg" + (i % 2)
                     + ":target" + i + "')");
-            exec("INSERT INTO actions (id, primary_output, label_id, mnemonic_id, outcome)"
+            exec("INSERT INTO actions (id, primary_output, label_id, mnemonic_id, outcome,"
+                    + " start_micros, end_micros)"
                     + " VALUES (" + id + ", 'out/" + i + ".o', " + id + ", " + (i % 2 + 1)
-                    + ", 'SUCCESS')");
+                    + ", 'SUCCESS', " + actionStart + ", " + (actionStart + 50_000) + ")");
             // Sequential spawns, each 400 ms, so the chain and the clock agree.
             long start = 1_000 + i * 400_000L;
             exec("INSERT INTO action_attempts (id, task_id, log_entry_index, action_id,"
@@ -115,11 +122,25 @@ final class Phase8ExitCriteriaTest {
     }
 
     private SessionMetrics collect() throws Exception {
+        return collect(null);
+    }
+
+    private SessionMetrics collect(CriticalPath.DurationSource requestedSource) throws Exception {
+        return collect(requestedSource, MetricQueries.DEFAULT_CANDIDATE_LIMIT);
+    }
+
+    private SessionMetrics collect(
+            CriticalPath.DurationSource requestedSource, int candidateLimit) throws Exception {
         try (MetricQueries queries = new MetricQueries(
                 database.newReadConnection(),
                 new GraphQueries(database.newReadConnection(), tempDir.resolve("indexes")))) {
-            return queries.collect(MetricQueries.Request.everything(
-                    queries.bestDurationSource()));
+            CriticalPath.DurationSource source = requestedSource == null
+                    ? queries.bestDurationSource() : requestedSource;
+            return queries.collect(new MetricQueries.Request(
+                    source,
+                    Set.of(GroupAggregate.Dimension.values()),
+                    MetricQueries.DEFAULT_GROUP_LIMIT,
+                    candidateLimit));
         }
     }
 
@@ -228,6 +249,131 @@ final class Phase8ExitCriteriaTest {
         assertThat(summary.lines().filter(line -> line.equals("Critical path"))).isEmpty();
     }
 
+    @Test
+    @DisplayName("dependency contributors use the same duration source as the path")
+    void dependencyContributorsKeepTheSelectedDurationSource() throws Exception {
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.BEP_ACTION);
+
+        assertThat(metrics.invocation().criticalPaths().derived().orElseThrow()
+                .makespanMicros()).isEqualTo(400_000L);
+        assertThat(metrics.criticalPathActions()).hasSize(ACTIONS);
+        assertThat(metrics.criticalPathActions())
+                .allSatisfy(action -> assertThat(action.durationMicros()).hasValue(50_000L));
+        assertThat(metrics.criticalPathActions().stream()
+                .filter(action -> action.actionId() == 1L)
+                .findFirst().orElseThrow().startMicros()).hasValue(10_000L);
+    }
+
+    @Test
+    @DisplayName("execution path weights do not sum raced attempts but action totals do")
+    void dependencyAttemptWeightsDoNotSumRacedWork() throws Exception {
+        exec("INSERT INTO action_attempts (id, task_id, log_entry_index, action_id,"
+                + " correlation, runner, cache_hit, start_micros, total_micros, input_bytes,"
+                + " queue_micros, setup_micros, execution_wall_micros, cacheable, remotable)"
+                + " VALUES (100, 1, 100, 1, 'MATCHED_BY_OUTPUT', 'local', 0, 1200,"
+                + " 800000, 2048, 700000, 5000, 95000, 1, 1)");
+
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+
+        assertThat(metrics.invocation().criticalPaths().derived().orElseThrow()
+                .makespanMicros()).isEqualTo(3_200_000L);
+        var contributor = metrics.criticalPathActions().stream()
+                .filter(action -> action.actionId() == 1L)
+                .findFirst().orElseThrow();
+        assertThat(contributor.durationMicros()).hasValue(1_200_000L);
+        assertThat(contributor.queueMicros()).hasValue(701_000L);
+        assertThat(contributor.attempts()).isEqualTo(2);
+        // The original attempt did not report every component. The aggregate
+        // must not subtract only the known subset and call the remainder exact.
+        assertThat(contributor.unaccountedMicros()).isEmpty();
+
+        var catalogAction = metrics.candidates().stream()
+                .filter(action -> action.actionId() == 1L)
+                .findFirst().orElseThrow();
+        assertThat(catalogAction.durationMicros()).hasValue(1_200_000L);
+        assertThat(catalogAction.queueMicros()).hasValue(701_000L);
+    }
+
+    @Test
+    @DisplayName("dependency contributors retain only the bounded heaviest path weights")
+    void dependencyContributorsUseABoundedTopN() throws Exception {
+        for (int id = 1; id <= ACTIONS; id++) {
+            exec("UPDATE action_attempts SET total_micros = " + (id * 100_000L)
+                    + " WHERE id = " + id);
+        }
+
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT, 3);
+
+        assertThat(metrics.criticalPathActions())
+                .extracting(action -> action.actionId())
+                .containsExactly(8L, 7L, 6L);
+    }
+
+    @Test
+    @DisplayName("an untrusted graph is never used as this invocation's critical path")
+    void untrustedGraphsDoNotProduceDependencyPaths() throws Exception {
+        exec("UPDATE graph_sources SET configuration_match = 'MISMATCHED',"
+                + " mismatch_detail = 'query used another configuration' WHERE id = 1");
+
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+
+        assertThat(metrics.invocation().criticalPaths().derived()).isEmpty();
+        assertThat(metrics.criticalPathActions()).isEmpty();
+        assertThat(metrics.invocation().criticalPaths().schedulingGapMicros()).isEmpty();
+        assertThat(metrics.candidates()).allSatisfy(action -> {
+            assertThat(action.directDependencies()).isEmpty();
+            assertThat(action.directConsumers()).isEmpty();
+        });
+    }
+
+    @Test
+    @DisplayName("an incomplete declared graph cannot produce a dependency path")
+    void incompleteGraphsDoNotProduceDependencyPaths() throws Exception {
+        exec("UPDATE graph_sources SET unresolved_artifacts = 3 WHERE id = 1");
+
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+
+        assertThat(metrics.invocation().criticalPaths().derived()).isEmpty();
+        assertThat(metrics.criticalPathActions()).isEmpty();
+        assertThat(metrics.invocation().criticalPaths().schedulingGapMicros()).isEmpty();
+        assertThat(metrics.invocation().criticalPaths().derivedUnavailableReason())
+                .hasValueSatisfying(reason -> assertThat(reason)
+                        .contains("3 artifact paths were unresolved")
+                        .contains("dependency edges"));
+        assertThat(metrics.invocation().coverage().find("Action-graph completeness"))
+                .hasValueSatisfying(coverage -> {
+                    assertThat(coverage.isComplete()).isFalse();
+                    assertThat(coverage.reason()).hasValueSatisfying(reason -> assertThat(reason)
+                            .contains("3 artifact paths were unresolved"));
+                });
+    }
+
+    @Test
+    @DisplayName("missing graph indexes leave dependency degrees unknown")
+    void missingIndexesDoNotBecomeZeroDegree() throws Exception {
+        exec("DELETE FROM graph_indexes");
+
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+
+        assertThat(metrics.invocation().criticalPaths().derived()).isEmpty();
+        assertThat(metrics.candidates()).isNotEmpty().allSatisfy(action -> {
+            assertThat(action.directDependencies()).isEmpty();
+            assertThat(action.directConsumers()).isEmpty();
+        });
+    }
+
+    @Test
+    @DisplayName("overflowing dependency duration arithmetic is reported as unavailable")
+    void overflowingDerivedPathIsUnavailable() throws Exception {
+        exec("UPDATE action_attempts SET total_micros = " + Long.MAX_VALUE);
+
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+
+        assertThat(metrics.invocation().criticalPaths().derived()).isEmpty();
+        assertThat(metrics.invocation().criticalPaths().derivedUnavailableReason())
+                .hasValueSatisfying(reason -> assertThat(reason).contains("overflowed"));
+    }
+
     // --- criterion 3 -------------------------------------------------------
 
     @Test
@@ -271,11 +417,11 @@ final class Phase8ExitCriteriaTest {
         // path's own node indices, from the collection that weighted it.
         assertThat(metrics.invocation().criticalPaths().derived().orElseThrow().path())
                 .hasSize(ACTIONS);
-        // Plan 16.1 asks a chain finding to show slack and graph coverage.
+        // Plan 16.1 asks a chain finding to show slack and graph completeness.
         assertThat(chain.evidence()).extracting(Finding.Evidence::detail)
                 .allMatch(detail -> detail.contains("slack"));
         assertThat(chain.metrics()).extracting(Finding.MetricValue::name)
-                .contains("Action-graph coverage");
+                .contains("Action-graph completeness");
     }
 
     private boolean rowExists(long actionId) throws Exception {

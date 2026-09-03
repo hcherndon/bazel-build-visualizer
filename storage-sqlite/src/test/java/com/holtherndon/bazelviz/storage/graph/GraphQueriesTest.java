@@ -10,7 +10,9 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -41,8 +43,11 @@ final class GraphQueriesTest {
         MigrationRunner.standard().migrate(database);
         connection = database.writerConnection();
         exec("INSERT INTO graph_sources (id, kind, state, configuration_match,"
-                + " declared_actions, correlated_actions)"
-                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT', 5, 1)");
+                + " target_scope,"
+                + " declared_actions, correlated_actions, unresolved_artifacts,"
+                + " unresolved_depset_references)"
+                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT',"
+                + " 'EXACT_BEP_TARGETS', 5, 1, 0, 0)");
         exec("INSERT INTO graph_sources (id, kind, state, configuration_match, error_excerpt)"
                 + " VALUES (2, 'CONFIGURED_TARGETS', 'FAILED', 'UNKNOWN', 'cquery exploded')");
         exec("INSERT INTO mnemonics (id, value) VALUES (1, 'Javac')");
@@ -135,6 +140,39 @@ final class GraphQueriesTest {
     }
 
     @Test
+    @DisplayName("batch node details preserve request order and missing nodes")
+    void batchNodeDetailsPreserveMissingNodes() throws Exception {
+        Map<Integer, java.util.Optional<GraphQueries.GraphNode>> nodes =
+                queries.nodes(List.of(4, 2, 99, 0, 2, -1));
+
+        assertThat(nodes.keySet()).containsExactly(4, 2, 99, 0, -1);
+        assertThat(nodes.get(4).orElseThrow().label()).contains("//chain:t4");
+        assertThat(nodes.get(2).orElseThrow().actionId()).hasValue(7);
+        assertThat(nodes.get(0).orElseThrow().declaredOnly()).isTrue();
+        assertThat(nodes.get(99)).isEmpty();
+        assertThat(nodes.get(-1)).isEmpty();
+        assertThat(queries.nodes(List.of())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("batch node details cross SQLite's historical bind-variable boundary")
+    void batchNodeDetailsUseAsManyQueriesAsNeeded() throws Exception {
+        List<Integer> requested = new ArrayList<>();
+        for (int node = 0; node < 1_005; node++) {
+            requested.add(node);
+        }
+
+        Map<Integer, java.util.Optional<GraphQueries.GraphNode>> nodes =
+                queries.nodes(requested);
+
+        assertThat(nodes).hasSize(1_005);
+        assertThat(nodes.get(0)).isPresent();
+        assertThat(nodes.get(4)).isPresent();
+        assertThat(nodes.get(5)).isEmpty();
+        assertThat(nodes.get(1_004)).isEmpty();
+    }
+
+    @Test
     @DisplayName("forward neighbours are what a node feeds; reverse are what feeds it")
     void neighboursFollowTheIndexDirection() throws Exception {
         List<GraphQueries.GraphNode> fed = queries.neighbours(
@@ -177,6 +215,11 @@ final class GraphQueriesTest {
         assertThat(queries.nodeForAction(7)).hasValue(2);
         assertThat(queries.nodeForAction(999)).isEmpty();
         assertThat(queries.actionIdsByNodeIndex()).containsExactly(java.util.Map.entry(2, 7L));
+
+        List<String> streamed = new ArrayList<>();
+        queries.forEachActionIdByNodeIndex(
+                (nodeIndex, actionId) -> streamed.add(nodeIndex + ":" + actionId));
+        assertThat(streamed).containsExactly("2:7");
     }
 
     @Test
@@ -262,6 +305,61 @@ final class GraphQueriesTest {
         // Rule 11: "nothing measured this" and "this took no time" are
         // opposite claims, and the array must keep them apart.
         assertThat(durations[0]).isEqualTo(-1);
+    }
+
+    @Test
+    @DisplayName("equal BEP timestamps remain unavailable rather than becoming measured zero")
+    void unusableBepTimestampsStayUnknown() throws Exception {
+        exec("UPDATE actions SET end_micros = start_micros WHERE id = 7");
+
+        long[] durations = queries.durationsByNodeIndex(false, -1);
+
+        assertThat(durations[2]).isEqualTo(-1);
+    }
+
+    @Test
+    @DisplayName("attempt path weights do not add parallel attempts together")
+    void attemptPathWeightsRemainConservative() throws Exception {
+        exec("INSERT INTO enrichment_tasks (id, kind, state)"
+                + " VALUES (1, 'EXECUTION_LOG', 'SUCCEEDED')");
+        exec("INSERT INTO action_attempts"
+                + " (id, task_id, log_entry_index, action_id, correlation, total_micros)"
+                + " VALUES (1, 1, 0, 7, 'MATCHED_BY_OUTPUT', 10000),"
+                + " (2, 1, 1, 7, 'MATCHED_BY_OUTPUT', 20000)");
+
+        long[] durations = queries.durationsByNodeIndex(true, -1);
+
+        assertThat(durations[2]).isEqualTo(10_000);
+        assertThat(durations[0]).isEqualTo(-1);
+    }
+
+    @Test
+    @DisplayName("one attempt without a duration makes the action's path weight unknown")
+    void partialAttemptTimingStaysUnknown() throws Exception {
+        exec("INSERT INTO enrichment_tasks (id, kind, state)"
+                + " VALUES (1, 'EXECUTION_LOG', 'SUCCEEDED')");
+        exec("INSERT INTO action_attempts"
+                + " (id, task_id, log_entry_index, action_id, correlation, total_micros)"
+                + " VALUES (1, 1, 0, 7, 'MATCHED_BY_OUTPUT', 10000),"
+                + " (2, 1, 1, 7, 'MATCHED_BY_OUTPUT', NULL)");
+
+        long[] durations = queries.durationsByNodeIndex(true, -1);
+
+        assertThat(durations[2]).isEqualTo(-1);
+    }
+
+    @Test
+    @DisplayName("attempts retained after a failed retry do not become path weights")
+    void staleAttemptTimingStaysUnknown() throws Exception {
+        exec("INSERT INTO enrichment_tasks (id, kind, state)"
+                + " VALUES (1, 'EXECUTION_LOG', 'FAILED')");
+        exec("INSERT INTO action_attempts"
+                + " (id, task_id, log_entry_index, action_id, correlation, total_micros)"
+                + " VALUES (1, 1, 0, 7, 'MATCHED_BY_OUTPUT', 10000)");
+
+        long[] durations = queries.durationsByNodeIndex(true, -1);
+
+        assertThat(durations[2]).isEqualTo(-1);
     }
 
     @Test
@@ -357,6 +455,57 @@ final class GraphQueriesTest {
         assertThat(targets.isTrustworthy()).isFalse();
         assertThat(targets.graphKind()).contains(GraphKind.CONFIGURED_TARGETS);
         assertThat(targets.error()).contains("cquery exploded");
+    }
+
+    @Test
+    @DisplayName("exact configuration is insufficient when action structure is incomplete")
+    void incompleteOrUnknownActionStructureIsNotTrustworthy() throws Exception {
+        exec("UPDATE graph_sources SET unresolved_artifacts = 2 WHERE id = 1");
+
+        GraphQueries.GraphSource incomplete = queries.sources().getFirst();
+        assertThat(incomplete.isTrustworthy()).isFalse();
+        assertThat(incomplete.actionGraphCompletenessProblem())
+                .hasValueSatisfying(reason -> assertThat(reason)
+                        .contains("2 artifact paths were unresolved")
+                        .contains("dependency edges"));
+
+        exec("UPDATE graph_sources SET unresolved_artifacts = NULL WHERE id = 1");
+
+        GraphQueries.GraphSource unknown = queries.sources().getFirst();
+        assertThat(unknown.isTrustworthy()).isFalse();
+        assertThat(unknown.actionGraphCompletenessProblem())
+                .hasValueSatisfying(reason -> assertThat(reason)
+                        .contains("not recorded")
+                        .contains("unverified"));
+
+        exec("UPDATE graph_sources SET unresolved_artifacts = 0,"
+                + " unresolved_depset_references = 1 WHERE id = 1");
+
+        GraphQueries.GraphSource missingDepset = queries.sources().getFirst();
+        assertThat(missingDepset.isTrustworthy()).isFalse();
+        assertThat(missingDepset.actionGraphCompletenessProblem())
+                .hasValueSatisfying(reason -> assertThat(reason)
+                        .contains("1 depset reference was unresolved")
+                        .contains("dependency edges"));
+    }
+
+    @Test
+    @DisplayName("a wider or unrecorded target scope cannot support exact graph claims")
+    void targetScopeIsPartOfTrust() throws Exception {
+        exec("UPDATE graph_sources SET target_scope = 'REQUESTED_PATTERNS',"
+                + " target_scope_detail = 'requested-pattern fallback' WHERE id = 1");
+
+        GraphQueries.GraphSource fallback = queries.sources().getFirst();
+        assertThat(fallback.isTrustworthy()).isFalse();
+        assertThat(fallback.targetScopeProblem()).contains("requested-pattern fallback");
+
+        exec("UPDATE graph_sources SET target_scope = NULL, target_scope_detail = NULL"
+                + " WHERE id = 1");
+
+        GraphQueries.GraphSource migrated = queries.sources().getFirst();
+        assertThat(migrated.isTrustworthy()).isFalse();
+        assertThat(migrated.targetScopeProblem())
+                .hasValueSatisfying(reason -> assertThat(reason).contains("not recorded"));
     }
 
     // ------------------------------------------------------------- plumbing

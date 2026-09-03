@@ -1,1 +1,4 @@
-# Home of the shared build conventions (tools/bbv.bzl). Nothing to build here.
+# Shared Java/test policy values. Package BUILD files invoke native and
+# contrib_rules_jvm rules directly; this package does not define rule macros.
+
+exports_files(["java_test_settings.bzl"])

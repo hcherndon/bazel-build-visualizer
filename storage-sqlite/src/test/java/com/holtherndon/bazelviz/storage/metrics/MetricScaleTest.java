@@ -95,7 +95,7 @@ final class MetricScaleTest {
             statement.execute("INSERT INTO event_streams (id, stream_key, state)"
                     + " VALUES (1, 's', 'CLOSED')");
             statement.execute("INSERT INTO enrichment_tasks (id, kind, state)"
-                    + " VALUES (1, 'EXEC_LOG', 'DONE')");
+                    + " VALUES (1, 'EXECUTION_LOG', 'SUCCEEDED')");
             for (int i = 0; i < MNEMONICS; i++) {
                 statement.execute("INSERT INTO mnemonics (id, value) VALUES ("
                         + (i + 1) + ", 'Mnemonic" + i + "')");

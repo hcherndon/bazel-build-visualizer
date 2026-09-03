@@ -219,16 +219,49 @@ final class ExecutionLogImporterTest {
     }
 
     @Test
-    @DisplayName("re-importing replaces the previous outcome rather than appending")
+    @DisplayName("re-importing replaces the previous execution-log rows rather than appending")
     void reimportIsIdempotent() throws Exception {
         importFixture("bazel920-build.compact");
         long first = scalar("SELECT count(*) FROM action_attempts");
         importFixture("bazel920-build.compact");
 
         assertThat(scalar("SELECT count(*) FROM enrichment_tasks")).isEqualTo(1);
-        // The attempts from the first run are still there under the same task
-        // id; what must not happen is two task rows disagreeing about state.
-        assertThat(scalar("SELECT count(*) FROM action_attempts")).isGreaterThanOrEqualTo(first);
+        assertThat(scalar("SELECT count(*) FROM action_attempts")).isEqualTo(first);
+    }
+
+    @Test
+    @DisplayName("a successful shorter re-import removes every old attempt and input set")
+    void successfulShorterRetryReplacesTheOldLog() throws Exception {
+        importFixture("bazel920-build.compact");
+        assertThat(scalar("SELECT count(*) FROM action_attempts")).isPositive();
+        assertThat(scalar("SELECT count(*) FROM input_sets")).isPositive();
+
+        useBuildOf("bazel920-fullycached.compact");
+        ExecutionLogImporter.Result replacement =
+                importFixture("bazel920-fullycached.compact");
+
+        assertThat(replacement.state()).isEqualTo(EnrichmentTask.State.SUCCEEDED);
+        assertThat(scalar("SELECT count(*) FROM action_attempts")).isZero();
+        assertThat(scalar("SELECT count(*) FROM input_sets")).isZero();
+    }
+
+    @Test
+    @DisplayName("a failed retry restores the last complete execution-log rows")
+    void failedRetryRollsBackReplacement() throws Exception {
+        importFixture("bazel920-build.compact");
+        long attempts = scalar("SELECT count(*) FROM action_attempts");
+        long inputSets = scalar("SELECT count(*) FROM input_sets");
+        Path broken = tempDir.resolve("retry-garbage.bin");
+        Files.write(broken, new byte[] {0, 0, 0, 0});
+
+        ExecutionLogImporter.Result retry =
+                new ExecutionLogImporter(connection, EnvironmentRedactor.none())
+                        .importFrom(broken);
+
+        assertThat(retry.state()).isEqualTo(EnrichmentTask.State.FAILED);
+        assertThat(scalar("SELECT count(*) FROM action_attempts")).isEqualTo(attempts);
+        assertThat(scalar("SELECT count(*) FROM input_sets")).isEqualTo(inputSets);
+        assertThat(taskState()).isEqualTo(EnrichmentTask.State.FAILED);
     }
 
     // ---------------------------------------------------------------- helpers

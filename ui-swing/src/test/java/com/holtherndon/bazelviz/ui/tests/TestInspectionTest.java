@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.storage.entities.TestAttemptRow;
 import com.holtherndon.bazelviz.storage.entities.TestQueries;
 import com.holtherndon.bazelviz.storage.entities.TestRow;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.files.FileLink;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -110,6 +111,8 @@ class TestInspectionTest {
                         OptionalLong.of(1))));
 
         assertThat(valueOf(inspection, "test.log")).hasValue("file:///out/t/test.log");
+        assertThat(field(inspection, "test.log").orElseThrow().fileLink())
+                .contains(FileLink.testLog("test.log", "file:///out/t/test.log"));
     }
 
     private static TestRow test(

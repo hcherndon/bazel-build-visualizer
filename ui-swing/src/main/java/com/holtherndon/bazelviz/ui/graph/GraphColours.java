@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.graph;
 
 import java.awt.Color;
+import javax.swing.UIManager;
 
 /**
  * What a node's colour is allowed to mean.
@@ -23,16 +24,27 @@ public final class GraphColours {
     /** The node under the pointer. */
     public static final Color HOVER = new Color(0x5F, 0x6D, 0xF0);
 
-    /** Edges. Light, because at any real density they are the background. */
-    public static final Color EDGE = new Color(0x00, 0x00, 0x00, 0x40);
-
     /** Edges into or out of the selection, drawn over the rest. */
     public static final Color EDGE_HIGHLIGHTED = new Color(0x1A, 0x73, 0xE8, 0xC0);
 
     /** The box-select rectangle. */
     public static final Color MARQUEE = new Color(0x1A, 0x73, 0xE8, 0x30);
 
-    public static final Color LABEL = new Color(0x20, 0x20, 0x20);
+    /** Ordinary edges follow the current text colour at low opacity. */
+    public static Color edge() {
+        return withAlpha(label(), 0x40);
+    }
+
+    /** Shared/cycle links sit behind the primary branches in either theme. */
+    public static Color secondaryEdge() {
+        return withAlpha(label(), 0x24);
+    }
+
+    /** Labels use the active look-and-feel foreground, including dark themes. */
+    public static Color label() {
+        Color label = UIManager.getColor("Label.foreground");
+        return label == null ? new Color(0x20, 0x20, 0x20) : label;
+    }
 
     /**
      * The heat ramp, cold to hot, over {@code [0, 1]}.
@@ -56,5 +68,9 @@ public final class GraphColours {
                 (int) Math.round(from.getRed() + (to.getRed() - from.getRed()) * u),
                 (int) Math.round(from.getGreen() + (to.getGreen() - from.getGreen()) * u),
                 (int) Math.round(from.getBlue() + (to.getBlue() - from.getBlue()) * u));
+    }
+
+    private static Color withAlpha(Color color, int alpha) {
+        return new Color(color.getRed(), color.getGreen(), color.getBlue(), alpha);
     }
 }

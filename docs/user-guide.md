@@ -1,10 +1,97 @@
 # User guide
 
-Bazel Build Visualizer captures what a Bazel build did and shows it. It runs
-locally, on your machine, for one person; nothing it captures leaves the machine
-unless you export it.
+Bazel Build Visualizer captures what a Bazel build did and shows it. The app,
+managed sessions and analysis stay on your desktop. A build can run there or on
+an SSH host you explicitly select; captured data is not sent elsewhere unless
+you start that connection or export a session. An optional Workspace Discovery
+script is trusted local executable configuration and can perform whatever
+local or network work its author wrote.
 
 This guide is written for somebody who has a slow build and wants to know why.
+
+---
+
+## Choose an execution workspace
+
+The app restores the Workspace windows that were open when it last closed. If
+there is nothing to restore, it opens on **Workspaces**, with the most recently
+opened entries first. A Workspace is one repository on one machine, not a
+captured build. Give it a name and choose either:
+
+- **This computer** — a local working directory and Bazel executable.
+- **SSH host** — an OpenSSH destination or configured Host alias, optional
+  port, absolute remote working directory and remote Bazel executable.
+
+You can save several repositories on the same local or SSH machine. Choosing a
+Workspace opens its own native window; choosing the same profile again focuses
+the window that is already open. A local window validates its directory.
+Opening an SSH window is the explicit action that creates its private OpenSSH
+connection. The app uses your existing host keys, agent and configuration; it
+does not ask for or store a password or private key.
+
+Use the **Workspaces** menu later to recall the Workspace manager, create or
+edit a saved one, or reconnect and close the current window. The manager hides
+while Workspace windows are open and returns when the last one closes. Each
+window's repository, editors, builds, captured-session selection and Terminal
+use only that window's execution context.
+
+Up to eight restorable Workspace-window slots can be tracked. An unavailable
+previously discovered Workspace keeps its slot until you press **Forget** in
+the manager, so the app never silently drops an older restore entry. Different
+canonical repositories can capture at the same time. If two profiles resolve
+to the same repository, the second capture is refused and identifies the
+window that owns the active capture; Bazel's own repository lock remains the
+final authority.
+
+Window restoration reconnects saved SSH Workspaces because leaving the window
+open is persisted application state. It restores the Workspace, position and
+size and starts on Console. It does not reopen a historical session, start the
+Terminal, repopulate the command draft, or rerun a command. A saved Workspace's
+command history and table layout remain available; discovered Workspaces do not
+persist those per-window settings. A discovered Workspace restores only when
+startup discovery emits the same deterministic profile again.
+When upgrading from the former single-window app, its command history is moved
+once into the saved Workspace whose repository and execution host match; it is
+never copied to an ambiguous SSH profile.
+
+A Workspace and a captured session are independent. You do not choose a
+session before opening a Workspace, and you may inspect or import historical
+data without selecting a live Workspace. Opening a recorded SSH session never
+contacts that host or selects a matching Workspace for you.
+
+### Discover Workspaces with a script
+
+Open **Settings › Preferences…**, then choose the **Discovery** tab, to save
+one optional discovery script. It runs locally, not in a selected Workspace:
+once during graphical startup and whenever you press **Run Discovery Now**.
+That button saves the current editor text before starting the run. The work
+happens away from the Swing event thread.
+
+A non-empty script must begin with a shebang such as `#!/bin/sh` or
+`#!/usr/bin/env python3`. The app invokes the script file directly, so the
+operating system follows that shebang; it does not wrap the text in another
+shell. The editor uses the same line to choose syntax highlighting. Treat the
+script as executable code with your account's local permissions, and save only
+code you trust.
+
+Print one Workspace per non-comment stdout line in exactly one of these forms:
+
+```
+local|name|working-directory
+ssh|name|OpenSSH-destination-or-Host-alias|working-directory
+```
+
+Discovered profiles use `bazel` as their executable. For SSH, put a custom
+port, jump host, identity file, and other connection options in
+`~/.ssh/config`; they are not extra output fields.
+
+Every invocation replaces all results from the previous invocation. Accepted
+rows appear on the Workspaces screen and in **Workspaces › Available
+Workspaces** with a **Discovered** tag. They are available for this app process
+only: they are never written to `workspaces.properties` and have no Edit or
+Remove action. Edit the script and run discovery again to change them. Invalid
+rows and execution problems produce bounded diagnostics instead of silently
+changing the protocol or keeping stale results.
 
 ---
 
@@ -15,8 +102,9 @@ directory holding everything captured, indexed for querying.
 
 ### Run a build through the tool
 
-Fill in the launcher bar at the top: the workspace, the Bazel executable, and
-the command you would have typed. Press **Run**.
+Choose a Workspace, open **Console**, enter the Bazel command you would have
+typed, and press **Run**. The launcher shows the selected Workspace instead of
+asking for its machine, directory and executable again.
 
 Before anything starts you are shown the **instrumentation plan**: your original
 command, the effective command the tool will actually run, every flag it added,
@@ -25,6 +113,14 @@ needs, the conflict is shown and you choose.
 
 The tool adds flags to make the build *observable* — an event stream, an
 execution log, a timing profile. It does not change what the build does.
+
+For an SSH Workspace, capture borrows the connection that Workspace already
+owns. Preflight adds a capture-scoped reverse loopback tunnel from the remote
+host to the desktop BES, validates the Linux Workspace and Bazel, and creates a
+private remote capture directory. The review identifies both tunnel endpoints
+and states that the forced-TTY Bazel command has merged stdout/stderr. Nothing
+runs if the reverse forward, SFTP subsystem or required remote tool is
+unavailable. Closing the capture does not close the selected Workspace.
 
 ### Import a file Bazel already wrote
 
@@ -40,7 +136,56 @@ an archive does and does not contain.
 
 **File ▸ Open Recent** lists sessions already on this machine. Each one can be
 pinned, which protects it from cleanup, or removed from the list without
-deleting it.
+deleting it. **File ▸ Clean Up Sessions…** also keeps any session open in any
+application window, even if that window opened it after the cleanup preview was
+shown; the result names sessions kept for that reason.
+
+---
+
+## Appearance
+
+Open **Settings › Preferences…** and choose the **Theme** tab to switch the
+whole application between Light, Dark, IntelliJ Light, Darcula, macOS Light,
+and macOS Dark. Open file editors, syntax views, graphs, timelines, and the
+selected Workspace's live Terminal update with the rest of the window;
+changing terminal colours does not restart its shell.
+
+The choice is saved automatically and applied before the first window appears
+on the next launch. A command-line `-Dbbv.theme=<id>` setting overrides it for
+that process only. The accepted IDs are `light`, `dark`, `intellij-light`,
+`darcula`, `macos-light`, and `macos-dark`. Missing or damaged appearance
+settings fall back to Light.
+
+---
+
+## Diagnostics and logging
+
+The graphical app records normal lifecycle and operation summaries in
+`logs/application.log` below its application-support directory. Choose
+**Diagnostics › Log Detail** at any time:
+
+- **Error** records operations that could not complete.
+- **Warn** adds recoverable problems that may need attention.
+- **Info** adds normal lifecycle and operation summaries. This is the
+  recommended default.
+- **Debug** adds decisions and stage-level progress useful for troubleshooting.
+- **Trace** adds the most detailed bounded progress. Use it briefly when Debug
+  is not enough because it grows logs fastest.
+
+The choice takes effect immediately and is saved for the next launch. A
+`-Dbbv.log.level=<error|warn|info|debug|trace>` property overrides it for one
+process without replacing the saved choice.
+
+Choose **Open Application Log** for a modeless, read-only text viewer. Its
+**Reload** action reads records written since it opened. **Reveal Application
+Log** selects the file in the system file browser. The Diagnostics menu also
+shows the exact number of records a saturated logging queue could not retain;
+the log writes a warning when that happens. Logs can contain workspace paths,
+labels, SSH destinations, session identifiers and failure messages, so treat
+them as sensitive build data.
+
+Headless commands do not create this file. They keep logs on stderr, default to
+Warn, and leave stdout available for command output and JSON.
 
 ---
 
@@ -67,15 +212,105 @@ Two numbers on this screen are worth understanding before you use any other:
 
 ### Timeline
 
-Every action as a span, on a shared clock, grouped into lanes. Drag to select a
-range and the Actions table narrows to it.
+Actions and attempts share one clock and are grouped into lanes. Use the wheel
+or a two-finger vertical trackpad gesture to scroll through the lanes. A
+two-finger horizontal gesture pans left or right in time; Shift + wheel offers
+the same fallback. Hold Control or Command while scrolling to zoom around the
+pointer. A native pinch also zooms on macOS when the application is started
+through the Bazel launcher or packaged app; a manually launched jar needs the
+package export documented in the README. The **−**, **+**, and **Fit build**
+buttons offer the same controls without a gesture.
 
-At a wide zoom the timeline draws aggregate bins rather than individual spans;
-the counts in a bin are exact for that bin. Zoom in and individual spans return.
+Primary-button drag pans in time. Shift + primary-button drag selects a range,
+and the Actions table narrows to spans that overlap it. A short click still
+selects the span under the pointer and shows its details in the right pane.
+Right-click a segment for the same cross-view actions available elsewhere.
+Panning or zooming stops **Follow live**; vertical lane scrolling does not.
 
-**Colour means duration, and grey means unknown.** Grey is deliberately off the
-heat ramp rather than at its cold end: "took no time" and "nothing measured
-this" look identical on a ramp and mean opposite things.
+At a wide zoom the timeline draws exact aggregate density rather than
+individual spans. Its lane label changes to say that this is a whole-build
+view, because the columns are not per-lane. Zoom in and individual spans
+return. While a nearby exact window loads, the still-overlapping known spans
+remain in their lanes and only the uncovered time edge is shaded as loading.
+With no exact overlap, aggregate density remains visible and the status line
+says it is updating. Rapid navigation keeps only the newest waiting viewport
+request, and a late detail read cannot replace a newer selection.
+
+Very short work is drawn as a narrow needle so it remains visible. The status
+line states how many needles are present, the hover readout keeps the exact
+duration, and zooming in restores proportional width. The hit target is wider
+than the needle, so a tiny event remains selectable without changing what its
+drawn width claims. Hovering a span shows its adaptive duration and identity;
+the time grid and axis also change precision with zoom so close views do not
+repeat rounded labels.
+
+**Colour means the selected mode, and grey means unknown.** Outcome shows
+success and failure. If an execution log is available, Cache result and Where
+it ran distinguish hits from misses or local from remote work. Failures also
+receive a second top edge, so they do not depend on colour alone. Grey is never
+used to claim zero.
+
+### Critical Path
+
+This page keeps two different answers side by side. **Bazel-reported critical
+path** is the ordered progress text Bazel wrote into the trace profile.
+**Visualizer-computed dependency critical path** is the longest weighted chain
+through the imported action graph. Bazel's answer includes the schedule it
+observed; the dependency chain is only a lower bound on what dependencies
+required. Their difference is a useful lead, not proof that a particular
+scheduler or machine caused the wait.
+
+The four cards show both totals, their signed difference when the dependency
+graph is fully timed, and observed idle time inside the timed-action window.
+The difference is withheld when node durations are missing because that gap
+would mix unknown work with scheduler delay. Unknown values remain unknown. The
+coverage text says which timing source weighted the graph, how many graph nodes
+were timed, and whether the imported graph was confirmed to use this build's
+configuration.
+
+The two tabs preserve each path's complete reported order. Both tables load
+200 rows at a time and retain eight recently visited pages, so a long path does
+not become an in-memory object list. Select a Bazel component to inspect its
+description and duration. Select a dependency step to
+see its target, mnemonic, output, path weight, earliest start and finish, slack,
+and any matched execution-log signals such as queue, execution, network, and
+cache state. The path weight and execution detail stay explicitly separate:
+when several subprocess attempts raced or retried, the conservative path weight
+uses the shortest attempt while the execution section reports total work across
+all attempts. Right-click an identified step for the normal target/action
+commands, or double-click it to reveal the executed action. **Open dependency
+chain in Graph** opens the same derived chain in the graph view; if Graph is
+still loading, the request waits for that reader instead of drawing against the
+wrong source.
+
+The page always shows each path's exact length and never drops unmatched
+declared actions. A failed page
+replaces the loading inspector with its error instead of leaving details from a
+previous selection on screen. It preloads the richer execution breakdown only
+for the largest matched contributors; use **Reveal action** for full details on
+another executed step. Both limits and the exact reason for an unavailable path
+are stated on screen.
+
+### Starlark Profile
+
+This page answers which Starlark functions, source files, and call contexts
+used CPU during rule and macro execution. It is available when the build used
+the Performance or Full capture preset and Bazel produced a valid
+`--starlark_cpu_profile` file.
+
+Summary explains the sampled CPU total, profile duration, sampling period, and
+coverage. Hot Functions and Files are searchable, sortable, and fully paged.
+Selecting a function lets Call Graph load its aggregate callers and callees.
+Flame draws root-to-leaf call contexts; double-click a context to focus it and
+use **Reset to all roots** to return. If the drawing limit is reached, the page
+states the exact omitted count while the complete data remains on the Query
+page. Double-click or right-click a source-bearing row to open it through the
+current local or SSH Workspace.
+
+Read these as statistical CPU samples, not elapsed build time. Several
+Starlark threads can make CPU exceed wall duration, blocked time is absent,
+and source lines are navigation hints rather than a line heat map. See
+`docs/starlark-profiling.md` for the exact data and query contract.
 
 ### Actions
 
@@ -121,7 +356,7 @@ Above the findings is the **coverage** banner. Read it first. A cache-miss
 finding over a build whose cache state was 12% covered is a different claim from
 the same finding at 99%, and the banner is what tells them apart.
 
-### Tests, Errors, Events, Build
+### Tests, Errors, Events, Console
 
 - **Tests** — one row per test target, with attempts, and the distinction
   between a test that failed and a test that never built.
@@ -132,8 +367,42 @@ the same finding at 99%, and the banner is what tells them apart.
   than Failures — for most broken builds the compiler's own text is the only
   diagnostic there is, and not all of it describes a failure.
 - **Events** — the raw event stream, with the original bytes of any event.
-- **Build** — one pane for the running build: the capture's phase, counters and
+- **Console** — one pane for the running build: the capture's phase, counters and
   stop buttons across the top, and what Bazel printed below them.
+
+### Browse Repository and Terminal
+
+**Browse Repository** is available for a local workspace and for the currently
+connected SSH workspace. It lists a directory only when you expand it. Double-
+click a regular file to open the shared language-aware viewer/editor; Save is
+explicit and refuses to replace a file that changed since it was opened. Binary
+files and text files above 16 MiB are refused rather than shown partially.
+Rows use bundled SVG icons for directories and common source, data and document
+types. BUILD, WORKSPACE, MODULE, `.bzl`, `.bazel`, and `.bazelrc` names use the
+green BZL document icon; an unknown file uses the text-document icon. The
+mapping is local and fixed: browsing never downloads an icon or treats a
+repository file as icon artwork.
+
+At the repository root, Bazel's `bazel-out`, `bazel-bin`, `bazel-testlogs`,
+legacy `bazel-genfiles`, and `bazel-<workspace-directory>` symbolic links use
+the green Bazel-folder icon. Expand one to resolve and list its target lazily.
+Ordinary links and lookalike names remain leaves; the browser never walks links
+automatically. A Bazel output link can resolve outside the workspace root,
+which is how Bazel normally exposes its output tree.
+
+**Terminal** is available for every selected Workspace. Navigating to the tab
+starts its shell automatically; repeated visits do not create another shell.
+A local Workspace uses your inherited login shell (or `/bin/sh` when none is
+configured) in its working directory. An SSH Workspace uses a login shell on
+the selected host. Both support ordinary keyboard input, colours, selection
+and copy/paste, scrolling, resize, and full-screen programs such as editors and
+pagers. The Terminal stays alive while you inspect other tabs. Disconnect
+closes only that shell; it does not close the Workspace.
+
+These tools belong to the live execution connection, not the data session on
+screen. Reopening a session recorded as remote never reconnects, opens a shell
+or executes its saved command. Choose an SSH Workspace explicitly when live
+file access is wanted; capture preflight is needed only when starting a build.
 
 ---
 
@@ -213,16 +482,23 @@ library on the next launch.
 
 ---
 
-## What v1 does not do
+## Current boundaries
 
 Stated so you do not go looking:
 
 - **No comparison between builds.** One session at a time.
-- **No settings screen.** The limits in `docs/limits.md` exist and are not
-  editable from the UI.
-- **No remote BES forwarding**, no historical storage, no team sharing.
-- **macOS only.** The code is portable; nothing else has been tested.
-- **The timeline does not draw the critical path.** The graph does.
+- **Preferences currently has Theme and Discovery tabs.** The limits in
+  `docs/limits.md` are not editable there. Workspaces and launcher command
+  history remain direct controls.
+- **No implicit reconnect or historical remote storage.** SSH access exists
+  only for a live connection the user started; no team server is provided.
+- **The desktop application is macOS; SSH execution hosts are Linux.** Other
+  desktop/remote combinations have not been tested.
+- **Terminal is tied to the selected live Workspace.** It is not reopened from
+  historical session data, and its scrollback keeps the newest 20,000 lines
+  rather than growing without bound.
+- **The timeline does not draw the critical path.** Use Critical Path to
+  analyse both path definitions, then open the dependency chain in Graph.
 
 ---
 

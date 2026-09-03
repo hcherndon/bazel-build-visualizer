@@ -20,6 +20,9 @@ public enum DataSource {
     /** Bazel's JSON trace profile. */
     PROFILE,
 
+    /** Bazel's pprof CPU profile of Starlark execution. */
+    STARLARK_CPU_PROFILE,
+
     /** {@code bazel aquery} output — the declared action graph. */
     AQUERY,
 

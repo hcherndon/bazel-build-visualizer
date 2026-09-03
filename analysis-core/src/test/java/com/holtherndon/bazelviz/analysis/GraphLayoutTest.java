@@ -83,6 +83,127 @@ final class GraphLayoutTest {
     }
 
     @Test
+    @DisplayName("the hierarchy centres a parent over non-overlapping child subtrees")
+    void hierarchyCentresParentsOverChildren() {
+        GraphLayout.Result layout = GraphLayout.hierarchy(diamond(), RUNNING);
+
+        assertThat(layout.kind()).isEqualTo(GraphLayout.Kind.HIERARCHY);
+        assertThat(layout.size()).isEqualTo(4);
+        assertThat(layout.parentAt(0)).isEqualTo(-1);
+        assertThat(layout.parentAt(1)).isEqualTo(0);
+        assertThat(layout.parentAt(2)).isEqualTo(0);
+        // Node 3 is shared. First deterministic discovery owns it; the other
+        // real edge remains a cross-link rather than duplicating the node.
+        assertThat(layout.parentAt(3)).isEqualTo(1);
+        assertThat(layout.xAt(1)).isNotEqualTo(layout.xAt(2));
+        assertThat(layout.xAt(0))
+                .isEqualTo((layout.xAt(1) + layout.xAt(2)) / 2.0);
+        assertThat(layout.yAt(1)).isGreaterThan(layout.yAt(0));
+        assertThat(layout.yAt(3)).isGreaterThan(layout.yAt(1));
+    }
+
+    @Test
+    @DisplayName("a rooted dependency hierarchy starts at the selected consumer")
+    void dependencyHierarchyStartsAtTheSelection() {
+        CsrGraph forward = CsrBuilder.build(4, visitor -> {
+            visitor.edge(0, 1);
+            visitor.edge(1, 2);
+            visitor.edge(2, 3);
+        });
+        GraphExtract.Result dependencies = GraphExtract.dependencies(
+                CsrBuilder.reverse(forward), 3, 8, 100);
+
+        GraphLayout.Result layout = GraphLayout.hierarchy(dependencies, RUNNING);
+
+        assertThat(layout.nodes().getFirst()).isEqualTo(3);
+        assertThat(layout.parentAt(0)).isEqualTo(-1);
+        for (int position = 1; position < layout.size(); position++) {
+            assertThat(layout.yAt(position)).isGreaterThan(layout.yAt(position - 1));
+        }
+    }
+
+    @Test
+    @DisplayName("reverse-dependency and neighbourhood hierarchies branch from the selection")
+    void rootedHierarchyDirectionMatchesTheScope() {
+        CsrGraph forward = CsrBuilder.build(3, visitor -> {
+            visitor.edge(0, 1);
+            visitor.edge(1, 2);
+        });
+
+        GraphLayout.Result dependents = GraphLayout.hierarchy(
+                GraphExtract.dependents(forward, 0, 8, 100), RUNNING);
+        assertThat(dependents.nodes()).containsExactly(0, 1, 2);
+        assertThat(dependents.parentAt(1)).isEqualTo(0);
+        assertThat(dependents.parentAt(2)).isEqualTo(1);
+
+        GraphLayout.Result neighbourhood = GraphLayout.hierarchy(
+                GraphExtract.neighbourhood(
+                        forward, CsrBuilder.reverse(forward), 1, 8, 100),
+                RUNNING);
+        assertThat(neighbourhood.nodes().getFirst()).isEqualTo(1);
+        assertThat(neighbourhood.parentAt(1)).isEqualTo(0);
+        assertThat(neighbourhood.parentAt(2)).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("cycles, disconnected components and isolated nodes all get a stable place")
+    void hierarchyHandlesCyclesAndDisconnectedComponents() {
+        CsrGraph graph = CsrBuilder.build(6, visitor -> {
+            visitor.edge(0, 1);
+            visitor.edge(1, 2);
+            visitor.edge(2, 0);
+            visitor.edge(3, 4);
+        });
+        GraphExtract.Result extract = GraphExtract.whole(graph, 100, 100);
+
+        GraphLayout.Result first = GraphLayout.hierarchy(extract, RUNNING);
+        GraphLayout.Result second = GraphLayout.hierarchy(extract, RUNNING);
+
+        assertThat(first.size()).isEqualTo(6);
+        int roots = 0;
+        java.util.Set<String> coordinates = new java.util.HashSet<>();
+        for (int position = 0; position < first.size(); position++) {
+            if (first.parentAt(position) < 0) {
+                roots++;
+            }
+            coordinates.add(first.xAt(position) + ":" + first.yAt(position));
+            assertThat(second.xAt(position)).isEqualTo(first.xAt(position));
+            assertThat(second.yAt(position)).isEqualTo(first.yAt(position));
+            assertThat(second.parentAt(position)).isEqualTo(first.parentAt(position));
+        }
+        assertThat(roots).isEqualTo(3);
+        assertThat(coordinates).hasSize(6);
+    }
+
+    @Test
+    @DisplayName("fifty thousand isolated roots still fit inside the supported world scale")
+    void isolatedHierarchyDoesNotSpendBlankSlotsBetweenRoots() {
+        int count = 50_000;
+        List<Integer> nodes = java.util.stream.IntStream.range(0, count).boxed().toList();
+        GraphExtract.Result isolated = new GraphExtract.Result(
+                GraphExtract.Mode.WHOLE, nodes, List.of(), count, 0, false, count);
+
+        GraphLayout.Result layout = GraphLayout.hierarchy(isolated, RUNNING);
+
+        double[] bounds = layout.bounds().orElseThrow();
+        assertThat(layout.size()).isEqualTo(count);
+        // GraphTransform's minimum scale is 1e-4; below 5M world units this
+        // remains under 500 px and can fit in a 600px canvas with margins.
+        assertThat(bounds[2] - bounds[0]).isLessThan(5_000_000);
+    }
+
+    @Test
+    @DisplayName("a cancelled hierarchy returns no partial forest")
+    void hierarchyCancellationIsClean() {
+        AtomicBoolean cancelled = new AtomicBoolean(true);
+
+        GraphLayout.Result layout = GraphLayout.hierarchy(diamond(), cancelled);
+
+        assertThat(layout.cancelled()).isTrue();
+        assertThat(layout.size()).isZero();
+    }
+
+    @Test
     @DisplayName("a radial layout puts the centre at the origin and the rest around it")
     void radialRingsByDistance() {
         CsrGraph star = CsrBuilder.build(5, visitor -> {
@@ -159,11 +280,15 @@ final class GraphLayoutTest {
     @DisplayName("every mode has a sensible default layout")
     void modesHaveDefaults() {
         assertThat(GraphLayout.defaultFor(GraphExtract.Mode.NEIGHBOURHOOD))
-                .isEqualTo(GraphLayout.Kind.RADIAL);
+                .isEqualTo(GraphLayout.Kind.HIERARCHY);
         assertThat(GraphLayout.defaultFor(GraphExtract.Mode.CRITICAL_PATH))
                 .isEqualTo(GraphLayout.Kind.LINEAR);
         assertThat(GraphLayout.defaultFor(GraphExtract.Mode.DEPENDENCIES))
-                .isEqualTo(GraphLayout.Kind.LAYERED);
+                .isEqualTo(GraphLayout.Kind.HIERARCHY);
+        assertThat(GraphLayout.defaultFor(GraphExtract.Mode.DEPENDENTS))
+                .isEqualTo(GraphLayout.Kind.HIERARCHY);
+        assertThat(GraphLayout.defaultFor(GraphExtract.Mode.WHOLE))
+                .isEqualTo(GraphLayout.Kind.HIERARCHY);
         assertThat(GraphLayout.defaultFor(GraphExtract.Mode.CLUSTERS))
                 .isEqualTo(GraphLayout.Kind.GRID);
         // And every mode has one, so a new display mode cannot arrive without

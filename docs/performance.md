@@ -18,6 +18,30 @@ inside measurement records are the Gradle-era commands that produced those
 numbers and are preserved as records; the current way to run everything is
 `bazel run //benchmarks:<spike>` as shown in "Running the spikes".
 
+**Build-graph note (2026-08-28).** ADR-010 replaced the module-wide Java
+compile actions and generated source-group dictionaries with package-local
+native targets. This exposes package compilation to Bazel's scheduler and
+narrows cache invalidation structurally. No clean-build or incremental-build
+speedup is claimed yet: comparable cold and warm measurements have not been
+recorded. The application benchmark figures below measure the program, not
+the repository's own build graph, and are unchanged by this reorganization.
+
+**SSH-workspace note (2026-08-28).** ADR-011 adds remote Linux execution, but
+no SSH latency, file-transfer throughput or remote-build comparison has been
+measured, so none is claimed here. Network, SSH server and remote storage
+performance are outside the desktop benchmark environment below. The paths
+that protect UI responsiveness are structural: filesystem and SFTP operations
+run off the EDT, repository directories load lazily under an explicit visible-
+entry cap, text reads retain the existing 16 MiB refusal, terminal history is
+bounded at 20,000 scrollback lines, and JediTerm I/O plus Pty4J process work run
+off the EDT on window-owned virtual executors. Each staged capture-file transfer
+has a 32 GiB refusal. Aquery and cquery still run only after the measured build;
+their non-TTY output streams
+directly to local files rather than accumulating in memory. The terminal stack
+adds about 8 MiB of resolved jar payload, including Kotlin, JNA and Pty4J's host
+resources; that is a packaging-footprint observation, not a startup, throughput,
+frame-rate or idle-CPU measurement. No such terminal measurement is claimed yet.
+
 ## Benchmark tiers (plan 20.1)
 
 Authoritative constants live in
@@ -58,6 +82,29 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 | 10 | No routine EDT pause exceeds 100 ms | **met structurally** — `EdtDisciplineTest` asserts every component that can reach a database owns a thread; three paint-isolation tests assert the painted views can reach neither. Frame p95s above are the empirical half. |
 | 11 | Long queries are cancellable | **met** — `SessionReader.cancelRunningQuery`, `GraphLayoutService.cancel`, and every layout returns a placement of nothing rather than a partial one |
 | 12 | Session finalization can resume after application restart | **met** — an import interrupted at 145,000 of 300,000 events resumes to a state identical to a clean import |
+
+Critical-path analysis keeps its O(V) schedule in primitive arrays and its
+selected chain in one primitive `int[]`. Resolving the bounded contributor list
+streams node/action correlations through a 25-entry heap; it does not retain a
+boxed map or sort all path nodes. Both Critical Path tables page 200 rows at a
+time and cache eight pages. The Bazel-reported side first reads only an exact
+component count and aggregate duration, then fetches descriptions by ordinal
+as their pages become visible; it never retains the full profile path.
+
+Starlark CPU import streams the gzip pprof outer message and decodes one
+bounded embedded record at a time; it never materializes the protobuf Profile.
+Normalized rows are written in bounded JDBC batches. Per-sample value, label,
+stack, inline-line, and expanded-symbol limits prevent compact records or a
+stack-by-inline cross product from becoming an unbounded heap graph. Derived
+stacks retain numeric ids and symbol-presence flags rather than repeated source
+strings. The UI initially reads
+one metadata row, pages functions/files/call edges 200 rows at a time, caches
+eight pages per table, and asks SQLite for at most 5,000 call contexts per
+flame slice. The slice reports the exact total and omitted count, while all raw
+and derived rows remain queryable. Function-context and per-file function
+counts are materialized once during import. Empty-search pages and root flame
+slices use ordering/depth indexes, avoiding a full context regroup, correlated
+per-file scans, and temporary sorting on every page.
 
 ### What the Phase 0 spikes do and do not prove
 
@@ -203,7 +250,8 @@ The tier flags matter: the timeline and graph spikes default to Tier 2 and
 Tier 1 respectively, so the Tier 3 / Tier 2 figures in the results above come
 from the flagged invocations.
 
-Spike JVMs run with `-Xmx4g` (set in `benchmarks/BUILD.bazel`). System
+Spike JVMs run with `-Xmx4g` (set in the spike package's
+`BUILD.bazel`). System
 properties ride as `--jvm_flag=-D<name>=<value>` arguments before the
 program's own. Record alongside every measurement: OS + version, CPU, RAM,
 JDK build, display scale (for windowed runs), and the seed/tier used.
@@ -515,6 +563,25 @@ as an error — the table simply holds fewer rows than its own count says.
 
 ### Two ways to lose keyset paging, both measured
 
+The separate All Targets card also avoids `OFFSET`. It keyset-pages distinct
+labels from cquery's `configured_target_nodes` after the preceding page's exact
+label, 200 at a time, and reads a label's configuration rows only when it is
+selected or expanded. The card is deliberately dormant until visited and
+states loaded versus exact total labels. This path has correctness coverage but
+no separate large-session timing yet; no latency claim is made for it here.
+The capture cquery asks for `deps(...)` of the exact top-level labels the BEP
+reported. Those labels are streamed from SQLite into a session-local query
+file rather than retained as a Java list, so the scope does not add an
+unbounded in-memory copy. This population includes transitive configured
+targets instead of only repeating the requested labels. That deliberately
+increases post-build analysis and import work; the launch plan classifies it
+as high overhead and runs it only after the measured invocation. No new timing
+claim is made without a separate large-workspace measurement.
+
+Top Level Targets has its own flat presentation over the smaller BEP top-level
+population. It uses the same 200-label keyset shape and explicit loaded/total
+status; switching back to Packages keeps the existing lazy package reads.
+
 The Phase 0 spike established that `OFFSET` costs grow with scroll depth and
 keyset costs do not. Phase 3 found two ways to write a keyset query that costs
 the same as `OFFSET` anyway. Both were shipped before they were measured, and
@@ -617,34 +684,44 @@ responsive there. Both numbers were in the code before either was measured;
 
 | Operation | At 50,000 nodes / 200,000 edges |
 |---|---|
-| Extract, layout, index and label | **14 ms** |
-| Fitted frame (far band, 1600×1000) | **35 ms** |
-| Near-zoom frame (every visible edge and label) | **4 ms** |
-| 20,000 hit tests | **2 ms** |
+| Extract, dependency-hierarchy layout, indexes and two-line labels | **12 ms** |
+| Fitted overview frame (far band, 1600×1000) | **48 ms** |
+| Near-zoom frame (All dependencies; every visible edge and label) | **36 ms** |
+| Reveal one node's cross-links | **<1 ms** |
+| 20,000 hit tests | **14 ms** |
 
 Two of those numbers are the result of a fix rather than a first attempt.
 
 **The fitted frame was 366 ms.** Two causes, both in the edge loop: `setColor`
 was called once per edge, which at two hundred thousand edges costs more than
 the lines do; and every edge was drawn at far zoom, where two hundred thousand
-hairlines resolve to a grey smear. Batching the colour into one bulk pass and
-one highlight pass, and applying plan 13.6's far-band rule above a 30,000-edge
-budget, gives the 35 ms above. The budget is reported on screen rather than
-applied silently.
+hairlines resolve to a grey smear. Batching edge state, keeping close views
+behind viewport culling, and replacing the far hierarchy's hairline wall with
+an evenly distributed, screen-bounded backbone gives the 48 ms above. The exact
+simplified count is reported on screen rather than applied silently.
 
-**The near-zoom frame is nine times cheaper than the fitted one**, which is the
-right way round and worth stating: culling means the detailed view reads only
-the cells the viewport touches, while the fitted view reads everything. Zooming
-in makes the canvas faster, not slower.
+**The near-zoom frame is about a quarter cheaper than the fitted one**, which is
+the right way round and worth stating: culling means the detailed view reads
+only the cells the viewport touches, while the fitted view reads everything.
+Zooming in makes the canvas faster, not slower.
 
-**Layout is 14 ms because it is linear.** The first layered implementation
-assigned layers by relaxing every edge until nothing changed — O(V·E) in the
+**Layout and model preparation take 12 ms because every path is linear.** The
+first layered implementation assigned layers by relaxing every edge until
+nothing changed — O(V·E) in the
 worst case, which at this size is a hang rather than a layout. Kahn's algorithm
 over a locally-built adjacency index replaced it, and the radial layout's
-per-node rescan of the edge list got the same treatment.
+per-node rescan of the edge list got the same treatment. The default dependency
+hierarchy likewise discovers its spanning forest and assigns subtree spans with
+primitive-array passes over nodes and edges. Endpoint translation, the spatial
+index, primary/cross-link classification and the cross-link incidence index are
+prepared on the graph worker too, never on Swing's event thread.
 
-Frame budget: 33 ms at 30 FPS (plan 20.2). The fitted frame is at that budget
-and every other frame is far inside it; while a drag is in progress the canvas
+Frame budget: 33 ms at 30 FPS (plan 20.2). The slowest of five fitted and close
+frames are 48 ms and 36 ms; indexed selection and hit tests remain inside the
+budget. The far hierarchy visits only its sampled primary-edge ordinals, draws
+at most two evenly distributed primary branches per horizontal pixel, and
+states the exact simplified count; zooming in restores every branch. While a
+drag is in progress the canvas
 drops labels and, above 20,000 edges, edges too, which is what plan 17.7's
 "disable expensive detail while actively panning" is for.
 

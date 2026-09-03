@@ -10,22 +10,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Positions for a subgraph's nodes, in world coordinates.
  *
- * <h2>Four layouts, none of them force-directed</h2>
+ * <h2>Five layouts, none of them force-directed</h2>
  *
  * <p>Plan 13.7 names layered for dependency subgraphs, radial for
  * neighbourhoods, linear for critical paths and grid for cluster summaries, and
  * ends "do not run force-directed layout on an unbounded action graph". There is
- * none here at all: every layout below is a single linear pass, so the answer to
- * "how long will this take" is the node count rather than a convergence
- * criterion.
+ * none here at all: every layout below uses bounded linear passes, so the
+ * answer to "how long will this take" is the graph size rather than a
+ * convergence criterion.
  *
  * <h2>Linear, not merely non-iterative</h2>
  *
  * <p>Layering by repeated edge relaxation is easier to write and is O(V·E) in
  * the worst case; at the 50,000-node limit of {@link GraphExtract} that is not a
- * layout, it is a hang. Both traversals here build a local adjacency index once
- * and then run in O(V+E) — Kahn's algorithm for layering, a queue-based
- * breadth-first walk for rings.
+ * layout, it is a hang. The graph traversals here build a local adjacency index
+ * once and then run in O(V+E) — Kahn's algorithm for layering and queue-based
+ * breadth-first walks for hierarchy and rings.
  *
  * <h2>Deterministic</h2>
  *
@@ -52,6 +52,12 @@ public final class GraphLayout {
     /** Vertical spacing between nodes within a layer. */
     private static final double NODE_GAP = 44;
 
+    /** Horizontal room for one leaf in the dependency hierarchy. */
+    private static final double HIERARCHY_LEAF_GAP = 100;
+
+    /** Vertical room between parent and child levels in the hierarchy. */
+    private static final double HIERARCHY_LEVEL_GAP = 64;
+
     /** How often to look at the cancellation flag, in nodes. */
     private static final int CANCEL_CHECK_INTERVAL = 4_096;
 
@@ -74,7 +80,10 @@ public final class GraphLayout {
         if (nodes.isEmpty()) {
             return Result.empty(Kind.LAYERED);
         }
-        Adjacency adjacency = Adjacency.directed(extract);
+        Adjacency adjacency = Adjacency.directed(extract, cancelled);
+        if (adjacency == null) {
+            return Result.cancelled(Kind.LAYERED);
+        }
         int count = nodes.size();
         int[] layer = new int[count];
         int[] remaining = adjacency.inDegree.clone();
@@ -83,18 +92,25 @@ public final class GraphLayout {
         int head = 0;
         int tail = 0;
         for (int i = 0; i < count; i++) {
+            if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.LAYERED);
+            }
             if (remaining[i] == 0) {
                 queue[tail++] = i;
             }
         }
         int processed = 0;
+        int work = 0;
         while (head < tail) {
-            if ((processed & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+            if ((work++ & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
                 return Result.cancelled(Kind.LAYERED);
             }
             int node = queue[head++];
             processed++;
             for (int e = adjacency.offsets[node]; e < adjacency.offsets[node + 1]; e++) {
+                if ((work++ & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return Result.cancelled(Kind.LAYERED);
+                }
                 int next = adjacency.targets[e];
                 if (layer[next] < layer[node] + 1) {
                     layer[next] = layer[node] + 1;
@@ -106,13 +122,19 @@ public final class GraphLayout {
         }
 
         int deepest = 0;
-        for (int value : layer) {
-            deepest = Math.max(deepest, value);
+        for (int i = 0; i < count; i++) {
+            if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.LAYERED);
+            }
+            deepest = Math.max(deepest, layer[i]);
         }
         if (processed < count) {
             // Whatever is left is in a cycle. Park it past everything that was
             // placed properly, so the drawing is odd rather than wrong.
             for (int i = 0; i < count; i++) {
+                if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return Result.cancelled(Kind.LAYERED);
+                }
                 if (remaining[i] > 0) {
                     layer[i] = deepest + 1;
                 }
@@ -123,11 +145,230 @@ public final class GraphLayout {
         double[] x = new double[count];
         double[] y = new double[count];
         for (int i = 0; i < count; i++) {
+            if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.LAYERED);
+            }
             int row = filled.merge(layer[i], 1, Integer::sum) - 1;
             x[i] = layer[i] * LAYER_GAP;
             y[i] = row * NODE_GAP;
         }
         return new Result(Kind.LAYERED, nodes, x, y, false);
+    }
+
+    /**
+     * A top-to-bottom dependency hierarchy over a deterministic spanning forest.
+     *
+     * <p>A dependency DAG is not a tree: a generated artifact can feed several
+     * consumers and an action can need several producers. This layout does not
+     * duplicate nodes or pretend otherwise. First discovery chooses one primary
+     * parent for placement; every other real dependency remains a cross-link for
+     * the renderer to disclose and draw on demand.
+     *
+     * <p>Rooted views start from their selected node. Dependencies walk towards
+     * producers, reverse dependencies walk towards consumers, and a neighbourhood
+     * walks both ways. Whole-build and cluster views start from zero-indegree
+     * nodes. Any nodes left by a disconnected component or cycle are seeded in
+     * stable node order, so the algorithm always terminates and places every
+     * node exactly once.
+     *
+     * <p>Child subtrees receive contiguous leaf spans and each parent is centred
+     * over its span. The implementation is iterative and O(V+E): primitive
+     * layout arrays, no recursive stack and no object per edge.
+     */
+    public static Result hierarchy(GraphExtract.Result extract, AtomicBoolean cancelled) {
+        List<Integer> nodes = extract.nodes();
+        if (nodes.isEmpty()) {
+            return Result.empty(Kind.HIERARCHY);
+        }
+        if (cancelled.get()) {
+            return Result.cancelled(Kind.HIERARCHY);
+        }
+
+        int count = nodes.size();
+        Adjacency traversal = switch (extract.mode()) {
+            case DEPENDENCIES -> Adjacency.reversed(extract, cancelled);
+            case NEIGHBOURHOOD -> Adjacency.undirected(extract, cancelled);
+            case DEPENDENTS, WHOLE, PATH, CRITICAL_PATH, CLUSTERS ->
+                    Adjacency.directed(extract, cancelled);
+        };
+        if (traversal == null) {
+            return Result.cancelled(Kind.HIERARCHY);
+        }
+
+        int[] parent = new int[count];
+        Arrays.fill(parent, -1);
+        int[] depth = new int[count];
+        boolean[] seen = new boolean[count];
+        int[] discovery = new int[count];
+        int[] queue = new int[count];
+        int discovered = 0;
+
+        // Rooted extracts put the selected node first. Whole graphs instead
+        // start at their natural producer roots, in stable local order.
+        if (extract.mode() == GraphExtract.Mode.WHOLE
+                || extract.mode() == GraphExtract.Mode.CLUSTERS) {
+            for (int node = 0; node < count; node++) {
+                if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return Result.cancelled(Kind.HIERARCHY);
+                }
+                if (traversal.inDegree[node] == 0 && !seen[node]) {
+                    int added = discoverTree(
+                            node, traversal, seen, parent, depth, discovery, discovered,
+                            queue, cancelled);
+                    if (added < 0) {
+                        return Result.cancelled(Kind.HIERARCHY);
+                    }
+                    discovered += added;
+                }
+            }
+        } else {
+            int added = discoverTree(
+                    0, traversal, seen, parent, depth, discovery, discovered,
+                    queue, cancelled);
+            if (added < 0) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+            discovered += added;
+        }
+
+        // Disconnected components and source cycles have no reachable natural
+        // root. The smallest unvisited local position becomes one; discovery
+        // still owns each node once, so a closing cycle edge is a cross-link.
+        for (int node = 0; node < count; node++) {
+            if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+            if (seen[node]) {
+                continue;
+            }
+            int added = discoverTree(
+                    node, traversal, seen, parent, depth, discovery, discovered,
+                    queue, cancelled);
+            if (added < 0) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+            discovered += added;
+        }
+
+        int[] childCount = new int[count];
+        for (int node = 0; node < count; node++) {
+            if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+            if (parent[node] >= 0) {
+                childCount[parent[node]]++;
+            }
+        }
+        int[] childOffsets = new int[count + 1];
+        for (int node = 0; node < count; node++) {
+            if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+            childOffsets[node + 1] = childOffsets[node] + childCount[node];
+        }
+        int[] children = new int[childOffsets[count]];
+        int[] childCursor = childOffsets.clone();
+        for (int node = 0; node < count; node++) {
+            if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+            if (parent[node] >= 0) {
+                children[childCursor[parent[node]]++] = node;
+            }
+        }
+
+        // Discovery is parent-before-child. Its reverse is therefore a valid
+        // postorder for accumulating each subtree's leaf width.
+        int[] leaves = new int[count];
+        for (int at = discovered - 1; at >= 0; at--) {
+            int node = discovery[at];
+            if (childCount[node] == 0) {
+                leaves[node] = 1;
+            }
+            if (parent[node] >= 0) {
+                leaves[parent[node]] += leaves[node];
+            }
+            if ((at & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+        }
+
+        double[] spanStart = new double[count];
+        double nextComponent = 0;
+        for (int at = 0; at < discovered; at++) {
+            if ((at & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+            int node = discovery[at];
+            if (parent[node] < 0) {
+                spanStart[node] = nextComponent;
+                nextComponent += leaves[node];
+            }
+        }
+        double[] x = new double[count];
+        double[] y = new double[count];
+        for (int at = 0; at < discovered; at++) {
+            if ((at & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.HIERARCHY);
+            }
+            int node = discovery[at];
+            double childStart = spanStart[node];
+            for (int edge = childOffsets[node]; edge < childOffsets[node + 1]; edge++) {
+                if ((edge & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return Result.cancelled(Kind.HIERARCHY);
+                }
+                int child = children[edge];
+                spanStart[child] = childStart;
+                childStart += leaves[child];
+            }
+            x[node] = (spanStart[node] + leaves[node] / 2.0) * HIERARCHY_LEAF_GAP;
+            y[node] = depth[node] * HIERARCHY_LEVEL_GAP;
+        }
+        return new Result(Kind.HIERARCHY, nodes, x, y, parent, false);
+    }
+
+    /**
+     * Breadth-first first-discovery ownership for one hierarchy component.
+     *
+     * @return nodes added, or -1 when cancellation was requested
+     */
+    private static int discoverTree(
+            int root,
+            Adjacency adjacency,
+            boolean[] seen,
+            int[] parent,
+            int[] depth,
+            int[] discovery,
+            int discoveryStart,
+            int[] queue,
+            AtomicBoolean cancelled) {
+        int head = 0;
+        int tail = 0;
+        seen[root] = true;
+        queue[tail++] = root;
+        int added = 0;
+        int work = 0;
+        while (head < tail) {
+            if ((work++ & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return -1;
+            }
+            int node = queue[head++];
+            discovery[discoveryStart + added++] = node;
+            for (int edge = adjacency.offsets[node]; edge < adjacency.offsets[node + 1]; edge++) {
+                if ((work++ & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return -1;
+                }
+                int next = adjacency.targets[edge];
+                if (seen[next]) {
+                    continue;
+                }
+                seen[next] = true;
+                parent[next] = node;
+                depth[next] = depth[node] + 1;
+                queue[tail++] = next;
+            }
+        }
+        return added;
     }
 
     /**
@@ -148,7 +389,10 @@ public final class GraphLayout {
         if (nodes.isEmpty()) {
             return Result.empty(Kind.RADIAL);
         }
-        Adjacency adjacency = Adjacency.undirected(extract);
+        Adjacency adjacency = Adjacency.undirected(extract, cancelled);
+        if (adjacency == null) {
+            return Result.cancelled(Kind.RADIAL);
+        }
         int count = nodes.size();
         int[] ring = new int[count];
         Arrays.fill(ring, -1);
@@ -158,12 +402,16 @@ public final class GraphLayout {
         int head = 0;
         int tail = 0;
         queue[tail++] = 0;
+        int work = 0;
         while (head < tail) {
-            if ((head & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+            if ((work++ & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
                 return Result.cancelled(Kind.RADIAL);
             }
             int node = queue[head++];
             for (int e = adjacency.offsets[node]; e < adjacency.offsets[node + 1]; e++) {
+                if ((work++ & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return Result.cancelled(Kind.RADIAL);
+                }
                 int next = adjacency.targets[e];
                 if (ring[next] < 0) {
                     ring[next] = ring[node] + 1;
@@ -173,23 +421,35 @@ public final class GraphLayout {
         }
 
         int outermost = 0;
-        for (int value : ring) {
-            outermost = Math.max(outermost, value);
+        for (int i = 0; i < count; i++) {
+            if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.RADIAL);
+            }
+            outermost = Math.max(outermost, ring[i]);
         }
         for (int i = 0; i < count; i++) {
+            if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.RADIAL);
+            }
             if (ring[i] < 0) {
                 ring[i] = outermost + 1;
             }
         }
 
         int[] ringSizes = new int[outermost + 2];
-        for (int value : ring) {
-            ringSizes[value]++;
+        for (int i = 0; i < count; i++) {
+            if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.RADIAL);
+            }
+            ringSizes[ring[i]]++;
         }
         int[] placed = new int[ringSizes.length];
         double[] x = new double[count];
         double[] y = new double[count];
         for (int i = 0; i < count; i++) {
+            if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                return Result.cancelled(Kind.RADIAL);
+            }
             int r = ring[i];
             int slot = placed[r]++;
             double radius = r * LAYER_GAP;
@@ -250,8 +510,7 @@ public final class GraphLayout {
     /** The layout a display mode gets, absent a user choice. */
     public static Kind defaultFor(GraphExtract.Mode mode) {
         return switch (mode) {
-            case DEPENDENCIES, DEPENDENTS, WHOLE -> Kind.LAYERED;
-            case NEIGHBOURHOOD -> Kind.RADIAL;
+            case DEPENDENCIES, DEPENDENTS, NEIGHBOURHOOD, WHOLE -> Kind.HIERARCHY;
             case PATH, CRITICAL_PATH -> Kind.LINEAR;
             case CLUSTERS -> Kind.GRID;
         };
@@ -260,6 +519,7 @@ public final class GraphLayout {
     /** Runs the named layout. */
     public static Result run(Kind kind, GraphExtract.Result extract, AtomicBoolean cancelled) {
         return switch (kind) {
+            case HIERARCHY -> hierarchy(extract, cancelled);
             case LAYERED -> layered(extract, cancelled);
             case RADIAL -> radial(extract, cancelled);
             case LINEAR -> linear(extract, cancelled);
@@ -276,28 +536,43 @@ public final class GraphLayout {
      */
     private record Adjacency(int[] offsets, int[] targets, int[] inDegree) {
 
-        static Adjacency directed(GraphExtract.Result extract) {
-            return build(extract, false);
+        static Adjacency directed(GraphExtract.Result extract, AtomicBoolean cancelled) {
+            return build(extract, false, false, cancelled);
         }
 
-        static Adjacency undirected(GraphExtract.Result extract) {
-            return build(extract, true);
+        static Adjacency reversed(GraphExtract.Result extract, AtomicBoolean cancelled) {
+            return build(extract, true, false, cancelled);
         }
 
-        private static Adjacency build(GraphExtract.Result extract, boolean bothWays) {
+        static Adjacency undirected(GraphExtract.Result extract, AtomicBoolean cancelled) {
+            return build(extract, false, true, cancelled);
+        }
+
+        private static Adjacency build(
+                GraphExtract.Result extract,
+                boolean reverseEdges,
+                boolean bothWays,
+                AtomicBoolean cancelled) {
             List<Integer> nodes = extract.nodes();
             int count = nodes.size();
             Map<Integer, Integer> position = new HashMap<>(count * 2);
             for (int i = 0; i < count; i++) {
+                if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return null;
+                }
                 position.put(nodes.get(i), i);
             }
 
             int[] outDegree = new int[count];
             int[] inDegree = new int[count];
             int edgeCount = 0;
+            int work = 0;
             for (GraphExtract.Edge edge : extract.edges()) {
-                Integer from = position.get(edge.from());
-                Integer to = position.get(edge.to());
+                if ((work++ & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return null;
+                }
+                Integer from = position.get(reverseEdges ? edge.to() : edge.from());
+                Integer to = position.get(reverseEdges ? edge.from() : edge.to());
                 if (from == null || to == null) {
                     continue;
                 }
@@ -312,13 +587,20 @@ public final class GraphLayout {
 
             int[] offsets = new int[count + 1];
             for (int i = 0; i < count; i++) {
+                if ((i & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return null;
+                }
                 offsets[i + 1] = offsets[i] + outDegree[i];
             }
             int[] targets = new int[edgeCount];
             int[] cursor = offsets.clone();
+            work = 0;
             for (GraphExtract.Edge edge : extract.edges()) {
-                Integer from = position.get(edge.from());
-                Integer to = position.get(edge.to());
+                if ((work++ & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+                    return null;
+                }
+                Integer from = position.get(reverseEdges ? edge.to() : edge.from());
+                Integer to = position.get(reverseEdges ? edge.from() : edge.to());
                 if (from == null || to == null) {
                     continue;
                 }
@@ -327,25 +609,37 @@ public final class GraphLayout {
                     targets[cursor[to]++] = from;
                 }
             }
+            if (cancelled.get()) {
+                return null;
+            }
             return new Adjacency(offsets, targets, inDegree);
         }
     }
 
     /** Which layout produced a placement. */
     public enum Kind {
-        LAYERED("Layered"),
-        RADIAL("Radial"),
-        LINEAR("Linear"),
-        GRID("Grid");
+        HIERARCHY(
+                "Dependency hierarchy",
+                "Top-down primary dependency branches; shared and cyclic links stay as cross-links."),
+        LAYERED("Layered", "Longest-path columns with every node in its dependency layer."),
+        RADIAL("Radial", "Concentric rings by distance from the selected node."),
+        LINEAR("Linear", "One left-to-right line, intended for paths."),
+        GRID("Grid", "Even rows and columns, intended for grouped summaries.");
 
         private final String displayName;
+        private final String description;
 
-        Kind(String displayName) {
+        Kind(String displayName, String description) {
             this.displayName = displayName;
+            this.description = description;
         }
 
         public String displayName() {
             return displayName;
+        }
+
+        public String description() {
+            return description;
         }
     }
 
@@ -371,14 +665,32 @@ public final class GraphLayout {
         private final List<Integer> nodes;
         private final double[] x;
         private final double[] y;
+        private final int[] parent;
         private final boolean cancelled;
 
         Result(Kind kind, List<Integer> nodes, double[] x, double[] y, boolean cancelled) {
+            this(kind, nodes, x, y, noParents(nodes.size()), cancelled);
+        }
+
+        Result(
+                Kind kind,
+                List<Integer> nodes,
+                double[] x,
+                double[] y,
+                int[] parent,
+                boolean cancelled) {
             this.kind = kind;
             this.nodes = List.copyOf(nodes);
             this.x = x;
             this.y = y;
+            this.parent = parent;
             this.cancelled = cancelled;
+        }
+
+        private static int[] noParents(int count) {
+            int[] parents = new int[count];
+            Arrays.fill(parents, -1);
+            return parents;
         }
 
         /** A placement of nothing — for a graph that could not be read at all. */
@@ -414,6 +726,14 @@ public final class GraphLayout {
 
         public int size() {
             return nodes.size();
+        }
+
+        /**
+         * This node's primary hierarchy parent as a layout position, or -1.
+         * Other layouts have no primary-parent claim and return -1 everywhere.
+         */
+        public int parentAt(int position) {
+            return parent[position];
         }
 
         /** The bounding box as min-x, min-y, max-x, max-y; empty when nothing is placed. */

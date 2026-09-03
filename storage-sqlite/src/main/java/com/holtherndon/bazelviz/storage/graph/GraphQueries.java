@@ -3,6 +3,7 @@ package com.holtherndon.bazelviz.storage.graph;
 import com.holtherndon.bazelviz.core.graph.ConfigurationMatch;
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
+import com.holtherndon.bazelviz.core.graph.GraphTargetScope;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.graph.ShortestPath;
 import java.io.IOException;
@@ -12,6 +13,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -39,7 +42,9 @@ public final class GraphQueries implements AutoCloseable {
 
     private static final String SOURCES =
             "SELECT kind, command, state, configuration_match, mismatch_detail,"
-                    + " declared_actions, correlated_actions, error_excerpt"
+                    + " target_scope, target_scope_detail,"
+                    + " declared_actions, correlated_actions, unresolved_artifacts,"
+                    + " unresolved_depset_references, error_excerpt"
                     + " FROM graph_sources ORDER BY id";
 
     private static final String NODE_BY_ACTION =
@@ -66,13 +71,14 @@ public final class GraphQueries implements AutoCloseable {
                     + " AND (l.value LIKE ? OR m.value LIKE ? OR art.path LIKE ?)"
                     + " ORDER BY l.value IS NULL, l.value LIMIT ?";
 
-    private static final String NODE_DETAIL =
+    private static final String NODE_DETAIL_COLUMNS =
             "SELECT da.node_index, l.value, m.value, art.path, da.action_id"
                     + " FROM declared_actions da"
                     + " LEFT JOIN labels l ON l.id = da.label_id"
                     + " LEFT JOIN mnemonics m ON m.id = da.mnemonic_id"
-                    + " LEFT JOIN artifacts art ON art.id = da.primary_output_id"
-                    + " WHERE da.node_index = ?";
+                    + " LEFT JOIN artifacts art ON art.id = da.primary_output_id";
+
+    private static final String NODE_DETAIL = NODE_DETAIL_COLUMNS + " WHERE da.node_index = ?";
 
     private static final String NODE_BY_EXACT_LABEL =
             "SELECT da.node_index FROM declared_actions da"
@@ -135,6 +141,13 @@ public final class GraphQueries implements AutoCloseable {
      * total. Which one was used travels with the answer, because plan 13.4
      * requires it to.
      *
+     * <p>When an action has several execution attempts, the dependency path
+     * uses the shortest recorded attempt. Summing raced or retried attempts
+     * would turn parallel subprocess work into serial elapsed time and would
+     * no longer be a dependency-only lower bound. The general action metrics
+     * may still sum attempts when they describe total work rather than path
+     * latency.
+     *
      * @param fromAttempts true to weight by execution-log spawn time, false to
      *     weight by the action's own start and end
      */
@@ -150,12 +163,17 @@ public final class GraphQueries implements AutoCloseable {
         String sql = fromAttempts
                 ? "SELECT d.node_index, min(t.total_micros) FROM declared_actions d"
                         + " JOIN action_attempts t ON t.action_id = d.action_id"
-                        + " WHERE d.node_index IS NOT NULL AND t.total_micros IS NOT NULL"
+                        + " JOIN enrichment_tasks et ON et.id = t.task_id"
+                        + "   AND et.kind = 'EXECUTION_LOG' AND et.state = 'SUCCEEDED'"
+                        + " WHERE d.node_index IS NOT NULL"
                         + " GROUP BY d.node_index"
+                        + " HAVING COUNT(t.total_micros) = COUNT(t.id)"
+                        + "   AND MIN(t.total_micros) >= 0"
                 : "SELECT d.node_index, a.end_micros - a.start_micros FROM declared_actions d"
                         + " JOIN actions a ON a.id = d.action_id"
                         + " WHERE d.node_index IS NOT NULL"
-                        + "   AND a.start_micros IS NOT NULL AND a.end_micros IS NOT NULL";
+                        + "   AND a.start_micros IS NOT NULL AND a.end_micros IS NOT NULL"
+                        + "   AND a.end_micros > a.start_micros";
         try (PreparedStatement statement = connection.prepareStatement(sql);
                 ResultSet rows = statement.executeQuery()) {
             while (rows.next()) {
@@ -221,6 +239,34 @@ public final class GraphQueries implements AutoCloseable {
             }
         }
         return Map.copyOf(byNode);
+    }
+
+    /**
+     * Streams correlated graph-node/action pairs without materializing the graph as boxed maps.
+     *
+     * <p>The rendered graph needs a random-access map and uses
+     * {@link #actionIdsByNodeIndex()}. Metrics that only select a bounded top-N
+     * can consume this cursor directly, keeping memory bounded for Tier-3
+     * graphs.
+     */
+    public void forEachActionIdByNodeIndex(NodeActionVisitor visitor) throws SQLException {
+        Objects.requireNonNull(visitor, "visitor");
+        try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT node_index, action_id FROM declared_actions"
+                                + " WHERE node_index IS NOT NULL AND action_id IS NOT NULL")) {
+            statement.setFetchSize(4_096);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    visitor.accept(rows.getInt(1), rows.getLong(2));
+                }
+            }
+        }
+    }
+
+    /** One primitive graph-node/action pair from the streaming correlation cursor. */
+    @FunctionalInterface
+    public interface NodeActionVisitor {
+        void accept(int nodeIndex, long actionId);
     }
 
     /**
@@ -364,14 +410,25 @@ public final class GraphQueries implements AutoCloseable {
                 boolean declaredNull = rows.wasNull();
                 long correlated = rows.getLong("correlated_actions");
                 boolean correlatedNull = rows.wasNull();
+                long unresolved = rows.getLong("unresolved_artifacts");
+                boolean unresolvedNull = rows.wasNull();
+                long unresolvedDepsets = rows.getLong("unresolved_depset_references");
+                boolean unresolvedDepsetsNull = rows.wasNull();
                 out.add(new GraphSource(
                         rows.getString("kind"),
                         Optional.ofNullable(rows.getString("command")),
                         rows.getString("state"),
                         ConfigurationMatch.valueOf(rows.getString("configuration_match")),
                         Optional.ofNullable(rows.getString("mismatch_detail")),
+                        Optional.ofNullable(rows.getString("target_scope"))
+                                .map(GraphTargetScope::valueOf)
+                                .orElse(GraphTargetScope.UNKNOWN),
+                        Optional.ofNullable(rows.getString("target_scope_detail")),
                         declaredNull ? OptionalLong.empty() : OptionalLong.of(declared),
                         correlatedNull ? OptionalLong.empty() : OptionalLong.of(correlated),
+                        unresolvedNull ? OptionalLong.empty() : OptionalLong.of(unresolved),
+                        unresolvedDepsetsNull
+                                ? OptionalLong.empty() : OptionalLong.of(unresolvedDepsets),
                         Optional.ofNullable(rows.getString("error_excerpt"))));
             }
         }
@@ -476,16 +533,75 @@ public final class GraphQueries implements AutoCloseable {
                 if (!rows.next()) {
                     return Optional.empty();
                 }
-                long actionId = rows.getLong(5);
-                boolean actionNull = rows.wasNull();
-                return Optional.of(new GraphNode(
-                        rows.getInt(1),
-                        Optional.ofNullable(rows.getString(2)),
-                        Optional.ofNullable(rows.getString(3)),
-                        Optional.ofNullable(rows.getString(4)),
-                        actionNull ? OptionalLong.empty() : OptionalLong.of(actionId)));
+                return Optional.of(readGraphNode(rows));
             }
         }
+    }
+
+    /**
+     * Details for a caller-bounded set of action-graph node indexes.
+     *
+     * <p>Every distinct requested index remains a key, in first-requested
+     * order. A key whose node is absent maps to {@link Optional#empty()}, so a
+     * caller can distinguish "the node was not stored" from "the node was not
+     * requested" without issuing one query per row.
+     *
+     * <p>Large inputs are read in several SQL batches rather than silently
+     * truncated or made dependent on SQLite's configured bind-variable
+     * ceiling. Callers should still bound the list to the rows they intend to
+     * display; this method preserves all of them.
+     */
+    public Map<Integer, Optional<GraphNode>> nodes(List<Integer> nodeIndexes)
+            throws SQLException {
+        Objects.requireNonNull(nodeIndexes, "nodeIndexes");
+        Map<Integer, Optional<GraphNode>> byIndex = new LinkedHashMap<>();
+        for (Integer nodeIndex : nodeIndexes) {
+            byIndex.putIfAbsent(
+                    Objects.requireNonNull(nodeIndex, "nodeIndexes contains null"),
+                    Optional.empty());
+        }
+        if (byIndex.isEmpty()) {
+            return Map.of();
+        }
+
+        List<Integer> distinctIndexes = new ArrayList<>(byIndex.keySet());
+        // SQLite historically guarantees at least 999 bind variables. Keeping
+        // a little headroom makes this portable without limiting the input:
+        // additional indexes simply use another query.
+        int bindParametersPerBatch = 900;
+        for (int from = 0; from < distinctIndexes.size(); from += bindParametersPerBatch) {
+            int to = Math.min(distinctIndexes.size(), from + bindParametersPerBatch);
+            String placeholders = String.join(
+                    ",", Collections.nCopies(to - from, "?"));
+            try (PreparedStatement statement = connection.prepareStatement(
+                    NODE_DETAIL_COLUMNS + " WHERE da.node_index IN (" + placeholders + ")")) {
+                for (int index = from; index < to; index++) {
+                    statement.setInt(index - from + 1, distinctIndexes.get(index));
+                }
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        GraphNode node = readGraphNode(rows);
+                        byIndex.put(node.nodeIndex(), Optional.of(node));
+                    }
+                }
+            }
+        }
+        return Collections.unmodifiableMap(byIndex);
+    }
+
+    private static GraphNode readGraphNode(ResultSet rows) throws SQLException {
+        int nodeIndex = rows.getInt(1);
+        Optional<String> label = Optional.ofNullable(rows.getString(2));
+        Optional<String> mnemonic = Optional.ofNullable(rows.getString(3));
+        Optional<String> primaryOutput = Optional.ofNullable(rows.getString(4));
+        long actionId = rows.getLong(5);
+        boolean actionNull = rows.wasNull();
+        return new GraphNode(
+                nodeIndex,
+                label,
+                mnemonic,
+                primaryOutput,
+                actionNull ? OptionalLong.empty() : OptionalLong.of(actionId));
     }
 
     /** {@link #search(String, int)} for any indexed graph. */
@@ -776,7 +892,12 @@ public final class GraphQueries implements AutoCloseable {
      * One graph and what may be said about it.
      *
      * @param configurationMatch the only thing that decides whether this graph
-     *     may be presented as the build's (plan 8.6)
+     *     has the same configurations as the build (plan 8.6)
+     * @param targetScope whether the query used the exact BEP top-level target population
+     * @param unresolvedArtifacts artifact paths the aquery importer could not
+     *     resolve; empty means an older session did not retain the measurement
+     * @param unresolvedDepsetReferences action-input and transitive-child
+     *     references whose depsets were absent; empty has the same meaning
      */
     public record GraphSource(
             String kind,
@@ -784,13 +905,67 @@ public final class GraphQueries implements AutoCloseable {
             String state,
             ConfigurationMatch configurationMatch,
             Optional<String> mismatchDetail,
+            GraphTargetScope targetScope,
+            Optional<String> targetScopeDetail,
             OptionalLong declaredActions,
             OptionalLong correlatedActions,
+            OptionalLong unresolvedArtifacts,
+            OptionalLong unresolvedDepsetReferences,
             Optional<String> error) {
 
         /** True when this graph is loadable and describes this build. */
         public boolean isTrustworthy() {
-            return state.equals("SUCCEEDED") && configurationMatch.permitsExactClaim();
+            return state.equals("SUCCEEDED")
+                    && configurationMatch.permitsExactClaim()
+                    && targetScope.permitsExactClaim()
+                    && actionGraphCompletenessProblem().isEmpty();
+        }
+
+        /** Why this graph's target population is not confirmed, if it is not exact. */
+        public Optional<String> targetScopeProblem() {
+            if (targetScope.permitsExactClaim()) {
+                return Optional.empty();
+            }
+            return Optional.of(targetScopeDetail.filter(detail -> !detail.isBlank())
+                    .orElseGet(targetScope::describe));
+        }
+
+        /**
+         * Why an action graph's dependency structure is not confirmed
+         * complete, or empty when this source is structurally usable.
+         *
+         * <p>Configuration and import-state checks remain separate. A cquery
+         * source does not contain artifact paths, so this measurement does not
+         * apply to it.
+         */
+        public Optional<String> actionGraphCompletenessProblem() {
+            if (!kind.equals("DECLARED_ACTIONS")) {
+                return Optional.empty();
+            }
+            if (unresolvedArtifacts.isEmpty() || unresolvedDepsetReferences.isEmpty()) {
+                return Optional.of("structural completeness was not recorded for this session,"
+                        + " so the action graph is unverified");
+            }
+            long artifacts = unresolvedArtifacts.getAsLong();
+            long depsets = unresolvedDepsetReferences.getAsLong();
+            if (artifacts > 0 || depsets > 0) {
+                StringBuilder problem = new StringBuilder();
+                if (artifacts > 0) {
+                    problem.append(artifacts).append(" artifact ")
+                            .append(artifacts == 1 ? "path was" : "paths were")
+                            .append(" unresolved");
+                }
+                if (depsets > 0) {
+                    if (!problem.isEmpty()) {
+                        problem.append(" and ");
+                    }
+                    problem.append(depsets).append(" depset ")
+                            .append(depsets == 1 ? "reference was" : "references were")
+                            .append(" unresolved");
+                }
+                return Optional.of(problem + ", so dependency edges are missing");
+            }
+            return Optional.empty();
         }
 
         /** The words for the graph-source selector. */

@@ -100,6 +100,23 @@ public final class GraphExtract {
      * here: a path is a list of nodes and the edges between consecutive ones.
      */
     public static Result path(CsrGraph forward, List<Integer> nodes, Mode mode) {
+        return path(forward, nodes, mode, DEFAULT_NODE_LIMIT, DEFAULT_EDGE_LIMIT);
+    }
+
+    /**
+     * The nodes on a path, refusing the whole drawing before allocating it when
+     * it exceeds either detailed-drawing budget.
+     *
+     * <p>A clipped path is not a path, so this never returns a prefix and calls
+     * it complete. The exception reports the exact requested size for the UI.
+     */
+    public static Result path(
+            CsrGraph forward,
+            List<Integer> nodes,
+            Mode mode,
+            int nodeLimit,
+            int edgeLimit) {
+        requirePathWithinLimits(nodes.size(), mode, nodeLimit, edgeLimit);
         List<Edge> edges = new ArrayList<>(Math.max(0, nodes.size() - 1));
         for (int i = 0; i + 1 < nodes.size(); i++) {
             edges.add(new Edge(nodes.get(i), nodes.get(i + 1)));
@@ -107,6 +124,23 @@ public final class GraphExtract {
         return new Result(
                 mode, List.copyOf(nodes), edges,
                 forward.nodeCount(), forward.edgeCount(), false, nodes.size());
+    }
+
+    /** Validates an explicit path before any node or edge list is copied. */
+    public static void requirePathWithinLimits(
+            int requestedNodes, Mode mode, int nodeLimit, int edgeLimit) {
+        long requestedEdges = Math.max(0L, (long) requestedNodes - 1L);
+        if (requestedNodes <= nodeLimit && requestedEdges <= edgeLimit) {
+            return;
+        }
+        String subject = mode == Mode.CRITICAL_PATH
+                ? "The critical path" : "The requested path";
+        throw new PathLimitExceededException(
+                subject + " has " + requestedNodes + " actions and " + requestedEdges
+                        + " dependencies, exceeding the drawing budget of " + nodeLimit
+                        + " actions and " + edgeLimit + " dependencies. Nothing was drawn;"
+                        + " raise the Node or Edge budget and try again.",
+                requestedNodes, requestedEdges, nodeLimit, edgeLimit);
     }
 
     /**
@@ -204,6 +238,32 @@ public final class GraphExtract {
 
     /** One directed edge, in producer-to-consumer order. */
     public record Edge(int from, int to) {}
+
+    /** An explicit path was refused intact because it exceeded a drawing budget. */
+    public static final class PathLimitExceededException extends IllegalArgumentException {
+
+        private final int requestedNodes;
+        private final long requestedEdges;
+
+        private PathLimitExceededException(
+                String message,
+                int requestedNodes,
+                long requestedEdges,
+                int nodeLimit,
+                int edgeLimit) {
+            super(message);
+            this.requestedNodes = requestedNodes;
+            this.requestedEdges = requestedEdges;
+        }
+
+        public int requestedNodes() {
+            return requestedNodes;
+        }
+
+        public long requestedEdges() {
+            return requestedEdges;
+        }
+    }
 
     /**
      * What an extraction returned, and what it did not.

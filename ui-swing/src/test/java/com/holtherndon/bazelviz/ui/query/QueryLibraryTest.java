@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -127,5 +130,38 @@ final class QueryLibraryTest {
         assertThat(library.views())
                 .as("deleting the examples is a choice; a reseed would overrule it")
                 .isEmpty();
+    }
+
+    @Test
+    @DisplayName("separate workspace windows do not lose concurrent library saves")
+    void separateInstancesSerializeSharedIndexUpdates() throws Exception {
+        QueryLibrary first = library();
+        QueryLibrary second = library();
+        int saveCount = 24;
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var writers = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("query-library-test-", 0).factory())) {
+            java.util.ArrayList<Future<?>> saves = new java.util.ArrayList<>();
+            for (int index = 0; index < saveCount; index++) {
+                int savedIndex = index;
+                QueryLibrary writer = index % 2 == 0 ? first : second;
+                saves.add(writers.submit(() -> {
+                    start.await();
+                    writer.saveQuery("query-" + savedIndex, "SELECT " + savedIndex);
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> save : saves) {
+                save.get();
+            }
+        }
+
+        assertThat(first.queries())
+                .extracting(QueryLibrary.SavedQuery::name)
+                .containsExactlyInAnyOrder(java.util.stream.IntStream.range(0, saveCount)
+                        .mapToObj(index -> "query-" + index)
+                        .toArray(String[]::new));
     }
 }

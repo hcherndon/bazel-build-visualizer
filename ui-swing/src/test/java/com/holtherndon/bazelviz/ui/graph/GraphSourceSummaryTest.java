@@ -3,6 +3,7 @@ package com.holtherndon.bazelviz.ui.graph;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.core.graph.ConfigurationMatch;
+import com.holtherndon.bazelviz.core.graph.GraphTargetScope;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import java.util.List;
 import java.util.Optional;
@@ -22,9 +23,21 @@ final class GraphSourceSummaryTest {
 
     private static GraphQueries.GraphSource source(
             String state, ConfigurationMatch match, String detail) {
+        return source(state, match, detail, OptionalLong.of(0));
+    }
+
+    private static GraphQueries.GraphSource source(
+            String state,
+            ConfigurationMatch match,
+            String detail,
+            OptionalLong unresolvedArtifacts) {
         return new GraphQueries.GraphSource(
                 "DECLARED_ACTIONS", Optional.of("bazel aquery //..."), state, match,
-                Optional.ofNullable(detail), OptionalLong.of(16), OptionalLong.of(4),
+                Optional.ofNullable(detail), GraphTargetScope.EXACT_BEP_TARGETS,
+                Optional.of("The query used 1 exact BEP target."),
+                OptionalLong.of(16), OptionalLong.of(4),
+                unresolvedArtifacts,
+                OptionalLong.of(0),
                 state.equals("FAILED") ? Optional.of("no such target") : Optional.empty());
     }
 
@@ -63,6 +76,52 @@ final class GraphSourceSummaryTest {
         assertThat(GraphSourceSummary.label(unknown)).contains("unverified");
         assertThat(GraphSourceSummary.warning(unknown)).isPresent();
         assertThat(unknown.isTrustworthy()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a requested-pattern fallback is labelled and warned separately from configuration")
+    void fallbackScopeIsLoud() {
+        GraphQueries.GraphSource fallback = new GraphQueries.GraphSource(
+                "DECLARED_ACTIONS", Optional.of("bazel aquery --query_file=aquery.query"),
+                "SUCCEEDED", ConfigurationMatch.EXACT, Optional.empty(),
+                GraphTargetScope.REQUESTED_PATTERNS,
+                Optional.of("No BEP targets were available; requested patterns were used."),
+                OptionalLong.of(16), OptionalLong.of(4), OptionalLong.of(0),
+                OptionalLong.of(0), Optional.empty());
+
+        assertThat(GraphSourceSummary.label(fallback)).contains("wider target scope");
+        assertThat(GraphSourceSummary.describe(fallback)).contains("requested patterns");
+        assertThat(GraphSourceSummary.warning(fallback))
+                .hasValueSatisfying(warning -> assertThat(warning).contains("target scope"));
+        assertThat(fallback.isTrustworthy()).isFalse();
+    }
+
+    @Test
+    @DisplayName("unresolved artifact paths make an exact-configuration graph incomplete")
+    void unresolvedPathsAreWarnedAbout() {
+        GraphQueries.GraphSource incomplete = source(
+                "SUCCEEDED", ConfigurationMatch.EXACT, null, OptionalLong.of(2));
+
+        assertThat(GraphSourceSummary.label(incomplete)).contains("incomplete");
+        assertThat(GraphSourceSummary.describe(incomplete))
+                .contains("2 artifact paths were unresolved")
+                .contains("dependency edges").contains("missing");
+        assertThat(GraphSourceSummary.warning(incomplete))
+                .hasValueSatisfying(text -> assertThat(text).contains("not confirmed complete"));
+        assertThat(incomplete.isTrustworthy()).isFalse();
+    }
+
+    @Test
+    @DisplayName("an older graph without completeness metadata remains unverified")
+    void missingCompletenessMetadataIsUnknown() {
+        GraphQueries.GraphSource old = source(
+                "SUCCEEDED", ConfigurationMatch.EXACT, null, OptionalLong.empty());
+
+        assertThat(GraphSourceSummary.label(old)).contains("completeness unverified");
+        assertThat(GraphSourceSummary.describe(old)).contains("completeness is unknown");
+        assertThat(GraphSourceSummary.warning(old))
+                .hasValueSatisfying(text -> assertThat(text).contains("not recorded"));
+        assertThat(old.isTrustworthy()).isFalse();
     }
 
     @Test

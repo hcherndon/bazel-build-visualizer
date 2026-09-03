@@ -3,7 +3,11 @@ package com.holtherndon.bazelviz.ui.timeline;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
+import com.holtherndon.bazelviz.ui.theme.AppTheme;
+import com.holtherndon.bazelviz.ui.theme.Themes;
+import java.awt.Color;
 import java.awt.GraphicsEnvironment;
+import java.awt.event.InputEvent;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 import java.awt.event.MouseMotionListener;
@@ -11,7 +15,10 @@ import java.awt.event.MouseWheelEvent;
 import java.awt.event.MouseWheelListener;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JComponent;
+import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -83,6 +90,34 @@ final class TimelineViewTest {
                 List.of(), Map.of(), 0, 0, 0);
     }
 
+    @Test
+    @DisplayName("the custom timeline scrollbar follows a live dark-to-light switch")
+    void scrollbarPaletteFollowsTheme() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                Themes.install(AppTheme.DARK);
+                TimelineView view = new TimelineView();
+                @SuppressWarnings("unchecked")
+                Map<String, Object> darkStyle = (Map<String, Object>) view.scrollForTest()
+                        .getVerticalScrollBar().getClientProperty("FlatLaf.style");
+                Color darkThumb = (Color) darkStyle.get("thumb");
+
+                Themes.install(AppTheme.LIGHT);
+                view.updateUI();
+                @SuppressWarnings("unchecked")
+                Map<String, Object> lightStyle = (Map<String, Object>) view.scrollForTest()
+                        .getVerticalScrollBar().getClientProperty("FlatLaf.style");
+                Color lightThumb = (Color) lightStyle.get("thumb");
+
+                assertThat(darkThumb).isNotEqualTo(lightThumb);
+                assertThat(darkStyle.get("width")).isEqualTo(14);
+                assertThat(lightStyle.get("width")).isEqualTo(14);
+            } finally {
+                Themes.installDefault();
+            }
+        });
+    }
+
     /** A view showing the given model, sized so mouse pixel math means something. */
     private static TimelineView viewShowing(TimelineModel model) {
         TimelineView view = new TimelineView();
@@ -112,19 +147,62 @@ final class TimelineViewTest {
 
     private static MouseEvent pressAt(JComponent canvas, int x) {
         return new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED,
-                System.currentTimeMillis(), 0, x, 10, 1, false);
+                System.currentTimeMillis(), InputEvent.BUTTON1_DOWN_MASK,
+                x, 10, 1, false, MouseEvent.BUTTON1);
     }
 
     private static MouseEvent dragTo(JComponent canvas, int x) {
         return new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED,
-                System.currentTimeMillis(), 0, x, 10, 1, false);
+                System.currentTimeMillis(), InputEvent.BUTTON1_DOWN_MASK,
+                x, 10, 1, false, MouseEvent.NOBUTTON);
+    }
+
+    private static MouseEvent shiftPressAt(JComponent canvas, int x) {
+        return new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED,
+                System.currentTimeMillis(),
+                InputEvent.BUTTON1_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK,
+                x, 10, 1, false, MouseEvent.BUTTON1);
+    }
+
+    private static MouseEvent releaseAt(JComponent canvas, int x) {
+        return new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED,
+                System.currentTimeMillis(), InputEvent.SHIFT_DOWN_MASK,
+                x, 10, 1, false, MouseEvent.BUTTON1);
     }
 
     /** @param rotation positive scrolls "down", which this view treats as zooming out. */
     private static MouseWheelEvent wheelAt(JComponent canvas, int x, double rotation) {
-        return new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL, System.currentTimeMillis(), 0,
-                x, 10, x, 10, 1, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 1,
+        return new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL, System.currentTimeMillis(),
+                InputEvent.CTRL_DOWN_MASK, x, 10, x, 10, 1, false,
+                MouseWheelEvent.WHEEL_UNIT_SCROLL, 1,
                 (int) Math.round(rotation), rotation);
+    }
+
+    @Test
+    @DisplayName("clearing a selected range removes its overlay and notifies subscribers")
+    void clearRangeRemovesTheSharedFilter() {
+        TimelineView view = viewShowingAWall();
+        JComponent canvas = view.canvasForTest();
+        AtomicReference<OptionalLong> from = new AtomicReference<>(OptionalLong.empty());
+        AtomicReference<OptionalLong> to = new AtomicReference<>(OptionalLong.empty());
+        view.onRangeChanged((newFrom, newTo) -> {
+            from.set(newFrom);
+            to.set(newTo);
+        });
+
+        pressListener(canvas).mousePressed(shiftPressAt(canvas, 200));
+        dragListener(canvas).mouseDragged(dragTo(canvas, 600));
+        pressListener(canvas).mouseReleased(releaseAt(canvas, 600));
+
+        assertThat(view.viewport().orElseThrow().hasRange()).isTrue();
+        assertThat(from.get()).isPresent();
+        assertThat(to.get()).isPresent();
+
+        view.clearRange();
+
+        assertThat(view.viewport().orElseThrow().hasRange()).isFalse();
+        assertThat(from.get()).isEmpty();
+        assertThat(to.get()).isEmpty();
     }
 
     @Test
@@ -218,5 +296,21 @@ final class TimelineViewTest {
         // Not merely non-negative by coincidence: the leftmost tick position
         // sits in the margin and must be entirely absent, tick and label both.
         assertThat(ticks).noneMatch(tick -> tick.x() == 0);
+    }
+
+    @Test
+    @DisplayName("close zoom uses distinct high-precision axis labels")
+    void closeZoomTicksDoNotRepeatRoundedLabels() {
+        TimelineViewport close = new TimelineViewport(
+                new TimelineTransform(WALL_START, 1.0), false,
+                OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty());
+
+        List<TimelineView.Tick> ticks = TimelineView.ticksFor(close, aModel(), WIDTH);
+
+        assertThat(ticks).hasSizeGreaterThan(2);
+        assertThat(ticks.stream().map(TimelineView.Tick::label).distinct().count())
+                .as("each close-zoom tick must communicate a different instant")
+                .isEqualTo(ticks.size());
+        assertThat(ticks).anyMatch(tick -> tick.label().matches("0\\.0{3,}1.*s"));
     }
 }

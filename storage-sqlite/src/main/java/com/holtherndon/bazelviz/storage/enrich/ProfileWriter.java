@@ -42,17 +42,21 @@ public final class ProfileWriter implements AutoCloseable {
                     + " anchor_micros = excluded.anchor_micros,"
                     + " anchor_source_key = excluded.anchor_source_key,"
                     + " anchor_meaning = excluded.anchor_meaning,"
-                    + " uncertainty_micros = excluded.uncertainty_micros";
+                    + " uncertainty_micros = excluded.uncertainty_micros,"
+                    + " trace_min_micros = excluded.trace_min_micros,"
+                    + " trace_max_micros = excluded.trace_max_micros";
     private static final String UPDATE_TRACE_RANGE =
             "UPDATE profile_metadata SET trace_min_micros = ?, trace_max_micros = ? WHERE id = 1";
     private static final String INSERT_THREAD =
             "INSERT INTO profile_threads (thread_id, name, sort_index) VALUES (?, ?, ?)"
-                    + " ON CONFLICT (thread_id) DO UPDATE SET name = excluded.name";
+                    + " ON CONFLICT (thread_id) DO UPDATE SET name = excluded.name,"
+                    + " sort_index = excluded.sort_index";
     private static final String INSERT_PHASE =
             "INSERT INTO build_phases (ordinal, name, start_micros, end_micros, end_is_derived)"
                     + " VALUES (?, ?, ?, ?, ?)"
                     + " ON CONFLICT (ordinal) DO UPDATE SET name = excluded.name,"
-                    + " start_micros = excluded.start_micros, end_micros = excluded.end_micros";
+                    + " start_micros = excluded.start_micros, end_micros = excluded.end_micros,"
+                    + " end_is_derived = excluded.end_is_derived";
     private static final String INSERT_SPAN =
             "INSERT INTO profile_spans (category, name, thread_id, start_micros,"
                     + " duration_micros, primary_output, action_id, label_id, mnemonic_id)"
@@ -65,7 +69,11 @@ public final class ProfileWriter implements AutoCloseable {
     private static final String INSERT_CRITICAL_PATH =
             "INSERT INTO bazel_critical_path (ordinal, description, start_micros,"
                     + " duration_micros, thread_id) VALUES (?, ?, ?, ?, ?)"
-                    + " ON CONFLICT (ordinal) DO UPDATE SET description = excluded.description";
+                    + " ON CONFLICT (ordinal) DO UPDATE SET"
+                    + " description = excluded.description,"
+                    + " start_micros = excluded.start_micros,"
+                    + " duration_micros = excluded.duration_micros,"
+                    + " thread_id = excluded.thread_id";
     private static final String INSERT_LABEL =
             "INSERT INTO labels (value) VALUES (?) ON CONFLICT (value) DO NOTHING";
     private static final String INSERT_MNEMONIC =
@@ -106,6 +114,7 @@ public final class ProfileWriter implements AutoCloseable {
     private int pendingSpans;
     private int pendingCounters;
     private int pendingThreads;
+    private int pendingCriticalPathComponents;
     private long spansWritten;
     private long attributedSpans;
     private long traceMin = Long.MAX_VALUE;
@@ -159,12 +168,11 @@ public final class ProfileWriter implements AutoCloseable {
         insertThread.executeBatch();
         insertSpan.executeBatch();
         insertCounter.executeBatch();
-        // The critical path is bounded by the build's depth, so it is never
-        // flushed early and does not need a counter.
         insertCriticalPath.executeBatch();
         pendingThreads = 0;
         pendingSpans = 0;
         pendingCounters = 0;
+        pendingCriticalPathComponents = 0;
     }
 
     private void writeHeader(EnrichmentCommand.ProfileHeaderSeen header) throws SQLException {
@@ -304,11 +312,15 @@ public final class ProfileWriter implements AutoCloseable {
         setNullableLong(insertCriticalPath, 4, component.durationMicros());
         setNullableLong(insertCriticalPath, 5, component.threadId());
         insertCriticalPath.addBatch();
+        if (++pendingCriticalPathComponents >= BATCH) {
+            insertCriticalPath.executeBatch();
+            pendingCriticalPathComponents = 0;
+        }
     }
 
     private void note(long start, OptionalLong duration) {
         traceMin = Math.min(traceMin, start);
-        traceMax = Math.max(traceMax, start + duration.orElse(0));
+        traceMax = Math.max(traceMax, Math.addExact(start, duration.orElse(0)));
     }
 
     private void intern(PreparedStatement statement, Optional<String> value) throws SQLException {

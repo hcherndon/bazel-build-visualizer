@@ -51,6 +51,7 @@ final class EntityActionsTest {
         // the action graph, and both handler arms look it up exactly.
         assertThat(offers).extracting(EntityActions.Offer::command).containsExactly(
                 EntityActions.Command.OPEN_TARGET,
+                EntityActions.Command.OPEN_BUILD_FILE,
                 EntityActions.Command.OPEN_IN_TREE,
                 EntityActions.Command.OPEN_IN_GRAPH,
                 EntityActions.Command.SHOW_ACTIONS_FOR_LABEL,
@@ -90,6 +91,23 @@ final class EntityActionsTest {
         assertThat(actions.offersFor(List.of(new EntityRef.EventId(9)), Set.of()))
                 .extracting(EntityActions.Offer::command)
                 .containsExactly(EntityActions.Command.SHOW_SOURCE_EVENT);
+    }
+
+    @Test
+    @DisplayName("a configuration checksum offers the exact configuration destination")
+    void configurationRefOffersConfigurationCommand() {
+        EntityActions actions = new EntityActions(ALL, new Recorder());
+        EntityRef.ConfigurationChecksum configuration =
+                new EntityRef.ConfigurationChecksum("9f9de2");
+
+        List<EntityActions.Offer> offers =
+                actions.offersFor(List.of(configuration), Set.of());
+
+        assertThat(offers).singleElement().satisfies(offer -> {
+            assertThat(offer.command()).isEqualTo(EntityActions.Command.VIEW_CONFIGURATION);
+            assertThat(offer.command().title()).isEqualTo("View Configuration");
+            assertThat(offer.ref()).isEqualTo(configuration);
+        });
     }
 
     @Test
@@ -136,7 +154,7 @@ final class EntityActionsTest {
         EntityRef.TargetLabel label = new EntityRef.TargetLabel("//pkg:name");
         JPopupMenu menu = actions.popupFor(List.of(label), Set.of());
 
-        assertThat(menu.getComponentCount()).isEqualTo(5);
+        assertThat(menu.getComponentCount()).isEqualTo(6);
         ((JMenuItem) menu.getComponent(0)).doClick();
 
         assertThat(recorder.commands).containsExactly(EntityActions.Command.OPEN_TARGET);
@@ -187,6 +205,8 @@ final class EntityActionsTest {
     @DisplayName("a label ref refuses to exist without a label")
     void labelRefRejectsBlank() {
         assertThatThrownBy(() -> new EntityRef.TargetLabel(" "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new EntityRef.ConfigurationChecksum(" "))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

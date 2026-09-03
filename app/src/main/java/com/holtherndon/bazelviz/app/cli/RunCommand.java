@@ -9,6 +9,7 @@ import com.holtherndon.bazelviz.capture.live.CaptureSummary;
 import com.holtherndon.bazelviz.capture.live.Preflight;
 import com.holtherndon.bazelviz.runner.exec.ExecutableNotUsableException;
 import com.holtherndon.bazelviz.runner.plan.AddedFlag;
+import com.holtherndon.bazelviz.runner.plan.AuxiliaryCommandPlan;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
@@ -179,6 +180,12 @@ final class RunCommand {
                     + (flag.isApplied() ? "" : "  not applied: " + flag.capabilityStatus()));
             err.println("      " + flag.reason());
         }
+        for (AuxiliaryCommandPlan command : plan.auxiliaryCommands()) {
+            err.println("  > " + command.label() + "  [after build, "
+                    + command.estimatedCost().displayName() + " overhead]");
+            err.println("      " + command.purpose());
+            err.println("      " + String.join(" ", command.argv()));
+        }
         for (String warning : plan.warnings()) {
             err.println("  ! " + warning);
         }
@@ -338,6 +345,17 @@ final class RunCommand {
                 JsonValue.JsonArray.ofStrings(preflight.plan().effective().toArgv()));
         root.put("injectedFlags",
                 JsonValue.JsonArray.ofStrings(preflight.plan().injectedArgv()));
+        List<JsonValue> auxiliary = new ArrayList<>();
+        for (AuxiliaryCommandPlan command : preflight.plan().auxiliaryCommands()) {
+            Map<String, JsonValue> entry = new LinkedHashMap<>();
+            entry.put("label", JsonValue.of(command.label()));
+            entry.put("purpose", JsonValue.of(command.purpose()));
+            entry.put("argv", JsonValue.JsonArray.ofStrings(command.argv()));
+            entry.put("timing", JsonValue.of(command.timing().name()));
+            entry.put("output", JsonValue.of(command.outputPath().toString()));
+            auxiliary.add(new JsonValue.JsonObject(entry));
+        }
+        root.put("auxiliaryCommands", JsonValue.JsonArray.of(auxiliary));
         root.put("canLaunch", JsonValue.of(preflight.canLaunch()));
         root.put("capabilityDetection",
                 JsonValue.of(preflight.capabilities().detection().name()));

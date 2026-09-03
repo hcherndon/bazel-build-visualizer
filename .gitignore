@@ -10,9 +10,10 @@ bin/
 
 # Bazel outputs and convenience symlinks. Anchored to the repository root for
 # the same reason the build/ patterns above are anchored: a bare `bazel-*`
-# matches at any depth and would swallow the tracked `bazel-runner/` module —
-# and several vendored proto paths contain "bazel" too. The last entry is the
-# workspace symlink Bazel names after the repository directory.
+# matches at any depth and would swallow the tracked `bazel-runner/`
+# compatibility package (its source moved to `runner/` in ADR-010). Several
+# vendored proto paths contain "bazel" too. The last entry is the workspace
+# symlink Bazel names after the repository directory.
 /bazel-bin
 /bazel-out
 /bazel-testlogs

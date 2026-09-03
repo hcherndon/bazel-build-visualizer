@@ -29,7 +29,7 @@ import javax.swing.tree.TreeSelectionModel;
  *
  * <h2>Why the feature is unusable without this</h2>
  *
- * <p>A session database carries 59 tables across five schema versions and this
+ * <p>A session database carries many tables across evolving schema versions and this
  * repository has no generated schema page — the DDL in {@code storage-sqlite}
  * and its javadoc are the only description of it, and neither is reachable from
  * the application. A query surface with no way to see column names is a query
@@ -41,7 +41,7 @@ import javax.swing.tree.TreeSelectionModel;
  *
  * <h2>No row counts</h2>
  *
- * <p>Counting 59 tables is a scan per table, and a count shown before it was
+ * <p>Counting every table is a scan per table, and a count shown before it was
  * taken would be a zero standing in for "not known yet" (rule 11). The column
  * list is the thing that was missing; a count is one {@code SELECT COUNT(*)}
  * away in the editor beside it.

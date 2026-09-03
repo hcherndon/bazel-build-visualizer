@@ -58,7 +58,10 @@ Found by asking what each unread accessor was *for*:
   Whether graph coverage is complete". The rule showed the first two. It now
   reports each contributor's slack — zero for everything on the chain, by
   construction, which is what distinguishes "on the chain" from "merely slow" —
-  and carries action-graph coverage as a metric with its own provenance.
+  and carries confirmed action-graph structural completeness as a metric with
+  its own provenance. The separately displayed action-graph correlation ratio
+  is not a completeness measurement: cached actions legitimately do not have
+  an executed row to correlate.
 - **`directDependencies` and `onDerivedCriticalPath` were never shown.** Both
   now appear in the high-fan-out finding, and start and completion concurrency
   in the queue-dominated one, which is where plan 15.1's per-action concurrency

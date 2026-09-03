@@ -7,8 +7,11 @@ import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.regex.Pattern;
 import javax.swing.JComponent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -48,6 +51,7 @@ final class EdtDisciplineTest {
             "com.holtherndon.bazelviz.ui.session.QueryReader",
             "com.holtherndon.bazelviz.ui.table.RowSource",
             "com.holtherndon.bazelviz.ui.timeline.SpanSource",
+            "com.holtherndon.bazelviz.runner.files.ExecutionFileSystem",
             "com.holtherndon.bazelviz.storage.graph.GraphQueries",
             "com.holtherndon.bazelviz.storage.metrics.MetricQueries",
             "com.holtherndon.bazelviz.storage.SessionDatabase");
@@ -144,42 +148,36 @@ final class EdtDisciplineTest {
      * thing somebody has to remember to add a new view to and this rule is
      * exactly the kind nobody remembers.
      *
-     * <p>Discovery is anchored on {@link MainWindow}'s code source — the jar
-     * or classes directory the module's own classes were loaded from — rather
-     * than on any build system's output layout. Under Gradle that was a
-     * {@code build/classes/java/main} directory; under Bazel it is the module
-     * jar; under both it contains exactly this module's main classes and none
-     * of its test classes, which matters because this file's own
-     * {@code Offender} fixture is a deliberate rule violation.
+     * <p>Each Java package is compiled into its own jar, so discovery walks
+     * every class-path entry and keeps classes below the UI package. The jar
+     * containing this test is excluded: it also contains this file's
+     * deliberately broken {@code Offender} fixture, which exists to prove the
+     * rule can fail. Other modules are harmless because their class names do
+     * not start with the UI package path.
      */
     private static List<Class<?>> compiledComponents() throws Exception {
-        var codeSource = MainWindow.class.getProtectionDomain().getCodeSource();
-        assertThat(codeSource)
-                .as("the code source of the ui-swing classes; a null here means the"
-                        + " classes came from somewhere unscannable and the scan is broken")
+        var testCodeSource = EdtDisciplineTest.class.getProtectionDomain().getCodeSource();
+        assertThat(testCodeSource)
+                .as("the test code source; a null here means its deliberate fixture cannot"
+                        + " be excluded safely")
                 .isNotNull();
-        Path source = Path.of(codeSource.getLocation().toURI());
-        List<String> names = new ArrayList<>();
-        if (Files.isDirectory(source)) {
-            try (var walk = Files.walk(source)) {
-                for (Path file : walk.filter(path -> path.toString().endsWith(".class")).toList()) {
-                    names.add(source.relativize(file).toString()
-                            .replace(java.io.File.separatorChar, '.')
-                            .replaceAll("\\.class$", ""));
-                }
+        Path testSource = Path.of(testCodeSource.getLocation().toURI());
+        Set<String> names = new LinkedHashSet<>();
+        String classPath = System.getProperty("java.class.path", "");
+        for (String entry : classPath.split(Pattern.quote(java.io.File.pathSeparator))) {
+            if (entry.isBlank()) {
+                continue;
             }
-        } else {
-            try (var jar = new java.util.jar.JarFile(source.toFile())) {
-                for (var entries = jar.entries(); entries.hasMoreElements(); ) {
-                    var entry = entries.nextElement();
-                    if (entry.getName().endsWith(".class")) {
-                        names.add(entry.getName()
-                                .replace('/', '.')
-                                .replaceAll("\\.class$", ""));
-                    }
-                }
+            Path source = Path.of(entry);
+            if (!Files.exists(source) || sameFile(source, testSource)) {
+                continue;
             }
+            collectUiClasses(source, names);
         }
+
+        assertThat(names)
+                .as("compiled UI classes discovered across the package-local jars")
+                .isNotEmpty();
         List<Class<?>> components = new ArrayList<>();
         for (String name : names) {
             Class<?> loaded;
@@ -194,5 +192,40 @@ final class EdtDisciplineTest {
             }
         }
         return components;
+    }
+
+    private static void collectUiClasses(Path source, Set<String> names) throws Exception {
+        String packagePath = "com/holtherndon/bazelviz/ui/";
+        if (Files.isDirectory(source)) {
+            try (var walk = Files.walk(source)) {
+                for (Path file : walk.filter(path -> path.toString().endsWith(".class")).toList()) {
+                    String relative = source.relativize(file).toString()
+                            .replace(java.io.File.separatorChar, '/');
+                    if (relative.startsWith(packagePath)) {
+                        names.add(relative.replace('/', '.').replaceAll("\\.class$", ""));
+                    }
+                }
+            }
+        } else {
+            try (var jar = new java.util.jar.JarFile(source.toFile())) {
+                for (var entries = jar.entries(); entries.hasMoreElements(); ) {
+                    var entry = entries.nextElement();
+                    if (entry.getName().startsWith(packagePath)
+                            && entry.getName().endsWith(".class")) {
+                        names.add(entry.getName()
+                                .replace('/', '.')
+                                .replaceAll("\\.class$", ""));
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean sameFile(Path first, Path second) {
+        try {
+            return Files.isSameFile(first, second);
+        } catch (java.io.IOException ignored) {
+            return first.toAbsolutePath().normalize().equals(second.toAbsolutePath().normalize());
+        }
     }
 }

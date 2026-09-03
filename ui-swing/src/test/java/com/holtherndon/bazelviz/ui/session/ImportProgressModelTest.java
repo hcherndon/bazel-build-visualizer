@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.within;
 
 import com.holtherndon.bazelviz.capture.file.importer.ImportPhase;
 import com.holtherndon.bazelviz.capture.file.importer.ImportProgress;
-import com.holtherndon.bazelviz.ui.events.EventValueFormat;
+import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.DisplayName;

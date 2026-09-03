@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.table.Page;
 import com.holtherndon.bazelviz.ui.table.RowSource;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -115,6 +116,70 @@ public final class ActionRowSource implements RowSource<ActionRow> {
 
     public int pageSize() {
         return pageSize;
+    }
+
+    /**
+     * The page containing {@code row} under this source's sort and direction.
+     *
+     * <p>The anchor index stores the last row of every full page. A binary
+     * search over those boundaries locates an exact row without scanning the
+     * action table or issuing an {@code OFFSET} query. Callers must supply a
+     * row that matches this source's filter.
+     */
+    public long pageIndexOf(ActionRow row) {
+        Objects.requireNonNull(row, "row");
+        ActionQueries.Anchor target = ActionQueries.Anchor.of(row, sort);
+        List<ActionQueries.Anchor> anchors = index.anchors();
+        int low = 0;
+        int high = anchors.size();
+        while (low < high) {
+            int middle = low + (high - low) / 2;
+            if (compareInDisplayOrder(target, anchors.get(middle)) <= 0) {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        return low;
+    }
+
+    private int compareInDisplayOrder(ActionQueries.Anchor left, ActionQueries.Anchor right) {
+        int comparison = compareValues(left.sortValue(), right.sortValue());
+        if (comparison == 0) {
+            comparison = Long.compare(left.id(), right.id());
+        }
+        return descending ? -comparison : comparison;
+    }
+
+    private static int compareValues(Optional<Object> left, Optional<Object> right) {
+        if (left.isEmpty()) {
+            return right.isEmpty() ? 0 : -1;
+        }
+        if (right.isEmpty()) {
+            return 1;
+        }
+        Object leftValue = left.orElseThrow();
+        Object rightValue = right.orElseThrow();
+        if (leftValue instanceof Number leftNumber
+                && rightValue instanceof Number rightNumber) {
+            return Long.compare(leftNumber.longValue(), rightNumber.longValue());
+        }
+        return compareSqliteText(leftValue.toString(), rightValue.toString());
+    }
+
+    /** SQLite's default BINARY collation: unsigned lexicographic UTF-8 bytes. */
+    static int compareSqliteText(String left, String right) {
+        byte[] leftBytes = left.getBytes(StandardCharsets.UTF_8);
+        byte[] rightBytes = right.getBytes(StandardCharsets.UTF_8);
+        int shared = Math.min(leftBytes.length, rightBytes.length);
+        for (int i = 0; i < shared; i++) {
+            int comparison = Integer.compare(
+                    Byte.toUnsignedInt(leftBytes[i]), Byte.toUnsignedInt(rightBytes[i]));
+            if (comparison != 0) {
+                return comparison;
+            }
+        }
+        return Integer.compare(leftBytes.length, rightBytes.length);
     }
 
     @Override

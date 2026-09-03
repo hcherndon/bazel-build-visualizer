@@ -6,6 +6,7 @@ set -euo pipefail
 
 BAZEL_TAG="9.2.0"
 GOOGLEAPIS_COMMIT="c3e3d8a2031ec31f0f81fa42454ba55c7b40f284"
+PPROF_COMMIT="ca85771921e4d23ebb56030bf1e488f215f26d36"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROTO_ROOT="${SCRIPT_DIR}/src/main/proto"
@@ -56,12 +57,17 @@ for f in "${GOOGLEAPIS_FILES[@]}"; do
     fetch "https://raw.githubusercontent.com/googleapis/googleapis/${GOOGLEAPIS_COMMIT}" "$f"
 done
 
+fetch "https://raw.githubusercontent.com/google/pprof/${PPROF_COMMIT}" \
+    "perftools/profiles/profile.proto"
+
 mkdir -p "${LICENSE_DIR}"
 echo "fetching LICENSE files"
 curl -sSfL -o "${LICENSE_DIR}/BAZEL_LICENSE" \
     "https://raw.githubusercontent.com/bazelbuild/bazel/${BAZEL_TAG}/LICENSE"
 curl -sSfL -o "${LICENSE_DIR}/GOOGLEAPIS_LICENSE" \
     "https://raw.githubusercontent.com/googleapis/googleapis/${GOOGLEAPIS_COMMIT}/LICENSE"
+curl -sSfL -o "${LICENSE_DIR}/PPROF_LICENSE" \
+    "https://raw.githubusercontent.com/google/pprof/${PPROF_COMMIT}/LICENSE"
 
 # Guard against the import closure growing: everything imported must either be
 # vendored here or be a google/protobuf/* well-known type shipped with protoc.
@@ -81,4 +87,4 @@ done < <(find "${PROTO_ROOT}" -name '*.proto' -exec grep -h '^import' {} + \
 if [ "${missing}" -ne 0 ]; then
     exit 1
 fi
-echo "done: $((${#BAZEL_FILES[@]} + ${#GOOGLEAPIS_FILES[@]})) proto files refreshed"
+echo "done: $((${#BAZEL_FILES[@]} + ${#GOOGLEAPIS_FILES[@]} + 1)) proto files refreshed"

@@ -117,19 +117,54 @@ public final class GraphStaging implements AutoCloseable {
     }
 
     /**
-     * Artifacts whose path could not be resolved.
+     * Artifact ids that cannot resolve to a path.
      *
-     * <p>Non-zero means the file referenced a path fragment it never declared,
-     * which makes every path reached through it unknown rather than merely
-     * absent. Counted so the importer can report it instead of quietly
-     * producing a smaller graph.
+     * <p>This includes both declared artifacts whose fragment chain is broken
+     * and artifact ids referenced by actions or depsets but never declared.
+     * The final joins silently omit either shape, so both must prevent a
+     * completeness claim.
      */
     public long unresolvedArtifacts() throws SQLException {
         try (Statement statement = connection.createStatement();
                 var rows = statement.executeQuery(
-                        "SELECT count(*) FROM stage_artifact a"
+                        "SELECT count(*) FROM ("
+                                + " SELECT a.id AS artifact FROM stage_artifact a"
                                 + " WHERE NOT EXISTS (SELECT 1 FROM stage_path p"
-                                + "                   WHERE p.artifact = a.id)")) {
+                                + "                   WHERE p.artifact = a.id)"
+                                + " UNION SELECT artifact FROM stage_depset_artifact r"
+                                + " WHERE NOT EXISTS (SELECT 1 FROM stage_path p"
+                                + "                   WHERE p.artifact = r.artifact)"
+                                + " UNION SELECT artifact FROM stage_action_output r"
+                                + " WHERE NOT EXISTS (SELECT 1 FROM stage_path p"
+                                + "                   WHERE p.artifact = r.artifact)"
+                                + " UNION SELECT primary_output FROM stage_action r"
+                                + " WHERE r.primary_output <> 0"
+                                + " AND NOT EXISTS (SELECT 1 FROM stage_path p"
+                                + "                 WHERE p.artifact = r.primary_output)"
+                                + ")")) {
+            return rows.next() ? rows.getLong(1) : 0;
+        }
+    }
+
+    /**
+     * References to depsets the protobuf never declared.
+     *
+     * <p>These otherwise disappear from the importer joins: an action loses
+     * an entire input set, or a depset loses a transitive child. Count the
+     * references, rather than just distinct ids, because each omitted link is
+     * a separate structural hole.
+     */
+    public long unresolvedDepsetReferences() throws SQLException {
+        try (Statement statement = connection.createStatement();
+                var rows = statement.executeQuery(
+                        "SELECT"
+                                + " (SELECT count(*) FROM stage_action_input r"
+                                + "  WHERE NOT EXISTS (SELECT 1 FROM stage_depset d"
+                                + "                    WHERE d.id = r.depset))"
+                                + " +"
+                                + " (SELECT count(*) FROM stage_depset_child r"
+                                + "  WHERE NOT EXISTS (SELECT 1 FROM stage_depset d"
+                                + "                    WHERE d.id = r.child))")) {
             return rows.next() ? rows.getLong(1) : 0;
         }
     }

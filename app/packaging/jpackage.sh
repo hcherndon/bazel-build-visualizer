@@ -6,7 +6,7 @@
 #   bazel run //app:jpackage -- --type=dmg         # dmg, for notarization
 #   bazel run //app:jpackage -- --app-version=2.0.0
 #
-# The input is the deploy jar (//app:bbv_deploy.jar) rather than Gradle's
+# The input is the deploy jar (//app:app_deploy.jar) rather than Gradle's
 # installDist layout: a single fat jar is exactly what a desktop app that is
 # never on anybody else's classpath wants, and it is the artifact Bazel
 # already builds deterministically.
@@ -70,7 +70,7 @@ if ! command -v "$JPACKAGE" > /dev/null; then
 fi
 
 # Runfiles-relative inputs ('bazel run' starts in the runfiles root).
-DEPLOY_JAR="app/bbv_deploy.jar"
+DEPLOY_JAR="app/app_deploy.jar"
 ASSOCIATION="app/src/main/packaging/bviz.properties"
 [[ -f "$DEPLOY_JAR" ]] || { echo "error: missing $DEPLOY_JAR in runfiles" >&2; exit 1; }
 [[ -f "$ASSOCIATION" ]] || { echo "error: missing $ASSOCIATION in runfiles" >&2; exit 1; }
@@ -94,7 +94,8 @@ COMMAND=(
     --main-jar "bbv_deploy.jar"
     --main-class "com.holtherndon.bazelviz.app.Main"
     --dest "$OUT"
-    # See tools/bbv.bzl for why ALL-UNNAMED is the only available target:
+    # See tools/java_test_settings.bzl for why ALL-UNNAMED is the only
+    # available target:
     # everything, FlatLaf included, is on the classpath.
     --java-options "--enable-native-access=ALL-UNNAMED"
     --java-options "-Dapple.laf.useScreenMenuBar=true"
@@ -103,6 +104,9 @@ COMMAND=(
 )
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
+    # Optional native trackpad pinch events. Timeline zoom still works through
+    # Control/Command-wheel and its buttons when this API is unavailable.
+    COMMAND+=(--java-options "--add-exports=java.desktop/com.apple.eawt.event=ALL-UNNAMED")
     COMMAND+=(--mac-package-identifier "com.holtherndon.bazelviz")
     if [[ -n "${BBV_MAC_SIGNING_IDENTITY:-}" ]]; then
         COMMAND+=(--mac-sign --mac-signing-key-user-name "$BBV_MAC_SIGNING_IDENTITY")

@@ -5,6 +5,7 @@
     "com.fifesoft:autocomplete": -551839186,
     "com.fifesoft:rsyntaxtextarea": -416566626,
     "com.formdev:flatlaf": -1319144948,
+    "com.formdev:flatlaf-extras": 1637959522,
     "com.github.vertical-blank:sql-formatter": -1547627279,
     "com.google.code.findbugs:jsr305": 495355163,
     "com.google.code.gson:gson": 2063056812,
@@ -19,6 +20,9 @@
     "io.grpc:grpc-protobuf": -466239409,
     "io.grpc:grpc-stub": -132420852,
     "org.assertj:assertj-core": 1789438049,
+    "org.jetbrains.jediterm:jediterm-core": 323271576,
+    "org.jetbrains.jediterm:jediterm-ui": -666765107,
+    "org.jetbrains.pty4j:pty4j": 764232362,
     "org.junit.jupiter:junit-jupiter": 1465511359,
     "org.junit.platform:junit-platform-launcher": 1718633558,
     "org.junit.platform:junit-platform-reporting": -2000138776,
@@ -26,7 +30,7 @@
     "org.openjdk.jmh:jmh-generator-annprocess": -1162360421,
     "org.slf4j:slf4j-api": -2005163028,
     "org.xerial:sqlite-jdbc": -641800335,
-    "repositories": -1949687017
+    "repositories": -521267231
   },
   "__RESOLVED_ARTIFACTS_HASH": {
     "ch.qos.logback:logback-classic": 1453420512,
@@ -34,7 +38,9 @@
     "com.fifesoft:autocomplete": 2025684569,
     "com.fifesoft:rsyntaxtextarea": -651993130,
     "com.formdev:flatlaf": -1105540594,
+    "com.formdev:flatlaf-extras": -1046418286,
     "com.github.vertical-blank:sql-formatter": -972722667,
+    "com.github.weisj:jsvg": 512560354,
     "com.google.android:annotations": 2096496032,
     "com.google.api.grpc:proto-google-common-protos": -1280588887,
     "com.google.code.findbugs:jsr305": 870839855,
@@ -57,11 +63,18 @@
     "io.grpc:grpc-util": -114791116,
     "io.perfmark:perfmark-api": -1795841558,
     "net.bytebuddy:byte-buddy": 1533370805,
+    "net.java.dev.jna:jna": -1045971559,
+    "net.java.dev.jna:jna-platform": 527596188,
     "net.sf.jopt-simple:jopt-simple": -1677351973,
     "org.apache.commons:commons-math3": -1383243934,
     "org.apiguardian:apiguardian-api": 1279798469,
     "org.assertj:assertj-core": 1161972741,
     "org.codehaus.mojo:animal-sniffer-annotations": 534312981,
+    "org.jetbrains.jediterm:jediterm-core": 547139680,
+    "org.jetbrains.jediterm:jediterm-ui": -1491129491,
+    "org.jetbrains.kotlin:kotlin-stdlib": -63163912,
+    "org.jetbrains.pty4j:pty4j": -1410488825,
+    "org.jetbrains:annotations": 1055264768,
     "org.jspecify:jspecify": 117231129,
     "org.junit.jupiter:junit-jupiter": -427379008,
     "org.junit.jupiter:junit-jupiter-api": -1170819288,
@@ -114,11 +127,23 @@
       },
       "version": "3.7.2"
     },
+    "com.formdev:flatlaf-extras": {
+      "shasums": {
+        "jar": "7d03612d5c11d27a4ac714e79b11c73405d07f84a3214fe4ae091daadc8b5166"
+      },
+      "version": "3.7.2"
+    },
     "com.github.vertical-blank:sql-formatter": {
       "shasums": {
         "jar": "1c3b6d0b2b3b95c8c052c209f5bacd490d792e45240d555bb319bc1387a8efea"
       },
       "version": "2.0.5"
+    },
+    "com.github.weisj:jsvg": {
+      "shasums": {
+        "jar": "a538142d27c57c55066da02a535cc8eee3afd0d37b3daff8eba6344bd0ffc1b6"
+      },
+      "version": "2.1.0"
     },
     "com.google.android:annotations": {
       "shasums": {
@@ -252,6 +277,18 @@
       },
       "version": "1.15.11"
     },
+    "net.java.dev.jna:jna": {
+      "shasums": {
+        "jar": "34ed1e1f27fa896bca50dbc4e99cf3732967cec387a7a0d5e3486c09673fe8c6"
+      },
+      "version": "5.14.0"
+    },
+    "net.java.dev.jna:jna-platform": {
+      "shasums": {
+        "jar": "ae4caceb3840730c2537f9b7fb55a01baba580286b4122951488bcee558c2449"
+      },
+      "version": "5.14.0"
+    },
     "net.sf.jopt-simple:jopt-simple": {
       "shasums": {
         "jar": "df26cc58f235f477db07f753ba5a3ab243ebe5789d9f89ecf68dd62ea9a66c28"
@@ -281,6 +318,36 @@
         "jar": "cfd7e51a828fe6b98bc0dbb99e34900c9e9012322cb9ddd57fd8dd0b02da5e27"
       },
       "version": "1.27"
+    },
+    "org.jetbrains.jediterm:jediterm-core": {
+      "shasums": {
+        "jar": "da8a8fb51cabd252e00bd541712c3934e064c808e843f0fbc9032f2ed1f3c9dd"
+      },
+      "version": "3.74"
+    },
+    "org.jetbrains.jediterm:jediterm-ui": {
+      "shasums": {
+        "jar": "d5fcc39840adc932c829786f7e1febb10120f62ca0e5a957de18fdc40ca3bec2"
+      },
+      "version": "3.74"
+    },
+    "org.jetbrains.kotlin:kotlin-stdlib": {
+      "shasums": {
+        "jar": "ccb14ff83fabcb11458b798dbc9824748ccdffeec79c9aba789e6ed1cda86b1c"
+      },
+      "version": "2.4.0"
+    },
+    "org.jetbrains.pty4j:pty4j": {
+      "shasums": {
+        "jar": "1635a8ec4c2d5caf318caf0764ad5ee9d7248f329dadc5ece03aa78438504c27"
+      },
+      "version": "0.13.8"
+    },
+    "org.jetbrains:annotations": {
+      "shasums": {
+        "jar": "61666dbce7e42e6c85b43c04fcfb8293a21dcb55b3c80e869270ce42c01a6b35"
+      },
+      "version": "24.0.1"
     },
     "org.jspecify:jspecify": {
       "shasums": {
@@ -381,6 +448,10 @@
     "com.fifesoft:autocomplete": [
       "com.fifesoft:rsyntaxtextarea"
     ],
+    "com.formdev:flatlaf-extras": [
+      "com.formdev:flatlaf",
+      "com.github.weisj:jsvg"
+    ],
     "com.google.api.grpc:proto-google-common-protos": [
       "com.google.protobuf:protobuf-java"
     ],
@@ -452,8 +523,32 @@
       "io.grpc:grpc-core",
       "org.codehaus.mojo:animal-sniffer-annotations"
     ],
+    "net.java.dev.jna:jna-platform": [
+      "net.java.dev.jna:jna"
+    ],
     "org.assertj:assertj-core": [
       "net.bytebuddy:byte-buddy"
+    ],
+    "org.jetbrains.jediterm:jediterm-core": [
+      "org.jetbrains.kotlin:kotlin-stdlib",
+      "org.jetbrains:annotations",
+      "org.slf4j:slf4j-api"
+    ],
+    "org.jetbrains.jediterm:jediterm-ui": [
+      "org.jetbrains.jediterm:jediterm-core",
+      "org.jetbrains.kotlin:kotlin-stdlib",
+      "org.jetbrains:annotations",
+      "org.slf4j:slf4j-api"
+    ],
+    "org.jetbrains.kotlin:kotlin-stdlib": [
+      "org.jetbrains:annotations"
+    ],
+    "org.jetbrains.pty4j:pty4j": [
+      "net.java.dev.jna:jna",
+      "net.java.dev.jna:jna-platform",
+      "org.jetbrains.kotlin:kotlin-stdlib",
+      "org.jetbrains:annotations",
+      "org.slf4j:slf4j-api"
     ],
     "org.junit.jupiter:junit-jupiter": [
       "org.junit.jupiter:junit-jupiter-api",
@@ -604,11 +699,67 @@
       "com.formdev.flatlaf.ui",
       "com.formdev.flatlaf.util"
     ],
+    "com.formdev:flatlaf-extras": [
+      "com.formdev.flatlaf.extras",
+      "com.formdev.flatlaf.extras.components",
+      "com.formdev.flatlaf.extras.resources"
+    ],
     "com.github.vertical-blank:sql-formatter": [
       "com.github.vertical_blank.sqlformatter",
       "com.github.vertical_blank.sqlformatter.core",
       "com.github.vertical_blank.sqlformatter.core.util",
       "com.github.vertical_blank.sqlformatter.languages"
+    ],
+    "com.github.weisj:jsvg": [
+      "com.github.weisj.jsvg",
+      "com.github.weisj.jsvg.animation",
+      "com.github.weisj.jsvg.animation.interpolation",
+      "com.github.weisj.jsvg.animation.time",
+      "com.github.weisj.jsvg.animation.value",
+      "com.github.weisj.jsvg.attributes",
+      "com.github.weisj.jsvg.attributes.filter",
+      "com.github.weisj.jsvg.attributes.font",
+      "com.github.weisj.jsvg.attributes.stroke",
+      "com.github.weisj.jsvg.attributes.text",
+      "com.github.weisj.jsvg.attributes.transform",
+      "com.github.weisj.jsvg.attributes.value",
+      "com.github.weisj.jsvg.geometry",
+      "com.github.weisj.jsvg.geometry.mesh",
+      "com.github.weisj.jsvg.geometry.noise",
+      "com.github.weisj.jsvg.geometry.path",
+      "com.github.weisj.jsvg.geometry.size",
+      "com.github.weisj.jsvg.geometry.util",
+      "com.github.weisj.jsvg.logging",
+      "com.github.weisj.jsvg.logging.impl",
+      "com.github.weisj.jsvg.nodes",
+      "com.github.weisj.jsvg.nodes.animation",
+      "com.github.weisj.jsvg.nodes.container",
+      "com.github.weisj.jsvg.nodes.filter",
+      "com.github.weisj.jsvg.nodes.mesh",
+      "com.github.weisj.jsvg.nodes.prototype",
+      "com.github.weisj.jsvg.nodes.prototype.impl",
+      "com.github.weisj.jsvg.nodes.prototype.spec",
+      "com.github.weisj.jsvg.nodes.text",
+      "com.github.weisj.jsvg.paint",
+      "com.github.weisj.jsvg.paint.impl",
+      "com.github.weisj.jsvg.paint.impl.jdk",
+      "com.github.weisj.jsvg.parser",
+      "com.github.weisj.jsvg.parser.css",
+      "com.github.weisj.jsvg.parser.css.impl",
+      "com.github.weisj.jsvg.parser.impl",
+      "com.github.weisj.jsvg.parser.resources",
+      "com.github.weisj.jsvg.parser.resources.impl",
+      "com.github.weisj.jsvg.renderer",
+      "com.github.weisj.jsvg.renderer.animation",
+      "com.github.weisj.jsvg.renderer.awt",
+      "com.github.weisj.jsvg.renderer.impl",
+      "com.github.weisj.jsvg.renderer.impl.context",
+      "com.github.weisj.jsvg.renderer.output",
+      "com.github.weisj.jsvg.renderer.output.impl",
+      "com.github.weisj.jsvg.ui",
+      "com.github.weisj.jsvg.util",
+      "com.github.weisj.jsvg.util.supplier",
+      "com.github.weisj.jsvg.view"
     ],
     "com.google.android:annotations": [
       "android.annotation"
@@ -820,6 +971,29 @@
       "net.bytebuddy.utility.privilege",
       "net.bytebuddy.utility.visitor"
     ],
+    "net.java.dev.jna:jna": [
+      "com.sun.jna",
+      "com.sun.jna.internal",
+      "com.sun.jna.ptr",
+      "com.sun.jna.win32"
+    ],
+    "net.java.dev.jna:jna-platform": [
+      "com.sun.jna.platform",
+      "com.sun.jna.platform.bsd",
+      "com.sun.jna.platform.dnd",
+      "com.sun.jna.platform.linux",
+      "com.sun.jna.platform.mac",
+      "com.sun.jna.platform.unix",
+      "com.sun.jna.platform.unix.aix",
+      "com.sun.jna.platform.unix.solaris",
+      "com.sun.jna.platform.win32",
+      "com.sun.jna.platform.win32.COM",
+      "com.sun.jna.platform.win32.COM.tlb",
+      "com.sun.jna.platform.win32.COM.tlb.imp",
+      "com.sun.jna.platform.win32.COM.util",
+      "com.sun.jna.platform.win32.COM.util.annotation",
+      "com.sun.jna.platform.wince"
+    ],
     "net.sf.jopt-simple:jopt-simple": [
       "joptsimple",
       "joptsimple.internal",
@@ -936,6 +1110,94 @@
     ],
     "org.codehaus.mojo:animal-sniffer-annotations": [
       "org.codehaus.mojo.animal_sniffer"
+    ],
+    "org.jetbrains.jediterm:jediterm-core": [
+      "com.jediterm.core",
+      "com.jediterm.core.compatibility",
+      "com.jediterm.core.input",
+      "com.jediterm.core.typeahead",
+      "com.jediterm.core.util",
+      "com.jediterm.terminal",
+      "com.jediterm.terminal.emulator",
+      "com.jediterm.terminal.emulator.charset",
+      "com.jediterm.terminal.emulator.keyboard",
+      "com.jediterm.terminal.emulator.mouse",
+      "com.jediterm.terminal.model",
+      "com.jediterm.terminal.model.hyperlinks",
+      "com.jediterm.terminal.util"
+    ],
+    "org.jetbrains.jediterm:jediterm-ui": [
+      "com.jediterm.terminal",
+      "com.jediterm.terminal.model",
+      "com.jediterm.terminal.ui",
+      "com.jediterm.terminal.ui.hyperlinks",
+      "com.jediterm.terminal.ui.input",
+      "com.jediterm.terminal.ui.settings"
+    ],
+    "org.jetbrains.kotlin:kotlin-stdlib": [
+      "kotlin",
+      "kotlin.annotation",
+      "kotlin.collections",
+      "kotlin.collections.builders",
+      "kotlin.collections.jdk8",
+      "kotlin.collections.unsigned",
+      "kotlin.comparisons",
+      "kotlin.concurrent",
+      "kotlin.concurrent.atomics",
+      "kotlin.concurrent.internal",
+      "kotlin.contracts",
+      "kotlin.coroutines",
+      "kotlin.coroutines.cancellation",
+      "kotlin.coroutines.intrinsics",
+      "kotlin.coroutines.jvm.internal",
+      "kotlin.enums",
+      "kotlin.experimental",
+      "kotlin.internal",
+      "kotlin.internal.jdk7",
+      "kotlin.internal.jdk8",
+      "kotlin.io",
+      "kotlin.io.encoding",
+      "kotlin.io.path",
+      "kotlin.jdk7",
+      "kotlin.js",
+      "kotlin.jvm",
+      "kotlin.jvm.functions",
+      "kotlin.jvm.internal",
+      "kotlin.jvm.internal.markers",
+      "kotlin.jvm.internal.unsafe",
+      "kotlin.jvm.jdk8",
+      "kotlin.jvm.optionals",
+      "kotlin.math",
+      "kotlin.properties",
+      "kotlin.random",
+      "kotlin.random.jdk8",
+      "kotlin.ranges",
+      "kotlin.reflect",
+      "kotlin.sequences",
+      "kotlin.streams.jdk8",
+      "kotlin.system",
+      "kotlin.text",
+      "kotlin.text.jdk8",
+      "kotlin.time",
+      "kotlin.time.jdk8",
+      "kotlin.uuid"
+    ],
+    "org.jetbrains.pty4j:pty4j": [
+      "com.pty4j",
+      "com.pty4j.unix",
+      "com.pty4j.unix.freebsd",
+      "com.pty4j.unix.linux",
+      "com.pty4j.unix.macosx",
+      "com.pty4j.unix.openbsd",
+      "com.pty4j.util",
+      "com.pty4j.windows",
+      "com.pty4j.windows.conpty",
+      "com.pty4j.windows.cygwin",
+      "com.pty4j.windows.winpty"
+    ],
+    "org.jetbrains:annotations": [
+      "org.intellij.lang.annotations",
+      "org.jetbrains.annotations"
     ],
     "org.jspecify:jspecify": [
       "org.jspecify.annotations"
@@ -1061,7 +1323,9 @@
       "com.fifesoft:autocomplete",
       "com.fifesoft:rsyntaxtextarea",
       "com.formdev:flatlaf",
+      "com.formdev:flatlaf-extras",
       "com.github.vertical-blank:sql-formatter",
+      "com.github.weisj:jsvg",
       "com.google.android:annotations",
       "com.google.api.grpc:proto-google-common-protos",
       "com.google.code.findbugs:jsr305",
@@ -1084,11 +1348,77 @@
       "io.grpc:grpc-util",
       "io.perfmark:perfmark-api",
       "net.bytebuddy:byte-buddy",
+      "net.java.dev.jna:jna",
+      "net.java.dev.jna:jna-platform",
       "net.sf.jopt-simple:jopt-simple",
       "org.apache.commons:commons-math3",
       "org.apiguardian:apiguardian-api",
       "org.assertj:assertj-core",
       "org.codehaus.mojo:animal-sniffer-annotations",
+      "org.jetbrains.jediterm:jediterm-core",
+      "org.jetbrains.jediterm:jediterm-ui",
+      "org.jetbrains.kotlin:kotlin-stdlib",
+      "org.jetbrains.pty4j:pty4j",
+      "org.jetbrains:annotations",
+      "org.jspecify:jspecify",
+      "org.junit.jupiter:junit-jupiter",
+      "org.junit.jupiter:junit-jupiter-api",
+      "org.junit.jupiter:junit-jupiter-engine",
+      "org.junit.jupiter:junit-jupiter-params",
+      "org.junit.platform:junit-platform-commons",
+      "org.junit.platform:junit-platform-engine",
+      "org.junit.platform:junit-platform-launcher",
+      "org.junit.platform:junit-platform-reporting",
+      "org.openjdk.jmh:jmh-core",
+      "org.openjdk.jmh:jmh-generator-annprocess",
+      "org.opentest4j.reporting:open-test-reporting-tooling-spi",
+      "org.opentest4j:opentest4j",
+      "org.slf4j:slf4j-api",
+      "org.xerial:sqlite-jdbc"
+    ],
+    "https://packages.jetbrains.team/maven/p/ij/intellij-dependencies/": [
+      "ch.qos.logback:logback-classic",
+      "ch.qos.logback:logback-core",
+      "com.fifesoft:autocomplete",
+      "com.fifesoft:rsyntaxtextarea",
+      "com.formdev:flatlaf",
+      "com.formdev:flatlaf-extras",
+      "com.github.vertical-blank:sql-formatter",
+      "com.github.weisj:jsvg",
+      "com.google.android:annotations",
+      "com.google.api.grpc:proto-google-common-protos",
+      "com.google.code.findbugs:jsr305",
+      "com.google.code.gson:gson",
+      "com.google.errorprone:error_prone_annotations",
+      "com.google.guava:failureaccess",
+      "com.google.guava:guava",
+      "com.google.guava:listenablefuture",
+      "com.google.j2objc:j2objc-annotations",
+      "com.google.protobuf:protobuf-java",
+      "com.google.protobuf:protobuf-java-util",
+      "io.airlift:aircompressor",
+      "io.grpc:grpc-api",
+      "io.grpc:grpc-context",
+      "io.grpc:grpc-core",
+      "io.grpc:grpc-netty-shaded",
+      "io.grpc:grpc-protobuf",
+      "io.grpc:grpc-protobuf-lite",
+      "io.grpc:grpc-stub",
+      "io.grpc:grpc-util",
+      "io.perfmark:perfmark-api",
+      "net.bytebuddy:byte-buddy",
+      "net.java.dev.jna:jna",
+      "net.java.dev.jna:jna-platform",
+      "net.sf.jopt-simple:jopt-simple",
+      "org.apache.commons:commons-math3",
+      "org.apiguardian:apiguardian-api",
+      "org.assertj:assertj-core",
+      "org.codehaus.mojo:animal-sniffer-annotations",
+      "org.jetbrains.jediterm:jediterm-core",
+      "org.jetbrains.jediterm:jediterm-ui",
+      "org.jetbrains.kotlin:kotlin-stdlib",
+      "org.jetbrains.pty4j:pty4j",
+      "org.jetbrains:annotations",
       "org.jspecify:jspecify",
       "org.junit.jupiter:junit-jupiter",
       "org.junit.jupiter:junit-jupiter-api",

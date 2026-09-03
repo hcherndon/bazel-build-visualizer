@@ -6,6 +6,7 @@ import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.core.redact.RedactionPolicy;
 import com.holtherndon.bazelviz.core.redact.Redactor;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.files.FileLink;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import java.util.List;
 
@@ -52,7 +53,8 @@ public final class ActionInspection {
                 new com.holtherndon.bazelviz.ui.nav.EntityRef.EventId(eventId)));
 
         builder.section("Identity")
-                .field("Primary output", row.primaryOutput())
+                .file("Primary output", row.primaryOutput(),
+                        FileLink.actionOutput(row.primaryOutput()))
                 .field(EntityFormat.field("Target", row.label()))
                 .field(EntityFormat.field("Mnemonic", row.mnemonic()))
                 .field(EntityFormat.field("Configuration", row.configurationId()));

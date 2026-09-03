@@ -1,53 +1,26 @@
-# Entry point and composition root.
+"""Application entry points and package-local compatibility facade."""
 
+load("@rules_java//java:defs.bzl", "java_binary", "java_library")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
-load("//tools:bbv.bzl", "bbv_java_binary", "bbv_java_library", "bbv_java_test_suite", "bbv_real_bazel_test")
+load("//tools:java_test_settings.bzl", "NATIVE_ACCESS_FLAG")
 
-# The macOS file association for .bviz (plan 24, Phase 9): consumed by the
-# jpackage target below and read cross-module by Phase9ExitCriteriaTest.
 exports_files(["src/main/packaging/bviz.properties"])
 
-bbv_java_library(
-    name = "app",
-    deps = [
-        "//core-model",
-        "//ui-swing",
-        # The headless subcommands in `app/cli` drive the Phase 1 import
-        # pipeline directly. capture-file already exposes session-format and
-        # storage-sqlite as exports, but both are named here as well because
-        # this module's own source imports SessionManager and SessionDatabase
-        # — a dependency a file compiles against belongs in its own build
-        # file, not inherited by accident from a sibling's api surface.
-        "//capture-file",
-        # `bbv run` drives the Phase 2 capture path: the coordinator, the
-        # embedded BES server and the launcher. capture-bes exposes
-        # bazel-runner as exports, but the runner is named here too because
-        # this module's own source imports CapturePreset, PlanConflict and
-        # CancellationMode.
-        "//capture-bes",
-        "//bazel-runner",
-        "//session-format",
-        "//storage-sqlite",
-        # For BepPayloadType: `inspect` prints "targetCompleted (7)" rather
-        # than a bare payload-case number.
-        "//bep-codec",
+java_library(
+    name = "app-lib",
+    exports = [
+        "//app/src/main/java/com/holtherndon/bazelviz/app/cli:cli",
+        "//app/src/main/java/com/holtherndon/bazelviz/app/dirs:dirs",
+        "//app/src/main/java/com/holtherndon/bazelviz/app:app",
     ],
-    runtime_deps = ["@maven//:ch_qos_logback_logback_classic"],
+    visibility = ["//visibility:public"],
 )
 
-# The application. `bazel run //app:bbv -- <args>`; system properties go as
-# `--jvm_flag=-Dbbv.smoke=true` before the program args (the java_binary stub
-# accepts leading --jvm_flag= arguments). //app:bbv_deploy.jar is the
-# single-file distribution and what the jpackage target packages.
-bbv_java_binary(
-    name = "bbv",
-    # FlatLaf's NativeLibrary calls System::load for the macOS window
-    # decorations, so this launcher carries the native-access grant on every
-    # platform, not just macOS (bbv_java_binary adds it). The dock/menu-bar
-    # flags select on the target platform — an improvement over Gradle,
-    # which keyed on the build host's OS.
-    jvm_flags = select({
+java_binary(
+    name = "app",
+    jvm_flags = [NATIVE_ACCESS_FLAG] + select({
         "@platforms//os:macos": [
+            "--add-exports=java.desktop/com.apple.eawt.event=ALL-UNNAMED",
             "'-Xdock:name=Bazel Build Visualizer'",
             "'-Dapple.awt.application.name=Bazel Build Visualizer'",
             "-Dapple.laf.useScreenMenuBar=true",
@@ -56,63 +29,47 @@ bbv_java_binary(
         "//conditions:default": [],
     }),
     main_class = "com.holtherndon.bazelviz.app.Main",
-    runtime_deps = [":app"],
+    resources = ["//app/src/main/resources:resources"],
+    runtime_deps = [
+        ":app-lib",
+        "@maven//:ch_qos_logback_logback_classic",
+    ],
+    visibility = ["//app:__subpackages__"],
 )
 
-# Every test in this module runs headless, matching the environment CI gives
-# the `bbv import` / `bbv inspect` commands.
-bbv_java_test_suite(
+# Preserve the original launcher and deploy-jar labels while the clearer
+# `//app:app` spelling remains the documented entry point.
+alias(
+    name = "bbv",
+    actual = ":app",
+)
+
+alias(
+    name = "bbv_deploy.jar",
+    actual = ":app_deploy.jar",
+)
+
+test_suite(
     name = "tests",
-    # LimitsDocTest parses docs/limits.md against the constants it names.
-    data = ["//docs:limits.md"],
-    exclude = ["src/test/java/com/holtherndon/bazelviz/app/cli/RealBazelCliRunTest.java"],
-    headless = True,
-    deps = [
-        ":app",
-        "//bazel-runner",
-        "//bep-codec",
-        "//capture-bes",
-        "//capture-file",
-        "//core-model",
-        "//session-format",
-        "//storage-sqlite",
-        # The CLI tests import real synthetic BEP fixtures and the
-        # deliberate-damage helpers, so the truncated-source exit code is
-        # proved against a genuinely truncated protobuf stream rather than a
-        # hand-built one.
-        "//test-support",
-        "//ui-swing",
+    tests = [
+        "//app/src/test/java/com/holtherndon/bazelviz/app/cli:tests",
+        "//app/src/test/java/com/holtherndon/bazelviz/app/dirs:tests",
+        "//app/src/test/java/com/holtherndon/bazelviz/app/logging:tests",
+        "//app/src/test/java/com/holtherndon/bazelviz/app:tests",
     ],
-    runtime_deps = ["@maven//:ch_qos_logback_logback_classic"],
 )
 
-bbv_real_bazel_test(
+alias(
     name = "RealBazelCliRunTest",
-    srcs = ["src/test/java/com/holtherndon/bazelviz/app/cli/RealBazelCliRunTest.java"],
-    jvm_flags = ["-Djava.awt.headless=true"],
-    test_class = "com.holtherndon.bazelviz.app.cli.RealBazelCliRunTest",
-    runtime_deps = ["@maven//:ch_qos_logback_logback_classic"],
-    deps = [
-        ":app",
-        ":tests-lib",
-        "//core-model",
-        "//session-format",
-        "//test-support",
-    ],
+    actual = "//app/src/test/java/com/holtherndon/bazelviz/app/cli:RealBazelCliRunTest",
 )
 
-# ---------------------------------------------------------------- packaging
-#
-# Plan 24, Phase 9: macOS file associations, an app menu, packages for both
-# architectures, and signing hooks that do not embed credentials. Ported from
-# the Gradle jpackage/notarize tasks; the scripts carry the behavior. Output
-# goes to <workspace>/dist/jpackage (gitignored).
 sh_binary(
     name = "jpackage",
     srcs = ["packaging/jpackage.sh"],
     data = [
         "src/main/packaging/bviz.properties",
-        ":bbv_deploy.jar",
+        ":app_deploy.jar",
     ],
 )
 

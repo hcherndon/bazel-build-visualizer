@@ -102,7 +102,18 @@ excerpt, and no Phase 5 table gets rows. Nothing about it touches `actions`,
 `action_attempts` or anything else an earlier phase wrote — the same structural
 containment Phase 4 uses, for the same reason.
 
-## 9. What a CSR index may claim
+## 9. Structural completeness is explicit
+
+Before an imported action graph may support a completeness-sensitive result,
+its `graph_sources` row must record zero unresolved artifact ids and zero
+unresolved depset references. Missing artifact declarations, broken fragment
+chains, missing primary/output artifacts, missing action-input depsets, and
+missing transitive-child depsets all
+cause joins to omit dependencies, so configuration equality alone is not a
+trust gate. Older sessions have `NULL`, not a fabricated zero, and remain
+visible with completeness unverified.
+
+## 10. What a CSR index may claim
 
 An index file is only ever read together with its `graph_indexes` row. A file
 whose header disagrees with the row is refused rather than used: a stale index is
@@ -111,7 +122,22 @@ worse than none, because it answers.
 Indexes are built by atomic rename (plan 13.2), so a half-written file is never
 visible under its final name.
 
-## 10. What Phase 5 does not do
+A replacement aquery attempt invalidates both action-index registrations, and
+a replacement cquery attempt invalidates the configured-target registration,
+before new bytes are parsed. Process failures take the same path even though
+there is no protobuf to import. A failed query, import, or rebuild may leave the
+preceding CSR file on disk, but it leaves no registry row through which that
+file can be loaded. New registrations carry the `graph_sources` row they were
+derived from; a source that is no longer successful makes its registered index
+unavailable.
+
+Each aquery and cquery source also records its target-scope provenance. Only
+`EXACT_BEP_TARGETS`, produced from a BEP with its final marker, can support an
+exact graph claim. `REQUESTED_PATTERNS` discloses the no-target fallback;
+`UNKNOWN` covers migrated sessions, preparation failures, and nonempty target
+sets from incomplete BEP streams. Existing rows migrate to unknown, never exact.
+
+## 11. What Phase 5 does not do
 
 - **It does not compute a dependency critical path.** That is Phase 6, and it
   needs timing joined to this graph.

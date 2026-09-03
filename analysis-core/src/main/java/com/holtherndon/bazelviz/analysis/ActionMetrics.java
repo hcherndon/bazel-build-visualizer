@@ -121,16 +121,17 @@ public record ActionMetrics(
             return OptionalDouble.empty();
         }
         long transfer = 0;
-        boolean any = false;
         for (OptionalLong part : new OptionalLong[] {networkMicros, uploadMicros, fetchMicros}) {
-            if (part.isPresent()) {
-                transfer += part.getAsLong();
-                any = true;
+            if (part.isEmpty()) {
+                return OptionalDouble.empty();
+            }
+            try {
+                transfer = Math.addExact(transfer, part.getAsLong());
+            } catch (ArithmeticException overflow) {
+                return OptionalDouble.empty();
             }
         }
-        return any
-                ? OptionalDouble.of((double) transfer / durationMicros.getAsLong())
-                : OptionalDouble.empty();
+        return OptionalDouble.of((double) transfer / durationMicros.getAsLong());
     }
 
     /**
@@ -144,19 +145,23 @@ public record ActionMetrics(
             return OptionalLong.empty();
         }
         long accounted = 0;
-        boolean any = false;
         for (OptionalLong part : new OptionalLong[] {
                 queueMicros, setupMicros, executionMicros, networkMicros, uploadMicros,
                 fetchMicros}) {
-            if (part.isPresent()) {
-                accounted += part.getAsLong();
-                any = true;
+            if (part.isEmpty()) {
+                return OptionalLong.empty();
+            }
+            try {
+                accounted = Math.addExact(accounted, part.getAsLong());
+            } catch (ArithmeticException overflow) {
+                return OptionalLong.empty();
             }
         }
-        if (!any) {
+        try {
+            return OptionalLong.of(Math.subtractExact(durationMicros.getAsLong(), accounted));
+        } catch (ArithmeticException overflow) {
             return OptionalLong.empty();
         }
-        return OptionalLong.of(durationMicros.getAsLong() - accounted);
     }
 
     private OptionalDouble fractionOf(OptionalLong part) {

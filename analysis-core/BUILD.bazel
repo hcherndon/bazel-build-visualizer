@@ -1,22 +1,16 @@
-# Critical path, parallelism, cache analysis.
+load("@rules_java//java:defs.bzl", "java_library")
 
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
-
-bbv_java_library(
+java_library(
     name = "analysis-core",
-    # api on both: the critical path walks a CSR graph. analysis-core knows
-    # nothing about where the graph came from or where it is stored.
     exports = [
         "//core-model",
         "//graph-core",
+        "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis",
     ],
-    deps = [
-        "//core-model",
-        "//graph-core",
-    ],
+    visibility = ["//visibility:public"],
 )
 
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    deps = [":analysis-core"],
+    tests = ["//analysis-core/src/test/java/com/holtherndon/bazelviz/analysis:tests"],
 )

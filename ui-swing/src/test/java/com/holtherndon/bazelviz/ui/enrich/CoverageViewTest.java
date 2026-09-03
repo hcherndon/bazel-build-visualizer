@@ -6,6 +6,8 @@ import com.holtherndon.bazelviz.core.enrich.AttemptCorrelation;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
 import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
 import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.GraphicsEnvironment;
 import java.util.List;
 import java.util.Map;
@@ -13,7 +15,10 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
 import javax.swing.SwingUtilities;
+import javax.swing.border.TitledBorder;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -150,6 +155,165 @@ final class CoverageViewTest {
                 .contains("not linked to the actions table");
     }
 
+    @Test
+    @DisplayName("the empty coverage state fills the pane instead of becoming a top card")
+    void emptyStateUsesTheWholePane() throws Exception {
+        CoverageView view = onEdt(CoverageView::new);
+        onEdt(() -> {
+            layoutTree(view, 1_000, 600);
+            assertThat(view.emptyStateForTest().isVisible()).isTrue();
+            assertThat(view.emptyStateForTest().getSize()).isEqualTo(view.getSize());
+            assertThat(view.emptyStateForTest().getComponent(0))
+                    .isInstanceOfSatisfying(javax.swing.JLabel.class,
+                            message -> assertThat(message.isEnabled()).isFalse());
+
+            view.render(new CoverageView.Snapshot(
+                    new EnrichmentQueries.Coverage(0, 0, 0, 0, 0, Map.of()),
+                    List.of(), List.of(), Optional.empty(), List.of(), List.of()));
+            layoutTree(view, 1_000, 600);
+            assertThat(view.emptyStateForTest().isVisible()).isFalse();
+            assertThat(view.scrollForTest().isVisible()).isTrue();
+            return null;
+        });
+    }
+
+    @Test
+    @DisplayName("coverage gives long sections full width and pairs only short sections")
+    void cardsUseReadableResponsiveRows() throws Exception {
+        List<String> criticalDescriptions = new java.util.ArrayList<>();
+        List<EnrichmentQueries.CriticalPathComponent> criticalComponents =
+                new java.util.ArrayList<>();
+        for (int index = 0; index < 6; index++) {
+            String description = "action 'Compiling a deliberately long generated source for "
+                    + "//pkg/subpackage:target_" + index + " from bazel-out/darwin-fastbuild/bin/"
+                    + "pkg/subpackage/generated/descriptor_" + index
+                    + ".java under the selected Java toolchain [for tool]'";
+            criticalDescriptions.add(description);
+            criticalComponents.add(new EnrichmentQueries.CriticalPathComponent(
+                    index, description, OptionalLong.of(8_000)));
+        }
+        CoverageView view = onEdt(CoverageView::new);
+        onEdt(() -> {
+            view.render(new CoverageView.Snapshot(
+                    new EnrichmentQueries.Coverage(13, 4, 4, 900, 900, Map.of()),
+                    List.of(new EnrichmentQueries.RunnerCount("remote", 4)),
+                    List.of(new EnrichmentQueries.Phase(
+                            0, "Launch Blaze", 0, OptionalLong.of(10_000), false)),
+                    Optional.empty(),
+                    criticalComponents,
+                    List.of()));
+
+            // Match the lower half of a large Overview split instead of
+            // handing the inner grid an artificial 6,000px canvas.
+            layoutTree(view, 1_090, 285);
+            JPanel cards = view.cardsForTest();
+            JPanel data = section(cards, "Data coverage");
+            JPanel critical = section(cards, "Bazel's critical path");
+            JPanel tasks = section(cards, "Enrichment tasks");
+            Component[] paired = view.pairedCardsForTest().getComponents();
+
+            assertThat(view.dashboardForTest().getWidth())
+                    .isEqualTo(view.contentForTest().getWidth());
+            assertThat(view.contentForTest().getWidth())
+                    .isEqualTo(view.scrollForTest().getViewport().getExtentSize().width);
+            assertThat(view.dashboardForTest().getX()).isZero();
+            assertThat(paired).hasSize(2);
+            assertThat(paired[0].getX()).isLessThan(paired[1].getX());
+            assertThat(data.getWidth()).isEqualTo(critical.getWidth());
+            assertThat(tasks.getWidth()).isEqualTo(critical.getWidth());
+            assertThat(critical.getWidth())
+                    .isGreaterThan(paired[0].getWidth() + paired[1].getWidth() - 24);
+
+            for (String text : criticalDescriptions) {
+                javax.swing.JTextArea description = findTextArea(cards, text);
+                assertThat(description).isNotNull();
+                assertThat(description.getWidth())
+                        .isGreaterThan((int) (critical.getWidth() * 0.65));
+                assertThat(description.getHeight())
+                        .isGreaterThanOrEqualTo(
+                                2 * description.getFontMetrics(description.getFont()).getHeight());
+                assertThat(description.getY() + description.getHeight())
+                        .isLessThanOrEqualTo(critical.getHeight());
+            }
+            javax.swing.JTextArea duration = findTextArea(cards, "8.0 ms");
+            assertThat(duration).isNotNull();
+            assertThat(duration.getWidth()).isLessThan((int) (critical.getWidth() * 0.34));
+            assertThat(critical.getHeight()).isGreaterThanOrEqualTo(critical.getPreferredSize().height);
+            assertThat(view.contentForTest().getHeight())
+                    .isGreaterThan(view.scrollForTest().getViewport().getExtentSize().height);
+            assertThat(view.scrollForTest().getVerticalScrollBar().isVisible()).isTrue();
+
+            layoutTree(view, 770, 210);
+            assertThat(paired[1].getX()).isEqualTo(paired[0].getX());
+            assertThat(paired[1].getY()).isGreaterThan(paired[0].getY());
+            assertThat(critical.getX() + critical.getWidth()).isLessThanOrEqualTo(cards.getWidth());
+            return null;
+        });
+    }
+
+    @Test
+    @DisplayName("coverage follows a real viewport when the window expands")
+    void dashboardUsesNewViewportWidthAfterResize() throws Exception {
+        CoverageView view = onEdt(CoverageView::new);
+        onEdt(() -> {
+            view.render(new CoverageView.Snapshot(
+                    new EnrichmentQueries.Coverage(13, 4, 4, 0, 0, Map.of()),
+                    List.of(), List.of(), Optional.empty(), List.of(), List.of()));
+
+            layoutTree(view, 1_090, 370);
+            int initial = view.dashboardForTest().getWidth();
+            int initialExtent = view.scrollForTest().getViewport().getExtentSize().width;
+            assertThat(view.contentForTest().getWidth()).isEqualTo(initialExtent);
+            assertThat(view.cardsForTest().getWidth()).isEqualTo(initial);
+            layoutTree(view, 1_320, 370);
+
+            int expandedExtent = view.scrollForTest().getViewport().getExtentSize().width;
+            assertThat(expandedExtent).isGreaterThan(initialExtent + 200);
+            assertThat(view.dashboardForTest().getWidth()).isGreaterThan(initial + 200);
+            assertThat(view.dashboardForTest().getWidth())
+                    .isEqualTo(view.contentForTest().getWidth());
+            assertThat(view.contentForTest().getWidth()).isEqualTo(expandedExtent);
+            assertThat(view.cardsForTest().getWidth()).isEqualTo(view.dashboardForTest().getWidth());
+            assertThat(view.dashboardForTest().getX()).isZero();
+            return null;
+        });
+    }
+
+    @Test
+    @DisplayName("long build-provided row values wrap inside a narrow coverage card")
+    void longValuesWrapWithoutHorizontalOverflow() throws Exception {
+        String error = "Expected a profile object but received a deliberately long malformed"
+                + " value whose complete diagnostic must remain readable in a narrow window";
+        CoverageView view = onEdt(CoverageView::new);
+        onEdt(() -> {
+            view.render(new CoverageView.Snapshot(
+                    new EnrichmentQueries.Coverage(13, 0, 0, 0, 0, Map.of()),
+                    List.of(), List.of(), Optional.empty(), List.of(),
+                    List.of(new EnrichmentTask(
+                            EnrichmentTask.Kind.PROFILE,
+                            Optional.of("/tmp/a/very/long/path/to/the/imported/profile.json"),
+                            EnrichmentTask.State.FAILED,
+                            Optional.of("failed"),
+                            Optional.of(error),
+                            true,
+                            List.of("Bazel's own critical path"),
+                            OptionalLong.empty(),
+                            OptionalLong.empty()))));
+            layoutTree(view, 360, 600);
+
+            javax.swing.JTextArea errorArea = findTextArea(view.cardsForTest(), error);
+            assertThat(errorArea).isNotNull();
+            assertThat(errorArea.getWidth()).isPositive();
+            assertThat(errorArea.getHeight())
+                    .isGreaterThan(errorArea.getFontMetrics(errorArea.getFont()).getHeight());
+
+            assertThat(view.contentForTest().getScrollableTracksViewportWidth()).isTrue();
+            assertThat(view.scrollForTest().getHorizontalScrollBarPolicy())
+                    .isEqualTo(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+            return null;
+        });
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static List<String> render(EnrichmentQueries.Coverage coverage) throws Exception {
@@ -164,6 +328,81 @@ final class CoverageViewTest {
 
     private static String joined(List<String> text) {
         return String.join(" ‖ ", text);
+    }
+
+    private static void layoutTree(Container root, int width, int height) {
+        root.setSize(width, height);
+        for (int pass = 0; pass < 4; pass++) {
+            invalidateTree(root);
+            layoutChildren(root);
+        }
+    }
+
+    private static void invalidateTree(Container root) {
+        root.invalidate();
+        for (Component child : root.getComponents()) {
+            if (child instanceof Container nested) {
+                invalidateTree(nested);
+            }
+        }
+    }
+
+    private static void layoutChildren(Container root) {
+        root.doLayout();
+        for (Component child : root.getComponents()) {
+            if (child instanceof Container nested) {
+                layoutChildren(nested);
+            }
+        }
+    }
+
+    private static javax.swing.JTextArea findTextArea(Container root, String text) {
+        for (Component child : root.getComponents()) {
+            if (child instanceof javax.swing.JTextArea area && text.equals(area.getText())) {
+                return area;
+            }
+            if (child instanceof Container nested) {
+                javax.swing.JTextArea found = findTextArea(nested, text);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static JPanel section(Container root, String title) {
+        for (Component child : root.getComponents()) {
+            if (child instanceof JPanel panel
+                    && panel.getBorder() instanceof TitledBorder border
+                    && title.equals(border.getTitle())) {
+                return panel;
+            }
+            if (child instanceof Container nested) {
+                JPanel found = sectionOrNull(nested, title);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        throw new AssertionError("section not found: " + title);
+    }
+
+    private static JPanel sectionOrNull(Container root, String title) {
+        for (Component child : root.getComponents()) {
+            if (child instanceof JPanel panel
+                    && panel.getBorder() instanceof TitledBorder border
+                    && title.equals(border.getTitle())) {
+                return panel;
+            }
+            if (child instanceof Container nested) {
+                JPanel found = sectionOrNull(nested, title);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     private static <T> T onEdt(Callable<T> work) throws Exception {

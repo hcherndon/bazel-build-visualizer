@@ -122,9 +122,10 @@ final class LimitsDocTest {
     @Test
     @DisplayName("the page states the gap between plan 20.3 and what exists")
     void theGapIsStated() throws Exception {
-        // The honest half. Fourteen of plan 20.3's nineteen limits exist as
-        // constants and none has a settings screen; five are not implemented at
-        // all. A page that listed only what exists would read as completeness.
+        // The honest half. Most of plan 20.3's limits exist as constants, but
+        // none of those limits is editable in the current Preferences tabs;
+        // the remaining limits are not implemented at all. A page that listed
+        // only what exists would read as completeness.
         // Whitespace-normalised: a documentation test that depends on where a
         // line happens to wrap fails the next time somebody reflows a
         // paragraph, which teaches people to delete the test rather than fix
@@ -133,7 +134,7 @@ final class LimitsDocTest {
 
         assertThat(text)
                 .contains("plan 20.3")
-                .contains("none of them has a settings screen")
+                .contains("none of those limits is editable in Preferences")
                 .contains("not implemented");
     }
 }

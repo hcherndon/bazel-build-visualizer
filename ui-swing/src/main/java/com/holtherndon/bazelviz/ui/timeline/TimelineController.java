@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -12,8 +13,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import javax.swing.SwingUtilities;
@@ -33,8 +37,9 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Everything here runs on one worker thread. A viewport change schedules a
  * fetch; the fetch hands its result to the EDT; the EDT assigns one field and
- * repaints. A user panning fast queues several fetches and sees the last one,
- * which is why each carries the generation it was started for.
+ * repaints. Fast navigation keeps one read in progress and one replaceable
+ * latest request, and revision plus session-generation checks keep an older
+ * result from reaching the view.
  */
 public final class TimelineController {
 
@@ -60,6 +65,8 @@ public final class TimelineController {
     private final long liveRebuildIntervalMicros;
 
     private ExecutorService worker;
+    /** One in-flight exact-window read and one replaceable latest request. */
+    private LatestRequestQueue<WindowRequest> windowRequests;
     /**
      * The controller's own clock, independent of {@link #refreshLive}'s caller.
      *
@@ -85,6 +92,15 @@ public final class TimelineController {
     /** Whether the open session is a running capture, for the in-flight band. */
     private boolean live;
     private long generation;
+    /**
+     * Monotonic identity of the most recently requested inspector details.
+     *
+     * <p>Detail reads share the timeline worker. A completed older read can
+     * already be waiting on the EDT when a person selects another span. The
+     * session generation alone cannot distinguish those two requests because
+     * both belong to the same session.
+     */
+    private long detailRevision;
     private long lastLiveRebuildMicros;
     private volatile boolean rebuildInFlight;
     /**
@@ -134,7 +150,12 @@ public final class TimelineController {
         view.onRangeChanged(listener);
     }
 
-    /** Gives the view's inline inspector the shared navigation vocabulary. */
+    /** Clears the visible range and notifies its Actions-table subscriber. */
+    public void clearRange() {
+        view.clearRange();
+    }
+
+    /** Gives the view's side inspector the shared navigation vocabulary. */
     public void installEntityActions(EntityActions actions) {
         view.installEntityActions(actions);
     }
@@ -175,6 +196,7 @@ public final class TimelineController {
             return thread;
         });
         worker = executor;
+        windowRequests = new LatestRequestQueue<>();
         scheduleBuild(executor, opened, wanted, true);
         startTicker();
     }
@@ -201,22 +223,48 @@ public final class TimelineController {
 
     /** Lets go of the session. */
     public void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches immediately and completes after this session's timeline reads have stopped. */
+    public CompletionStage<Void> closeSessionAsync() {
         generation++;
+        detailRevision++;
         ExecutorService executor = worker;
         worker = null;
+        LatestRequestQueue<WindowRequest> requests = windowRequests;
+        windowRequests = null;
+        if (requests != null) {
+            requests.close();
+        }
         source = null;
         live = false;
         builtGrouping = null;
         builtSort = null;
-        if (executor != null) {
-            executor.shutdownNow();
-        }
         ScheduledExecutorService scheduler = ticker;
         ticker = null;
-        if (scheduler != null) {
-            scheduler.shutdownNow();
-        }
         view.showEmpty("No session is open.");
+        if (executor == null && scheduler == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return ViewClose.runAsync("bbv-timeline-close", () -> {
+            if (executor != null) {
+                executor.shutdownNow();
+            }
+            if (scheduler != null) {
+                scheduler.shutdownNow();
+            }
+            try {
+                if (executor != null) {
+                    executor.awaitTermination(5, TimeUnit.SECONDS);
+                }
+                if (scheduler != null) {
+                    scheduler.awaitTermination(5, TimeUnit.SECONDS);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
     }
 
     /**
@@ -312,8 +360,9 @@ public final class TimelineController {
      */
     private void refreshWindow() {
         ExecutorService executor = worker;
+        LatestRequestQueue<WindowRequest> requests = windowRequests;
         SessionSource open = source;
-        if (executor == null || open == null) {
+        if (executor == null || requests == null || open == null) {
             return;
         }
         if (builtGrouping != view.grouping() || builtSort != view.sortBy()) {
@@ -328,57 +377,164 @@ public final class TimelineController {
         long to = range.get()[1];
         LaneGrouping.By by = view.grouping();
         long wanted = generation;
-        executor.execute(() -> {
-            SpanWindow built;
-            try {
-                built = spansIn(open, from, to, by);
-            } catch (RuntimeException failure) {
-                log.debug("fetching timeline spans", failure);
-                return;
-            }
-            SwingUtilities.invokeLater(() -> {
-                if (wanted == generation) {
-                    view.setWindow(built);
-                }
-            });
-        });
+        WindowRequest request = new WindowRequest(open, from, to, by, wanted);
+        if (requests.offer(request)) {
+            scheduleWindowRead(executor, requests);
+        }
+    }
+
+    private void scheduleWindowRead(
+            ExecutorService executor, LatestRequestQueue<WindowRequest> requests) {
+        try {
+            executor.execute(() -> readLatestWindow(executor, requests));
+        } catch (RejectedExecutionException stopped) {
+            requests.close();
+        }
     }
 
     /**
-     * Fetches one clicked action's details for the inline inspector, off the
+     * Reads one request, then yields the single worker before scheduling the
+     * latest replacement. This bounds gesture work without starving an action
+     * detail request or a model rebuild already queued on the same worker.
+     */
+    private void readLatestWindow(
+            ExecutorService executor, LatestRequestQueue<WindowRequest> requests) {
+        LatestRequestQueue.Entry<WindowRequest> entry = requests.take();
+        if (entry == null) {
+            return;
+        }
+        WindowRequest request = entry.value();
+        try {
+            SpanWindow built = spansIn(
+                    request.source(), request.from(), request.to(), request.grouping());
+            SwingUtilities.invokeLater(() -> {
+                if (request.sessionGeneration() == generation
+                        && requests == windowRequests
+                        && requests.isLatest(entry.revision())) {
+                    view.setWindow(built);
+                }
+            });
+        } catch (RuntimeException failure) {
+            log.debug("fetching timeline spans", failure);
+        } finally {
+            if (requests.finish()) {
+                scheduleWindowRead(executor, requests);
+            }
+        }
+    }
+
+    private record WindowRequest(
+            SessionSource source,
+            long from,
+            long to,
+            LaneGrouping.By grouping,
+            long sessionGeneration) {}
+
+    /**
+     * A bounded latest-wins handoff: one value may be running and one may be
+     * waiting. A newer waiting value replaces the older one rather than
+     * growing the executor's queue with stale viewport reads.
+     */
+    static final class LatestRequestQueue<T> {
+
+        record Entry<T>(long revision, T value) {}
+
+        private Entry<T> pending;
+        private long latestRevision;
+        private boolean running;
+        private boolean closed;
+
+        /** Returns true when the caller must schedule the reader. */
+        synchronized boolean offer(T value) {
+            if (closed) {
+                return false;
+            }
+            pending = new Entry<>(++latestRevision, value);
+            if (running) {
+                return false;
+            }
+            running = true;
+            return true;
+        }
+
+        synchronized Entry<T> take() {
+            if (closed) {
+                running = false;
+                return null;
+            }
+            Entry<T> value = pending;
+            pending = null;
+            if (value == null) {
+                running = false;
+            }
+            return value;
+        }
+
+        /** Returns true when a replacement must be scheduled. */
+        synchronized boolean finish() {
+            if (closed || pending == null) {
+                running = false;
+                return false;
+            }
+            return true;
+        }
+
+        synchronized boolean isLatest(long revision) {
+            return !closed && revision == latestRevision;
+        }
+
+        synchronized int pendingCount() {
+            return pending == null ? 0 : 1;
+        }
+
+        synchronized void close() {
+            closed = true;
+            pending = null;
+            running = false;
+        }
+    }
+
+    /**
+     * Fetches one clicked action's details for the side inspector, off the
      * EDT, and hands the view a {@link SpanDetails} — plain strings and refs,
      * nothing that can block.
      */
-    private void fetchDetails(long actionId) {
+    void fetchDetails(long actionId) {
         ExecutorService executor = worker;
         SessionSource open = source;
         if (executor == null || open == null) {
             return;
         }
         long wanted = generation;
-        executor.execute(() -> {
-            SpanDetails details;
-            try (var reader = open.openEntityReader()) {
-                Optional<ActionRow> row = reader.action(actionId);
-                if (row.isEmpty()) {
-                    details = new SpanDetails(
-                            "Action " + actionId,
-                            List.of("This action is no longer in the session."),
-                            List.of());
-                } else {
-                    details = detailsOf(row.get());
+        long wantedDetail = ++detailRevision;
+        try {
+            executor.execute(() -> {
+                SpanDetails details;
+                try (var reader = open.openEntityReader()) {
+                    Optional<ActionRow> row = reader.action(actionId);
+                    if (row.isEmpty()) {
+                        details = new SpanDetails(
+                                "Action " + actionId,
+                                List.of("This action is no longer in the session."),
+                                List.of());
+                    } else {
+                        details = detailsOf(row.get());
+                    }
+                } catch (Exception failure) {
+                    log.debug("fetching action details for the timeline inspector", failure);
+                    return;
                 }
-            } catch (Exception failure) {
-                log.debug("fetching action details for the timeline inspector", failure);
-                return;
-            }
-            SpanDetails toShow = details;
-            SwingUtilities.invokeLater(() -> {
-                if (wanted == generation) {
-                    view.showInspector(toShow);
-                }
+                SpanDetails toShow = details;
+                SwingUtilities.invokeLater(() -> {
+                    if (wanted == generation && wantedDetail == detailRevision) {
+                        view.showInspector(toShow);
+                    }
+                });
             });
-        });
+        } catch (RejectedExecutionException stopped) {
+            // Session close won the race. The revision was still advanced, so
+            // an older detail callback already waiting on the EDT stays stale.
+        }
     }
 
     /**

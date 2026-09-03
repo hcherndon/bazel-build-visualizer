@@ -7,10 +7,15 @@ import com.holtherndon.bazelviz.ui.events.RawPayloadRenderer;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
+import com.holtherndon.bazelviz.ui.files.WorkspaceFileResolver;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.RawPayload;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
@@ -24,6 +29,8 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongConsumer;
@@ -216,7 +223,10 @@ public final class ErrorsView extends JPanel {
         JScrollPane scroll = new JScrollPane(table);
         scroll.setMinimumSize(new Dimension(320, 160));
         inspector.setMinimumSize(new Dimension(300, 160));
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, scroll, inspector);
+        JSplitPane split = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                new SectionPane("Errors", scroll),
+                new SectionPane("Error details", inspector));
         split.setResizeWeight(0.62);
 
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
@@ -241,6 +251,28 @@ public final class ErrorsView extends JPanel {
 
     public void onShowSourceEvent(LongConsumer handler) {
         this.showEventHandler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /** Adopts the shared row/inspector actions, including Open Build File. */
+    public void installEntityActions(EntityActions actions) {
+        Objects.requireNonNull(actions, "actions");
+        inspector.installEntityActions(actions, java.util.Set.of());
+        actions.installRowMenu(table, this::refsAtRow, java.util.Set.of());
+    }
+
+    List<EntityRef> refsAtRow(int modelRow) {
+        if (modelRow < 0 || modelRow >= tableModel.getRowCount()) {
+            return List.of();
+        }
+        ErrorRow row = tableModel.rowAt(modelRow);
+        List<EntityRef> refs = new ArrayList<>();
+        if (row.kind() == ErrorRow.Kind.ACTION) {
+            refs.add(new EntityRef.ActionId(row.id()));
+        }
+        WorkspaceFileResolver.mainRepositoryLabel(row.subject())
+                .ifPresent(label -> refs.add(new EntityRef.TargetLabel(label)));
+        row.bepEventId().ifPresent(eventId -> refs.add(new EntityRef.EventId(eventId)));
+        return refs;
     }
 
     /**
@@ -271,6 +303,13 @@ public final class ErrorsView extends JPanel {
      */
     public void attachColumnState(java.nio.file.Path settingsDirectory) {
         headerInteractions.attachPersistence(settingsDirectory, "errors");
+    }
+
+    /** Permanently closes this view, including its debounced column-state writer. */
+    public CompletionStage<Void> closeAsync() {
+        return CompletableFuture.allOf(
+                closeSessionAsync().toCompletableFuture(),
+                headerInteractions.closeAsync().toCompletableFuture());
     }
 
     /** Visible for testing: the shared header behaviour on this table. */
@@ -349,6 +388,11 @@ public final class ErrorsView extends JPanel {
     }
 
     public void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches immediately and completes after this session's error reads have stopped. */
+    public CompletionStage<Void> closeSessionAsync() {
         tableModel.clear();
         inspector.show(Inspection.NONE);
         loadMore.setVisible(false);
@@ -362,15 +406,17 @@ public final class ErrorsView extends JPanel {
         reader = null;
         payloadReader = null;
         payloadFailure = null;
-        if (stopping == null) {
-            return;
+        if (stopping == null && closing == null && closingPayloads == null) {
+            return CompletableFuture.completedFuture(null);
         }
-        Thread closer = new Thread(() -> {
-            stopping.shutdownNow();
-            try {
-                stopping.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
+        return ViewClose.runAsync("bbv-errors-close", () -> {
+            if (stopping != null) {
+                stopping.shutdownNow();
+                try {
+                    stopping.awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
             }
             if (closing != null) {
                 closing.close();
@@ -378,9 +424,7 @@ public final class ErrorsView extends JPanel {
             if (closingPayloads != null) {
                 closingPayloads.close();
             }
-        }, "bbv-errors-close");
-        closer.setDaemon(true);
-        closer.start();
+        });
     }
 
     /** Visible for testing. */

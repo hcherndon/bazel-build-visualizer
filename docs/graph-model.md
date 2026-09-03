@@ -124,11 +124,11 @@ such group appears when there is nothing unknown.
 
 ### Layout is linear, deterministic and cancellable
 
-Layered by longest path (Kahn's algorithm, so every dependency arrow points
-forward), radial by graph distance, linear for paths, grid for cluster
-summaries. No force-directed layout at any size. The same subgraph laid out
-twice lands in the same place; a cancelled layout places nothing rather than
-half a graph, which would look like an answer.
+Dependency hierarchy, layered by longest path (Kahn's algorithm), radial by
+graph distance, linear for paths, and grid for cluster summaries are all
+O(V+E). No force-directed layout at any size. The same subgraph laid out twice
+lands in the same place; a cancelled layout places nothing rather than half a
+graph, which would look like an answer.
 
 ### Drawing limits are rendering decisions, never data ones
 
@@ -150,6 +150,31 @@ configured-target label graph — into the session's `indexes/` directory,
 quietly: a failure costs the graph view and is named in the capture warnings,
 never the capture. Sessions imported from a BEP file alone have no graph to
 index, and say so; that is a property of the source, not a failure.
+
+Starting a replacement query attempt removes the matching registry rows before
+parsing: both declared and observed action indexes for aquery, or the label
+index for cquery. A process failure without a protobuf records the same failed
+source and invalidation. The old CSR files can remain until an atomic rebuild
+replaces them, but they are unreachable if the query, import, or rebuild fails.
+Each new registry row also records the `graph_sources` row it came from, so a
+failed or running source cannot serve a previously registered index.
+
+### Completeness is separate from action correlation
+
+The aquery importer records two exact structural checks before its temporary
+staging tables disappear: artifact ids that cannot resolve to paths, and
+action-input or transitive-child references to depsets that were never
+declared. Either kind would otherwise vanish at a join and remove dependency
+edges. A declared graph is trusted only after the import succeeds under the
+build's exact configurations, its target scope is the exact top-level label
+set from a completed BEP, and both counts are present and zero. A requested-
+pattern fallback, a truncated BEP, and migrated older sessions keep scope
+unverified rather than being certified after the fact.
+
+The percentage of declared actions linked to executed actions is instead
+**action-graph correlation**. A cache hit produces no executed action and can
+lower that ratio without removing anything from the declared graph, so the
+ratio is never used as evidence of structural completeness.
 
 ### The configured-target label graph has an index
 
@@ -240,10 +265,11 @@ leaves the mnemonic alone; no mnemonic falls back to the target label, then
 the basename; nothing at all stays null so the canvas says "(name not
 recorded)". Label-graph nodes keep their target labels — a label *is* the node
 there — and the complete export keeps target labels too, because its `label`
-column must keep meaning the target. The visible export writes the drawn
-names, so its node CSV is headed `id,name,duration_micros`: a `label` header
-over "Javac — t0.o" would be a false claim, and the two exports' different
-headers pin which file carries which.
+column must keep meaning the target. The visible export writes the canvas name,
+which now combines the distinct action name and owning target, so its node CSV
+is headed `id,name,duration_micros`: a `label` header over that combined value
+would be a false claim, and the two exports' different headers pin which file
+carries which.
 
 **Label declutter and label-aware Fit.** Within a zoom band, a label that
 would paint over an already-painted label is skipped under a deterministic
@@ -274,8 +300,8 @@ as-you-type matches (queried off the EDT), and choosing one lands on that
 exact node — replacing the old silent first-substring-match jump. A dropdown
 row shows the target label followed by the distinct name in parentheses —
 `//pkg:t1  (Javac — t1.o)` — and a Browse leaf shows the same with the
-package stripped, since the package is the group it sits under; neither is
-byte-identical to the canvas's drawn name, which omits the label. The search
+package stripped, since the package is the group it sits under. The canvas
+shows the distinct action name first and `Target: //pkg:t1` beneath it. The search
 matches every part a drawn name is composed from — target label, mnemonic
 and primary-output path in the action graphs, label and rule class in the
 label graph — so a name a user can read on the canvas is one they can type
@@ -283,3 +309,44 @@ back without being told it does not exist. Browse is a filter-plus-tree
 listing (the schema-browser pattern) of up to `BROWSE_LIMIT` nodes grouped
 by package, its root naming the graph's total so a truncated listing cannot
 read as complete.
+
+## What the Graph-card hierarchy rework added (2026-08-25)
+
+**Dependency hierarchy is the default.** Dependencies, reverse dependencies,
+neighbourhoods and whole-graph views now use a deterministic, mode-aware
+spanning forest. A breadth-first primary parent gives each node one place in a
+top-down tree-like drawing; leaf spans centre parents over contiguous child
+groups. Cycles and disconnected components become additional roots. The
+layout uses primitive arrays, has no recursion, remains O(V+E), and returns no
+partial placement when cancelled. Layered, radial, linear and grid layouts
+remain selectable.
+
+**Branches stay readable without changing the graph.** Primary hierarchy
+edges use orthogonal stem/bus/stem routes. Shared, cyclic and other non-tree
+dependencies remain in the model as cross-links. The explicit **Decluttered
+(recommended)** setting hides those cross-links by default, reports the exact
+hidden count, and reveals links touching one selected node; **All dependencies**
+draws every one. Medium and near zoom draw every primary branch. At overview
+scale the canvas keeps a deterministic, evenly distributed backbone bounded by
+`FAR_HIERARCHY_BRANCHES_PER_PIXEL`, states exactly how many branches are not
+drawn individually, and restores all of them on zoom. These are rendering
+choices, not changes to the graph. Visible DOT/CSV export includes every
+dependency among its extracted nodes, including paint-only hidden cross-links,
+and says that in its provenance.
+
+**The controls and nodes explain themselves.** Graph source, Find, Scope,
+Traversal depth, Node budget, Group budget, Group nodes by, Layout,
+Dependencies, and Node size and colour all have visible labels and accessible
+`labelFor` bindings. Scope and drawing summaries explain the active choices.
+An action node uses two lines — its distinct action name and its owning target
+— and visible DOT/CSV exports preserve both. Find queries are debounced; Open
+lists ambiguous matches instead of silently choosing the first.
+
+**Preparation stays off the event thread.** Graph extraction, layout, endpoint
+translation, node labels, spatial indexing, primary/cross-link classification,
+and the per-node cross-link incidence index are all prepared by the graph
+worker. Superseded preparation callbacks are cancelled. Selection can therefore
+reveal its incident cross-links without an edge-list scan or event-thread
+computation; a multi-node marquee does not reveal an unbounded union. Source
+changes clear the old model before the new graph can be clicked or exported,
+because node indices are source-specific.

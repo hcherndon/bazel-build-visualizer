@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.capture.live.CaptureCoordinator;
 import com.holtherndon.bazelviz.capture.live.CaptureRequest;
 import com.holtherndon.bazelviz.capture.live.CaptureResult;
 import com.holtherndon.bazelviz.capture.live.Preflight;
+import com.holtherndon.bazelviz.capture.live.RemoteExecution;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
 import com.holtherndon.bazelviz.runner.plan.PlanRequest;
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
@@ -13,8 +14,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
@@ -37,8 +41,15 @@ import java.util.function.Predicate;
  */
 public final class LaunchController {
 
+    private static final System.Logger log =
+            System.getLogger(LaunchController.class.getName());
+    private static final Runnable NO_OP = () -> { };
+
     /** What the UI is told, always on the UI thread. */
     public interface Listener {
+
+        /** A successful SSH preflight produced a reusable live workspace. */
+        default void remoteConnected(RemoteExecution remote) { }
 
         /** Preflight finished and the plan is ready to show. */
         void planReady(Preflight preflight);
@@ -63,12 +74,29 @@ public final class LaunchController {
     private final Executor toUi;
     private final Listener listener;
     private final Predicate<Path> directoryExists;
-    private final AtomicReference<CaptureCoordinator> active = new AtomicReference<>();
+    private final Runnable afterCoordinatorClosed;
+    private final AtomicReference<AcceptedCoordinator> active = new AtomicReference<>();
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicInteger pendingCoordinatorCleanup = new AtomicInteger();
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
 
     public LaunchController(Executor worker, Executor toUi, Listener listener) {
-        this(worker, toUi, listener, Files::isDirectory);
+        this(worker, toUi, listener, Files::isDirectory, NO_OP);
+    }
+
+    /**
+     * Creates a controller with a callback for releasing operation-scoped application resources.
+     *
+     * <p>The callback runs once for each coordinator accepted by {@link #preflight}, after that
+     * coordinator has closed. It runs on the capture worker and must not update Swing directly.
+     */
+    public LaunchController(
+            Executor worker,
+            Executor toUi,
+            Listener listener,
+            Runnable afterCoordinatorClosed) {
+        this(worker, toUi, listener, Files::isDirectory, afterCoordinatorClosed);
     }
 
     LaunchController(
@@ -76,10 +104,21 @@ public final class LaunchController {
             Executor toUi,
             Listener listener,
             Predicate<Path> directoryExists) {
+        this(worker, toUi, listener, directoryExists, NO_OP);
+    }
+
+    LaunchController(
+            Executor worker,
+            Executor toUi,
+            Listener listener,
+            Predicate<Path> directoryExists,
+            Runnable afterCoordinatorClosed) {
         this.worker = Objects.requireNonNull(worker, "worker");
         this.toUi = Objects.requireNonNull(toUi, "toUi");
         this.listener = Objects.requireNonNull(listener, "listener");
         this.directoryExists = Objects.requireNonNull(directoryExists, "directoryExists");
+        this.afterCoordinatorClosed = Objects.requireNonNull(
+                afterCoordinatorClosed, "afterCoordinatorClosed");
     }
 
     /**
@@ -94,31 +133,34 @@ public final class LaunchController {
         if (closed.get()) {
             return;
         }
-        if (active.get() != null) {
-            failOnUi(new IllegalStateException("a capture is already in progress"));
-            return;
-        }
         CaptureCoordinator coordinator = new CaptureCoordinator(request.withConsole(consoleSink())
                 .withProgress(progress -> postToUi(() -> listener.captureProgress(progress))));
-        if (!active.compareAndSet(null, coordinator)) {
-            worker.execute(coordinator::close);
+        AcceptedCoordinator accepted = new AcceptedCoordinator(coordinator);
+        if (!active.compareAndSet(null, accepted)) {
+            scheduleClose(coordinator);
             failOnUi(new IllegalStateException("a capture is already in progress"));
             return;
         }
         worker.execute(() -> {
             try {
                 if (closed.get()) {
-                    discard(coordinator);
+                    discard(accepted);
                     return;
                 }
-                if (!directoryExists.test(request.workingDirectory())) {
+                if (!request.isRemote()
+                        && !directoryExists.test(request.localWorkingDirectory())) {
                     throw new IOException(
                             "the working directory does not exist: " + request.workingDirectory());
                 }
                 Preflight preflight = coordinator.preflight();
-                postToUi(() -> listener.planReady(preflight));
+                Optional<RemoteExecution> remote = coordinator.detachRemoteExecution();
+                if (remote.isPresent()) {
+                    postRemoteReady(remote.orElseThrow(), preflight);
+                } else {
+                    postToUi(() -> listener.planReady(preflight));
+                }
             } catch (IOException | RuntimeException failure) {
-                discard(coordinator);
+                discard(accepted);
                 failOnUi(failure);
             }
         });
@@ -129,21 +171,22 @@ public final class LaunchController {
         if (closed.get()) {
             return;
         }
-        CaptureCoordinator coordinator = active.get();
-        if (coordinator == null) {
+        AcceptedCoordinator accepted = active.get();
+        if (accepted == null) {
             return;
         }
+        CaptureCoordinator coordinator = accepted.coordinator;
         worker.execute(() -> {
             try {
                 if (closed.get()) {
-                    discard(coordinator);
+                    discard(accepted);
                     return;
                 }
                 Preflight replanned = coordinator.replan(
                         request -> request.resolving(kind, resolutionId));
                 postToUi(() -> listener.planReady(replanned));
             } catch (IOException | RuntimeException failure) {
-                discard(coordinator);
+                discard(accepted);
                 failOnUi(failure);
             }
         });
@@ -154,20 +197,21 @@ public final class LaunchController {
         if (closed.get()) {
             return;
         }
-        CaptureCoordinator coordinator = active.get();
-        if (coordinator == null) {
+        AcceptedCoordinator accepted = active.get();
+        if (accepted == null) {
             return;
         }
+        CaptureCoordinator coordinator = accepted.coordinator;
         worker.execute(() -> {
             try {
                 if (closed.get()) {
-                    discard(coordinator);
+                    discard(accepted);
                     return;
                 }
                 Preflight replanned = coordinator.replan(adjust);
                 postToUi(() -> listener.planReady(replanned));
             } catch (IOException | RuntimeException failure) {
-                discard(coordinator);
+                discard(accepted);
                 failOnUi(failure);
             }
         });
@@ -178,15 +222,16 @@ public final class LaunchController {
         if (closed.get()) {
             return;
         }
-        CaptureCoordinator coordinator = active.get();
-        if (coordinator == null) {
+        AcceptedCoordinator accepted = active.get();
+        if (accepted == null) {
             return;
         }
+        CaptureCoordinator coordinator = accepted.coordinator;
         running.set(true);
         worker.execute(() -> {
             try {
                 if (closed.get()) {
-                    discard(coordinator);
+                    discard(accepted);
                     return;
                 }
                 Preflight preflight = coordinator.preflight();
@@ -197,7 +242,7 @@ public final class LaunchController {
                 failOnUi(failure);
             } finally {
                 running.set(false);
-                discard(coordinator);
+                discard(accepted);
             }
         });
     }
@@ -211,17 +256,28 @@ public final class LaunchController {
      * a capture and still produces a session worth opening.
      */
     public void cancel(CancellationMode mode) {
-        CaptureCoordinator coordinator = active.get();
-        if (coordinator != null) {
-            coordinator.cancel(mode);
+        AcceptedCoordinator accepted = active.get();
+        if (accepted != null) {
+            accepted.coordinator.cancel(mode);
         }
     }
 
     /** Abandons a plan that was never launched, releasing the BES port. */
     public void discardPlan() {
-        CaptureCoordinator coordinator = active.getAndSet(null);
-        if (coordinator != null) {
-            worker.execute(coordinator::close);
+        AcceptedCoordinator accepted = active.get();
+        if (accepted == null) {
+            return;
+        }
+        beginCoordinatorCleanup();
+        if (!active.compareAndSet(accepted, null)) {
+            finishCoordinatorCleanup();
+            return;
+        }
+        try {
+            worker.execute(() -> closeAcceptedReserved(accepted));
+        } catch (RuntimeException rejected) {
+            finishCoordinatorCleanup();
+            throw rejected;
         }
     }
 
@@ -231,18 +287,38 @@ public final class LaunchController {
      * finalize its journal; a pending preflight or plan is closed on the worker.
      */
     public void close() {
+        closeAsync();
+    }
+
+    /**
+     * Stops callbacks and completes after every accepted coordinator cleanup has finished.
+     *
+     * <p>The returned stage never waits on the caller. A running capture still follows its
+     * cancellation and raw-data finalization path on the capture worker; a pending preflight or
+     * review plan is discarded on that same worker. Cleanup already queued by {@link
+     * #discardPlan()} is included even though that method clears the active slot first. This lets
+     * a workspace window keep its SSH execution alive until capture-scoped tunnels and staging
+     * resources are actually finished.
+     */
+    public CompletionStage<Void> closeAsync() {
         if (!closed.compareAndSet(false, true)) {
-            return;
+            return closeCompletion;
         }
-        CaptureCoordinator coordinator = active.get();
-        if (coordinator == null) {
-            return;
+        AcceptedCoordinator accepted = active.get();
+        if (accepted == null) {
+            completeCloseIfIdle();
+            return closeCompletion;
         }
         if (running.get()) {
-            coordinator.cancel(CancellationMode.CANCEL);
+            accepted.coordinator.cancel(CancellationMode.CANCEL);
         } else {
-            worker.execute(() -> discard(coordinator));
+            try {
+                scheduleDiscard(accepted);
+            } catch (RuntimeException rejected) {
+                closeCompletion.completeExceptionally(rejected);
+            }
         }
+        return closeCompletion;
     }
 
     public boolean isBusy() {
@@ -251,7 +327,7 @@ public final class LaunchController {
 
     /** The running capture, for a status display. */
     public Optional<CaptureCoordinator> current() {
-        return Optional.ofNullable(active.get());
+        return Optional.ofNullable(active.get()).map(value -> value.coordinator);
     }
 
     private ConsoleSink consoleSink() {
@@ -264,14 +340,127 @@ public final class LaunchController {
         };
     }
 
-    private void discard(CaptureCoordinator coordinator) {
-        if (active.compareAndSet(coordinator, null)) {
+    private void discard(AcceptedCoordinator accepted) {
+        beginCoordinatorCleanup();
+        discardReserved(accepted);
+    }
+
+    private void scheduleDiscard(AcceptedCoordinator accepted) {
+        beginCoordinatorCleanup();
+        try {
+            worker.execute(() -> discardReserved(accepted));
+        } catch (RuntimeException rejected) {
+            finishCoordinatorCleanup();
+            throw rejected;
+        }
+    }
+
+    private void discardReserved(AcceptedCoordinator accepted) {
+        try {
+            if (active.compareAndSet(accepted, null)) {
+                closeAccepted(accepted);
+            }
+        } finally {
+            finishCoordinatorCleanup();
+        }
+    }
+
+    private void scheduleClose(CaptureCoordinator coordinator) {
+        beginCoordinatorCleanup();
+        try {
+            worker.execute(() -> closeUnacceptedReserved(coordinator));
+        } catch (RuntimeException rejected) {
+            finishCoordinatorCleanup();
+            throw rejected;
+        }
+    }
+
+    private void closeAcceptedReserved(AcceptedCoordinator accepted) {
+        try {
+            closeAccepted(accepted);
+        } finally {
+            finishCoordinatorCleanup();
+        }
+    }
+
+    private void closeUnacceptedReserved(CaptureCoordinator coordinator) {
+        try {
             coordinator.close();
+        } finally {
+            finishCoordinatorCleanup();
+        }
+    }
+
+    private void closeAccepted(AcceptedCoordinator accepted) {
+        try {
+            accepted.coordinator.close();
+        } finally {
+            notifyCoordinatorClosed(accepted);
+        }
+    }
+
+    private void notifyCoordinatorClosed(AcceptedCoordinator accepted) {
+        if (!accepted.callbackDelivered.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            afterCoordinatorClosed.run();
+        } catch (RuntimeException callbackFailure) {
+            log.log(
+                    System.Logger.Level.WARNING,
+                    "Capture coordinator close callback failed",
+                    callbackFailure);
+        }
+    }
+
+    private void beginCoordinatorCleanup() {
+        pendingCoordinatorCleanup.incrementAndGet();
+    }
+
+    private void finishCoordinatorCleanup() {
+        int remaining = pendingCoordinatorCleanup.decrementAndGet();
+        if (remaining < 0) {
+            throw new IllegalStateException("capture cleanup accounting became negative");
+        }
+        completeCloseIfIdle();
+    }
+
+    private void completeCloseIfIdle() {
+        if (closed.get() && active.get() == null && pendingCoordinatorCleanup.get() == 0) {
+            closeCompletion.complete(null);
         }
     }
 
     private void failOnUi(Throwable failure) {
         postToUi(() -> listener.captureFailed(failure));
+    }
+
+    private void postRemoteReady(RemoteExecution remote, Preflight preflight) {
+        try {
+            toUi.execute(() -> {
+                if (closed.get()) {
+                    remote.close();
+                    return;
+                }
+                boolean transferredToUi = false;
+                try {
+                    listener.remoteConnected(remote);
+                    transferredToUi = true;
+                    listener.planReady(preflight);
+                } catch (RuntimeException failure) {
+                    // Once remoteConnected returns, the window owns this connection. A later
+                    // plan-rendering failure must not leave that window pointing at a closed
+                    // repository/terminal session.
+                    if (!transferredToUi) {
+                        remote.close();
+                    }
+                    listener.captureFailed(failure);
+                }
+            });
+        } catch (RuntimeException rejected) {
+            remote.close();
+            throw rejected;
+        }
     }
 
     private void postToUi(Runnable callback) {
@@ -283,5 +472,14 @@ public final class LaunchController {
                 callback.run();
             }
         });
+    }
+
+    private static final class AcceptedCoordinator {
+        private final CaptureCoordinator coordinator;
+        private final AtomicBoolean callbackDelivered = new AtomicBoolean();
+
+        private AcceptedCoordinator(CaptureCoordinator coordinator) {
+            this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
+        }
     }
 }

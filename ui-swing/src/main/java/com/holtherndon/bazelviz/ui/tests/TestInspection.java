@@ -6,6 +6,8 @@ import com.holtherndon.bazelviz.storage.entities.TestQueries;
 import com.holtherndon.bazelviz.storage.entities.TestRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.files.FileLink;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.util.List;
 import java.util.Optional;
 
@@ -49,6 +51,9 @@ public final class TestInspection {
         Inspection.Builder builder = new Inspection.Builder(test.label())
                 .subtitle(test.overallStatus().name())
                 .sourceEvent(test.bepEventId());
+        builder.ref(new EntityRef.TargetLabel(test.label()));
+        test.bepEventId().ifPresent(eventId ->
+                builder.ref(new EntityRef.EventId(eventId)));
 
         builder.section("Result")
                 .field("Status", test.overallStatus().name())
@@ -101,10 +106,11 @@ public final class TestInspection {
         if (!logs.isEmpty()) {
             builder.section("Logs");
             for (TestQueries.TestLog log : logs) {
-                // The URI, not the content: these point into the output base,
-                // which the next build removes. Saying where it was beats
-                // offering a link that silently does nothing.
-                builder.field(log.name().orElse(log.summaryStatus().orElse("log")), log.uri());
+                String name = log.name().orElse(log.summaryStatus().orElse("log"));
+                // The URI stays visible and the Open button resolves it only
+                // when pressed. A later bazel clean may have removed it; that
+                // becomes an explicit modeless error rather than a dead link.
+                builder.file(name, log.uri(), FileLink.testLog(name, log.uri()));
             }
         }
         addSpawns(builder, spawns);

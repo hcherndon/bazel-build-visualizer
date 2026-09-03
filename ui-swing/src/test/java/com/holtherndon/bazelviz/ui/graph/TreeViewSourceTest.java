@@ -60,11 +60,15 @@ final class TreeViewSourceTest {
         MigrationRunner.standard().migrate(database);
         Connection connection = database.writerConnection();
         exec(connection, "INSERT INTO graph_sources (id, kind, state, configuration_match,"
-                + " declared_actions, correlated_actions)"
-                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT', 3, 0)");
+                + " target_scope,"
+                + " declared_actions, correlated_actions, unresolved_artifacts,"
+                + " unresolved_depset_references)"
+                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT',"
+                + " 'EXACT_BEP_TARGETS', 3, 0, 0, 0)");
         exec(connection, "INSERT INTO graph_sources (id, kind, state, configuration_match,"
-                + " declared_actions)"
-                + " VALUES (2, 'CONFIGURED_TARGETS', 'SUCCEEDED', 'EXACT', 4)");
+                + " target_scope, declared_actions)"
+                + " VALUES (2, 'CONFIGURED_TARGETS', 'SUCCEEDED', 'EXACT',"
+                + " 'EXACT_BEP_TARGETS', 4)");
         exec(connection, "INSERT INTO mnemonics (id, value) VALUES (1, 'Genrule')");
         for (int i = 0; i < 3; i++) {
             exec(connection, "INSERT INTO labels (id, value) VALUES ("

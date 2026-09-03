@@ -1,14 +1,19 @@
 package com.holtherndon.bazelviz.ui.events;
 
+import com.holtherndon.bazelviz.runner.files.ExecutionPath;
+import com.holtherndon.bazelviz.ui.files.WorkspaceFileAccess;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
+import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import com.holtherndon.bazelviz.ui.session.ImportProgressPanel;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
@@ -16,13 +21,17 @@ import java.awt.Point;
 import java.awt.Rectangle;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
+import java.nio.file.Path;
 import javax.swing.BorderFactory;
 import javax.swing.JCheckBox;
 import javax.swing.JLabel;
@@ -149,11 +158,16 @@ public final class EventsView extends JPanel {
      */
     private ScheduledExecutorService ticker;
     private SessionSource source;
+    private Optional<WorkspaceFileAccess> fileAccess = Optional.empty();
     private PagedTableModel<EventRow> tableModel;
     private EventInspectorModel inspectorModel;
     /** The row source currently installed, kept so a live refresh can rebuild over its reader. */
     private EventRowSource rows;
     private Consumer<String> openFailureHandler = message -> { };
+    private Consumer<String> copyFilePathHandler = path -> { };
+    private Consumer<Path> openFileHandler = path -> { };
+    private Consumer<ExecutionPath> openExecutionFileHandler;
+    private Consumer<Path> revealFileHandler = path -> { };
     private LongConsumer rowCountListener = count -> { };
     private long lastLiveRefreshMicros;
     private volatile boolean refreshInFlight;
@@ -225,7 +239,10 @@ public final class EventsView extends JPanel {
             }
         });
 
-        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, inspector);
+        JSplitPane split = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                new SectionPane("Events", tableScroll),
+                new SectionPane("Event details", inspector));
         split.setResizeWeight(0.6);
 
         JPanel status = new JPanel(new BorderLayout());
@@ -263,6 +280,27 @@ public final class EventsView extends JPanel {
         Objects.requireNonNull(actions, "actions");
         inspector.installEntityActions(actions);
         actions.installRowMenu(table, this::refsAtRow, java.util.Set.of());
+    }
+
+    public void onCopyFilePath(Consumer<String> handler) {
+        copyFilePathHandler = Objects.requireNonNull(handler, "handler");
+        inspector.onCopyFilePath(copyFilePathHandler);
+    }
+
+    public void onRevealFile(Consumer<Path> handler) {
+        revealFileHandler = Objects.requireNonNull(handler, "handler");
+        inspector.onRevealFile(revealFileHandler);
+    }
+
+    public void onOpenFile(Consumer<Path> handler) {
+        openFileHandler = Objects.requireNonNull(handler, "handler");
+        inspector.onOpenFile(openFileHandler);
+    }
+
+    /** Opens files through the active execution host rather than a desktop Path. */
+    public void onOpenExecutionFile(Consumer<ExecutionPath> handler) {
+        openExecutionFileHandler = Objects.requireNonNull(handler, "handler");
+        inspector.onOpenExecutionFile(openExecutionFileHandler);
     }
 
     /**
@@ -305,11 +343,29 @@ public final class EventsView extends JPanel {
      * @param onFailure called on the EDT if the session could not be read
      */
     public void openSession(SessionSource newSource, Consumer<String> onFailure) {
+        openSession(newSource, WorkspaceFileAccess.fromSession(newSource.info()), onFailure);
+    }
+
+    /** Opens a session with an explicitly connected local or remote execution filesystem. */
+    public void openSession(
+            SessionSource newSource,
+            WorkspaceFileAccess fileAccess,
+            Consumer<String> onFailure) {
+        openSession(newSource, Optional.of(Objects.requireNonNull(fileAccess, "fileAccess")),
+                onFailure);
+    }
+
+    private void openSession(
+            SessionSource newSource,
+            Optional<WorkspaceFileAccess> openedFileAccess,
+            Consumer<String> onFailure) {
         Objects.requireNonNull(newSource, "newSource");
+        Objects.requireNonNull(openedFileAccess, "openedFileAccess");
         Objects.requireNonNull(onFailure, "onFailure");
         closeSession();
         openFailureHandler = onFailure;
         source = newSource;
+        fileAccess = openedFileAccess;
         pageExecutor = singleThreadExecutor("bbv-events-pages");
         detailExecutor = singleThreadExecutor("bbv-events-detail");
         startTicker();
@@ -365,6 +421,11 @@ public final class EventsView extends JPanel {
      * readers it handed out.
      */
     public void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches immediately and completes after this session's accepted reads have stopped. */
+    public CompletionStage<Void> closeSessionAsync() {
         pendingSelectionRow = -1;
         inspectorModel = null;
         tableModel = null;
@@ -375,21 +436,18 @@ public final class EventsView extends JPanel {
         ExecutorService details = detailExecutor;
         ScheduledExecutorService tick = ticker;
         source = null;
+        fileAccess = Optional.empty();
         pageExecutor = null;
         detailExecutor = null;
         ticker = null;
-        if (tick != null) {
-            tick.shutdownNow();
+        if (tick == null && pages == null && details == null) {
+            return CompletableFuture.completedFuture(null);
         }
-        if (pages == null && details == null) {
-            return;
-        }
-        Thread closer = new Thread(() -> {
+        return ViewClose.runAsync("bbv-session-close", () -> {
+            shutdown(tick);
             shutdown(pages);
             shutdown(details);
-        }, "bbv-session-close");
-        closer.setDaemon(true);
-        closer.start();
+        });
     }
 
     /**
@@ -416,6 +474,15 @@ public final class EventsView extends JPanel {
     /** The session currently open, or null. */
     public SessionSource openSession() {
         return source;
+    }
+
+    /** Detaches only execution-host file access while retaining the open analysis session. */
+    public CompletionStage<Void> detachExecutionFileAccessAsync() {
+        fileAccess = Optional.empty();
+        EventInspectorModel current = inspectorModel;
+        return current == null
+                ? CompletableFuture.completedFuture(null)
+                : current.detachExecutionFileAccessAsync();
     }
 
     // The two accessors below exist so the wiring between the table model, the
@@ -493,9 +560,20 @@ public final class EventsView extends JPanel {
             // defaults sizeColumns just set.
             headerInteractions.modelInstalled();
         });
-        inspectorModel = new EventInspectorModel(
-                detailReader, detailExecutor, SwingUtilities::invokeLater);
+        inspectorModel = fileAccess
+                .<EventInspectorModel>map(access -> new EventInspectorModel(
+                        detailReader, detailExecutor, SwingUtilities::invokeLater, access))
+                .orElseGet(() -> new EventInspectorModel(
+                        detailReader, detailExecutor, SwingUtilities::invokeLater, opened.info()));
         inspectorModel.addListener(inspector::show);
+        inspectorModel.addFileListener(inspector::showFiles);
+        inspector.onFilesRequested(inspectorModel::requestFiles);
+        inspector.onCopyFilePath(copyFilePathHandler);
+        inspector.onOpenFile(openFileHandler);
+        if (openExecutionFileHandler != null) {
+            inspector.onOpenExecutionFile(openExecutionFileHandler);
+        }
+        inspector.onRevealFile(revealFileHandler);
         inspector.show(EventInspection.none());
         statusLabel.setText(describe(opened.info(), rows));
         cards.show(deck, CARD_SESSION);
@@ -708,6 +786,13 @@ public final class EventsView extends JPanel {
      */
     public void attachColumnState(java.nio.file.Path settingsDirectory) {
         headerInteractions.attachPersistence(settingsDirectory, "events");
+    }
+
+    /** Permanently closes this view, including its debounced column-state writer. */
+    public CompletionStage<Void> closeAsync() {
+        return CompletableFuture.allOf(
+                closeSessionAsync().toCompletableFuture(),
+                headerInteractions.closeAsync().toCompletableFuture());
     }
 
     /** Visible for testing: the shared header behaviour on this table. */

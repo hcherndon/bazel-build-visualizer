@@ -15,12 +15,14 @@ import java.util.Set;
 import javax.swing.JButton;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
+import javax.swing.JSplitPane;
+import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * The Timeline's inline inspector, and the shared vocabulary it dispatches.
+ * The Timeline's side inspector, and the shared vocabulary it dispatches.
  *
  * <p>Before this existed, clicking a span selected a row in the Actions tab
  * without switching to it — visibly, nothing happened. Now a click shows the
@@ -115,6 +117,53 @@ final class TimelineInspectorTest {
         assertThat(selected).containsExactly(42L);
         assertThat(picked).containsExactly(42L);
         assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(42);
+    }
+
+    @Test
+    @DisplayName("action details occupy the right side instead of taking plot height")
+    void inspectorIsTheRightSideOfAHorizontalSplit() {
+        TimelineView view = new TimelineView();
+
+        JSplitPane split = view.contentSplitForTest();
+        assertThat(split.getOrientation()).isEqualTo(JSplitPane.HORIZONTAL_SPLIT);
+        assertThat(SwingUtilities.isDescendingFrom(
+                view.inspectorForTest(), split.getRightComponent())).isTrue();
+        assertThat(SwingUtilities.isDescendingFrom(
+                view.inspectorForTest(), split.getLeftComponent())).isFalse();
+        assertThat(view.inspectorVisibleForTest())
+                .as("the pane is stable, but initially contains only its prompt")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("right-clicking a span selects it and offers its shared actions")
+    void spanContextMenuUsesTheFacility() {
+        TimelineView view = new TimelineView();
+        view.canvasForTest().setSize(WIDTH, HEIGHT);
+        view.setModel(aModel());
+        SpanWindow.Builder window = SpanWindow.builder(0, 10_000_000);
+        window.add(0, 5_000_000, 0, 42, "");
+        view.setWindow(window.build());
+        Recorder recorder = new Recorder();
+        view.installEntityActions(new EntityActions(
+                Set.of(EntityActions.Command.OPEN_IN_GRAPH,
+                        EntityActions.Command.REVEAL_ACTION,
+                        EntityActions.Command.SHOW_ON_TIMELINE),
+                recorder));
+
+        JPopupMenu menu = view.contextMenuAtForTest(100, 1);
+
+        assertThat(itemsIn(menu))
+                .extracting(JMenuItem::getText)
+                .containsExactly("Open in graph", "Reveal action")
+                .doesNotContain("Show on timeline");
+        assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(42);
+        assertThat(view.inspectorVisibleForTest()).isTrue();
+
+        itemsIn(menu).getFirst().doClick();
+        assertThat(recorder.commands).containsExactly(EntityActions.Command.OPEN_IN_GRAPH);
+        assertThat(recorder.refs).containsExactly(new EntityRef.ActionId(42));
+        assertThat(view.contextMenuAtForTest(900, 1).getComponentCount()).isZero();
     }
 
     @Test

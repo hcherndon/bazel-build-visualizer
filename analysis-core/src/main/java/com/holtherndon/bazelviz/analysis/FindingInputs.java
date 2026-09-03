@@ -20,8 +20,9 @@ import java.util.Objects;
  *     each of the criteria the rules care about. Not every action: a rule that
  *     needed all five million would be a rule that cannot run on the sessions
  *     this application exists for.
- * @param criticalPathActions the derived critical path resolved to actions, in
- *     path order, as far as the node-to-action mapping allows
+ * @param criticalPathActions a bounded set of the derived path's heaviest
+ *     resolved actions, ordered by descending dependency-node path weight;
+ *     unmatched graph nodes are absent
  * @param lowParallelismWindows stretches where few actions were running,
  *     computed against this session's own typical concurrency
  */

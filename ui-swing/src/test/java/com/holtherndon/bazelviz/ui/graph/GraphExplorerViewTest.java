@@ -12,12 +12,17 @@ import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.theme.WrapLayout;
+import java.awt.Component;
+import java.awt.Container;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,11 +56,15 @@ final class GraphExplorerViewTest {
         com.holtherndon.bazelviz.storage.schema.MigrationRunner.standard().migrate(database);
         Connection connection = database.writerConnection();
         exec(connection, "INSERT INTO graph_sources (id, kind, state, configuration_match,"
-                + " declared_actions, correlated_actions)"
-                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT', 3, 0)");
+                + " target_scope,"
+                + " declared_actions, correlated_actions, unresolved_artifacts,"
+                + " unresolved_depset_references)"
+                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT',"
+                + " 'EXACT_BEP_TARGETS', 3, 0, 0, 0)");
         exec(connection, "INSERT INTO graph_sources (id, kind, state, configuration_match,"
-                + " declared_actions)"
-                + " VALUES (2, 'CONFIGURED_TARGETS', 'SUCCEEDED', 'EXACT', 4)");
+                + " target_scope, declared_actions)"
+                + " VALUES (2, 'CONFIGURED_TARGETS', 'SUCCEEDED', 'EXACT',"
+                + " 'EXACT_BEP_TARGETS', 4)");
         exec(connection, "INSERT INTO mnemonics (id, value) VALUES (1, 'Genrule')");
         for (int i = 0; i < 3; i++) {
             exec(connection, "INSERT INTO labels (id, value) VALUES ("
@@ -91,6 +100,61 @@ final class GraphExplorerViewTest {
     }
 
     @Test
+    @DisplayName("the graph-data form labels its source and node finder explicitly")
+    void graphDataControlsAreExplicit() {
+        assertThat(namedLabel(view, "graph.sourceLabel").getText())
+                .isEqualTo("Graph source:");
+        assertThat(namedLabel(view, "graph.sourceLabel").getLabelFor())
+                .isSameAs(namedComponent(view, "graph.source"));
+        assertThat(namedLabel(view, "graph.findNodeLabel").getText())
+                .isEqualTo("Find node:");
+        assertThat(namedLabel(view, "graph.findNodeLabel").getLabelFor())
+                .isSameAs(namedComponent(view, "graph.findNode"));
+    }
+
+    @Test
+    @DisplayName("the graph-data header is compact by default and wraps when narrow")
+    void graphDataHeaderIsCompactAndResponsive() throws Exception {
+        JPanel controls = (JPanel) namedComponent(view, "graph.dataControls");
+        assertThat(controls.getLayout()).isInstanceOf(WrapLayout.class);
+        assertThat(namedComponent(view, "graph.sourceExplanation").isVisible()).isFalse();
+        assertThat(namedComponent(view, "graph.sourceWarning").isVisible()).isFalse();
+        assertThat(namedComponent(view, "graph.findStatus").isVisible()).isFalse();
+
+        int[] heights = new int[2];
+        int[] combinedHeaderHeight = new int[1];
+        SwingUtilities.invokeAndWait(() -> {
+            controls.setSize(1_900, 200);
+            heights[0] = controls.getPreferredSize().height;
+            controls.setSize(420, 400);
+            heights[1] = controls.getPreferredSize().height;
+
+            JPanel dataHeader = (JPanel) namedComponent(view, "graph.dataHeader");
+            JPanel graphControls = (JPanel) namedComponent(view, "graph.controls");
+            dataHeader.setSize(1_900, 300);
+            graphControls.setSize(1_900, 300);
+            dataHeader.doLayout();
+            graphControls.doLayout();
+            dataHeader.doLayout();
+            graphControls.doLayout();
+            combinedHeaderHeight[0] = dataHeader.getPreferredSize().height
+                    + graphControls.getPreferredSize().height;
+        });
+
+        assertThat(heights[0]).as("wide default header height").isLessThan(50);
+        assertThat(heights[1]).as("narrow header reflows").isGreaterThan(heights[0]);
+        assertThat(combinedHeaderHeight[0])
+                .as("wide collapsed data and drawing headers")
+                .isLessThanOrEqualTo(200);
+
+        javax.swing.JToggleButton help = (javax.swing.JToggleButton)
+                namedComponent(view, "graph.sourceHelp");
+        SwingUtilities.invokeAndWait(help::doClick);
+        assertThat(namedComponent(view, "graph.sourceExplanation").isVisible()).isTrue();
+        assertThat(view.detailLabel().getText()).contains("A node is one declared action");
+    }
+
+    @Test
     @DisplayName("the trustworthy action graph is what a user who chooses nothing draws")
     void actionGraphIsPreferred() {
         assertThat(view.canvasPanel().shownGraph()).isEqualTo(GraphKind.DECLARED_ACTIONS);
@@ -111,6 +175,34 @@ final class GraphExplorerViewTest {
     }
 
     @Test
+    @DisplayName("critical-path navigation selects the action graph and draws the exact chain")
+    void criticalPathNavigationIsHonestAndGraphSpecific() throws Exception {
+        selectConfiguredTargets();
+
+        SwingUtilities.invokeAndWait(() -> view.showCriticalPath(java.util.List.of(0, 1, 2)));
+        awaitCondition(
+                () -> view.canvasPanel().descriptionText()
+                        .startsWith("Critical path"),
+                "the critical path to draw");
+
+        assertThat(view.canvasPanel().shownGraph()).isEqualTo(GraphKind.DECLARED_ACTIONS);
+        assertThat(view.canvasPanel().canvas().model().extract().nodes())
+                .containsExactly(0, 1, 2);
+        assertThat(view.statusForTesting()).contains("selected: 3 actions");
+    }
+
+    @Test
+    @DisplayName("critical-path navigation reports an unopened graph instead of claiming a draw")
+    void criticalPathNavigationReportsUnavailableGraph() throws Exception {
+        GraphExplorerView unopened = new GraphExplorerView();
+
+        SwingUtilities.invokeAndWait(() -> unopened.showCriticalPath(java.util.List.of(0, 1)));
+
+        assertThat(unopened.statusForTesting()).contains("No dependency graph is open");
+        assertThat(unopened.canvasPanel().canvas().model().size()).isZero();
+    }
+
+    @Test
     @DisplayName("a search draws the found node's neighbourhood")
     void searchDrawsTheNeighbourhood() throws Exception {
         SwingUtilities.invokeAndWait(() -> view.searchForTesting("t1"));
@@ -119,6 +211,19 @@ final class GraphExplorerViewTest {
                 "the neighbourhood to draw");
 
         assertThat(view.canvasPanel().descriptionText()).contains("Neighbourhood");
+    }
+
+    @Test
+    @DisplayName("Open asks which node when a Find pattern has several matches")
+    void openDoesNotSilentlyTakeTheFirstMatch() throws Exception {
+        SwingUtilities.invokeAndWait(() -> view.searchForTesting("t"));
+        awaitCondition(
+                () -> view.statusForTesting().contains("Choose one"),
+                "the explicit match choice");
+
+        assertThat(view.findResultsForTesting()).hasSize(3);
+        assertThat(view.canvasPanel().canvas().model().size()).isZero();
+        assertThat(view.canvasPanel().descriptionText()).contains("Pick an action");
     }
 
     @Test
@@ -290,6 +395,30 @@ final class GraphExplorerViewTest {
         throw new AssertionError("timed out waiting for " + what
                 + "; the canvas says: " + view.canvasPanel().descriptionText()
                 + "; the status says: " + view.statusForTesting());
+    }
+
+    private static JLabel namedLabel(Container root, String name) {
+        Component found = namedComponent(root, name);
+        if (found instanceof JLabel label) {
+            return label;
+        }
+        throw new AssertionError(name + " is not a label");
+    }
+
+    private static Component namedComponent(Container root, String name) {
+        for (Component child : root.getComponents()) {
+            if (name.equals(child.getName())) {
+                return child;
+            }
+            if (child instanceof Container nested) {
+                try {
+                    return namedComponent(nested, name);
+                } catch (AssertionError ignored) {
+                    // Keep looking in sibling containers.
+                }
+            }
+        }
+        throw new AssertionError("No component named " + name);
     }
 
     private static void exec(Connection connection, String sql) throws Exception {

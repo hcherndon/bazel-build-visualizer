@@ -1,6 +1,8 @@
 package com.holtherndon.bazelviz.enrich.graph;
 
 import com.holtherndon.bazelviz.core.graph.ConfigurationMatch;
+import com.holtherndon.bazelviz.core.graph.GraphTargetScope;
+import com.holtherndon.bazelviz.storage.graph.GraphIndexBuilder;
 import com.holtherndon.bazelviz.storage.graph.GraphStaging;
 import java.io.BufferedInputStream;
 import java.io.IOException;
@@ -64,8 +66,16 @@ public final class ActionGraphImporter {
      * schema v5 added.
      */
     public Result importFrom(Path file, List<String> command) throws SQLException {
+        return importFrom(file, command, GraphTargetScope.UNKNOWN,
+                GraphTargetScope.UNKNOWN.describe());
+    }
+
+    /** Imports {@code file} with the target-scope evidence captured beside the query. */
+    public Result importFrom(
+            Path file, List<String> command, GraphTargetScope targetScope, String scopeDetail)
+            throws SQLException {
         long started = clock.getAsLong();
-        long sourceId = beginSource(command, started);
+        long sourceId = beginSource(command, started, targetScope, scopeDetail);
 
         boolean previousAutoCommit = connection.getAutoCommit();
         connection.setAutoCommit(false);
@@ -87,6 +97,43 @@ public final class ActionGraphImporter {
         }
     }
 
+    /** Records an aquery process failure even though there is no protobuf to import. */
+    public Result recordFailure(Path file, List<String> command, String message)
+            throws SQLException {
+        return recordFailure(file, command, message, GraphTargetScope.UNKNOWN,
+                GraphTargetScope.UNKNOWN.describe());
+    }
+
+    /** Records a failed aquery together with the scope it attempted. */
+    public Result recordFailure(
+            Path file,
+            List<String> command,
+            String message,
+            GraphTargetScope targetScope,
+            String scopeDetail) throws SQLException {
+        long sourceId = beginSource(command, clock.getAsLong(), targetScope, scopeDetail);
+        long bytes;
+        try {
+            bytes = Files.exists(file) ? Files.size(file) : 0;
+        } catch (IOException unreadable) {
+            bytes = 0;
+        }
+        Result failed = new Result(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                bytes,
+                ConfigurationMatch.UNKNOWN,
+                "the query did not produce a graph",
+                Optional.of(file.toString()),
+                Optional.of(message));
+        finishSource(sourceId, "FAILED", Optional.of(message), failed);
+        return failed;
+    }
+
     private Result read(Path file, long sourceId) throws IOException, SQLException {
         long size = Files.size(file);
         if (size == 0) {
@@ -104,6 +151,7 @@ public final class ActionGraphImporter {
 
             staging.resolvePaths();
             long unresolved = staging.unresolvedArtifacts();
+            long unresolvedDepsets = staging.unresolvedDepsetReferences();
 
             long artifacts = internArtifacts();
             long depsets = insertDepsets(sourceId);
@@ -117,7 +165,7 @@ public final class ActionGraphImporter {
             List<String> extra = queried.stream().filter(id -> !declared.contains(id)).toList();
 
             return new Result(
-                    actions, correlated, artifacts, depsets, unresolved, size,
+                    actions, correlated, artifacts, depsets, unresolved, unresolvedDepsets, size,
                     match, match.describe(missing, extra),
                     Optional.of(file.toString()), Optional.empty());
         }
@@ -272,18 +320,33 @@ public final class ActionGraphImporter {
 
     // ------------------------------------------------------------ bookkeeping
 
-    private long beginSource(List<String> command, long started) throws SQLException {
+    private long beginSource(
+            List<String> command,
+            long started,
+            GraphTargetScope targetScope,
+            String scopeDetail) throws SQLException {
+        // A replacement changes both the declared and observed action-index
+        // node universe. Invalidate before parsing so a failed import or index
+        // rebuild can never expose the preceding generation as current.
+        GraphIndexBuilder.invalidateActionIndexes(connection);
         try (PreparedStatement statement = connection.prepareStatement(
                 "INSERT INTO graph_sources (kind, command, state, configuration_match,"
-                        + " started_micros) VALUES (?, ?, 'RUNNING', 'UNKNOWN', ?)"
+                        + " target_scope, target_scope_detail, started_micros)"
+                        + " VALUES (?, ?, 'RUNNING', 'UNKNOWN', ?, ?, ?)"
                         + " ON CONFLICT (kind) DO UPDATE SET command = excluded.command,"
                         + " state = 'RUNNING', configuration_match = 'UNKNOWN',"
+                        + " target_scope = excluded.target_scope,"
+                        + " target_scope_detail = excluded.target_scope_detail,"
                         + " started_micros = excluded.started_micros,"
                         + " error_excerpt = NULL, mismatch_detail = NULL,"
-                        + " declared_actions = NULL, correlated_actions = NULL")) {
+                        + " declared_actions = NULL, correlated_actions = NULL,"
+                        + " unresolved_artifacts = NULL,"
+                        + " unresolved_depset_references = NULL")) {
             statement.setString(1, KIND);
             statement.setString(2, String.join(" ", command));
-            statement.setLong(3, started);
+            statement.setString(3, targetScope.name());
+            statement.setString(4, scopeDetail);
+            statement.setLong(5, started);
             statement.executeUpdate();
         }
         return scalar("SELECT id FROM graph_sources WHERE kind = '" + KIND + "'");
@@ -295,6 +358,7 @@ public final class ActionGraphImporter {
         try (PreparedStatement statement = connection.prepareStatement(
                 "UPDATE graph_sources SET state = ?, error_excerpt = ?, configuration_match = ?,"
                         + " mismatch_detail = ?, declared_actions = ?, correlated_actions = ?,"
+                        + " unresolved_artifacts = ?, unresolved_depset_references = ?,"
                         + " raw_output_bytes = ?, raw_output_path = ?, finished_micros = ?"
                         + " WHERE id = ?")) {
             statement.setString(1, state);
@@ -307,12 +371,21 @@ public final class ActionGraphImporter {
             statement.setString(4, result.configurationDetail());
             statement.setLong(5, result.declaredActions());
             statement.setLong(6, result.correlatedActions());
-            statement.setLong(7, result.bytes());
+            if (state.equals("SUCCEEDED")) {
+                statement.setLong(7, result.unresolvedArtifacts());
+                statement.setLong(8, result.unresolvedDepsetReferences());
+            } else {
+                // A failed parse did not inspect a complete protobuf. Zero
+                // would falsely certify structural completeness.
+                statement.setNull(7, java.sql.Types.INTEGER);
+                statement.setNull(8, java.sql.Types.INTEGER);
+            }
+            statement.setLong(9, result.bytes());
             // Plan 12.4: the user may inspect the raw query output, and this is
             // where the UI finds it.
-            setNullable(statement, 8, result.rawOutputPath());
-            statement.setLong(9, clock.getAsLong());
-            statement.setLong(10, sourceId);
+            setNullable(statement, 10, result.rawOutputPath());
+            statement.setLong(11, clock.getAsLong());
+            statement.setLong(12, sourceId);
             statement.executeUpdate();
         }
     }
@@ -362,8 +435,11 @@ public final class ActionGraphImporter {
      * What an import did.
      *
      * @param unresolvedArtifacts artifacts whose path could not be built from
-     *     the fragment tree; non-zero means paths reached through a fragment the
-     *     file never declared, and every total below is a lower bound
+     *     the fragment tree or whose ids were referenced but never declared;
+     *     non-zero means every total below is a lower bound
+     * @param unresolvedDepsetReferences action-input or transitive-child links
+     *     whose depset ids were never declared; non-zero means dependencies
+     *     were omitted from the imported graph
      */
     public record Result(
             long declaredActions,
@@ -371,6 +447,7 @@ public final class ActionGraphImporter {
             long artifacts,
             long depsets,
             long unresolvedArtifacts,
+            long unresolvedDepsetReferences,
             long bytes,
             ConfigurationMatch configurationMatch,
             String configurationDetail,
@@ -378,7 +455,7 @@ public final class ActionGraphImporter {
             Optional<String> error) {
 
         static Result failed(String message) {
-            return new Result(0, 0, 0, 0, 0, 0, ConfigurationMatch.UNKNOWN,
+            return new Result(0, 0, 0, 0, 0, 0, 0, ConfigurationMatch.UNKNOWN,
                     "the query did not produce a graph", Optional.empty(),
                     Optional.of(message));
         }
@@ -389,7 +466,9 @@ public final class ActionGraphImporter {
 
         /** True when the graph may be described as this build's action graph. */
         public boolean matchesTheBuild() {
-            return configurationMatch.permitsExactClaim();
+            return configurationMatch.permitsExactClaim()
+                    && unresolvedArtifacts == 0
+                    && unresolvedDepsetReferences == 0;
         }
     }
 }

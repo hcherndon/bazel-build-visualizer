@@ -76,6 +76,37 @@ final class GraphExportTest {
     }
 
     @Test
+    @DisplayName("visible export keeps cross-links hidden only for drawing readability")
+    void visibleExportKeepsDeclutteredCrossLinks() throws IOException {
+        CsrGraph graph = CsrBuilder.build(4, visitor -> {
+            visitor.edge(0, 1);
+            visitor.edge(0, 2);
+            visitor.edge(1, 3);
+            visitor.edge(2, 3);
+        });
+        GraphExtract.Result extract = GraphExtract.whole(graph, 100, 100);
+        GraphModel model = GraphModel.of(
+                new GraphLayoutService.Rendered(
+                        GraphLayoutService.Request.whole(
+                                GraphKind.DECLARED_ACTIONS, 100, 100),
+                        extract,
+                        GraphLayout.hierarchy(extract, RUNNING),
+                        null,
+                        extract.describe()),
+                new String[] {"a", "b", "c", "d"},
+                null);
+        assertThat(model.crossLinkCount()).isEqualTo(1);
+
+        GraphExport.Result result = GraphExport.visible(
+                model, tempDir.resolve("hierarchy.csv"), GraphExport.Format.CSV);
+
+        assertThat(result.edges()).isEqualTo(4);
+        assertThat(Files.readAllLines(result.files().get(1)))
+                .hasSize(6)
+                .first().asString().contains("including links hidden only by drawing detail");
+    }
+
+    @Test
     @DisplayName("an untimed action is exported as untimed, not as zero")
     void untimedSurvivesTheExport() throws IOException {
         GraphExport.Result result = GraphExport.visible(
@@ -104,21 +135,20 @@ final class GraphExportTest {
     }
 
     @Test
-    @DisplayName("the visible export writes drawn names; the complete export writes labels")
+    @DisplayName("the visible export keeps action and target names; complete uses labels")
     void eachExportNamesItsColumnTruthfully() throws IOException {
-        // The visible model is built from display names — for action graphs
-        // "Mnemonic — output basename", which is not a Bazel label — while
-        // the complete export streams real target labels. A byte-identical
-        // "label" header over both would make one of the files a lie, so the
-        // headers pin which carries which.
+        // The visible action graph carries both the concise action name drawn
+        // first and its owning target. The complete export still streams the
+        // canonical target labels alone. The headers pin which carries which.
         GraphExtract.Result extract = GraphExtract.whole(chain(2), 10, 10);
         String[] drawnNames = {"Javac — t0.o", "Javac — t1.o"};
+        String[] ownerLabels = {"//pkg:t0", "//pkg:t1"};
         GraphModel model = GraphModel.of(
                 new GraphLayoutService.Rendered(
                         GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 10, 10),
                         extract, GraphLayout.layered(extract, RUNNING), null,
                         extract.describe()),
-                drawnNames, null);
+                drawnNames, ownerLabels, null);
 
         GraphExport.Result visible = GraphExport.visible(
                 model, tempDir.resolve("drawn.csv"), GraphExport.Format.CSV);
@@ -128,12 +158,44 @@ final class GraphExportTest {
 
         List<String> visibleNodes = Files.readAllLines(visible.files().get(0));
         assertThat(visibleNodes.get(1)).isEqualTo("id,name,duration_micros");
-        assertThat(visibleNodes.get(2)).contains("Javac — t0.o");
+        assertThat(visibleNodes.get(2))
+                .contains("Javac — t0.o")
+                .contains("target //pkg:t0");
 
         List<String> completeNodes = Files.readAllLines(complete.files().get(0));
         assertThat(completeNodes.get(1)).isEqualTo("id,label,duration_micros");
         assertThat(completeNodes.get(2)).contains("//pkg:t0");
         assertThat(String.join("\n", completeNodes)).doesNotContain("Javac");
+    }
+
+    @Test
+    @DisplayName("configured-target exports call their nodes targets, never actions")
+    void configuredTargetExportUsesTheRightNoun() throws IOException {
+        GraphExtract.Result extract = GraphExtract.whole(chain(2), 10, 10);
+        String[] labels = {"//pkg:t0", "//pkg:t1"};
+        GraphModel model = GraphModel.of(
+                new GraphLayoutService.Rendered(
+                        GraphLayoutService.Request.whole(
+                                GraphKind.CONFIGURED_TARGETS, 10, 10),
+                        extract,
+                        GraphLayout.hierarchy(extract, RUNNING),
+                        null,
+                        extract.describe("target")),
+                labels,
+                labels,
+                null);
+
+        GraphExport.Result visible = GraphExport.visible(
+                model, tempDir.resolve("targets-visible.dot"), GraphExport.Format.DOT);
+        GraphExport.Result complete = GraphExport.whole(
+                chain(2), labels, null, tempDir.resolve("targets-all.dot"),
+                GraphExport.Format.DOT, "target");
+
+        assertThat(visible.describe()).contains("2 targets").doesNotContain("actions");
+        assertThat(complete.describe()).contains("2 targets").doesNotContain("actions");
+        assertThat(Files.readString(complete.primary()))
+                .contains("all 2 targets")
+                .doesNotContain("actions");
     }
 
     @Test

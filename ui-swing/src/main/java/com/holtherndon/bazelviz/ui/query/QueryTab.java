@@ -11,9 +11,12 @@ import com.holtherndon.bazelviz.storage.query.SqlNotAllowedException;
 import com.holtherndon.bazelviz.storage.query.TempViewDefinition;
 import com.holtherndon.bazelviz.ui.session.QueryReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
+import com.holtherndon.bazelviz.ui.theme.SyntaxTextTheme;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -24,6 +27,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.swing.AbstractAction;
@@ -102,6 +107,7 @@ final class QueryTab extends JPanel {
 
     private final Host host;
     private final RSyntaxTextArea editor;
+    private final RTextScrollPane editorScroll;
     private final DefaultCompletionProvider completions = new DefaultCompletionProvider();
     private final JButton runButton = new JButton("Run");
     private final JButton cancelButton = new JButton("Cancel");
@@ -159,6 +165,10 @@ final class QueryTab extends JPanel {
         editor.setTabSize(2);
         editor.setMarkOccurrences(true);
         installCompletion();
+        editorScroll = new RTextScrollPane(editor);
+        editorScroll.setLineNumbersEnabled(true);
+        editorScroll.setMinimumSize(new Dimension(280, 90));
+        SyntaxTextTheme.apply(editor, editorScroll);
 
         PlainText.install(results);
         results.setDefaultRenderer(Object.class, new SqlValueRenderer());
@@ -210,9 +220,6 @@ final class QueryTab extends JPanel {
 
         JPanel top = new JPanel(new BorderLayout());
         top.add(toolbar, BorderLayout.NORTH);
-        RTextScrollPane editorScroll = new RTextScrollPane(editor);
-        editorScroll.setLineNumbersEnabled(true);
-        editorScroll.setMinimumSize(new Dimension(280, 90));
         top.add(editorScroll, BorderLayout.CENTER);
         top.add(errorScroll, BorderLayout.SOUTH);
 
@@ -231,7 +238,10 @@ final class QueryTab extends JPanel {
         bottom.add(resultScroll, BorderLayout.CENTER);
         bottom.add(footer, BorderLayout.SOUTH);
 
-        JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, top, bottom);
+        JSplitPane vertical = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                new SectionPane("Query", top),
+                new SectionPane("Results", bottom));
         vertical.setResizeWeight(0.34);
         vertical.setBorder(null);
         return vertical;
@@ -338,6 +348,11 @@ final class QueryTab extends JPanel {
 
     /** Lets go of the session, off the EDT, without leaving a statement running. */
     void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches immediately and completes after this tab's query reader has stopped. */
+    CompletionStage<Void> closeSessionAsync() {
         generation++;
         running = false;
         tableModel = null;
@@ -356,9 +371,9 @@ final class QueryTab extends JPanel {
         executor = null;
         source = null;
         if (closing == null && stopping == null) {
-            return;
+            return CompletableFuture.completedFuture(null);
         }
-        Thread closer = new Thread(() -> {
+        return ViewClose.runAsync("bbv-query-close", () -> {
             // Interrupt before shutting down: a describe that is mid-scan would
             // otherwise hold the executor for as long as the scan takes, and
             // closing the connection under it blocks too. This is what keeps a
@@ -370,9 +385,14 @@ final class QueryTab extends JPanel {
             if (closing != null) {
                 closing.close();
             }
-        }, "bbv-query-close");
-        closer.setDaemon(true);
-        closer.start();
+        });
+    }
+
+    /** Permanently closes the tab, including its debounced column-state writer. */
+    CompletionStage<Void> closeAsync() {
+        return CompletableFuture.allOf(
+                closeSessionAsync().toCompletableFuture(),
+                headerInteractions.closeAsync().toCompletableFuture());
     }
 
     /**
@@ -742,6 +762,14 @@ final class QueryTab extends JPanel {
 
     TableHeaderInteractions headerInteractionsForTest() {
         return headerInteractions;
+    }
+
+    RSyntaxTextArea editorForTest() {
+        return editor;
+    }
+
+    RTextScrollPane editorScrollForTest() {
+        return editorScroll;
     }
 
     void setRowCapForTest(int cap) {

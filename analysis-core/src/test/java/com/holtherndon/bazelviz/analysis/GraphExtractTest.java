@@ -161,6 +161,25 @@ final class GraphExtractTest {
     }
 
     @Test
+    @DisplayName("an oversized path is refused intact before its edges are allocated")
+    void oversizedPathsAreRefusedWithExactCounts() {
+        assertThatThrownBy(() -> GraphExtract.path(
+                        chain(10), List.of(0, 1, 2, 3),
+                        GraphExtract.Mode.CRITICAL_PATH, 3, 20))
+                .isInstanceOf(GraphExtract.PathLimitExceededException.class)
+                .hasMessageContaining("4 actions and 3 dependencies")
+                .hasMessageContaining("budget of 3 actions and 20 dependencies")
+                .hasMessageContaining("Nothing was drawn");
+
+        assertThatThrownBy(() -> GraphExtract.path(
+                        chain(10), List.of(0, 1, 2, 3),
+                        GraphExtract.Mode.PATH, 10, 2))
+                .isInstanceOf(GraphExtract.PathLimitExceededException.class)
+                .hasMessageContaining("4 actions and 3 dependencies")
+                .hasMessageContaining("budget of 10 actions and 2 dependencies");
+    }
+
+    @Test
     @DisplayName("an empty path is a legal, empty subgraph")
     void emptyPaths() {
         GraphExtract.Result none =

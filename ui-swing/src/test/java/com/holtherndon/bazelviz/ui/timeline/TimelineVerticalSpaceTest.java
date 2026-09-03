@@ -1,9 +1,12 @@
 package com.holtherndon.bazelviz.ui.timeline;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 import java.awt.GraphicsEnvironment;
 import java.awt.Point;
+import java.awt.Rectangle;
+import java.awt.event.InputEvent;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.util.ArrayList;
@@ -34,8 +37,8 @@ import org.junit.jupiter.api.Test;
  * to a {@link JScrollPane} rather than divided into whatever the window has.
  * These tests hold that: a depth-6 lane is six times a depth-1 lane, every one
  * of its sub-rows is separately hittable, the canvas reports the sum, the
- * scroll position survives a live rebuild, and the wheel still means zoom and
- * only zoom.
+ * scroll position survives a live rebuild, ordinary wheel input scrolls the
+ * rows, and a modified wheel gesture zooms time around its pointer.
  */
 final class TimelineVerticalSpaceTest {
 
@@ -274,30 +277,144 @@ final class TimelineVerticalSpaceTest {
     }
 
     @Test
-    @DisplayName("the wheel over the plot zooms, and does not also scroll")
-    void wheelZoomsWithoutScrolling() {
+    @DisplayName("an ordinary wheel over the plot scrolls rows without changing time")
+    void ordinaryWheelScrollsWithoutZooming() {
         TimelineView view = viewShowing(modelWithLaneCount(20));
         sizeViewport(view);
         JScrollPane scroll = view.scrollForTest();
         scroll.getViewport().setViewPosition(new Point(0, 100));
         JComponent canvas = view.canvasForTest();
 
-        double before = view.viewport().orElseThrow().transform().pixelsPerMicro();
+        TimelineTransform before = view.viewport().orElseThrow().transform();
         MouseWheelEvent wheel = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL,
                 System.currentTimeMillis(), 0, 500, 10, 500, 10, 1, false,
+                MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, 2, 2.0);
+        canvas.getMouseWheelListeners()[0].mouseWheelMoved(wheel);
+
+        assertThat(scroll.getViewport().getViewPosition().y)
+                .as("two wheel units moved two sixteen-pixel rows")
+                .isEqualTo(132);
+        assertThat(view.viewport().orElseThrow().transform())
+                .as("ordinary scrolling does not move or scale time")
+                .isEqualTo(before);
+        assertThat(view.followingForTest())
+                .as("reading another lane does not opt out of following a live build")
+                .isTrue();
+        assertThat(wheel.isConsumed()).isTrue();
+        assertThat(scroll.isWheelScrollingEnabled()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a sideways trackpad gesture pans time without moving the lanes")
+    void horizontalGesturePansTime() {
+        TimelineView view = viewShowing(modelWithLaneCount(20));
+        sizeViewport(view);
+        JScrollPane scroll = view.scrollForTest();
+        scroll.getViewport().setViewPosition(new Point(0, 100));
+        JComponent canvas = view.canvasForTest();
+
+        TimelineTransform before = view.viewport().orElseThrow().transform();
+        MouseWheelEvent wheel = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL,
+                System.currentTimeMillis(), InputEvent.SHIFT_DOWN_MASK,
+                500, 10, 500, 10, 1, false,
+                MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, 2, 2.0);
+        canvas.getMouseWheelListeners()[0].mouseWheelMoved(wheel);
+
+        TimelineTransform after = view.viewport().orElseThrow().transform();
+        assertThat(after.offsetMicros())
+                .as("positive native delta-X moves the visible time range right")
+                .isGreaterThan(before.offsetMicros());
+        assertThat(after.pixelsPerMicro()).isEqualTo(before.pixelsPerMicro());
+        assertThat(scroll.getViewport().getViewPosition().y).isEqualTo(100);
+        assertThat(view.followingForTest()).isFalse();
+        assertThat(wheel.isConsumed()).isTrue();
+    }
+
+    @Test
+    @DisplayName("density geometry follows the viewport rather than a repaint clip")
+    void densityUsesStableVisibleSlice() {
+        TimelineView view = viewShowing(modelWithLaneCount(20));
+        sizeViewport(view);
+        view.scrollForTest().getViewport().setViewPosition(new Point(0, 100));
+
+        Rectangle slice = view.visibleCanvasSliceForTest();
+
+        assertThat(slice.y).isEqualTo(100);
+        assertThat(slice.height).isEqualTo(VIEWPORT_HEIGHT);
+        assertThat(slice.width).isEqualTo(WIDTH);
+    }
+
+    @Test
+    @DisplayName("Control-wheel zooms around the pointer without moving the vertical scroll")
+    void controlWheelZoomsAroundItsPointer() {
+        TimelineView view = viewShowing(modelWithLaneCount(20));
+        sizeViewport(view);
+        JScrollPane scroll = view.scrollForTest();
+        scroll.getViewport().setViewPosition(new Point(0, 100));
+        JComponent canvas = view.canvasForTest();
+
+        int anchorX = 275;
+        TimelineTransform before = view.viewport().orElseThrow().transform();
+        double anchoredMicros = before.microsAtX(anchorX);
+        MouseWheelEvent wheel = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL,
+                System.currentTimeMillis(), InputEvent.CTRL_DOWN_MASK,
+                anchorX, 10, anchorX, 10, 1, false,
                 MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, -2, -2.0);
         canvas.getMouseWheelListeners()[0].mouseWheelMoved(wheel);
 
-        assertThat(view.viewport().orElseThrow().transform().pixelsPerMicro())
-                .as("the gesture zoomed")
-                .isGreaterThan(before);
-        assertThat(scroll.getViewport().getViewPosition().y)
-                .as("and did not also scroll")
-                .isEqualTo(100);
-        // Both halves of why: the event is consumed here, and the scroll pane
-        // is not listening for it either.
+        TimelineTransform after = view.viewport().orElseThrow().transform();
+        assertThat(after.pixelsPerMicro()).isGreaterThan(before.pixelsPerMicro());
+        assertThat(after.microsAtX(anchorX))
+                .as("the instant beneath the pointer stays beneath it")
+                .isCloseTo(anchoredMicros, within(1e-6));
+        assertThat(scroll.getViewport().getViewPosition().y).isEqualTo(100);
+        assertThat(view.followingForTest()).isFalse();
         assertThat(wheel.isConsumed()).isTrue();
-        assertThat(scroll.isWheelScrollingEnabled()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Command-wheel is also a zoom gesture")
+    void commandWheelZooms() {
+        TimelineView view = viewShowing(modelWithLaneCount(20));
+        JComponent canvas = view.canvasForTest();
+        double before = view.viewport().orElseThrow().transform().pixelsPerMicro();
+        MouseWheelEvent wheel = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL,
+                System.currentTimeMillis(), InputEvent.META_DOWN_MASK,
+                500, 10, 500, 10, 1, false,
+                MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, -1, -1.0);
+
+        canvas.getMouseWheelListeners()[0].mouseWheelMoved(wheel);
+
+        assertThat(view.viewport().orElseThrow().transform().pixelsPerMicro())
+                .isGreaterThan(before);
+        assertThat(wheel.isConsumed()).isTrue();
+    }
+
+    @Test
+    @DisplayName("small trackpad wheel deltas accumulate instead of being rounded away")
+    void fractionalWheelDeltasAccumulate() {
+        TimelineView view = viewShowing(modelWithLaneCount(20));
+        sizeViewport(view);
+        JScrollPane scroll = view.scrollForTest();
+        scroll.getViewport().setViewPosition(new Point(0, 50));
+        JComponent canvas = view.canvasForTest();
+
+        for (int i = 0; i < 3; i++) {
+            MouseWheelEvent wheel = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL,
+                    System.currentTimeMillis(), 0, 500, 10, 500, 10, 1, false,
+                    MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, 0, 0.02);
+            canvas.getMouseWheelListeners()[0].mouseWheelMoved(wheel);
+        }
+        assertThat(scroll.getViewport().getViewPosition().y).isEqualTo(50);
+
+        MouseWheelEvent fourth = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL,
+                System.currentTimeMillis(), 0, 500, 10, 500, 10, 1, false,
+                MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, 0, 0.02);
+        canvas.getMouseWheelListeners()[0].mouseWheelMoved(fourth);
+
+        assertThat(scroll.getViewport().getViewPosition().y)
+                .as("four sub-pixel deltas make one visible pixel together")
+                .isEqualTo(51);
     }
 
     @Test
@@ -324,7 +441,7 @@ final class TimelineVerticalSpaceTest {
                 .as("wheeling the label column moved the shared viewport")
                 .isEqualTo(50 + Math.round(2.0 * 16));
         assertThat(view.viewport().orElseThrow().transform().pixelsPerMicro())
-                .as("the label column's wheel gesture scrolls only — the canvas is still the one place it zooms")
+                .as("an unmodified wheel scrolls consistently over labels and plot")
                 .isEqualTo(before);
         assertThat(wheel.isConsumed()).isTrue();
     }

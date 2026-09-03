@@ -146,6 +146,35 @@ final class SessionRedactionTest {
         assertThat(label(tempDir.resolve("hide.sqlite"))).startsWith("[redacted:");
     }
 
+    @Test
+    @DisplayName("configuration option values use their Bazel flag name during export")
+    void optionValuesAreRedactedByFlagName() throws Exception {
+        Path original = tempDir.resolve("options.sqlite");
+        try (SessionDatabase database = open("options.sqlite")) {
+            Connection writer = database.writerConnection();
+            exec(writer, "INSERT INTO graph_sources"
+                    + " (id, kind, state, configuration_match)"
+                    + " VALUES (1, 'CONFIGURED_TARGETS', 'SUCCEEDED', 'EXACT')");
+            exec(writer, "INSERT INTO queried_configurations"
+                    + " (id, source_id, graph_id, checksum, is_tool, options_available)"
+                    + " VALUES (1, 1, 1, 'abc', 0, 1)");
+            exec(writer, "INSERT INTO queried_configuration_options"
+                    + " (configuration_id, option_set_name, option_name, option_value, ordinal)"
+                    + " VALUES (1, 'Remote', 'remote_header', 'Bearer secret-value', 0)");
+        }
+
+        Path copy = tempDir.resolve("options-redacted.sqlite");
+        SessionRedaction.copyRedacted(original, copy, RedactionPolicy.forExport());
+
+        try (SessionDatabase database = SessionDatabase.open(copy);
+                Statement statement = database.writerConnection().createStatement();
+                ResultSet rows = statement.executeQuery(
+                        "SELECT option_value FROM queried_configuration_options")) {
+            assertThat(rows.next()).isTrue();
+            assertThat(rows.getString(1)).doesNotContain("secret-value").startsWith("[redacted:");
+        }
+    }
+
     private static String label(Path database) throws Exception {
         try (SessionDatabase open = SessionDatabase.open(database);
                 Statement statement = open.writerConnection().createStatement();

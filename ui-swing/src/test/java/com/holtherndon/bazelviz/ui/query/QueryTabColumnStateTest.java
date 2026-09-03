@@ -4,10 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.storage.query.TempViewDefinition;
 import com.holtherndon.bazelviz.storage.query.SchemaTable;
+import com.holtherndon.bazelviz.ui.theme.AppTheme;
+import com.holtherndon.bazelviz.ui.theme.Themes;
 import java.awt.GraphicsEnvironment;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,6 +53,25 @@ final class QueryTabColumnStateTest {
             assertThat(tab.headerInteractionsForTest().explanationForTest("anything"))
                     .contains("ORDER BY")
                     .contains("belongs to the query");
+        });
+    }
+
+    @Test
+    @DisplayName("a query editor created under a dark theme is readable immediately")
+    void queryEditorStartsWithTheActiveTheme() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                Themes.install(AppTheme.DARK);
+                QueryTab tab = new QueryTab(NO_HOST, "SELECT 'value'");
+
+                assertThat(tab.editorForTest().getBackground())
+                        .isEqualTo(UIManager.getColor("TextArea.background"));
+                assertThat(tab.editorScrollForTest().getGutter().getBackground())
+                        .isEqualTo(UIManager.getColor("TextArea.background"));
+                assertThat(tab.editorScrollForTest().getLineNumbersEnabled()).isTrue();
+            } finally {
+                Themes.installDefault();
+            }
         });
     }
 }

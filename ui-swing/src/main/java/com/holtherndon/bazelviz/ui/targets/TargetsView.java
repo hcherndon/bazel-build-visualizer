@@ -5,10 +5,12 @@ import com.holtherndon.bazelviz.storage.entities.TargetRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -18,13 +20,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.LongConsumer;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -43,7 +49,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The Targets card: packages, and the targets inside them.
+ * The Top Level Targets card: packages, and the targets requested by the build.
  *
  * <h2>Two levels, loaded separately</h2>
  *
@@ -78,6 +84,12 @@ public final class TargetsView extends JPanel {
     private static final String CARD_EMPTY = "empty";
     private static final String CARD_TREE = "tree";
 
+    private static final String BROWSE_PACKAGES = "packages";
+    private static final String BROWSE_ALL_TARGETS = "all-targets";
+
+    /** Top-level labels appended by one explicit flat-list page request. */
+    public static final int FLAT_LABEL_PAGE_SIZE = 200;
+
     /** Placeholder child that makes a package node expandable before it is loaded. */
     private static final String PENDING = "…";
 
@@ -87,6 +99,13 @@ public final class TargetsView extends JPanel {
     private final DefaultMutableTreeNode root = new DefaultMutableTreeNode("targets");
     private final DefaultTreeModel treeModel = new DefaultTreeModel(root);
     private final JTree tree = new JTree(treeModel);
+    private final DefaultMutableTreeNode flatRoot = new DefaultMutableTreeNode("all targets");
+    private final DefaultTreeModel flatTreeModel = new DefaultTreeModel(flatRoot);
+    private final JTree flatTree = new JTree(flatTreeModel);
+    private final CardLayout browseCards = new CardLayout();
+    private final JPanel browseDeck = new JPanel(browseCards);
+    private final JComboBox<BrowseMode> browseMode = new JComboBox<>(BrowseMode.values());
+    private final JButton loadMoreLabels = new JButton("Load more targets");
     private final InspectorPanel inspector = new InspectorPanel();
     private final JLabel statusLabel = new JLabel(" ");
 
@@ -98,6 +117,12 @@ public final class TargetsView extends JPanel {
     private SessionSource source;
     private LongConsumer showEventHandler = eventId -> { };
     private long selectionGeneration;
+    private boolean flatPageLoading;
+    private long flatLabelCount = -1;
+    private String flatAfterLabel;
+    private SelectedTarget selectedFlatTarget;
+    private String packageStatus = " ";
+    private String flatStatus = " ";
 
     /**
      * The shared cross-view navigation actions, once {@link
@@ -127,6 +152,7 @@ public final class TargetsView extends JPanel {
         empty.add(emptyLabel, BorderLayout.CENTER);
 
         PlainText.install(tree);
+        PlainText.install(flatTree);
         PlainText.disableHtml(statusLabel);
         PlainText.disableHtml(emptyLabel);
         tree.setRootVisible(false);
@@ -145,12 +171,33 @@ public final class TargetsView extends JPanel {
                 // which is what makes re-expanding it free.
             }
         });
+        flatTree.setRootVisible(false);
+        flatTree.setShowsRootHandles(false);
+        flatTree.getSelectionModel().setSelectionMode(
+                TreeSelectionModel.SINGLE_TREE_SELECTION);
+        flatTree.addTreeSelectionListener(event -> flatSelectionChanged());
         inspector.onShowSourceEvent(eventId -> showEventHandler.accept(eventId));
 
-        JScrollPane scroll = new JScrollPane(tree);
-        scroll.setMinimumSize(new Dimension(320, 160));
+        JScrollPane treeScroll = new JScrollPane(tree);
+        treeScroll.setMinimumSize(new Dimension(320, 160));
+        JScrollPane flatScroll = new JScrollPane(flatTree);
+        flatScroll.setMinimumSize(new Dimension(320, 160));
+        JPanel flatPanel = new JPanel(new BorderLayout());
+        flatPanel.add(flatScroll, BorderLayout.CENTER);
+        JPanel flatFooter = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        loadMoreLabels.setEnabled(false);
+        loadMoreLabels.setToolTipText("Append the next " + FLAT_LABEL_PAGE_SIZE
+                + " top-level labels without creating package groups.");
+        loadMoreLabels.addActionListener(event -> loadNextFlatPage());
+        flatFooter.add(loadMoreLabels);
+        flatPanel.add(flatFooter, BorderLayout.SOUTH);
+        browseDeck.add(treeScroll, BROWSE_PACKAGES);
+        browseDeck.add(flatPanel, BROWSE_ALL_TARGETS);
         inspector.setMinimumSize(new Dimension(300, 160));
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, scroll, inspector);
+        JSplitPane split = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                new SectionPane("Top level targets", browseDeck),
+                new SectionPane("Target details", inspector));
         split.setResizeWeight(0.55);
 
         JPanel status = new JPanel(new BorderLayout());
@@ -179,6 +226,12 @@ public final class TargetsView extends JPanel {
      */
     private JPanel buildToolbar() {
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        JLabel viewLabel = new JLabel("View:");
+        viewLabel.setLabelFor(browseMode);
+        browseMode.setToolTipText("Group top-level targets by package or show one flat label list.");
+        browseMode.addActionListener(event -> switchBrowseMode());
+        bar.add(viewLabel);
+        bar.add(browseMode);
         toolbarActions.add(new ToolbarAction(
                 EntityActions.Command.OPEN_IN_TREE,
                 row -> Optional.of(new EntityRef.TargetLabel(row.label())),
@@ -212,8 +265,8 @@ public final class TargetsView extends JPanel {
                         + " so no query can select events by label."));
         toolbarActions.add(new ToolbarAction(
                 EntityActions.Command.SHOW_SOURCE_EVENT,
-                row -> row.bepEventId().isPresent()
-                        ? Optional.of(new EntityRef.EventId(row.bepEventId().getAsLong()))
+                row -> row.sourceEventId().isPresent()
+                        ? Optional.of(new EntityRef.EventId(row.sourceEventId().getAsLong()))
                         : Optional.empty(),
                 "Open the event this target row was normalized from",
                 "This target row records no source event, so there is"
@@ -232,18 +285,60 @@ public final class TargetsView extends JPanel {
      */
     public void installEntityActions(EntityActions actions) {
         this.entityActions = Objects.requireNonNull(actions, "actions");
+        inspector.installEntityActions(actions,
+                java.util.Set.of(EntityActions.Command.OPEN_TARGET));
+        actions.installTreeMenu(tree, this::refsAtPath, this::omissionsAtPath);
+        actions.installTreeMenu(flatTree, this::refsAtPath,
+                path -> java.util.Set.of(EntityActions.Command.OPEN_TARGET));
         updateToolbar();
+    }
+
+    private List<EntityRef> refsAtPath(TreePath path) {
+        Object node = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+        if (node instanceof PackageNode packageNode) {
+            return com.holtherndon.bazelviz.ui.files.WorkspaceFileResolver
+                    .mainRepositoryLabel(packageNode.summary.path())
+                    .<List<EntityRef>>map(label -> List.of(new EntityRef.TargetLabel(label)))
+                    .orElse(List.of());
+        }
+        if (node instanceof FlatLabelNode flat) {
+            return List.of(new EntityRef.TargetLabel(flat.label));
+        }
+        if (!(node instanceof TargetNode target)) {
+            return List.of();
+        }
+        List<EntityRef> refs = new ArrayList<>();
+        refs.add(new EntityRef.TargetLabel(target.row.label()));
+        target.row.configurationId().ifPresent(checksum ->
+                refs.add(new EntityRef.ConfigurationChecksum(checksum)));
+        target.row.bepEventId().ifPresent(eventId ->
+                refs.add(new EntityRef.EventId(eventId)));
+        return refs;
+    }
+
+    private java.util.Set<EntityActions.Command> omissionsAtPath(TreePath path) {
+        Object node = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+        if (node instanceof PackageNode) {
+            java.util.EnumSet<EntityActions.Command> omitted =
+                    java.util.EnumSet.allOf(EntityActions.Command.class);
+            omitted.remove(EntityActions.Command.OPEN_BUILD_FILE);
+            return omitted;
+        }
+        if (node instanceof FlatLabelNode) {
+            return java.util.Set.of(EntityActions.Command.OPEN_TARGET);
+        }
+        return java.util.Set.of(EntityActions.Command.OPEN_TARGET);
     }
 
     /** EDT: re-states every toolbar button against the current selection. */
     private void updateToolbar() {
-        TargetRow selected = selectedRow();
+        SelectedTarget selected = selectedTarget();
         for (ToolbarAction action : toolbarActions) {
             action.update(selected);
         }
     }
 
-    /** The selected target row, or null when the selection is not one. */
+    /** The selected package-tree target row, or null when the selection is not one. */
     private TargetRow selectedRow() {
         TreePath path = tree.getSelectionPath();
         if (path == null) {
@@ -251,6 +346,14 @@ public final class TargetsView extends JPanel {
         }
         Object selected = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
         return selected instanceof TargetNode targetNode ? targetNode.row : null;
+    }
+
+    private SelectedTarget selectedTarget() {
+        if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
+            return selectedFlatTarget;
+        }
+        TargetRow row = selectedRow();
+        return row == null ? null : new SelectedTarget(row.label(), row.bepEventId());
     }
 
     public void onShowSourceEvent(LongConsumer handler) {
@@ -285,6 +388,9 @@ public final class TargetsView extends JPanel {
                     }
                     reader = opened;
                     install(packages);
+                    if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
+                        ensureFlatPage();
+                    }
                 });
             } catch (RuntimeException failure) {
                 log.error("could not read targets", failure);
@@ -294,11 +400,25 @@ public final class TargetsView extends JPanel {
     }
 
     public void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches immediately and completes after this session's target reads have stopped. */
+    public CompletionStage<Void> closeSessionAsync() {
         pendingRevealTargetId = null;
         pendingRevealPackagePath = null;
         revealGeneration++;
         root.removeAllChildren();
         treeModel.reload();
+        flatRoot.removeAllChildren();
+        flatTreeModel.reload();
+        flatPageLoading = false;
+        flatLabelCount = -1;
+        flatAfterLabel = null;
+        selectedFlatTarget = null;
+        packageStatus = " ";
+        flatStatus = " ";
+        loadMoreLabels.setEnabled(false);
         inspector.show(Inspection.NONE);
         // Whatever was selected is gone with the tree, and the toolbar must
         // not keep offering jumps for a target that is no longer on screen.
@@ -308,22 +428,22 @@ public final class TargetsView extends JPanel {
         source = null;
         executor = null;
         reader = null;
-        if (stopping == null) {
-            return;
+        if (stopping == null && closing == null) {
+            return CompletableFuture.completedFuture(null);
         }
-        Thread closer = new Thread(() -> {
-            stopping.shutdownNow();
-            try {
-                stopping.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
+        return ViewClose.runAsync("bbv-targets-close", () -> {
+            if (stopping != null) {
+                stopping.shutdownNow();
+                try {
+                    stopping.awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
             }
             if (closing != null) {
                 closing.close();
             }
-        }, "bbv-targets-close");
-        closer.setDaemon(true);
-        closer.start();
+        });
     }
 
     /**
@@ -343,6 +463,7 @@ public final class TargetsView extends JPanel {
      */
     public void revealLabel(String label) {
         Objects.requireNonNull(label, "label");
+        browseMode.setSelectedItem(BrowseMode.PACKAGES);
         ExecutorService running = executor;
         EntityReader current = reader;
         if (running == null || current == null) {
@@ -492,8 +613,170 @@ public final class TargetsView extends JPanel {
             status.append("  ·  ").append(EntityFormat.count(notCompleted))
                     .append(" configured but never completed");
         }
-        statusLabel.setText(status.toString());
+        packageStatus = status.toString();
         cards.show(deck, CARD_TREE);
+        switchBrowseMode();
+    }
+
+    /** EDT: swaps the two presentations without changing what counts as top level. */
+    private void switchBrowseMode() {
+        BrowseMode mode = (BrowseMode) browseMode.getSelectedItem();
+        if (mode == BrowseMode.ALL_TARGETS) {
+            browseCards.show(browseDeck, BROWSE_ALL_TARGETS);
+            statusLabel.setText(flatStatus);
+            ensureFlatPage();
+            flatSelectionChanged();
+        } else {
+            browseCards.show(browseDeck, BROWSE_PACKAGES);
+            statusLabel.setText(packageStatus);
+            selectionChanged();
+        }
+        updateToolbar();
+    }
+
+    private void ensureFlatPage() {
+        if (reader != null && flatRoot.getChildCount() == 0 && !flatPageLoading) {
+            loadNextFlatPage();
+        }
+    }
+
+    /** Appends one bounded page of direct label rows; every SQL read stays off the EDT. */
+    private void loadNextFlatPage() {
+        EntityReader current = reader;
+        ExecutorService running = executor;
+        SessionSource opened = source;
+        if (flatPageLoading || current == null || running == null || opened == null) {
+            return;
+        }
+        if (flatLabelCount >= 0 && flatRoot.getChildCount() >= flatLabelCount) {
+            return;
+        }
+        flatPageLoading = true;
+        loadMoreLabels.setEnabled(false);
+        flatStatus = flatRoot.getChildCount() == 0
+                ? "Reading top-level target labels…" : "Reading more target labels…";
+        if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
+            statusLabel.setText(flatStatus);
+        }
+        String boundary = flatAfterLabel;
+        running.execute(() -> {
+            try {
+                long total = flatLabelCount < 0
+                        ? current.topLevelTargetLabelCount() : flatLabelCount;
+                List<String> labels = boundary == null
+                        ? current.firstTopLevelTargetLabels(FLAT_LABEL_PAGE_SIZE)
+                        : current.topLevelTargetLabelsAfter(
+                                boundary, FLAT_LABEL_PAGE_SIZE);
+                SwingUtilities.invokeLater(() -> installFlatPage(opened, total, labels));
+            } catch (RuntimeException failure) {
+                log.warn("could not read the flat top-level target list", failure);
+                SwingUtilities.invokeLater(() -> {
+                    if (source == opened) {
+                        flatPageLoading = false;
+                        flatStatus = "Could not read target labels: " + failure.getMessage();
+                        if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
+                            statusLabel.setText(flatStatus);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    private void installFlatPage(SessionSource opened, long total, List<String> labels) {
+        if (source != opened) {
+            return;
+        }
+        for (String label : labels) {
+            flatRoot.add(new DefaultMutableTreeNode(new FlatLabelNode(label)));
+        }
+        if (!labels.isEmpty()) {
+            flatAfterLabel = labels.getLast();
+        }
+        flatLabelCount = total;
+        flatPageLoading = false;
+        flatTreeModel.reload();
+        long loaded = flatRoot.getChildCount();
+        flatStatus = EntityFormat.count(loaded) + " of " + EntityFormat.count(total)
+                + " distinct top-level target labels loaded";
+        boolean hasMore = loaded < total;
+        loadMoreLabels.setEnabled(hasMore);
+        loadMoreLabels.setToolTipText(hasMore
+                ? "Append the next " + FLAT_LABEL_PAGE_SIZE + " top-level labels."
+                : "Every top-level target label is loaded.");
+        if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
+            statusLabel.setText(flatStatus);
+        }
+    }
+
+    private void flatSelectionChanged() {
+        if (browseMode.getSelectedItem() != BrowseMode.ALL_TARGETS) {
+            return;
+        }
+        TreePath path = flatTree.getSelectionPath();
+        Object value = path == null ? null
+                : ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+        if (!(value instanceof FlatLabelNode flat)) {
+            selectedFlatTarget = null;
+            inspector.show(Inspection.NONE);
+            updateToolbar();
+            return;
+        }
+        selectedFlatTarget = new SelectedTarget(flat.label, OptionalLong.empty());
+        updateToolbar();
+        inspector.show(Inspection.NONE);
+        long generation = ++selectionGeneration;
+        EntityReader current = reader;
+        ExecutorService running = executor;
+        if (current == null || running == null) {
+            return;
+        }
+        running.execute(() -> {
+            try {
+                List<TargetRow> rows = current.targetsByLabel(flat.label);
+                Inspection inspection;
+                OptionalLong sourceEvent = OptionalLong.empty();
+                if (rows.size() == 1) {
+                    TargetRow row = rows.getFirst();
+                    inspection = TargetInspection.of(
+                            row,
+                            current.targetTags(row.id()),
+                            row.configuredTargetId().isPresent()
+                                    ? current.outputGroups(row.configuredTargetId().getAsLong())
+                                    : List.of());
+                    sourceEvent = row.bepEventId();
+                } else {
+                    inspection = flatInspection(flat.label, rows);
+                }
+                OptionalLong finalSourceEvent = sourceEvent;
+                SwingUtilities.invokeLater(() -> {
+                    if (generation == selectionGeneration
+                            && browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
+                        selectedFlatTarget = new SelectedTarget(flat.label, finalSourceEvent);
+                        inspector.show(inspection);
+                        updateToolbar();
+                    }
+                });
+            } catch (RuntimeException failure) {
+                log.warn("could not describe top-level target {}", flat.label, failure);
+            }
+        });
+    }
+
+    private static Inspection flatInspection(String label, List<TargetRow> rows) {
+        long configurations = rows.stream()
+                .flatMap(row -> row.configurationId().stream())
+                .distinct()
+                .count();
+        return new Inspection.Builder(label)
+                .subtitle(EntityFormat.count(rows.size()) + " recorded variants")
+                .ref(new EntityRef.TargetLabel(label))
+                .section("Top-level target")
+                .field("Label", label)
+                .field("Rows recorded", EntityFormat.count(rows.size()))
+                .field("Configurations reported", EntityFormat.count(configurations))
+                .field("Inspect individually", "Switch to Packages and expand its package")
+                .build();
     }
 
     /**
@@ -539,6 +822,9 @@ public final class TargetsView extends JPanel {
     }
 
     private void selectionChanged() {
+        if (browseMode.getSelectedItem() != BrowseMode.PACKAGES) {
+            return;
+        }
         // Before any query: the toolbar states what the new selection can and
         // cannot do from what is already in hand, so it never lags a slow
         // inspection read.
@@ -588,14 +874,14 @@ public final class TargetsView extends JPanel {
         private final JPanel wrapper = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         private final JButton button;
         private final EntityActions.Command command;
-        private final Function<TargetRow, Optional<EntityRef>> refOf;
+        private final Function<SelectedTarget, Optional<EntityRef>> refOf;
         private final String enabledTip;
         private final String noRefReason;
         private final String unwiredReason;
 
         ToolbarAction(
                 EntityActions.Command command,
-                Function<TargetRow, Optional<EntityRef>> refOf,
+                Function<SelectedTarget, Optional<EntityRef>> refOf,
                 String enabledTip,
                 String noRefReason,
                 String unwiredReason) {
@@ -612,7 +898,7 @@ public final class TargetsView extends JPanel {
         }
 
         /** EDT: enables or disables against {@code selected}, with the reason. */
-        void update(TargetRow selected) {
+        void update(SelectedTarget selected) {
             Optional<String> unavailable = unavailableReason(selected);
             button.setEnabled(unavailable.isEmpty());
             String tip = PlainText.tooltip(unavailable.orElse(enabledTip));
@@ -621,7 +907,7 @@ public final class TargetsView extends JPanel {
         }
 
         /** Why this cannot be pressed right now, or empty when it can. */
-        private Optional<String> unavailableReason(TargetRow selected) {
+        private Optional<String> unavailableReason(SelectedTarget selected) {
             if (entityActions == null) {
                 return Optional.of("Cross-view navigation is not wired into"
                         + " this window.");
@@ -630,15 +916,14 @@ public final class TargetsView extends JPanel {
                 return Optional.of(unwiredReason);
             }
             if (selected == null) {
-                return Optional.of("Select a target in the tree first —"
-                        + " a package row is not a target.");
+                return Optional.of("Select a target first — a package row is not a target.");
             }
             return refOf.apply(selected).isEmpty()
                     ? Optional.of(noRefReason) : Optional.empty();
         }
 
         private void activate() {
-            TargetRow selected = selectedRow();
+            SelectedTarget selected = selectedTarget();
             EntityActions actions = entityActions;
             if (selected == null || actions == null || !actions.isWired(command)) {
                 // Unreachable while update() has the last word on enablement,
@@ -663,6 +948,74 @@ public final class TargetsView extends JPanel {
     /** Visible for testing: the commands the toolbar offers, in order. */
     List<EntityActions.Command> toolbarCommandsForTest() {
         return toolbarActions.stream().map(action -> action.command).toList();
+    }
+
+    List<EntityRef> packageRefsForTest(int packageIndex) {
+        DefaultMutableTreeNode node = (DefaultMutableTreeNode) root.getChildAt(packageIndex);
+        return refsAtPath(new TreePath(node.getPath()));
+    }
+
+    List<EntityRef> selectedTargetRefsForTest() {
+        TreePath path = tree.getSelectionPath();
+        return path == null ? List.of() : refsAtPath(path);
+    }
+
+    java.util.Set<EntityActions.Command> packageOmissionsForTest(int packageIndex) {
+        DefaultMutableTreeNode node = (DefaultMutableTreeNode) root.getChildAt(packageIndex);
+        return omissionsAtPath(new TreePath(node.getPath()));
+    }
+
+    List<String> browseModesForTest() {
+        List<String> labels = new ArrayList<>();
+        for (int i = 0; i < browseMode.getItemCount(); i++) {
+            labels.add(browseMode.getItemAt(i).toString());
+        }
+        return labels;
+    }
+
+    void showAllTargetsForTest() {
+        browseMode.setSelectedItem(BrowseMode.ALL_TARGETS);
+    }
+
+    int flatLabelCountForTest() {
+        return flatRoot.getChildCount();
+    }
+
+    String flatLabelForTest(int index) {
+        DefaultMutableTreeNode node = (DefaultMutableTreeNode) flatRoot.getChildAt(index);
+        return ((FlatLabelNode) node.getUserObject()).label;
+    }
+
+    private enum BrowseMode {
+        PACKAGES("Packages"),
+        ALL_TARGETS("All Targets");
+
+        private final String label;
+
+        BrowseMode(String label) {
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
+    private record SelectedTarget(String label, OptionalLong sourceEventId) {}
+
+    /** A direct, non-expandable row in the flat top-level view. */
+    private static final class FlatLabelNode {
+        private final String label;
+
+        FlatLabelNode(String label) {
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
     }
 
     /** A package row in the tree. */

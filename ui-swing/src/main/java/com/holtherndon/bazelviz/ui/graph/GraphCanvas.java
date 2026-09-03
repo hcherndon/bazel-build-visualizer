@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.graph;
 
 import com.holtherndon.bazelviz.analysis.GraphLayout;
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Cursor;
@@ -18,6 +19,7 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.Consumer;
 import javax.swing.JComponent;
+import javax.swing.UIManager;
 
 /**
  * The graph, drawn.
@@ -115,10 +117,22 @@ public final class GraphCanvas extends JComponent {
      */
     private static final int FAR_EDGE_BUDGET = 30_000;
 
+    /** Primary hierarchy branches retained per horizontal pixel at far zoom. */
+    static final int FAR_HIERARCHY_BRANCHES_PER_PIXEL = 2;
+
     /** Hoisted out of the paint loop, where they were an allocation per node. */
     private static final BasicStroke THIN = new BasicStroke(1f);
 
     private static final BasicStroke OUTLINE = new BasicStroke(2f);
+
+    /** Dashed cross-links stay distinguishable from the hierarchy's branches. */
+    private static final BasicStroke CROSS_LINK = new BasicStroke(
+            1f,
+            BasicStroke.CAP_BUTT,
+            BasicStroke.JOIN_ROUND,
+            10f,
+            new float[] {4f, 4f},
+            0f);
 
     /**
      * One stroke per weight bucket, thinnest first.
@@ -134,9 +148,13 @@ public final class GraphCanvas extends JComponent {
 
     private GraphModel model = GraphModel.empty();
     private GraphTransform transform = GraphTransform.identity();
+    private GraphEdgeDisplay edgeDisplay = GraphEdgeDisplay.DECLUTTERED;
 
     /** Selected layout positions, in the order they were selected. */
     private final Set<Integer> selection = new LinkedHashSet<>();
+
+    /** Cross-links revealed by the current selection, computed only when it changes. */
+    private int revealedCrossLinks;
 
     private int hover = -1;
     private boolean panning;
@@ -185,6 +203,10 @@ public final class GraphCanvas extends JComponent {
     /** Arrowheads the last paint drew; zero outside the near band. */
     private int arrowsInLastPaint;
 
+    /** Hierarchy branches and cross-links actually drawn in the last paint. */
+    private int primaryEdgesInLastPaint;
+    private int crossLinksInLastPaint;
+
     /** True this frame when edges get direction arrowheads. */
     private boolean arrowsThisFrame;
 
@@ -199,7 +221,7 @@ public final class GraphCanvas extends JComponent {
 
     public GraphCanvas() {
         setOpaque(true);
-        setBackground(Color.WHITE);
+        refreshTheme();
         setFocusable(true);
         setPreferredSize(new Dimension(600, 400));
         Mouse mouse = new Mouse();
@@ -208,10 +230,23 @@ public final class GraphCanvas extends JComponent {
         addMouseWheelListener(mouse);
     }
 
+    @Override
+    public void updateUI() {
+        super.updateUI();
+        refreshTheme();
+        repaint();
+    }
+
+    private void refreshTheme() {
+        Color background = UIManager.getColor("Panel.background");
+        setBackground(background == null ? Color.WHITE : background);
+    }
+
     /** Replaces what is drawn and fits it to the window. */
     public void setModel(GraphModel model) {
         this.model = model == null ? GraphModel.empty() : model;
         selection.clear();
+        revealedCrossLinks = 0;
         hover = -1;
         // A new layout means new positions; offsets against the old ones
         // would displace unrelated nodes. Every new query, focus, source,
@@ -244,6 +279,21 @@ public final class GraphCanvas extends JComponent {
 
     public GraphTransform transform() {
         return transform;
+    }
+
+    /** Changes dependency detail without extracting or laying out again. */
+    public void setEdgeDisplay(GraphEdgeDisplay display) {
+        GraphEdgeDisplay next = display == null ? GraphEdgeDisplay.DECLUTTERED : display;
+        if (next == edgeDisplay) {
+            return;
+        }
+        edgeDisplay = next;
+        viewChangedListener.run();
+        repaint();
+    }
+
+    public GraphEdgeDisplay edgeDisplay() {
+        return edgeDisplay;
     }
 
     /** Called with the selected layout positions whenever they change. */
@@ -335,7 +385,9 @@ public final class GraphCanvas extends JComponent {
             return plain;
         }
         double nodeRadius = Math.max(2.5, NODE_RADIUS * plain.scale());
-        double wanted = widest + nodeRadius + 4;
+        double nodeExtent = model.layout().kind() == GraphLayout.Kind.HIERARCHY
+                ? nodeRadius * 1.3 : nodeRadius;
+        double wanted = widest + nodeExtent + 4;
         double usableWidth = getWidth() - 2 * FIT_MARGIN;
         // Two caps, both honest. The fraction cap stops a dense graph of long
         // names zooming to nothing; the band cap stops the reservation
@@ -348,7 +400,12 @@ public final class GraphCanvas extends JComponent {
         double reserve = Math.min(wanted, Math.min(cap, Math.max(0, bandCap)));
         boolean capped = reserve < wanted;
         GraphTransform reserved = GraphTransform.fit(
-                bounds, getWidth(), getHeight(), FIT_MARGIN, reserve, metrics.getHeight());
+                bounds,
+                getWidth(),
+                getHeight(),
+                FIT_MARGIN,
+                reserve,
+                visibleLabelHeight(metrics, band));
         if (Detail.forScale(reserved.scale()) != band) {
             // The vertical reservation squeezed the scale below the band
             // floor after all — only possible hard against the boundary. The
@@ -395,14 +452,41 @@ public final class GraphCanvas extends JComponent {
         int widest = 0;
         if (detail == Detail.MEDIUM) {
             for (int position : selection) {
-                widest = Math.max(widest, metrics.stringWidth(model.displayLabelAt(position)));
+                widest = Math.max(widest, labelWidth(metrics, position));
             }
             return widest;
         }
         for (int position = 0; position < model.size(); position++) {
-            widest = Math.max(widest, metrics.stringWidth(model.displayLabelAt(position)));
+            widest = Math.max(widest, labelWidth(metrics, position));
         }
         return widest;
+    }
+
+    private int labelWidth(java.awt.FontMetrics metrics, int position) {
+        int width = metrics.stringWidth(model.displayLabelAt(position));
+        return model.ownerLabelAt(position)
+                .map(owner -> Math.max(width, metrics.stringWidth("Target: " + owner)))
+                .orElse(width);
+    }
+
+    private int visibleLabelHeight(java.awt.FontMetrics metrics, Detail detail) {
+        if (detail == Detail.FAR) {
+            return 0;
+        }
+        if (detail == Detail.MEDIUM) {
+            for (int position : selection) {
+                if (model.ownerLabelAt(position).isPresent()) {
+                    return metrics.getHeight() * 2;
+                }
+            }
+            return metrics.getHeight();
+        }
+        for (int position = 0; position < model.size(); position++) {
+            if (model.ownerLabelAt(position).isPresent()) {
+                return metrics.getHeight() * 2;
+            }
+        }
+        return metrics.getHeight();
     }
 
     private void setTransform(GraphTransform next) {
@@ -437,7 +521,31 @@ public final class GraphCanvas extends JComponent {
         if (position >= 0 && position < model.size()) {
             selection.add(position);
         }
+        notifySelectionChanged();
+        repaint();
+    }
+
+    private void notifySelectionChanged() {
+        revealedCrossLinks = countRevealedCrossLinks();
         selectionListener.accept(selectedPositions());
+    }
+
+    private int countRevealedCrossLinks() {
+        if (model.layout().kind() != GraphLayout.Kind.HIERARCHY || selection.size() != 1) {
+            return 0;
+        }
+        return model.crossLinksTouching(selection);
+    }
+
+    /** Replaces the selection with several positions, for marquee behavior tests. */
+    void selectPositionsForTesting(int... positions) {
+        selection.clear();
+        for (int position : positions) {
+            if (position >= 0 && position < model.size()) {
+                selection.add(position);
+            }
+        }
+        notifySelectionChanged();
         repaint();
     }
 
@@ -496,6 +604,7 @@ public final class GraphCanvas extends JComponent {
 
     @Override
     protected void paintComponent(Graphics graphics) {
+        int previousDeclutteredLabels = declutteredLabels;
         if (fitPending && getWidth() > 0 && getHeight() > 0) {
             // The deferred fit from setModel. Cheap, and it must happen before
             // the first pixel rather than after the user has seen the wrong one.
@@ -528,6 +637,8 @@ public final class GraphCanvas extends JComponent {
             arrowsThisFrame = detail == Detail.NEAR && !panning;
             arrowRadiusPixels = Math.max(2.5, NODE_RADIUS * transform.scale());
             arrowsInLastPaint = 0;
+            primaryEdgesInLastPaint = 0;
+            crossLinksInLastPaint = 0;
             declutteredLabels = 0;
             paintedLabels.clear();
             paintEdges(g, world, detail);
@@ -543,6 +654,14 @@ public final class GraphCanvas extends JComponent {
             }
         } finally {
             g.dispose();
+        }
+        if (previousDeclutteredLabels != declutteredLabels) {
+            int paintedCount = declutteredLabels;
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (declutteredLabels == paintedCount) {
+                    viewChangedListener.run();
+                }
+            });
         }
     }
 
@@ -561,7 +680,11 @@ public final class GraphCanvas extends JComponent {
         // drawing has one bucket and pays for exactly one pass, as before.
         // Highlighted edges are a final pass, and only when there is a
         // selection to highlight.
-        g.setColor(GraphColours.EDGE);
+        if (model.layout().kind() == GraphLayout.Kind.HIERARCHY) {
+            paintHierarchyEdges(g, world, detail);
+            return;
+        }
+        g.setColor(GraphColours.edge());
         int lastBucket = model.maxEdgeBucket();
         for (int bucket = 0; bucket <= lastBucket; bucket++) {
             g.setStroke(EDGE_STROKES[bucket]);
@@ -575,7 +698,7 @@ public final class GraphCanvas extends JComponent {
                         && (selection.contains(from) || selection.contains(to))) {
                     continue;
                 }
-                drawEdge(g, layout, world, from, to);
+                drawEdge(g, layout, world, from, to, false);
             }
         }
         if (selection.isEmpty()) {
@@ -587,13 +710,178 @@ public final class GraphCanvas extends JComponent {
             int from = edges[0][e];
             int to = edges[1][e];
             if (selection.contains(from) || selection.contains(to)) {
-                drawEdge(g, layout, world, from, to);
+                drawEdge(g, layout, world, from, to, false);
             }
         }
     }
 
-    private void drawEdge(
-            Graphics2D g, GraphLayout.Result layout, double[] world, int from, int to) {
+    /**
+     * Primary parent links as orthogonal branches, shared/cycle links as
+     * subdued dashed lines. The latter are filtered by the explicit edge-detail
+     * setting; the model still contains every dependency.
+     */
+    private void paintHierarchyEdges(Graphics2D g, double[] world, Detail detail) {
+        int[][] edges = model.edgePositions();
+        int count = edges[0].length;
+        GraphLayout.Result layout = model.layout();
+        boolean hideFarCrossLinks = hierarchyCrossLinksAreHiddenAtFar(detail);
+        if (detail == Detail.FAR) {
+            paintHierarchyOverview(g, world, hideFarCrossLinks);
+            return;
+        }
+
+        g.setColor(GraphColours.secondaryEdge());
+        g.setStroke(CROSS_LINK);
+        for (int edge = 0; edge < count; edge++) {
+            if (model.isHierarchyEdge(edge)
+                    || (hideFarCrossLinks
+                            && !touchesSelection(edges[0][edge], edges[1][edge]))
+                    || !edgeVisible(edge)
+                    || touchesSelection(edges[0][edge], edges[1][edge])) {
+                continue;
+            }
+            if (drawEdge(g, layout, world, edges[0][edge], edges[1][edge], false)) {
+                crossLinksInLastPaint++;
+            }
+        }
+
+        g.setColor(GraphColours.edge());
+        int lastBucket = model.maxEdgeBucket();
+        for (int bucket = 0; bucket <= lastBucket; bucket++) {
+            g.setStroke(EDGE_STROKES[bucket]);
+            for (int edge = 0; edge < count; edge++) {
+                if (!model.isHierarchyEdge(edge)
+                        || model.edgeBucketAt(edge) != bucket
+                        || touchesSelection(edges[0][edge], edges[1][edge])) {
+                    continue;
+                }
+                if (drawEdge(g, layout, world, edges[0][edge], edges[1][edge], true)) {
+                    primaryEdgesInLastPaint++;
+                }
+            }
+        }
+
+        if (selection.isEmpty()) {
+            return;
+        }
+        g.setStroke(THIN);
+        g.setColor(GraphColours.EDGE_HIGHLIGHTED);
+        for (int edge = 0; edge < count; edge++) {
+            int from = edges[0][edge];
+            int to = edges[1][edge];
+            if (touchesSelection(from, to) && edgeVisible(edge)) {
+                if (drawEdge(g, layout, world, from, to, model.isHierarchyEdge(edge))) {
+                    if (model.isHierarchyEdge(edge)) {
+                        primaryEdgesInLastPaint++;
+                    } else {
+                        crossLinksInLastPaint++;
+                    }
+                }
+            }
+        }
+    }
+
+    /** A bounded, evenly distributed hierarchy backbone for the far overview. */
+    private void paintHierarchyOverview(
+            Graphics2D g, double[] world, boolean hideFarCrossLinks) {
+        int[][] edges = model.edgePositions();
+        GraphLayout.Result layout = model.layout();
+        int primaryTotal = model.hierarchyEdgeCount();
+        int primaryBudget = farHierarchyBranchBudget();
+
+        g.setStroke(THIN);
+        g.setColor(GraphColours.edge());
+        int primarySamples = Math.min(primaryTotal, primaryBudget);
+        for (int sample = 0; sample < primarySamples; sample++) {
+            int ordinal = evenlyDistributedOrdinal(sample, primaryTotal, primarySamples);
+            int edge = model.hierarchyEdgeAt(ordinal);
+            if (drawEdge(
+                    g, layout, world, edges[0][edge], edges[1][edge], false)) {
+                primaryEdgesInLastPaint++;
+            }
+        }
+
+        boolean revealOne = selection.size() == 1;
+        if (!hideFarCrossLinks && edgeDisplay == GraphEdgeDisplay.ALL) {
+            g.setStroke(CROSS_LINK);
+            g.setColor(GraphColours.secondaryEdge());
+            for (int ordinal = 0; ordinal < model.crossLinkCount(); ordinal++) {
+                int edge = model.crossLinkEdgeAt(ordinal);
+                if (!edgeVisible(edge)
+                        || (revealOne && touchesSelection(
+                                edges[0][edge], edges[1][edge]))) {
+                    continue;
+                }
+                if (drawEdge(g, layout, world, edges[0][edge], edges[1][edge], false)) {
+                    crossLinksInLastPaint++;
+                }
+            }
+        }
+
+        // One selected node reveals its cross-links. A marquee can select
+        // thousands of nodes, so it must not turn the bounded overview back
+        // into an all-edge paint by accident.
+        if (!revealOne) {
+            return;
+        }
+        int selected = selection.iterator().next();
+        int incident = model.crossLinkDegreeAt(selected);
+        boolean bounded = edgeDisplay == GraphEdgeDisplay.DECLUTTERED || hideFarCrossLinks;
+        int budget = bounded ? farHierarchyBranchBudget() : incident;
+        g.setStroke(THIN);
+        g.setColor(GraphColours.EDGE_HIGHLIGHTED);
+        int samples = Math.min(incident, budget);
+        for (int sample = 0; sample < samples; sample++) {
+            int ordinal = evenlyDistributedOrdinal(sample, incident, samples);
+            int edge = model.incidentCrossLinkAt(selected, ordinal);
+            int from = edges[0][edge];
+            int to = edges[1][edge];
+            if (edgeVisible(edge) && drawEdge(g, layout, world, from, to, false)) {
+                crossLinksInLastPaint++;
+            }
+        }
+    }
+
+    /** The centre ordinal of one deterministic, evenly divided sample bucket. */
+    private static int evenlyDistributedOrdinal(int sample, int total, int samples) {
+        return (int) Math.min(
+                total - 1L, ((2L * sample + 1) * total) / (2L * samples));
+    }
+
+    private int farHierarchyBranchBudget() {
+        return Math.max(1, getWidth() * FAR_HIERARCHY_BRANCHES_PER_PIXEL);
+    }
+
+    private int farHierarchyBranchesHidden() {
+        if (model.layout().kind() != GraphLayout.Kind.HIERARCHY || detail() != Detail.FAR) {
+            return 0;
+        }
+        return Math.max(0, model.hierarchyEdgeCount() - farHierarchyBranchBudget());
+    }
+
+    /** Selected cross-links simplified by the same far-view line budget. */
+    private int farSelectedCrossLinksHidden() {
+        if (model.layout().kind() != GraphLayout.Kind.HIERARCHY
+                || detail() != Detail.FAR
+                || selection.size() != 1
+                || (edgeDisplay == GraphEdgeDisplay.ALL
+                        && !hierarchyCrossLinksAreHiddenAtFar(detail()))) {
+            return 0;
+        }
+        return Math.max(0, revealedCrossLinks - farHierarchyBranchBudget());
+    }
+
+    private boolean touchesSelection(int from, int to) {
+        return selection.contains(from) || selection.contains(to);
+    }
+
+    private boolean drawEdge(
+            Graphics2D g,
+            GraphLayout.Result layout,
+            double[] world,
+            int from,
+            int to,
+            boolean orthogonal) {
         double x1 = nodeX(layout, from);
         double y1 = nodeY(layout, from);
         double x2 = nodeX(layout, to);
@@ -602,18 +890,33 @@ public final class GraphCanvas extends JComponent {
         // cross it.
         if (Math.max(x1, x2) < world[0] || Math.min(x1, x2) > world[2]
                 || Math.max(y1, y2) < world[1] || Math.min(y1, y2) > world[3]) {
-            return;
+            return false;
         }
         double sx1 = transform.screenX(x1);
         double sy1 = transform.screenY(y1);
         double sx2 = transform.screenX(x2);
         double sy2 = transform.screenY(y2);
+        if (orthogonal) {
+            int screenX1 = (int) Math.round(sx1);
+            int screenY1 = (int) Math.round(sy1);
+            int screenX2 = (int) Math.round(sx2);
+            int screenY2 = (int) Math.round(sy2);
+            int branchY = (int) Math.round((sy1 + sy2) / 2.0);
+            g.drawLine(screenX1, screenY1, screenX1, branchY);
+            g.drawLine(screenX1, branchY, screenX2, branchY);
+            g.drawLine(screenX2, branchY, screenX2, screenY2);
+            if (arrowsThisFrame) {
+                drawArrowhead(g, screenX2, branchY, screenX2, screenY2);
+            }
+            return true;
+        }
         g.drawLine(
                 (int) Math.round(sx1), (int) Math.round(sy1),
                 (int) Math.round(sx2), (int) Math.round(sy2));
         if (arrowsThisFrame) {
             drawArrowhead(g, sx1, sy1, sx2, sy2);
         }
+        return true;
     }
 
     /**
@@ -685,7 +988,15 @@ public final class GraphCanvas extends JComponent {
     private boolean edgesAreHidden(Detail detail) {
         int count = model.edgePositions()[0].length;
         return (panning && count > PANNING_EDGE_BUDGET)
-                || (detail == Detail.FAR && count > FAR_EDGE_BUDGET);
+                || (model.layout().kind() != GraphLayout.Kind.HIERARCHY
+                        && detail == Detail.FAR
+                        && count > FAR_EDGE_BUDGET);
+    }
+
+    private boolean hierarchyCrossLinksAreHiddenAtFar(Detail detail) {
+        return model.layout().kind() == GraphLayout.Kind.HIERARCHY
+                && detail == Detail.FAR
+                && model.crossLinkCount() > FAR_EDGE_BUDGET;
     }
 
     /**
@@ -699,17 +1010,100 @@ public final class GraphCanvas extends JComponent {
         StringBuilder text = new StringBuilder();
         if (edgesAreHidden(detail())) {
             int count = model.edgePositions()[0].length;
-            text.append(count)
-                    .append(" dependencies are not drawn at this zoom. Zoom in to see them.");
+            if (panning) {
+                text.append(count)
+                        .append(" dependencies are temporarily hidden while moving the graph.");
+            } else {
+                text.append(count)
+                        .append(" dependencies are not drawn at this zoom. Zoom in to see them.");
+            }
+        } else if (edgeDisplay == GraphEdgeDisplay.ALL
+                && hierarchyCrossLinksAreHiddenAtFar(detail())) {
+            int revealedAtFar = Math.min(revealedCrossLinks, farHierarchyBranchBudget());
+            int hidden = Math.max(0, model.crossLinkCount() - revealedAtFar);
+            if (hidden > 0) {
+                text.append(hidden)
+                        .append(hidden == 1 ? " cross-link is" : " cross-links are")
+                        .append(" not drawn at this zoom; the hierarchy branches remain visible."
+                                + " Zoom in to see every dependency.");
+            }
+        } else {
+            int hiddenCrossLinks = hiddenCrossLinkCount();
+            if (hiddenCrossLinks > 0) {
+                text.append(hiddenCrossLinks)
+                        .append(hiddenCrossLinks == 1
+                                ? " additional dependency is hidden"
+                                : " additional dependencies are hidden")
+                        .append(" by Decluttered edges. Select a node to reveal its links or"
+                                + " choose All dependencies.");
+            }
+        }
+        if (edgeDisplay == GraphEdgeDisplay.DECLUTTERED) {
+            int hiddenSelected = farSelectedCrossLinksHidden();
+            if (hiddenSelected > 0) {
+                appendHiddenDetail(text,
+                        hiddenSelected
+                                + (hiddenSelected == 1
+                                        ? " selected cross-link is"
+                                        : " selected cross-links are")
+                                + " not drawn individually at overview scale."
+                                + " Zoom in to restore every selected link.");
+            }
+        }
+        int hiddenPrimaryBranches = farHierarchyBranchesHidden();
+        if (hiddenPrimaryBranches > 0) {
+            int total = model.hierarchyEdgeCount();
+            int drawn = total - hiddenPrimaryBranches;
+            appendHiddenDetail(text,
+                    hiddenPrimaryBranches + " of " + total
+                            + " primary branches are not drawn individually at overview scale; "
+                            + drawn + " evenly spaced branches show the overall shape."
+                            + " Zoom in to restore every branch.");
+        }
+        if (detail() == Detail.FAR && model.size() > 0) {
+            String noun = model.nodeNoun();
+            appendHiddenDetail(text, noun.equals("action")
+                    ? "Select an action to see its name and target, or zoom in to draw labels."
+                    : "Select a " + noun + " to see its label, or zoom in to draw labels.");
+        } else if (declutteredLabels > 0) {
+            appendHiddenDetail(text,
+                    declutteredLabels
+                            + (declutteredLabels == 1
+                                    ? " node label is hidden" : " node labels are hidden")
+                            + " to prevent overlap. Zoom in or select a node to reveal it.");
         }
         if (!fitLabelNote.isEmpty()) {
-            if (text.length() > 0) {
-                text.append("  ");
-            }
-            text.append(fitLabelNote);
+            appendHiddenDetail(text, fitLabelNote);
         }
         return text.length() == 0
                 ? java.util.Optional.empty() : java.util.Optional.of(text.toString());
+    }
+
+    private static void appendHiddenDetail(StringBuilder text, String detail) {
+        if (text.length() > 0) {
+            text.append("  ");
+        }
+        text.append(detail);
+    }
+
+    /** Cross-links currently omitted by the explicit decluttering setting. */
+    int hiddenCrossLinkCount() {
+        if (model.layout().kind() != GraphLayout.Kind.HIERARCHY
+                || edgeDisplay == GraphEdgeDisplay.ALL) {
+            return 0;
+        }
+        return Math.max(0, model.crossLinkCount() - revealedCrossLinks);
+    }
+
+    private boolean edgeVisible(int edge) {
+        if (model.layout().kind() != GraphLayout.Kind.HIERARCHY
+                || edgeDisplay == GraphEdgeDisplay.ALL
+                || model.isHierarchyEdge(edge)) {
+            return true;
+        }
+        int[][] edges = model.edgePositions();
+        return selection.size() == 1
+                && touchesSelection(edges[0][edge], edges[1][edge]);
     }
 
     private void paintNodes(Graphics2D g, double[] world, Detail detail) {
@@ -744,17 +1138,32 @@ public final class GraphCanvas extends JComponent {
         int cx = (int) Math.round(transform.screenX(nodeX(layout, position)));
         int cy = (int) Math.round(transform.screenY(nodeY(layout, position)));
         g.setColor(model.colourAt(position));
-        g.fillOval(
-                cx - (int) Math.round(radius), cy - (int) Math.round(radius),
-                diameter, diameter);
+        boolean hierarchy = layout.kind() == GraphLayout.Kind.HIERARCHY;
+        if (hierarchy) {
+            int width = (int) Math.round(radius * 2.6);
+            int height = (int) Math.round(radius * 1.8);
+            g.fillRoundRect(cx - width / 2, cy - height / 2, width, height, 6, 6);
+        } else {
+            g.fillOval(
+                    cx - (int) Math.round(radius), cy - (int) Math.round(radius),
+                    diameter, diameter);
+        }
         if (selection.contains(position) || position == hover) {
             g.setColor(position == hover && !selection.contains(position)
                     ? GraphColours.HOVER : GraphColours.SELECTION);
             g.setStroke(OUTLINE);
-            g.drawOval(
-                    cx - (int) Math.round(radius) - 2,
-                    cy - (int) Math.round(radius) - 2,
-                    diameter + 4, diameter + 4);
+            if (hierarchy) {
+                int width = (int) Math.round(radius * 2.6);
+                int height = (int) Math.round(radius * 1.8);
+                g.drawRoundRect(
+                        cx - width / 2 - 2, cy - height / 2 - 2,
+                        width + 4, height + 4, 8, 8);
+            } else {
+                g.drawOval(
+                        cx - (int) Math.round(radius) - 2,
+                        cy - (int) Math.round(radius) - 2,
+                        diameter + 4, diameter + 4);
+            }
         }
     }
 
@@ -771,10 +1180,12 @@ public final class GraphCanvas extends JComponent {
      * skipped nodes are nameless.
      */
     private void paintLabels(Graphics2D g, double[] world, Detail detail) {
-        g.setColor(GraphColours.LABEL);
+        g.setColor(GraphColours.label());
         java.awt.FontMetrics metrics = g.getFontMetrics();
         int lineHeight = metrics.getHeight();
         double radius = Math.max(2.5, NODE_RADIUS * transform.scale());
+        double nodeExtent = model.layout().kind() == GraphLayout.Kind.HIERARCHY
+                ? radius * 1.3 : radius;
         GraphLayout.Result layout = model.layout();
 
         java.util.List<Integer> candidates = new java.util.ArrayList<>();
@@ -801,12 +1212,21 @@ public final class GraphCanvas extends JComponent {
         java.util.List<Rectangle> placed = new java.util.ArrayList<>();
         for (int position : candidates) {
             String label = model.displayLabelAt(position);
+            java.util.Optional<String> owner = model.ownerLabelAt(position);
             int x = (int) Math.round(
-                    transform.screenX(nodeX(layout, position)) + radius + 4);
+                    transform.screenX(nodeX(layout, position)) + nodeExtent + 4);
             int y = (int) Math.round(
-                    transform.screenY(nodeY(layout, position)) + lineHeight / 4.0);
+                    transform.screenY(nodeY(layout, position))
+                            - (owner.isPresent() ? lineHeight / 4.0 : -lineHeight / 4.0));
+            int width = metrics.stringWidth(label);
+            if (owner.isPresent()) {
+                width = Math.max(width, metrics.stringWidth("Target: " + owner.orElseThrow()));
+            }
             Rectangle box = new Rectangle(
-                    x, y - metrics.getAscent(), metrics.stringWidth(label), lineHeight);
+                    x,
+                    y - metrics.getAscent(),
+                    width,
+                    owner.isPresent() ? lineHeight * 2 : lineHeight);
             boolean overlaps = false;
             for (Rectangle other : placed) {
                 if (other.intersects(box)) {
@@ -821,6 +1241,7 @@ public final class GraphCanvas extends JComponent {
             placed.add(box);
             paintedLabels.add(position);
             g.drawString(label, x, y);
+            owner.ifPresent(target -> g.drawString("Target: " + target, x, y + lineHeight));
         }
     }
 
@@ -871,9 +1292,19 @@ public final class GraphCanvas extends JComponent {
         return arrowsInLastPaint;
     }
 
+    int primaryEdgesDrawnForTesting() {
+        return primaryEdgesInLastPaint;
+    }
+
+    int crossLinksDrawnForTesting() {
+        return crossLinksInLastPaint;
+    }
+
     /** Hit test at a screen point; empty when nothing is close enough. */
     public OptionalInt positionAt(int screenX, int screenY) {
-        double radius = HIT_RADIUS_PIXELS / transform.scale();
+        double visibleNodeRadius = NODE_RADIUS * GraphModel.MAX_RADIUS_SCALE
+                * (model.layout().kind() == GraphLayout.Kind.HIERARCHY ? 1.6 : 1.0);
+        double radius = Math.max(HIT_RADIUS_PIXELS / transform.scale(), visibleNodeRadius);
         double worldX = transform.worldX(screenX);
         double worldY = transform.worldY(screenY);
         if (dragOffsets.isEmpty()) {
@@ -959,7 +1390,7 @@ public final class GraphCanvas extends JComponent {
                 if (!selection.add(hit.getAsInt()) && add) {
                     selection.remove(hit.getAsInt());
                 }
-                selectionListener.accept(selectedPositions());
+                notifySelectionChanged();
                 // The branch point between panning and node dragging: a press
                 // on a node arms a node drag, a press on empty canvas (below)
                 // arms a pan. The drag moves a view-layer overlay only; the
@@ -971,7 +1402,7 @@ public final class GraphCanvas extends JComponent {
             }
             if (!event.isControlDown() && !event.isMetaDown() && !selection.isEmpty()) {
                 selection.clear();
-                selectionListener.accept(selectedPositions());
+                notifySelectionChanged();
             }
             dragOrigin = event.getPoint();
             setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
@@ -1042,7 +1473,7 @@ public final class GraphCanvas extends JComponent {
                         selection.add(position);
                     }
                 }
-                selectionListener.accept(selectedPositions());
+                notifySelectionChanged();
             }
             marquee = null;
             marqueeStart = null;
@@ -1053,6 +1484,7 @@ public final class GraphCanvas extends JComponent {
             if (panning) {
                 panning = false;
                 // The detail suppressed during the drag comes back here.
+                viewChangedListener.run();
                 repaint();
             }
             setCursor(Cursor.getDefaultCursor());
@@ -1075,9 +1507,20 @@ public final class GraphCanvas extends JComponent {
             int was = hover;
             hover = positionAt(event.getX(), event.getY()).orElse(-1);
             if (hover != was) {
-                setToolTipText(hover < 0 ? null : model.displayLabelAt(hover));
+                setToolTipText(hover < 0
+                        ? null : PlainText.tooltip(model.canvasLabelAt(hover)));
                 repaint();
             }
+        }
+
+        @Override
+        public void mouseExited(MouseEvent event) {
+            if (hover < 0) {
+                return;
+            }
+            hover = -1;
+            setToolTipText(null);
+            repaint();
         }
 
         @Override

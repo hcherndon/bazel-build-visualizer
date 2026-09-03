@@ -165,6 +165,39 @@ final class ProfileImporterTest {
     }
 
     @Test
+    @DisplayName("a successful profile retry replaces every old critical-path component")
+    void successfulRetryReplacesTheProfile() throws Exception {
+        new ProfileImporter(connection).importFrom(criticalPathProfile("first", 3, 100));
+
+        ProfileImporter.Result replacement = new ProfileImporter(connection)
+                .importFrom(criticalPathProfile("replacement", 1, 900));
+
+        assertThat(replacement.state()).isEqualTo(EnrichmentTask.State.SUCCEEDED);
+        assertThat(scalar("SELECT count(*) FROM bazel_critical_path")).isEqualTo(1);
+        assertThat(text("SELECT description FROM bazel_critical_path WHERE ordinal = 0"))
+                .isEqualTo("replacement-0");
+        assertThat(scalar("SELECT duration_micros FROM bazel_critical_path WHERE ordinal = 0"))
+                .isEqualTo(900);
+    }
+
+    @Test
+    @DisplayName("a failed profile retry rolls replacement back but marks retained rows unusable")
+    void failedRetryRetainsLastCompleteRowsBehindFailedState() throws Exception {
+        new ProfileImporter(connection).importFrom(criticalPathProfile("complete", 3, 100));
+        Path broken = tempDir.resolve("retry-broken.json");
+        Files.writeString(broken, "{\"traceEvents\":[{\"cat\":");
+
+        ProfileImporter.Result retry = new ProfileImporter(connection).importFrom(broken);
+
+        assertThat(retry.state()).isEqualTo(EnrichmentTask.State.FAILED);
+        assertThat(scalar("SELECT count(*) FROM bazel_critical_path")).isEqualTo(3);
+        assertThat(text("SELECT description FROM bazel_critical_path WHERE ordinal = 0"))
+                .isEqualTo("complete-0");
+        assertThat(new EnrichmentTaskStore(connection).all().getFirst().state())
+                .isEqualTo(EnrichmentTask.State.FAILED);
+    }
+
+    @Test
     @DisplayName("a failed profile import leaves an execution-log import alone")
     void tasksAreIndependent() throws Exception {
         // Plan 21.4: each enrichment task is independent.
@@ -233,6 +266,19 @@ final class ProfileImporterTest {
         assertThat(scalar("SELECT count(*) FROM profile_spans")).isEqualTo(spans);
     }
 
+    @Test
+    @DisplayName("a critical path larger than one JDBC batch imports every component")
+    void criticalPathBatchesAreFlushed() throws Exception {
+        int components = 6_000;
+
+        ProfileImporter.Result result = new ProfileImporter(connection)
+                .importFrom(criticalPathProfile("component", components, 1));
+
+        assertThat(result.state()).isEqualTo(EnrichmentTask.State.SUCCEEDED);
+        assertThat(scalar("SELECT count(*) FROM bazel_critical_path"))
+                .isEqualTo(components);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private ProfileImporter.Result importFixture(String name) throws Exception {
@@ -254,6 +300,24 @@ final class ProfileImporterTest {
         try (Statement statement = connection.createStatement()) {
             statement.execute(sql);
         }
+    }
+
+    private Path criticalPathProfile(String prefix, int components, long duration)
+            throws IOException {
+        Path profile = tempDir.resolve(prefix + "-critical-path.json");
+        try (java.io.BufferedWriter out = Files.newBufferedWriter(profile)) {
+            out.write("{\"otherData\":{\"profile_start_ts\":1},\"traceEvents\":[");
+            for (int i = 0; i < components; i++) {
+                if (i > 0) {
+                    out.write(',');
+                }
+                out.write("{\"cat\":\"critical path component\",\"name\":\""
+                        + prefix + "-" + i + "\",\"ph\":\"X\",\"ts\":" + (i * 10L)
+                        + ",\"dur\":" + duration + ",\"tid\":7}");
+            }
+            out.write("]}");
+        }
+        return profile;
     }
 
     private long scalar(String sql) throws SQLException {

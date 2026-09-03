@@ -1,15 +1,15 @@
-# Memory-mapped CSR graph indexes and traversal.
+load("@rules_java//java:defs.bzl", "java_library")
 
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
-
-bbv_java_library(
+java_library(
     name = "graph-core",
-    # api: callers traverse with core-model ids in hand.
-    exports = ["//core-model"],
-    deps = ["//core-model"],
+    exports = [
+        "//core-model",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph",
+    ],
+    visibility = ["//visibility:public"],
 )
 
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    deps = [":graph-core"],
+    tests = ["//graph-core/src/test/java/com/holtherndon/bazelviz/graph:tests"],
 )

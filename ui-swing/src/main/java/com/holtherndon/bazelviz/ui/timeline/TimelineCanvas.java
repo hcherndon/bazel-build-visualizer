@@ -234,7 +234,7 @@ public final class TimelineCanvas extends JComponent {
     }
 
     /** Smallest 1-2-5 ladder step (in micros) that is >= rawMicros. */
-    private static long niceStep(double rawMicros) {
+    static long niceStep(double rawMicros) {
         double raw = Math.max(1.0, rawMicros);
         double pow10 = Math.pow(10, Math.floor(Math.log10(raw)));
         for (double m : TICK_MULTIPLIERS) {
@@ -246,7 +246,7 @@ public final class TimelineCanvas extends JComponent {
     }
 
     /** Formats an instant with precision appropriate to the tick step. */
-    private static String formatMicros(long micros, long stepMicros) {
+    static String formatMicros(long micros, long stepMicros) {
         if (stepMicros >= 1_000_000) {
             long totalSec = Math.round(micros / 1_000_000.0);
             long abs = Math.abs(totalSec);

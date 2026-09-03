@@ -9,6 +9,7 @@ import com.holtherndon.bazelviz.capture.live.Preflight;
 import com.holtherndon.bazelviz.runner.proc.ConsoleSink;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -42,6 +43,7 @@ class LaunchControllerTest {
         AtomicInteger plans = new AtomicInteger();
         AtomicReference<Throwable> failure = new AtomicReference<>();
         AtomicBoolean callbackOnEdt = new AtomicBoolean();
+        AtomicInteger coordinatorClosed = new AtomicInteger();
         CountDownLatch failed = new CountDownLatch(1);
         LaunchController.Listener listener = new LaunchController.Listener() {
             @Override
@@ -76,7 +78,8 @@ class LaunchControllerTest {
                 path -> {
                     checkedOnEdt.set(SwingUtilities.isEventDispatchThread());
                     return false;
-                });
+                },
+                coordinatorClosed::incrementAndGet);
         CaptureRequest request = CaptureRequest.of(
                 temporary.resolve("sessions"), "test", "bazel", missing, List.of("build", "//..."));
 
@@ -90,6 +93,7 @@ class LaunchControllerTest {
                 .isInstanceOf(java.io.IOException.class)
                 .hasMessage("the working directory does not exist: " + missing);
         assertThat(controller.isBusy()).isFalse();
+        assertThat(coordinatorClosed).hasValue(1);
     }
 
     @Test
@@ -132,15 +136,121 @@ class LaunchControllerTest {
                 List.of("build", "//..."));
 
         controller.preflight(request);
-        controller.close();
+        java.util.concurrent.CompletionStage<Void> closed = controller.closeAsync();
 
         assertThat(controller.isBusy()).isTrue();
+        assertThat(closed.toCompletableFuture()).isNotDone();
         assertThat(queuedWorker).hasSize(2);
         queuedWorker.remove().run();
         assertThat(controller.isBusy()).isFalse();
+        assertThat(closed.toCompletableFuture()).isNotDone();
         queuedWorker.remove().run();
+        assertThat(closed.toCompletableFuture()).isCompleted();
         assertThat(queuedUi).isEmpty();
         assertThat(failures).hasValue(0);
+    }
+
+    @Test
+    void closeWaitsForDiscardPlanWorkQueuedAfterActiveWasCleared(@TempDir Path temporary) {
+        ArrayDeque<Runnable> queuedWorker = new ArrayDeque<>();
+        AtomicInteger coordinatorClosed = new AtomicInteger();
+        LaunchController controller = new LaunchController(
+                queuedWorker::add,
+                Runnable::run,
+                new CountingListener(new AtomicInteger()),
+                path -> true,
+                coordinatorClosed::incrementAndGet);
+        CaptureRequest request = CaptureRequest.of(
+                temporary.resolve("sessions"), "test", "bazel", temporary,
+                List.of("build", "//..."));
+
+        controller.preflight(request);
+        controller.discardPlan();
+        java.util.concurrent.CompletionStage<Void> closed = controller.closeAsync();
+
+        assertThat(controller.isBusy()).isFalse();
+        assertThat(closed.toCompletableFuture()).isNotDone();
+        assertThat(coordinatorClosed).hasValue(0);
+        assertThat(queuedWorker).hasSize(2);
+
+        queuedWorker.remove().run();
+        assertThat(closed.toCompletableFuture()).isNotDone();
+        assertThat(coordinatorClosed).hasValue(0);
+
+        queuedWorker.remove().run();
+        assertThat(closed.toCompletableFuture()).isCompleted();
+        assertThat(coordinatorClosed).hasValue(1);
+    }
+
+    @Test
+    void coordinatorThatLosesTheActiveCasDoesNotRunTheCloseCallback(
+            @TempDir Path temporary) {
+        List<Runnable> queuedWorker = new ArrayList<>();
+        AtomicInteger coordinatorClosed = new AtomicInteger();
+        LaunchController controller = new LaunchController(
+                queuedWorker::add,
+                Runnable::run,
+                new CountingListener(new AtomicInteger()),
+                path -> true,
+                coordinatorClosed::incrementAndGet);
+        CaptureRequest request = CaptureRequest.of(
+                temporary.resolve("sessions"), "test", "bazel", temporary,
+                List.of("build", "//..."));
+
+        controller.preflight(request);
+        controller.preflight(request);
+
+        assertThat(queuedWorker).hasSize(2);
+        queuedWorker.remove(1).run();
+        assertThat(coordinatorClosed).hasValue(0);
+
+        java.util.concurrent.CompletionStage<Void> closed = controller.closeAsync();
+        assertThat(queuedWorker).hasSize(2);
+
+        queuedWorker.removeFirst().run();
+        assertThat(coordinatorClosed).hasValue(1);
+        assertThat(closed.toCompletableFuture()).isNotDone();
+
+        queuedWorker.removeFirst().run();
+        assertThat(closed.toCompletableFuture()).isCompleted();
+        assertThat(coordinatorClosed).hasValue(1);
+    }
+
+    @Test
+    void callbackFailureDoesNotBreakPreflightFailureCleanup(@TempDir Path temporary) {
+        AtomicInteger coordinatorClosed = new AtomicInteger();
+        AtomicInteger failures = new AtomicInteger();
+        LaunchController controller = new LaunchController(
+                Runnable::run,
+                Runnable::run,
+                new CountingListener(failures),
+                path -> false,
+                () -> {
+                    coordinatorClosed.incrementAndGet();
+                    throw new IllegalStateException("callback failed");
+                });
+        CaptureRequest request = CaptureRequest.of(
+                temporary.resolve("sessions"), "test", "bazel", temporary,
+                List.of("build", "//..."));
+
+        controller.preflight(request);
+
+        assertThat(coordinatorClosed).hasValue(1);
+        assertThat(failures).hasValue(1);
+        assertThat(controller.isBusy()).isFalse();
+        assertThat(controller.closeAsync().toCompletableFuture()).isCompleted();
+    }
+
+    @Test
+    void closingAnIdleControllerCompletesImmediately() {
+        LaunchController controller = new LaunchController(
+                Runnable::run,
+                Runnable::run,
+                new CountingListener(new AtomicInteger()),
+                path -> true);
+
+        assertThat(controller.closeAsync().toCompletableFuture()).isCompleted();
+        assertThat(controller.closeAsync().toCompletableFuture()).isCompleted();
     }
 
     private static final class CountingListener implements LaunchController.Listener {

@@ -1,14 +1,17 @@
 package com.holtherndon.bazelviz.enrich.graph;
 
 import com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner;
-import com.holtherndon.bazelviz.runner.proc.Subprocess;
+import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
+import com.holtherndon.bazelviz.runner.runtime.CommandRequest;
+import com.holtherndon.bazelviz.runner.runtime.CommandResult;
+import com.holtherndon.bazelviz.runner.runtime.LocalCommandExecutor;
+import com.holtherndon.bazelviz.runner.runtime.RuntimeEnvironment;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -59,41 +62,67 @@ public final class AuxiliaryQueryRunner {
      * @return what happened; never throws for a query that merely failed
      */
     public Result run(AuxiliaryQueryPlanner.Plan plan) {
-        Path output = plan.outputFile();
+        return run(plan, LocalCommandExecutor.INSTANCE, plan.outputFile());
+    }
+
+    /**
+     * Runs {@code plan} on {@code executor} while preserving its protobuf in
+     * the explicitly local {@code output} file.
+     *
+     * <p>The command's {@link Path} working directory is converted to text and
+     * thereafter belongs to the executor. A remote executor interprets that
+     * text remotely; this class never resolves it on the desktop filesystem.
+     */
+    public Result run(
+            AuxiliaryQueryPlanner.Plan plan,
+            CommandExecutor executor,
+            Path output) {
+        Objects.requireNonNull(plan, "plan");
+        Objects.requireNonNull(executor, "executor");
+        Objects.requireNonNull(output, "output");
+        Path parent = output.toAbsolutePath().normalize().getParent();
+        if (parent == null) {
+            return Result.failed(plan, output, -1,
+                    "the output file has no local parent directory: " + output);
+        }
         try {
-            Files.createDirectories(output.getParent());
+            Files.createDirectories(parent);
+            // The old local redirect created an empty file even when the
+            // command failed. Preserve that inspectable failure evidence for
+            // executors that install redirected output only after success.
+            Files.write(output, new byte[0]);
         } catch (IOException cannotCreate) {
-            return Result.failed(plan, -1, "cannot create " + output.getParent()
+            return Result.failed(plan, output, -1, "cannot create " + parent
                     + ": " + cannotCreate.getMessage());
         }
 
-        Subprocess.Result result;
+        CommandResult result;
         try {
-            // Redirected, not captured as a String. Subprocess.run decodes
-            // stdout as UTF-8, which is right for `bazel help` and destroys a
-            // protobuf: every byte sequence that is not valid UTF-8 becomes a
-            // replacement character and the graph is unrecoverable. The file
-            // is written by the operating system without the JVM looking at
-            // the bytes.
-            result = Subprocess.runRedirectingStdout(
-                    plan.argv(), plan.command().workingDirectory(),
-                    environment(plan), timeout, output);
+            CommandRequest request = new CommandRequest(
+                    plan.argv(),
+                    Optional.of(plan.command().workingDirectory().toString()),
+                    plan.command().environmentOverrides(),
+                    inheritance(plan),
+                    false);
+            // Redirected as bytes, never captured as a String: decoding a
+            // query protobuf would replace invalid UTF-8 and corrupt it.
+            result = executor.runRedirectingStdout(request, timeout, output);
         } catch (IOException failure) {
-            return Result.failed(plan, -1, String.valueOf(failure.getMessage()));
+            return Result.failed(plan, output, -1, String.valueOf(failure.getMessage()));
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            return Result.failed(plan, -1, "the query was interrupted");
+            return Result.failed(plan, output, -1, "the query was interrupted");
         }
 
         // The file exists either way. A failed query writes zero bytes, which
         // is itself the signal (Q8), and the user is entitled to inspect the
         // raw output whatever happened (plan 12.4).
         if (result.timedOut()) {
-            return Result.failed(plan, -1,
+            return Result.failed(plan, output, -1,
                     "the query did not finish within " + timeout.toMinutes() + " minutes");
         }
         if (result.exitCode() != 0) {
-            return Result.failed(plan, result.exitCode(), excerpt(result.stderr()));
+            return Result.failed(plan, output, result.exitCode(), excerpt(result.stderr()));
         }
         return new Result(plan, output, 0, Optional.empty(), true);
     }
@@ -106,11 +135,12 @@ public final class AuxiliaryQueryRunner {
      * Bazel from {@code USE_BAZEL_VERSION}, so a query run without it queries a
      * different Bazel and returns a different graph.
      */
-    private static Map<String, String> environment(AuxiliaryQueryPlanner.Plan plan) {
-        Map<String, String> set = new LinkedHashMap<>();
-        plan.command().environmentOverrides().forEach((name, value) ->
-                value.ifPresent(present -> set.put(name, present)));
-        return set;
+    private static RuntimeEnvironment inheritance(AuxiliaryQueryPlanner.Plan plan) {
+        return switch (plan.command().inheritance()) {
+            case INHERIT_ALL -> RuntimeEnvironment.INHERIT_ALL;
+            case INHERIT_ALLOWLISTED -> RuntimeEnvironment.INHERIT_ESSENTIAL;
+            case NONE -> RuntimeEnvironment.NONE;
+        };
     }
 
     private static String excerpt(String stderr) {
@@ -135,8 +165,9 @@ public final class AuxiliaryQueryRunner {
             Optional<String> error,
             boolean succeeded) {
 
-        static Result failed(AuxiliaryQueryPlanner.Plan plan, int exitCode, String error) {
-            return new Result(plan, plan.outputFile(), exitCode, Optional.of(error), false);
+        static Result failed(
+                AuxiliaryQueryPlanner.Plan plan, Path output, int exitCode, String error) {
+            return new Result(plan, output, exitCode, Optional.of(error), false);
         }
 
         /** The command as the user would type it, for the plan display. */

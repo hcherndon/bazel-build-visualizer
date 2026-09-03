@@ -3,11 +3,15 @@ package com.holtherndon.bazelviz.ui.events;
 import com.holtherndon.bazelviz.storage.events.EventDetail;
 import com.holtherndon.bazelviz.ui.session.RawPayload;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
+import com.holtherndon.bazelviz.ui.session.SessionInfo;
+import com.holtherndon.bazelviz.ui.files.WorkspaceFileAccess;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
@@ -48,23 +52,61 @@ public final class EventInspectorModel {
         void inspectionChanged(EventInspection inspection);
     }
 
+    /** Receives lazy file-tab state, always on the UI dispatcher. */
+    @FunctionalInterface
+    public interface FileListener {
+        void filesChanged(EventFileInspection inspection);
+    }
+
     private final SessionReader reader;
     private final Executor fetchExecutor;
     private final Executor uiDispatcher;
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
+    private final List<FileListener> fileListeners = new CopyOnWriteArrayList<>();
+    private volatile Optional<WorkspaceFileAccess> fileAccess;
 
     /** Bumped by every selection change; a fetch whose generation is stale is dropped. */
     private final AtomicLong generation = new AtomicLong();
+    private final AtomicLong fileGeneration = new AtomicLong();
 
     private final AtomicLong payloadFetches = new AtomicLong();
+    private final AtomicLong fileLoads = new AtomicLong();
 
     private volatile OptionalLong selected = OptionalLong.empty();
     private volatile EventInspection current = EventInspection.none();
+    private volatile EventFileInspection currentFiles = EventFileInspection.none();
 
     public EventInspectorModel(SessionReader reader, Executor fetchExecutor, Executor uiDispatcher) {
+        this(reader, fetchExecutor, uiDispatcher, Optional.empty());
+    }
+
+    public EventInspectorModel(
+            SessionReader reader,
+            Executor fetchExecutor,
+            Executor uiDispatcher,
+            SessionInfo session) {
+        this(reader, fetchExecutor, uiDispatcher,
+                WorkspaceFileAccess.fromSession(Objects.requireNonNull(session, "session")));
+    }
+
+    public EventInspectorModel(
+            SessionReader reader,
+            Executor fetchExecutor,
+            Executor uiDispatcher,
+            WorkspaceFileAccess fileAccess) {
+        this(reader, fetchExecutor, uiDispatcher,
+                Optional.of(Objects.requireNonNull(fileAccess, "fileAccess")));
+    }
+
+    private EventInspectorModel(
+            SessionReader reader,
+            Executor fetchExecutor,
+            Executor uiDispatcher,
+            Optional<WorkspaceFileAccess> fileAccess) {
         this.reader = Objects.requireNonNull(reader, "reader");
         this.fetchExecutor = Objects.requireNonNull(fetchExecutor, "fetchExecutor");
         this.uiDispatcher = Objects.requireNonNull(uiDispatcher, "uiDispatcher");
+        this.fileAccess = Objects.requireNonNull(fileAccess, "fileAccess");
     }
 
     public void addListener(Listener listener) {
@@ -73,6 +115,14 @@ public final class EventInspectorModel {
 
     public void removeListener(Listener listener) {
         listeners.remove(listener);
+    }
+
+    public void addFileListener(FileListener listener) {
+        fileListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    public void removeFileListener(FileListener listener) {
+        fileListeners.remove(listener);
     }
 
     /** The most recently published state. */
@@ -93,6 +143,35 @@ public final class EventInspectorModel {
         return payloadFetches.get();
     }
 
+    /** Lazy file metadata loads performed since this model was created. */
+    public long fileLoadCount() {
+        return fileLoads.get();
+    }
+
+    public EventFileInspection currentFiles() {
+        return currentFiles;
+    }
+
+    /**
+     * Detaches execution-backed file access without closing the analysis reader.
+     *
+     * <p>The returned barrier is queued behind every already accepted inspector/file task on the
+     * model's serial executor. Once it completes, no task can still be using the old execution
+     * filesystem; later file requests retain recorded paths but omit host metadata.
+     */
+    public CompletionStage<Void> detachExecutionFileAccessAsync() {
+        fileAccess = Optional.empty();
+        fileGeneration.incrementAndGet();
+        publishFiles(EventFileInspection.none());
+        CompletableFuture<Void> barrier = new CompletableFuture<>();
+        try {
+            fetchExecutor.execute(() -> barrier.complete(null));
+        } catch (RuntimeException failure) {
+            barrier.completeExceptionally(failure);
+        }
+        return barrier;
+    }
+
     /** Clears the selection without reading anything. */
     public void clearSelection() {
         if (selected.isEmpty()) {
@@ -100,6 +179,7 @@ public final class EventInspectorModel {
         }
         selected = OptionalLong.empty();
         generation.incrementAndGet();
+        publishFiles(EventFileInspection.none());
         publish(EventInspection.none());
     }
 
@@ -114,6 +194,7 @@ public final class EventInspectorModel {
         }
         selected = OptionalLong.of(eventId);
         long mine = generation.incrementAndGet();
+        publishFiles(EventFileInspection.none());
         publish(EventInspection.loading(eventId));
         fetchExecutor.execute(() -> {
             if (generation.get() != mine) {
@@ -126,6 +207,44 @@ public final class EventInspectorModel {
                 return;
             }
             publish(result);
+        });
+    }
+
+    /** Lazily decodes and stats files for the currently loaded event. */
+    public void requestFiles() {
+        EventInspection snapshot = current;
+        if (snapshot.state() != EventInspection.State.LOADED
+                || snapshot.eventId().isEmpty()
+                || snapshot.payload().isEmpty()) {
+            return;
+        }
+        long eventId = snapshot.eventId().getAsLong();
+        EventFileInspection previous = currentFiles;
+        if (previous.eventId().isPresent()
+                && previous.eventId().getAsLong() == eventId
+                && previous.state() != EventFileInspection.State.NONE) {
+            return;
+        }
+        long mine = generation.get();
+        long fileMine = fileGeneration.get();
+        Optional<WorkspaceFileAccess> access = fileAccess;
+        publishFiles(EventFileInspection.loading(eventId));
+        RawPayload payload = snapshot.payload().orElseThrow();
+        fetchExecutor.execute(() -> {
+            if (generation.get() != mine || fileGeneration.get() != fileMine) {
+                return;
+            }
+            EventFileInspection result;
+            try {
+                fileLoads.incrementAndGet();
+                result = EventFileLoader.load(eventId, payload, access);
+            } catch (RuntimeException failure) {
+                log.warn("could not read files from event {}", eventId, failure);
+                result = EventFileInspection.failed(eventId, describe(failure));
+            }
+            if (generation.get() == mine && fileGeneration.get() == fileMine) {
+                publishFiles(result);
+            }
         });
     }
 
@@ -165,6 +284,15 @@ public final class EventInspectorModel {
         uiDispatcher.execute(() -> {
             for (Listener listener : listeners) {
                 listener.inspectionChanged(inspection);
+            }
+        });
+    }
+
+    private void publishFiles(EventFileInspection inspection) {
+        currentFiles = inspection;
+        uiDispatcher.execute(() -> {
+            for (FileListener listener : fileListeners) {
+                listener.filesChanged(inspection);
             }
         });
     }

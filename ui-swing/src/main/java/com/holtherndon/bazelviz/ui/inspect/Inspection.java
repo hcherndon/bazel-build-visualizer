@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.inspect;
 
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
+import com.holtherndon.bazelviz.ui.files.FileLink;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -72,30 +73,49 @@ public record Inspection(
      * @param unknownNote why it is not known, shown beside the absence. Never
      *     set when {@code value} is present.
      */
-    public record Field(String name, Optional<String> value, Optional<String> unknownNote) {
+    public record Field(
+            String name,
+            Optional<String> value,
+            Optional<String> unknownNote,
+            Optional<FileLink> fileLink) {
 
         public Field {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(value, "value");
             Objects.requireNonNull(unknownNote, "unknownNote");
+            Objects.requireNonNull(fileLink, "fileLink");
             if (value.isPresent() && unknownNote.isPresent()) {
                 throw new IllegalArgumentException(
                         "a field with a value must not also explain why it has none: " + name);
             }
+            if (fileLink.isPresent() && value.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "an openable file field must have a displayed location: " + name);
+            }
+        }
+
+        /** Compatibility shape for ordinary, non-openable fields. */
+        public Field(String name, Optional<String> value, Optional<String> unknownNote) {
+            this(name, value, unknownNote, Optional.empty());
         }
 
         public static Field of(String name, String value) {
-            return new Field(name, Optional.of(value), Optional.empty());
+            return new Field(name, Optional.of(value), Optional.empty(), Optional.empty());
+        }
+
+        /** A known file location with an explicit Open action. */
+        public static Field file(String name, String value, FileLink link) {
+            return new Field(name, Optional.of(value), Optional.empty(), Optional.of(link));
         }
 
         /** A value that is not known, and why. */
         public static Field unknown(String name, String why) {
-            return new Field(name, Optional.empty(), Optional.of(why));
+            return new Field(name, Optional.empty(), Optional.of(why), Optional.empty());
         }
 
         /** A value that is not known, with nothing more to say about it. */
         public static Field unknown(String name) {
-            return new Field(name, Optional.empty(), Optional.empty());
+            return new Field(name, Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         public boolean isKnown() {
@@ -146,6 +166,10 @@ public record Inspection(
 
         public Builder field(String name, String value) {
             return field(Field.of(name, value));
+        }
+
+        public Builder file(String name, String value, FileLink link) {
+            return field(Field.file(name, value, link));
         }
 
         public Builder unknown(String name, String why) {

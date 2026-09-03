@@ -52,8 +52,8 @@ import java.util.Set;
  *       so {@code EXPLAIN EXPLAIN PRAGMA …} is checked too.
  *   <li>{@code PRAGMA}, restricted to the introspection list in
  *       {@link #INTROSPECTION_PRAGMAS}. The schema browser reads
- *       {@code table_info} at runtime because this codebase has 59 tables
- *       across five schema versions and no generated schema page; a user who
+ *       {@code table_info} at runtime because this codebase has many tables
+ *       across evolving schema versions and no generated schema page; a user who
  *       wants the same answer for a table the browser is not showing should be
  *       able to ask for it directly.
  *   <li>{@code CREATE TEMP VIEW <name> AS <tabular>} — the one admitted

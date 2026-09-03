@@ -193,13 +193,13 @@ its configurations were the build's.
 
 | Table | Holds |
 |---|---|
-| `graph_sources` | one row per query, with its configuration match and failure reason |
+| `graph_sources` | one row per query, with its configuration match, failure reason, and (from v7) exact unresolved-reference counts |
 | `declared_actions` | what `aquery` said analysis produced, linked to executions where they exist |
 | `declared_action_inputs` / `_outputs` | an action's input sets and its outputs |
 | `graph_depsets` + two edge tables | the declared input DAG, unflattened |
 | `configured_target_nodes` / `_edges` | what `cquery` said, edges between labels |
 | `action_edges` | derived producer-to-consumer, keyed by derivation |
-| `graph_indexes` | the registry for the CSR files beside the database |
+| `graph_indexes` | the registry for the CSR files beside the database, tied to their graph source and invalidated before replacement imports |
 
 Four shapes worth knowing:
 
@@ -215,6 +215,82 @@ re-imports; a CSR is two arrays indexed from zero with no room for gaps.
 **`is_executable` holds 1 or NULL and never 0.** Bazel 6.5.0 emits the field
 for no action, but it is a proto3 bool without presence, so nothing downstream
 of the parser can tell "this version never says" from "not executable".
+
+### Schema v6 — cquery configuration details (Phase 5)
+
+Three tables keep the configuration payload that cquery publishes separately
+from the BEP configuration rows. They join by checksum, but are not merged:
+the cquery is a post-build source with its own success and configuration-match
+status in `graph_sources`.
+
+| Table | Holds |
+|---|---|
+| `queried_configurations` | checksum, mnemonic, platform, tool status, and whether this Bazel version published effective options |
+| `queried_configuration_fragments` | configuration fragments and the option sets each references |
+| `queried_configuration_options` | effective option name/value pairs, including explicit withheld-value state |
+
+Bazel 8.4.1 and newer publish the effective option payload; 6.5.0 and 7.6.1
+do not. `options_available` preserves that distinction, so zero stored options
+does not become a claim that an older configuration had no options. The
+Configurations card pages summaries and values from these tables and compares
+two exact checksums without loading every configuration into memory.
+
+### Schema v7 — action-graph structural completeness (Critical Path)
+
+Two nullable counts on `graph_sources` preserve what the streaming aquery
+importer learned before its staging tables disappeared:
+
+| Column | Holds |
+|---|---|
+| `unresolved_artifacts` | distinct artifact ids that could not resolve to a path, including primary/output ids referenced by an action or ids referenced by a depset but never declared |
+| `unresolved_depset_references` | action-input and transitive-child links whose depset id was never declared |
+
+Zero confirms that class of reference resolved. A positive value proves that
+joins omitted dependency-bearing data. `NULL` means the measurement was not
+recorded, including for databases migrated from v6; migration never rewrites
+unknown as zero. A declared graph is trusted for dependency-path analysis only
+when its import succeeded, its configuration match is exact, and both counts
+are present and zero.
+
+### Schema v8 — graph target-scope provenance
+
+Two nullable `graph_sources` columns preserve how each aquery or cquery chose
+its target population:
+
+| Column | Holds |
+|---|---|
+| `target_scope` | `EXACT_BEP_TARGETS`, `REQUESTED_PATTERNS`, or `UNKNOWN` |
+| `target_scope_detail` | the recorded evidence or fallback explanation |
+
+Only exact labels read from a BEP with its final marker permit an exact graph
+claim. A nonempty target table from an incomplete stream is still unverified.
+No-target captures use and disclose the requested-pattern closure. Migrated v7
+rows receive `target_scope = UNKNOWN` and keep the detail `NULL`.
+
+### Schema v9 — Starlark CPU pprof
+
+Schema v9 keeps Bazel's pprof sample and symbol structure queryable and builds
+separate derived indexes with explicit attribution coverage. The complete gzip
+source remains in `raw/`; migration does not invent profile rows for older
+sessions.
+
+| Table | Holds |
+|---|---|
+| `starlark_profile_metadata` | format, byte/count totals, raw and independently normalized pprof period, selected sample type, function/file/context attribution coverage, validation outcome, and owning enrichment task |
+| `starlark_profile_strings` | pprof string table, including source paths and function names |
+| `starlark_profile_sample_types` | every declared value type/unit pair |
+| `starlark_profile_mappings`, `starlark_profile_functions`, `starlark_profile_locations`, `starlark_profile_location_lines` | normalized pprof symbol and location records |
+| `starlark_profile_samples`, `starlark_profile_sample_values`, `starlark_profile_sample_frames`, `starlark_profile_sample_labels` | every sample value, leaf-first stack frame, and label |
+| `starlark_call_nodes` | exact physical-location root-to-leaf context tree derived from sample stacks |
+| `starlark_function_metrics`, `starlark_file_metrics` | attributed self and inline-aware, recursion-deduplicated cumulative sampled CPU/count indexes |
+| `starlark_call_edges` | aggregate adjacent caller/callee CPU and sample counts |
+
+`starlark_hot_functions`, `starlark_hot_files`,
+`starlark_resolved_call_edges`, and `starlark_resolved_call_nodes` join string
+and symbol ids for direct use in the Query page. Pprof location and function
+ids are meaningful only inside one process/profile and are never compared
+between sessions. Sample frames preserve pprof's leaf-first ordinal; call nodes
+reverse that order for root-to-leaf drawing.
 
 ## Sensitive-field inventory
 
@@ -236,8 +312,11 @@ default and what export must redact.
 | `labels.value` | internal repository, package and target names | redact on export when path redaction is enabled |
 | `test_logs.uri` | absolute paths into the output base | redact on export |
 | `configuration_make_variables.value` | make variables, which frequently hold paths | redact on export |
+| `queried_configuration_options.option_value` | effective Bazel flags, including user-supplied defines, environment and remote headers | withhold secret-named values on import; redact by option name on export |
 | `target_tags.tag` | user-authored strings, so arbitrary | redact on export |
 | `aborted_events.description` | Bazel's own text | redact on export |
+| `starlark_profile_strings.value` | Starlark function names, repository/source paths, and arbitrary pprof label strings | redact on export when path/text redaction is enabled |
+| `starlark_profile_metadata.validation_detail` | importer diagnostics that can repeat a source name or malformed value | redact on export |
 
 Everything else in schema v2 is structural — counts, timestamps, outcomes,
 opaque configuration ids, mnemonics — and carries nothing about the user.

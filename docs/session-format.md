@@ -25,7 +25,8 @@ Phase 1 landed.
   session-<uuid>/                # one directory per session
     manifest.json                # format version, SessionState, capture sources
                                  # and their completeness, counts, timestamps,
-                                 # original + effective command (ADR-007)
+                                 # original + effective command (ADR-007), and
+                                 # local/SSH execution provenance (ADR-011)
     session.sqlite               # per-session database (ADR-005)
     raw/                         # every source byte, verbatim (ADR-004)
       bes-000001.journal         # segmented raw journal, rotated at frame
@@ -33,7 +34,9 @@ Phase 1 landed.
       stdout.log / stderr.log    # console output (Phase 2)
       execution-log.bin          # execution log as received (Phase 4)
       profile.json               # timing profile as received (Phase 4)
-      aquery.pb / cquery.pb      # query outputs as received (Phase 5)
+      starlark-cpu.pprof.gz       # sampled Starlark CPU stacks as received
+      aquery.proto / cquery.proto # query outputs as received (Phase 5)
+      aquery.query / cquery.query # exact or explicitly fallback target expressions
       imported-source.bep        # the original file, for an imported session
     indexes/                     # rebuildable; see graph-model.md
       action-forward.csr         # forward action-dependency CSR (Phase 5)
@@ -56,10 +59,30 @@ are written today.
 
 The catalog database is an application-level concern and lives under the
 application-support root (`catalog/`), not inside any session directory.
+Cleanup and archive adoption are coordinated above the catalog by session UUID.
+An open session holds a process-level lease until its source closes, so cleanup
+cannot remove files still being read by another native window. Archive imports
+extract into unique sibling staging directories and serialize adoption of the
+same UUID.
 
 The manifest is small, human-readable JSON and is the only file read to list
 sessions cheaply besides the catalog; catalog and manifest must agree, with
 the manifest winning on conflict (the directory is the artifact).
+
+`executionLocation` is optional for compatibility with sessions written before
+ADR-011. A new live capture records `kind` (`LOCAL` or `SSH`) and a display
+name. SSH entries may also carry the OpenSSH destination and explicit port;
+they never contain a password, key or authentication option. Remote
+`workingDirectory` and `workspaceRoot` values remain Linux path text and are
+never interpreted as desktop `Path` values.
+
+Execution provenance is descriptive, not a reconnect recipe. Reading,
+importing or opening a manifest cannot create an SSH session, run its recorded
+command, open its terminal or fetch its files. A user must separately choose a
+saved or new SSH Workspace for live remote access; capture preflight follows
+only if they start another build. Reusable local/SSH Workspace profiles live in
+`settings/workspaces.properties` and are not stored in the managed session or a
+`.bviz` archive.
 
 ## Journal framing and integrity
 

@@ -9,11 +9,126 @@ user identity. The tool is local-first and treats captured data accordingly
 
 - The built-in BES endpoint (`capture-bes`) binds **loopback only**
   (`127.0.0.1`), never `0.0.0.0`. There is no option to widen this.
-- The application makes **no outbound network connections**: no telemetry,
-  no update pings, no crash upload. Anything of that kind would be a new
-  ADR, opt-in, and off by default.
+- The application has no telemetry, update ping or crash upload. Its built-in
+  outbound transport starts only when the user chooses a saved, discovered or
+  new **SSH host** Workspace: that explicit action runs the system
+  `/usr/bin/ssh` and `/usr/bin/sftp` clients for the destination (ADR-011).
+  Opening captured data never does so.
+- The remote BES address is also loopback. OpenSSH maps an allocated remote
+  `127.0.0.1` port back to the desktop listener; neither endpoint binds a LAN
+  or public interface. The SSH server must permit the reverse forward.
 - All captured data stays in the local session directory
-  (docs/session-format.md).
+  (docs/session-format.md). Bazel first writes auxiliary capture files into a
+  private mode-0700 remote staging directory, then SFTP copies them into the
+  local session's `raw/` directory before they are parsed. Cleanup is limited
+  to the exact generated file names and staging directory.
+
+SSH host keys, agent use, jump hosts, authentication and connection policy come
+from the user's normal OpenSSH configuration. The application forces batch
+mode, disables agent/X11 forwarding and remote local-command hooks, and neither
+implements SSH cryptography nor stores a password or private key. A Workspace
+saved for reuse after restart contains a stable ID, user label, local/SSH kind,
+working directory, Bazel executable, last-opened time and, for SSH only, its
+destination or Host alias and optional port. Profiles are bounded and written
+through a sibling temporary file and atomic replacement; they contain no
+captured command or authentication option.
+
+The application also persists the stable IDs and screen geometry of open
+Workspace windows in `workspace-window-state.properties`. On restart, a saved
+SSH profile that was left open reconnects automatically. This restores an
+execution choice the user already made; it is never inferred from a captured
+session. The state file contains no credentials and cannot restore an
+ephemeral discovered SSH profile unless startup discovery emits that same
+deterministic ID again. Removing the saved Workspace or forgetting its
+previous window prevents restoration.
+
+Each saved profile can also have a private directory below
+`settings/workspace-windows/`, named with the SHA-256 digest of its stable ID.
+It contains launcher state (including command history and the most recently
+saved draft) and table/query-result presentation settings. Restoration clears
+the command draft before showing Console but deliberately retains history.
+Commands and target labels can be sensitive; protect this directory like the
+Workspace profile store. Discovered profiles create no private settings
+directory. Private state is removed only after profile removal is saved, and
+orphan cleanup is skipped when the profile store cannot be trusted.
+
+Workspace Discovery is an explicit exception to treating settings as inert
+data. The optional saved script is executable local configuration and runs
+directly according to its shebang at graphical startup and on request. It has
+the same filesystem, process and network permissions as the desktop user, so a
+script can make its own outbound connections even though the application has
+no telemetry client. Save only trusted code. Imported sessions cannot create,
+replace or trigger the script.
+
+Discovery stdout is bounded and parsed only into local or SSH profile fields;
+it is not evaluated as code. Every invocation replaces the prior in-memory
+discovered set. Those profiles are tagged **Discovered**, are never written to
+`workspaces.properties`, and are not added to a session or export. A discovered
+SSH destination still makes no connection until the user selects that row.
+Invalid rows and process failures are exposed through bounded local
+diagnostics.
+
+The in-app file viewer follows only an explicit click. A selected local
+Workspace resolves repository paths through its local `ExecutionFileSystem`.
+An explicitly connected SSH Workspace resolves them through its own filesystem
+and uses SFTP for content; arbitrary remote URI authorities are still refused.
+Historical local `file:` URIs remain local links, while recorded remote paths
+are provenance unless a user separately chooses a live Workspace.
+BUILD-file edits are written only after the user presses **Save**, and a
+content-stamp check prevents the editor from silently replacing newer local or
+remote work. Reads remain bounded and binary-refusing.
+
+The Events inspector likewise delays file metadata until the user visits its
+Files tab. Open File and Copy remain explicit. Reveal in Finder applies only to
+a local file; a recorded SSH path is not reinterpreted on the desktop. Opening
+historical remote session data never reconnects to its recorded host, starts a
+terminal or executes its command. Remote file links work only while a user has
+an explicit live connection.
+
+Post-build aquery and cquery commands run on the same explicit execution host as
+the primary Bazel command. They query the requested targets' transitive
+dependency closure and may therefore record internal dependency labels that
+were not typed on the original command line. Their exact argv and output paths
+are shown before launch and retained in the session. Remote protobuf output is
+streamed through a non-TTY SSH channel into local managed files; neither query
+executes text found inside imported data.
+
+Terminal starts automatically when a user navigates to its tab with a Workspace
+selected. For a local Workspace its bytes stay in a local login-shell PTY. For
+SSH, keystrokes, pasted text and terminal-protocol replies can be sent to the
+chosen host, while that host's terminal control sequences are rendered locally.
+The channel persists while other tabs are selected and closes with the selected
+Workspace or the application. It is never created from manifest provenance or
+another imported file.
+
+## Application logs
+
+Graphical application logs stay below the local application-support directory
+and are never uploaded, added to a session archive or exported automatically.
+They can contain absolute workspace and file paths, target labels, SSH display
+destinations, session identifiers, timing summaries and exception messages.
+That is useful diagnostic context and also sensitive build data; protect and
+review a log before sharing it.
+
+The application does not intentionally record environment values, full raw
+command argument vectors, BEP payloads, file contents, terminal input or
+output, SFTP scripts, authentication material or SSH control-socket paths.
+Commands are logged as structural summaries such as execution kind, command
+name and argument count. Workspace Discovery likewise logs only structural
+outcomes, counts, byte totals and duration, not the saved script, stdout,
+stderr or rejected row text. A manual diagnostics dialog can show bounded
+stderr, so review that text before copying it. An exception supplied by an
+operating-system tool can still carry sensitive failure text, so logging is
+not a redaction boundary. Control characters in messages and stack traces are
+rendered as printable escapes, keeping every event to one physical log line.
+
+The active file and retained history are bounded and rotated locally. Logging
+callers never wait for disk I/O: a bounded writer queue reports an exact dropped
+record count in the Diagnostics menu and writes overflow warnings once the
+writer catches up. This loss affects diagnostic records only, never raw capture
+or normalized session data. One operating-system lease prevents concurrent app
+instances from rotating the same destination; a second instance reports that
+file logging is unavailable instead of sharing it unsafely.
 
 ## Redaction
 
@@ -40,6 +155,40 @@ each gets. Beyond the database: effective and original command lines,
 environment blocks, remote headers, and hostnames in profile metadata, which
 arrive with Phase 4.
 
+Schema v7's `unresolved_artifacts` and `unresolved_depset_references` are
+non-sensitive numeric counts. Redaction leaves them intact so an exported
+session cannot regain a false graph-completeness claim.
+
+Schema v8's `graph_sources.target_scope` enum is non-sensitive and remains
+intact. `target_scope_detail` can repeat labels or command context, so export
+redacts it as text.
+
+Schema v9's Starlark pprof string table is sensitive. It can contain repository
+paths, rule and macro names, function names, and arbitrary labels, so export
+redacts `starlark_profile_strings.value`. Structural ids, numeric samples,
+counts, the format/validation enums, and label value-kind enum remain intact;
+`starlark_profile_metadata.validation_detail` is redacted as free text. The raw
+`starlark-cpu.pprof.gz` is faithful source data and is omitted from a redacted
+archive under the same rule as every other raw capture.
+
+Saved Workspaces are also sensitive local settings: labels, local or remote
+directories, Bazel paths, and an SSH destination or Host alias can disclose
+host, account and project names. They contain no authentication material, but
+should be protected and shared with the same care as the user's SSH
+configuration. They are execution settings, not part of a captured session or
+its exports.
+
+The persisted Workspace Discovery script is more sensitive than a profile: it
+is executable code and may itself contain paths, hostnames or configuration.
+Discovered profile rows are ephemeral, but their labels, directories and SSH
+destinations remain visible in the current process and should be treated as
+sensitive while present.
+
+A live SSH session's manifest separately records its execution kind, display
+destination and optional port as provenance. That can also disclose a host
+name. It contains no authentication material, but it is part of the sensitive
+session artifact and can be carried by a portable archive.
+
 **The redaction layer landed in Phase 9.** `core.redact` holds the patterns,
 the policy and the engine; `storage.redact.SessionRedaction` names every column
 it rewrites; and `SessionRedactionTest` asserts that every `TEXT` column the
@@ -49,6 +198,17 @@ remembering to read it; that one is checked by running it.
 
 A session directory is still a sensitive artifact at rest. What changed is that
 there is now a way to produce something that is not.
+
+## Cquery configuration options (Phase 5)
+
+Bazel 8.4.1 and newer can put every effective configuration option into cquery
+output. Those values include user inputs such as defines, action environments,
+credential paths and remote headers. The raw cquery protobuf remains faithful
+and sensitive at rest. The normalized `queried_configuration_options` table
+withholds values whose option names match the execution-log secret patterns,
+plus Bazel's remote-header names, and records `redacted = 1`; withheld is not
+presented as empty or equal during comparison. Export applies the regular
+name-based redactor again, treating an option name as its `--flag` form.
 
 ## Execution-log environment variables (Phase 4)
 

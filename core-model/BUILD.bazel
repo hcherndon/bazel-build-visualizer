@@ -1,12 +1,32 @@
-# Shared domain types: ids, session state machine. Depends on nothing.
+load("@rules_java//java:defs.bzl", "java_library")
 
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
-
-bbv_java_library(
+java_library(
     name = "core-model",
+    exports = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/domain",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/entity",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/redact",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/text",
+    ],
+    visibility = ["//visibility:public"],
 )
 
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    deps = [":core-model"],
+    tests = [
+        "//core-model/src/test/java/com/holtherndon/bazelviz/core/graph:tests",
+        "//core-model/src/test/java/com/holtherndon/bazelviz/core/id:tests",
+        "//core-model/src/test/java/com/holtherndon/bazelviz/core/journal:tests",
+        "//core-model/src/test/java/com/holtherndon/bazelviz/core/measure:tests",
+        "//core-model/src/test/java/com/holtherndon/bazelviz/core/redact:tests",
+        "//core-model/src/test/java/com/holtherndon/bazelviz/core/session:tests",
+    ],
 )

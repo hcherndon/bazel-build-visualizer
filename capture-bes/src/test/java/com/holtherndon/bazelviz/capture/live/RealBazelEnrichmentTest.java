@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
+import com.holtherndon.bazelviz.runner.plan.InstrumentationPlanner;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.testsupport.bazel.BazelBinary;
 import com.holtherndon.bazelviz.testsupport.bazel.BazelWorkspaceFixture;
@@ -58,7 +59,8 @@ class RealBazelEnrichmentTest {
         assertThat(Files.list(raw).map(path -> path.getFileName().toString()).toList())
                 .describedAs("raw directory contents")
                 .anyMatch(name -> name.startsWith("execution-log"))
-                .anyMatch(name -> name.equals("profile.json"));
+                .anyMatch(name -> name.equals("profile.json"))
+                .anyMatch(name -> name.equals(InstrumentationPlanner.STARLARK_CPU_PROFILE_FILE));
 
         try (SessionDatabase database = open(result)) {
             Connection c = database.newReadConnection();
@@ -101,10 +103,26 @@ class RealBazelEnrichmentTest {
             // And the profile was checked against this session's build.
             assertThat(scalar(c, "SELECT build_id_matches FROM profile_metadata")).isEqualTo(1);
 
-            // Both tasks recorded themselves.
+            // The execution log, trace profile and Starlark CPU profile all
+            // recorded themselves.
             assertThat(scalar(c,
                     "SELECT COUNT(*) FROM enrichment_tasks WHERE state = 'SUCCEEDED'"))
-                    .isEqualTo(2);
+                    .isEqualTo(3);
+
+            // The real gzip pprof made it through capture, parsing,
+            // validation, and derivation. A very short invocation may have no
+            // samples, so format and units are the stable contract.
+            assertThat(text(c, "SELECT format FROM starlark_profile_metadata"))
+                    .isEqualTo("pprof-gzip");
+            assertThat(text(c, "SELECT validation_state FROM starlark_profile_metadata"))
+                    .isEqualTo("VALID");
+            assertThat(scalar(c, "SELECT COUNT(*) FROM starlark_profile_sample_types st"
+                    + " JOIN starlark_profile_strings type"
+                    + " ON type.string_index = st.type_string_index"
+                    + " JOIN starlark_profile_strings unit"
+                    + " ON unit.string_index = st.unit_string_index"
+                    + " WHERE type.value = 'CPU' AND unit.value = 'microseconds'"))
+                    .isEqualTo(1);
 
             // Nothing was dropped to keep the schema tidy.
             try (Statement s = c.createStatement();
@@ -130,6 +148,10 @@ class RealBazelEnrichmentTest {
         try (SessionDatabase database = open(result)) {
             Connection c = database.newReadConnection();
             assertThat(scalar(c, "SELECT COUNT(*) FROM action_attempts")).isPositive();
+            assertThat(text(c, "SELECT format FROM starlark_profile_metadata"))
+                    .isEqualTo("pprof-gzip");
+            assertThat(text(c, "SELECT validation_state FROM starlark_profile_metadata"))
+                    .isEqualTo("VALID");
 
             long withStart = scalar(c,
                     "SELECT COUNT(*) FROM action_attempts WHERE start_micros IS NOT NULL");
@@ -165,7 +187,7 @@ class RealBazelEnrichmentTest {
         List<String> command = new ArrayList<>(List.of("build", "//..."));
         CaptureRequest request = CaptureRequest.of(
                         sessionsRoot, "test", bazel.toString(), workspace.root(), command)
-                // The preset that asks for the execution log and the profile.
+                // The preset that asks for the execution log and both profiles.
                 .withPreset(CapturePreset.PERFORMANCE_DIAGNOSTICS)
                 .withEnvironment(BazelBinary.VERSION_ENV, version);
         try (CaptureCoordinator coordinator = new CaptureCoordinator(

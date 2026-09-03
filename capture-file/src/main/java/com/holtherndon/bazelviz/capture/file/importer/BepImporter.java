@@ -197,10 +197,15 @@ public final class BepImporter {
         Objects.requireNonNull(listener, "listener");
         Objects.requireNonNull(cancelRequested, "cancelRequested");
 
+        long startedNanos = System.nanoTime();
         Path absoluteSource = source.toAbsolutePath().normalize();
+        log.info("import {} started for {}", sessionId, absoluteSource.getFileName());
+        log.debug("import {} source path is {}", sessionId, absoluteSource);
         listener.onProgress(new ImportProgress(ImportPhase.DETECTING, 0, 0, OptionalLong.empty()));
         FormatDetection detection = FormatDetector.withDefaults().detect(absoluteSource);
         DetectedFormat format = detection.format();
+        log.debug("import {} detected {} after inspecting {} byte(s): {}",
+                sessionId, format, detection.bytesInspected(), detection.reason());
         if (format != DetectedFormat.BEP_BINARY && format != DetectedFormat.BEP_JSON) {
             // Including MANAGED_SESSION_DIR: a session directory is opened, not
             // imported, and guessing otherwise would create a session inside a
@@ -213,12 +218,17 @@ public final class BepImporter {
                 ManagedSessionLayout.CAPTURE_DIRECTORIES,
                 builder -> builder.addSource(SessionManifest.CaptureSourceEntry.pending(
                         format.name(), absoluteSource.toString())));
+        ImportResult result;
         try (Run run = new Run(session, format, listener, cancelRequested)) {
-            return run.runFreshImport(absoluteSource);
+            result = run.runFreshImport(absoluteSource);
         } catch (IOException | RuntimeException failure) {
+            log.error("import {} failed after {} ms", sessionId,
+                    elapsedMillis(startedNanos), failure);
             closeQuietly(session);
             throw failure;
         }
+        logCompletion(result, startedNanos);
+        return result;
     }
 
     // ------------------------------------------------------------------ resume
@@ -249,7 +259,11 @@ public final class BepImporter {
         Objects.requireNonNull(listener, "listener");
         Objects.requireNonNull(cancelRequested, "cancelRequested");
 
+        long startedNanos = System.nanoTime();
         SessionManifest existing = sessions.readManifest(sessionRoot);
+        log.info("import {} resume started from state {}",
+                existing.sessionId(), existing.state());
+        log.debug("import {} resume root is {}", existing.sessionId(), sessionRoot);
         if (existing.state().isTerminal()) {
             throw new IllegalStateException("session " + existing.sessionId() + " at " + sessionRoot
                     + " is already finished in state " + existing.state() + "; there is nothing to resume");
@@ -268,12 +282,17 @@ public final class BepImporter {
                 sessions.recover(sessionRoot, SessionManager.RecoveryDecision.RESUME);
         ManagedSession session = recovered.session().orElseThrow(() -> new IllegalStateException(
                 "recovery declined to reopen " + sessionRoot));
+        ImportResult result;
         try (Run run = new Run(session, sourceCheckpoint.format(), listener, cancelRequested)) {
-            return run.runResume(sourceCheckpoint);
+            result = run.runResume(sourceCheckpoint);
         } catch (IOException | RuntimeException failure) {
+            log.error("import {} resume failed after {} ms", existing.sessionId(),
+                    elapsedMillis(startedNanos), failure);
             closeQuietly(session);
             throw failure;
         }
+        logCompletion(result, startedNanos);
+        return result;
     }
 
     /**
@@ -295,6 +314,19 @@ public final class BepImporter {
         } catch (IOException e) {
             log.warn("failed to release the lock on {}", session.root(), e);
         }
+    }
+
+    private static void logCompletion(ImportResult result, long startedNanos) {
+        log.info("import {} finished: outcome={}, state={}, journaled={}, normalized={},"
+                        + " stored={}, diagnostics={}, elapsed={} ms",
+                result.sessionId(), result.outcome(), result.sessionState(),
+                result.recordsJournaled(), result.eventsNormalized(), result.eventsInDatabase(),
+                result.diagnosticsRecorded(), elapsedMillis(startedNanos));
+    }
+
+    private static long elapsedMillis(long startedNanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - startedNanos);
     }
 
     // ================================================================== the run
@@ -397,7 +429,7 @@ public final class BepImporter {
         ImportResult runFreshImport(Path source) throws IOException {
             session.transitionTo(SessionState.PREFLIGHT);
 
-            phase = ImportPhase.PRESERVING;
+            beginPhase(ImportPhase.PRESERVING);
             emitProgress(true);
             preserved = preserve(source);
             totalBytes = preserved.byteSize();
@@ -423,7 +455,7 @@ public final class BepImporter {
             journal = JournalWriter.create(
                     layout.rawDirectory(), session.id().value(), options.journalWriterConfig());
 
-            phase = ImportPhase.READING;
+            beginPhase(ImportPhase.READING);
             ImportOutcome outcome = readSource(0, 0);
             return finish(outcome);
         }
@@ -461,7 +493,7 @@ public final class BepImporter {
             recordJournalRecovery(recovery);
 
             Optional<ImportCheckpoint> checkpoint = journalCheckpoints.read();
-            phase = ImportPhase.REPLAYING_JOURNAL;
+            beginPhase(ImportPhase.REPLAYING_JOURNAL);
             emitProgress(true);
             long journalFrames = replayJournal(checkpoint);
             framesAtStart = journalFrames;
@@ -522,7 +554,7 @@ public final class BepImporter {
                     OptionalLong.of(startOffset));
             warnings.add("import resumed at source byte offset " + startOffset);
 
-            phase = ImportPhase.READING;
+            beginPhase(ImportPhase.READING);
             ImportOutcome outcome = readSource(startOffset, skip);
             return finish(outcome);
         }
@@ -1364,7 +1396,7 @@ public final class BepImporter {
 
         private ImportResult finishTerminal(ImportOutcome requested) throws IOException {
             ImportOutcome outcome = requested;
-            phase = ImportPhase.FINALIZING;
+            beginPhase(ImportPhase.FINALIZING);
             emitProgress(true);
             checkpoint();
             reportNormalizationAnomalies();
@@ -1429,6 +1461,11 @@ public final class BepImporter {
             writeSessionInfo(terminal, session.manifest().finalizedMicros());
 
             return result(outcome, Optional.of(summary));
+        }
+
+        private void beginPhase(ImportPhase next) {
+            phase = next;
+            log.debug("import {} entered {}", session.id(), next);
         }
 
         /**

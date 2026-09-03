@@ -27,7 +27,7 @@ import org.slf4j.LoggerFactory;
  * <p>"Never block the Swing event dispatch thread." Laying out fifty thousand
  * nodes is a linear pass, but linear over fifty thousand is still long enough to
  * freeze a window. Everything expensive happens on one background thread; only
- * the finished {@link Rendered} crosses back, and it crosses on the EDT.
+ * finished immutable render data or prepared models cross back, on the EDT.
  *
  * <h2>One request at a time, and the old one is told to stop</h2>
  *
@@ -77,6 +77,7 @@ public final class GraphLayoutService implements AutoCloseable {
             };
 
     private AtomicBoolean inFlight = new AtomicBoolean(false);
+    private AtomicBoolean preparationInFlight = new AtomicBoolean(false);
 
     public GraphLayoutService(GraphQueries queries) {
         this.queries = queries;
@@ -105,6 +106,7 @@ public final class GraphLayoutService implements AutoCloseable {
         // Whatever was running is now answering a question the user has moved
         // on from.
         inFlight.set(true);
+        preparationInFlight.set(true);
         AtomicBoolean cancelled = new AtomicBoolean(false);
         inFlight = cancelled;
 
@@ -158,6 +160,50 @@ public final class GraphLayoutService implements AutoCloseable {
     /** Work to run against the session's graph, off the event thread. */
     public interface GraphWork<T> {
         T runOn(CsrGraph forward) throws Exception;
+    }
+
+    /** Work that prepares an immutable view model without reading the graph. */
+    @FunctionalInterface
+    public interface Preparation<T> {
+        T run() throws Exception;
+    }
+
+    /**
+     * Prepares derived drawing state on the graph worker, then returns to EDT.
+     *
+     * <p>Building the spatial index, translating edge endpoints and restyling
+     * edge buckets are all bounded linear work, but still too much for Swing's
+     * event thread at the documented graph ceiling.
+     */
+    public <T> void prepare(
+            Preparation<T> work, Consumer<T> onDone, Consumer<Throwable> onError) {
+        preparationInFlight.set(true);
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        preparationInFlight = cancelled;
+        worker.execute(() -> {
+            if (cancelled.get()) {
+                return;
+            }
+            try {
+                T result = work.run();
+                if (!cancelled.get()) {
+                    SwingUtilities.invokeLater(() -> {
+                        if (!cancelled.get()) {
+                            onDone.accept(result);
+                        }
+                    });
+                }
+            } catch (Exception failure) {
+                if (!cancelled.get()) {
+                    log.warn("graph model preparation failed", failure);
+                    SwingUtilities.invokeLater(() -> {
+                        if (!cancelled.get()) {
+                            onError.accept(failure);
+                        }
+                    });
+                }
+            }
+        });
     }
 
     /**
@@ -339,6 +385,7 @@ public final class GraphLayoutService implements AutoCloseable {
             Consumer<Rendered> onDone,
             Consumer<Throwable> onError) {
         inFlight.set(true);
+        preparationInFlight.set(true);
         AtomicBoolean cancelled = new AtomicBoolean(false);
         inFlight = cancelled;
 
@@ -347,11 +394,19 @@ public final class GraphLayoutService implements AutoCloseable {
                 Optional<CsrGraph> forward = queries.forwardIndex(request.graph());
                 if (forward.isEmpty()) {
                     Rendered nothing = Rendered.unavailable(request);
-                    SwingUtilities.invokeLater(() -> onDone.accept(nothing));
+                    if (!cancelled.get()) {
+                        SwingUtilities.invokeLater(() -> {
+                            if (!cancelled.get()) {
+                                onDone.accept(nothing);
+                            }
+                        });
+                    }
                     return;
                 }
                 GraphExtract.Result extract =
-                        GraphExtract.path(forward.get(), nodes, request.mode());
+                        GraphExtract.path(
+                                forward.get(), nodes, request.mode(),
+                                request.nodeLimit(), request.edgeLimit());
                 GraphLayout.Result layout =
                         GraphLayout.run(request.layout(), extract, cancelled);
                 if (cancelled.get()) {
@@ -374,6 +429,7 @@ public final class GraphLayoutService implements AutoCloseable {
     /** Stops the running request without submitting another. */
     public void cancel() {
         inFlight.set(true);
+        preparationInFlight.set(true);
     }
 
     private Rendered compute(Request request, AtomicBoolean cancelled)
@@ -511,7 +567,7 @@ public final class GraphLayoutService implements AutoCloseable {
         public static Request whole(GraphKind graph, int nodeLimit, int edgeLimit) {
             return new Request(
                     graph, GraphExtract.Mode.WHOLE, 0, Integer.MAX_VALUE,
-                    nodeLimit, edgeLimit, GraphLayout.Kind.LAYERED,
+                    nodeLimit, edgeLimit, GraphLayout.defaultFor(GraphExtract.Mode.WHOLE),
                     GraphClustering.By.PACKAGE, GraphClustering.DEFAULT_CLUSTER_LIMIT);
         }
 
@@ -544,6 +600,13 @@ public final class GraphLayoutService implements AutoCloseable {
             return new Request(
                     graph, mode, sourceNode, maxDepth, nodes, edges,
                     layout, clusterBy, clusterLimit);
+        }
+
+        /** The same cluster query with an explicitly raised group ceiling. */
+        public Request withClusterLimit(int groups) {
+            return new Request(
+                    graph, mode, sourceNode, maxDepth, nodeLimit, edgeLimit,
+                    layout, clusterBy, groups);
         }
     }
 

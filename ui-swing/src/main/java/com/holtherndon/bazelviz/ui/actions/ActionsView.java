@@ -8,10 +8,13 @@ import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
+import com.holtherndon.bazelviz.ui.files.FileLink;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
@@ -25,7 +28,10 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
@@ -107,6 +113,8 @@ public final class ActionsView extends JPanel {
     private final JTextField textFilter = new JTextField(18);
     private final JComboBox<ActionSort> sortChoice = new JComboBox<>(ActionSort.values());
     private final JCheckBox descendingBox = new JCheckBox("Descending");
+    private final javax.swing.JButton showAllButton =
+            new javax.swing.JButton("Show all actions");
     private final javax.swing.JButton graphButton = new javax.swing.JButton("Dependencies");
     private final javax.swing.JButton timelineButton = new javax.swing.JButton("On timeline");
 
@@ -145,6 +153,9 @@ public final class ActionsView extends JPanel {
      */
     private EntityActions entityActions;
 
+    /** Clears the Timeline's visible range when this view removes its range filter. */
+    private Runnable clearExternalRange = () -> { };
+
     /** A time range from the timeline, applied on top of the toolbar's filter. */
     private java.util.Optional<long[]> rangeFilter = java.util.Optional.empty();
 
@@ -172,6 +183,22 @@ public final class ActionsView extends JPanel {
 
     /** Bumped on every reload so a slow one cannot overwrite a newer one. */
     private long reloadGeneration;
+
+    /** Bumped for every explicit cross-view reveal so stale lookups are ignored. */
+    private long revealGeneration;
+
+    /** A reveal waiting for its keyset page to enter the bounded page cache. */
+    private PendingTableReveal pendingTableReveal;
+
+    private record PendingReveal(long generation, ActionRow row) {}
+
+    private record PendingTableReveal(
+            long generation,
+            long actionId,
+            PagedTableModel<ActionRow> model,
+            int firstRow,
+            int lastRow,
+            long pageIndex) {}
 
     /**
      * Coalesces the keystrokes in the filter box.
@@ -251,7 +278,10 @@ public final class ActionsView extends JPanel {
         tableScroll.setMinimumSize(new Dimension(320, 160));
         inspector.setMinimumSize(new Dimension(300, 160));
 
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tableScroll, inspector);
+        JSplitPane split = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                new SectionPane("Actions", tableScroll),
+                new SectionPane("Action details", inspector));
         split.setResizeWeight(0.68);
 
         JPanel status = new JPanel(new BorderLayout(12, 0));
@@ -307,6 +337,11 @@ public final class ActionsView extends JPanel {
         bar.add(outcomeChoice);
         bar.add(new JLabel("Output contains:"));
         bar.add(textFilter);
+        showAllButton.setEnabled(false);
+        showAllButton.setToolTipText(PlainText.tooltip(
+                "Clear every action filter and return to the start of the table"));
+        showAllButton.addActionListener(event -> showAllActions());
+        bar.add(showAllButton);
         bar.add(new JLabel("Sort:"));
         bar.add(sortChoice);
         bar.add(descendingBox);
@@ -360,6 +395,16 @@ public final class ActionsView extends JPanel {
                 java.util.Set.of(EntityActions.Command.REVEAL_ACTION));
     }
 
+    /** Opens file-valued inspector fields through the window's shared editor. */
+    public void onOpenFile(Consumer<FileLink> handler) {
+        inspector.onOpenFile(handler);
+    }
+
+    /** Keeps the Timeline's range overlay synchronized with this view's filter. */
+    public void onClearExternalRange(Runnable handler) {
+        clearExternalRange = Objects.requireNonNull(handler, "handler");
+    }
+
     /**
      * The refs for one model row: the action itself, its target label when
      * it has one, and the event it was normalized from. A row whose page has
@@ -386,10 +431,24 @@ public final class ActionsView extends JPanel {
      * and cannot be applied to rows already fetched.
      */
     public void filterToRange(java.util.OptionalLong fromMicros, java.util.OptionalLong toMicros) {
-        rangeFilter = fromMicros.isPresent() && toMicros.isPresent()
+        java.util.Optional<long[]> next = fromMicros.isPresent() && toMicros.isPresent()
                 ? java.util.Optional.of(new long[] {fromMicros.getAsLong(), toMicros.getAsLong()})
                 : java.util.Optional.empty();
+        if (sameRange(rangeFilter, next)) {
+            return;
+        }
+        rangeFilter = next;
         reload();
+    }
+
+    private static boolean sameRange(
+            java.util.Optional<long[]> left, java.util.Optional<long[]> right) {
+        if (left.isEmpty() || right.isEmpty()) {
+            return left.isEmpty() && right.isEmpty();
+        }
+        long[] leftRange = left.orElseThrow();
+        long[] rightRange = right.orElseThrow();
+        return leftRange[0] == rightRange[0] && leftRange[1] == rightRange[1];
     }
 
     /**
@@ -450,8 +509,54 @@ public final class ActionsView extends JPanel {
         }
     }
 
+    /**
+     * Reveals and selects an action requested by another view.
+     *
+     * <p>Unlike {@link #selectAction}, this is navigation rather than passive
+     * timeline synchronization. It resolves the exact row off the EDT,
+     * visibly clears filters that could exclude it, seeks to its keyset page,
+     * and keeps the request until that page is loaded.
+     */
+    public void revealAction(long actionId) {
+        clearExternalRange.run();
+        SessionSource opened = source;
+        ExecutorService details = detailExecutor;
+        long generation = ++revealGeneration;
+        pendingTableReveal = null;
+        if (opened == null || details == null) {
+            return;
+        }
+        statusLabel.setText("Locating action…");
+        details.execute(() -> {
+            Optional<ActionRow> found;
+            try (EntityReader reader = opened.openEntityReader()) {
+                found = reader.action(actionId);
+            } catch (RuntimeException failure) {
+                log.warn("could not locate action {}", actionId, failure);
+                SwingUtilities.invokeLater(() -> {
+                    if (generation == revealGeneration && source == opened) {
+                        statusLabel.setText(
+                                "Could not locate action " + actionId + ": " + failure.getMessage());
+                    }
+                });
+                return;
+            }
+            SwingUtilities.invokeLater(() -> {
+                if (generation != revealGeneration || source != opened) {
+                    return;
+                }
+                if (found.isEmpty()) {
+                    statusLabel.setText("Action " + actionId + " was not found in this session.");
+                    return;
+                }
+                revealResolvedAction(new PendingReveal(generation, found.orElseThrow()));
+            });
+        });
+    }
+
     public void showEmpty(String message) {
         emptyLabel.setText(Objects.requireNonNull(message, "message"));
+        showAllButton.setEnabled(false);
         cards.show(deck, CARD_EMPTY);
     }
 
@@ -491,7 +596,7 @@ public final class ActionsView extends JPanel {
                                     + " that flag, so successful actions may be missing."
                             : "Actions that were cache hits publish no event, so this is what"
                                     + " executed this invocation, not what the build declared.");
-                    reload();
+                    reloadPreservingReveal();
                 });
             } catch (RuntimeException failure) {
                 log.error("could not open the actions view", failure);
@@ -502,13 +607,22 @@ public final class ActionsView extends JPanel {
 
     /** Closes the session and stops the executors, off the EDT. */
     public void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches immediately and completes after this session's accepted reads have stopped. */
+    public CompletionStage<Void> closeSessionAsync() {
         filterDebounce.stop();
+        revealGeneration++;
+        reloadGeneration++;
+        pendingTableReveal = null;
         // A label filter belongs to the session it was sent from; the next
         // session must not open pre-narrowed by an invisible leftover.
         labelFilter = Optional.empty();
         labelChip.setVisible(false);
         tableModel = null;
         rowSource = null;
+        showAllButton.setEnabled(false);
         table.setModel(new DefaultTableModel());
         inspector.show(Inspection.NONE);
         SessionSource closing = source;
@@ -521,10 +635,11 @@ public final class ActionsView extends JPanel {
         detailExecutor = null;
         detailReader = null;
         pageReader = null;
-        if (closing == null && pages == null && details == null) {
-            return;
+        if (closing == null && pages == null && details == null
+                && detail == null && page == null) {
+            return CompletableFuture.completedFuture(null);
         }
-        Thread closer = new Thread(() -> {
+        return ViewClose.runAsync("bbv-actions-close", () -> {
             shutdown(pages);
             shutdown(details);
             if (detail != null) {
@@ -533,9 +648,7 @@ public final class ActionsView extends JPanel {
             if (page != null) {
                 page.close();
             }
-        }, "bbv-actions-close");
-        closer.setDaemon(true);
-        closer.start();
+        });
     }
 
     /** Visible for testing: the installed model, or null before one is. */
@@ -556,6 +669,26 @@ public final class ActionsView extends JPanel {
     /** Visible for testing: the note about what the capture published. */
     public String captureNoteForTest() {
         return captureNote.getText();
+    }
+
+    /** Visible for testing: the selected action id once its page has loaded. */
+    public java.util.OptionalLong selectedActionIdForTest() {
+        ActionRow selected = selectedRow();
+        return selected == null
+                ? java.util.OptionalLong.empty()
+                : java.util.OptionalLong.of(selected.id());
+    }
+
+    /** Visible for testing: completes after detail work already accepted by the view. */
+    CompletionStage<Void> detailBarrierForTest() {
+        CompletableFuture<Void> barrier = new CompletableFuture<>();
+        ExecutorService details = detailExecutor;
+        if (details == null) {
+            barrier.complete(null);
+            return barrier;
+        }
+        details.execute(() -> SwingUtilities.invokeLater(() -> barrier.complete(null)));
+        return barrier;
     }
 
     /**
@@ -588,6 +721,13 @@ public final class ActionsView extends JPanel {
      */
     public void attachColumnState(java.nio.file.Path settingsDirectory) {
         headerInteractions.attachPersistence(settingsDirectory, "actions");
+    }
+
+    /** Permanently closes this view, including its debounced column-state writer. */
+    public CompletionStage<Void> closeAsync() {
+        return CompletableFuture.allOf(
+                closeSessionAsync().toCompletableFuture(),
+                headerInteractions.closeAsync().toCompletableFuture());
     }
 
     /** Visible for testing: the shared header behaviour on this table. */
@@ -676,6 +816,11 @@ public final class ActionsView extends JPanel {
         return labelChip;
     }
 
+    /** Visible for testing: the global action-filter reset control. */
+    public javax.swing.JButton showAllButtonForTest() {
+        return showAllButton;
+    }
+
     /** Visible for testing: the mnemonic entries the filter offers. */
     public List<String> mnemonicChoicesForTest() {
         List<String> items = new ArrayList<>();
@@ -697,6 +842,21 @@ public final class ActionsView extends JPanel {
      * table would disagree with the box above it.
      */
     private void reload() {
+        revealGeneration++;
+        pendingTableReveal = null;
+        reload(null);
+    }
+
+    /** Initial session loading must not discard a reveal queued while it was opening. */
+    private void reloadPreservingReveal() {
+        reload(null);
+    }
+
+    private void reload(PendingReveal reveal) {
+        reload(reveal, false);
+    }
+
+    private void reload(PendingReveal reveal, boolean moveToStart) {
         ExecutorService pages = pageExecutor;
         SessionSource opened = source;
         if (pages == null || opened == null) {
@@ -719,7 +879,7 @@ public final class ActionsView extends JPanel {
                             reader.close();
                             return;
                         }
-                        install(built, reader);
+                        install(built, reader, reveal, moveToStart);
                     });
                 } catch (RuntimeException failure) {
                     reader.close();
@@ -736,7 +896,11 @@ public final class ActionsView extends JPanel {
         });
     }
 
-    private void install(ActionRowSource built, EntityReader reader) {
+    private void install(
+            ActionRowSource built,
+            EntityReader reader,
+            PendingReveal reveal,
+            boolean moveToStart) {
         // The previous table's reader is finished with; this one's is not.
         EntityReader previous = pageReader;
         pageReader = reader;
@@ -748,6 +912,7 @@ public final class ActionsView extends JPanel {
         // otherwise clicking a row during a fast scroll leaves the inspector
         // showing the row before it, with no sign that it is stale.
         tableModel.addTableModelListener(event -> {
+            finishPendingReveal();
             if (table.getSelectedRow() >= 0 && inspector.displayed().isEmpty()) {
                 selectionChanged();
             }
@@ -758,8 +923,16 @@ public final class ActionsView extends JPanel {
         // column visible; reapply what the user arranged.
         headerInteractions.modelInstalled();
         inspector.show(Inspection.NONE);
+        graphButton.setEnabled(false);
+        timelineButton.setEnabled(false);
+        showAllButton.setEnabled(true);
         statusLabel.setText(describe(built));
         cards.show(deck, CARD_TABLE);
+        if (reveal != null && reveal.generation() == revealGeneration) {
+            requestReveal(reveal, built, tableModel);
+        } else if (moveToStart) {
+            resetTablePosition(built, tableModel);
+        }
         if (previous != null) {
             // Queued behind any page fetch already scheduled against it, on the
             // one thread that touches these readers.
@@ -806,6 +979,145 @@ public final class ActionsView extends JPanel {
         return rangeFilter
                 .map(range -> filter.inRange(range[0], range[1]))
                 .orElse(filter);
+    }
+
+    private void revealResolvedAction(PendingReveal reveal) {
+        clearFilterControls();
+        ActionRowSource currentRows = rowSource;
+        PagedTableModel<ActionRow> currentModel = tableModel;
+        ActionSort wantedSort = (ActionSort) sortChoice.getSelectedItem();
+        boolean wantedDescending = descendingBox.isSelected();
+
+        // Invalidate a filtered/sorted reload that was already running before
+        // the reveal. The current unfiltered model can be reused only when its
+        // visible sort still agrees with the controls.
+        reloadGeneration++;
+        if (currentRows != null && currentModel != null
+                && currentRows.filter().isEmpty()
+                && currentRows.sort() == wantedSort
+                && currentRows.descending() == wantedDescending) {
+            requestReveal(reveal, currentRows, currentModel);
+            return;
+        }
+        reload(reveal);
+    }
+
+    private void clearFilterControls() {
+        populating = true;
+        try {
+            mnemonicChoice.setSelectedItem(ANY_MNEMONIC);
+            outcomeChoice.setSelectedItem(ANY_OUTCOME);
+            textFilter.setText("");
+        } finally {
+            populating = false;
+        }
+        // setText fires the document listener synchronously even while the
+        // combo listeners are suppressed.
+        filterDebounce.stop();
+        rangeFilter = java.util.Optional.empty();
+        labelFilter = Optional.empty();
+        labelChip.setVisible(false);
+        toolbar.revalidate();
+        toolbar.repaint();
+    }
+
+    /** Clears every filter and returns to the full table at its first row. */
+    public void showAllActions() {
+        revealGeneration++;
+        pendingTableReveal = null;
+        clearFilterControls();
+        clearExternalRange.run();
+
+        ActionRowSource currentRows = rowSource;
+        PagedTableModel<ActionRow> currentModel = tableModel;
+        ActionSort wantedSort = (ActionSort) sortChoice.getSelectedItem();
+        boolean wantedDescending = descendingBox.isSelected();
+        reloadGeneration++;
+        if (currentRows != null && currentModel != null
+                && currentRows.filter().isEmpty()
+                && currentRows.sort() == wantedSort
+                && currentRows.descending() == wantedDescending) {
+            resetTablePosition(currentRows, currentModel);
+            return;
+        }
+        reload(null, true);
+    }
+
+    private void resetTablePosition(
+            ActionRowSource rows, PagedTableModel<ActionRow> model) {
+        table.clearSelection();
+        inspector.show(Inspection.NONE);
+        graphButton.setEnabled(false);
+        timelineButton.setEnabled(false);
+        statusLabel.setText(describe(rows));
+        if (model.getRowCount() == 0) {
+            return;
+        }
+        table.scrollRectToVisible(table.getCellRect(0, 0, true));
+        model.getValueAt(0, 0);
+    }
+
+    private void requestReveal(
+            PendingReveal reveal,
+            ActionRowSource rows,
+            PagedTableModel<ActionRow> model) {
+        if (reveal.generation() != revealGeneration || model != tableModel
+                || rows.rowCount() == 0) {
+            return;
+        }
+        long pageIndex = rows.pageIndexOf(reveal.row());
+        long first = pageIndex * model.pageSize();
+        if (first < 0 || first >= model.getRowCount()) {
+            statusLabel.setText(
+                    "Action " + reveal.row().id() + " was not found in the action list.");
+            return;
+        }
+        int firstRow = Math.toIntExact(first);
+        int lastRow = Math.min(firstRow + model.pageSize(), model.getRowCount()) - 1;
+        pendingTableReveal = new PendingTableReveal(
+                reveal.generation(), reveal.row().id(), model,
+                firstRow, lastRow, pageIndex);
+        table.scrollRectToVisible(table.getCellRect(firstRow, 0, true));
+        if (!finishPendingReveal()) {
+            // A cache miss returns immediately and schedules the exact page on
+            // the page executor. The model listener finishes the selection.
+            model.getValueAt(firstRow, 0);
+        }
+    }
+
+    private boolean finishPendingReveal() {
+        PendingTableReveal pending = pendingTableReveal;
+        if (pending == null) {
+            return false;
+        }
+        if (pending.generation() != revealGeneration || pending.model() != tableModel) {
+            pendingTableReveal = null;
+            return false;
+        }
+        for (int row = pending.firstRow(); row <= pending.lastRow(); row++) {
+            ActionRow candidate = pending.model().rowAt(row);
+            if (candidate != null && candidate.id() == pending.actionId()) {
+                pendingTableReveal = null;
+                table.setRowSelectionInterval(row, row);
+                table.scrollRectToVisible(table.getCellRect(row, 0, true));
+                if (rowSource != null) {
+                    statusLabel.setText(describe(rowSource));
+                }
+                return true;
+            }
+        }
+        if (pending.model().isPageLoaded(pending.pageIndex())) {
+            pendingTableReveal = null;
+            statusLabel.setText(
+                    "Action " + pending.actionId() + " was not found in the action list.");
+        } else if (pending.model().isPageFailed(pending.pageIndex())) {
+            pendingTableReveal = null;
+            Throwable failure = pending.model().lastFailure();
+            statusLabel.setText("Could not load action " + pending.actionId()
+                    + (failure == null || failure.getMessage() == null
+                            ? "." : ": " + failure.getMessage()));
+        }
+        return false;
     }
 
     private void populateMnemonics(List<String> mnemonics) {

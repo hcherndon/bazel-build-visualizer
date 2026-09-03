@@ -52,6 +52,68 @@ public final class RawPayloadRenderer {
 
     private RawPayloadRenderer() {}
 
+    /** A selected record decoded for structured, lazy inspector extensions. */
+    record DecodedEvent(Optional<BuildEvent> event, Optional<String> absence) {
+        DecodedEvent {
+            Objects.requireNonNull(event, "event");
+            Objects.requireNonNull(absence, "absence");
+            if (event.isPresent() == absence.isPresent()) {
+                throw new IllegalArgumentException("a decoded record has either an event or a reason");
+            }
+        }
+    }
+
+    /** Decodes the BuildEvent inside one raw record. Call only off the EDT. */
+    static DecodedEvent decodeEvent(RawPayload payload) {
+        Objects.requireNonNull(payload, "payload");
+        try {
+            byte[] bytes = payload.bytes();
+            return switch (payload.sourceKind()) {
+                case BEP_BINARY -> decoded(BepEventDecoder.withDefaults().decode(bytes));
+                case BEP_JSON_RECORD -> {
+                    JsonDecodeResult result = new JsonBuildEventDecoder().decode(bytes);
+                    yield result.decodedEvent()
+                            .map(event -> new DecodedEvent(Optional.of(event), Optional.empty()))
+                            .orElseGet(() -> absent("This JSON record could not be decoded: "
+                                    + result.detail().orElse("no detail was recorded")));
+                }
+                case BES_LIFECYCLE -> absent(
+                        "This lifecycle record carries no build-event files.");
+                case BES_ENVELOPE -> decodedEnvelope(bytes);
+            };
+        } catch (RuntimeException failure) {
+            return absent("This record could not be decoded for file metadata: "
+                    + (failure.getMessage() == null ? failure : failure.getMessage()));
+        }
+    }
+
+    private static DecodedEvent decodedEnvelope(byte[] bytes) {
+        BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
+        BesEnvelopeDecoder.Result result = decoder.decodeToolEvent(bytes, 0, bytes.length);
+        if (result.isFailed()) {
+            return absent("This BES record could not be decoded: "
+                    + result.failureDetail().orElse("no detail was recorded"));
+        }
+        BesEnvelope envelope = result.envelope().orElseThrow();
+        if (!envelope.kind().carriesBuildEvent()) {
+            return absent("This BES stream-control record carries no build-event files.");
+        }
+        return decoded(BepEventDecoder.withDefaults()
+                .decode(envelope.bazelEventBytes().orElseThrow().toByteArray()));
+    }
+
+    private static DecodedEvent decoded(DecodeResult result) {
+        if (result.isFailed()) {
+            return absent("This record could not be decoded as a BuildEvent: "
+                    + result.failureDetail().orElse("no detail was recorded"));
+        }
+        return new DecodedEvent(Optional.of(result.requireEvent()), Optional.empty());
+    }
+
+    private static DecodedEvent absent(String reason) {
+        return new DecodedEvent(Optional.empty(), Optional.of(reason));
+    }
+
     /**
      * A rendered payload.
      *

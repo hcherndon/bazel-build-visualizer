@@ -51,8 +51,8 @@ troubleshooting (capture failures, session recovery) arrives with Phase 2+.
   dependency.
 
   The build already passes `--enable-native-access=ALL-UNNAMED` to the JVMs
-  it forks (`tools/bbv.bzl`, the single written occurrence), so
-  `bazel test //...`, `bazel run //app:bbv`, the spikes and
+  it forks (`tools/java_test_settings.bzl`, the single written occurrence), so
+  `bazel test //...`, `bazel run //app:app`, the spikes and
   `//benchmarks:jmh` are all quiet, and the jpackage image carries it in its
   `.cfg`. You will see the warning only if you launch a JVM yourself —
   `java -jar` on the deploy jar, a profiler's own launcher, or an IDE run
@@ -70,16 +70,209 @@ troubleshooting (capture failures, session recovery) arrives with Phase 2+.
   missing flag stops being noise and becomes a hard startup failure. See
   ADR-008.
 
+### Timeline pinch does not zoom on macOS
+
+First check Control/Command + wheel or the Timeline's **−** and **+** buttons.
+If those zoom but a two-finger pinch does not, the application probably started
+without access to macOS's JDK magnification event package. The jpackage image
+and `bazel run //app:app` add the required export. A direct graphical jar launch
+or an IDE run configuration must add it explicitly:
+
+```
+--add-exports=java.desktop/com.apple.eawt.event=ALL-UNNAMED
+```
+
+For `java -jar`, place it before `-jar`, alongside
+`--enable-native-access=ALL-UNNAMED`. This export is only for native macOS
+pinch. Ordinary wheel/two-finger movement scrolls lanes, modified wheel zooms,
+and the buttons work without it. On Linux there is no macOS package to export.
+
+### Saved Workspaces are missing or will not save
+
+Workspace profiles live in `settings/workspaces.properties`, separately from
+captured sessions. A missing file is normal on first launch. An unreadable,
+malformed or larger-than-1-MiB file is refused whole with a startup diagnostic;
+it is never partially loaded. A failed atomic replacement leaves the previous
+file unchanged and the current in-memory list available until the window
+closes. At most 100 profiles are saved. Removing one deletes only that
+convenience record, never repository files or captured sessions.
+
+Older `settings/launcher.properties` values have a one-time migration path for
+the old local selection and up to 20 SSH connection records. Command history
+and other launcher preferences remain in that legacy file; it is not the
+source of truth for Workspaces after migration.
+
+### Workspace Discovery is missing, fails, or shows stale rows
+
+Open **Settings › Preferences…** and choose the **Discovery** tab. The saved
+script runs locally once at graphical startup and when **Run Discovery Now**
+is pressed; that button saves the current editor text first. A non-empty script
+must begin with a valid shebang. The file is executed directly, so confirm that
+the named interpreter exists on the desktop machine. The editor's detected
+language and syntax highlighting also come from that shebang. An empty script
+means discovery is not configured.
+
+The script must print one non-comment row per Workspace, with no extra fields:
+
+```
+local|name|working-directory
+ssh|name|OpenSSH-destination-or-Host-alias|working-directory
+```
+
+Each invocation replaces the previous discovered list, including when the new
+run produces no accepted rows. Check the status on the Workspaces screen. A
+manual **Run Discovery Now** also opens bounded, selectable diagnostics for a
+timeout, oversized output, stderr, malformed field count, duplicate row,
+invalid destination or accepted-row limit. Valid rows can still appear
+alongside diagnostics for invalid rows.
+
+Discovered rows are intentionally tagged **Discovered** and have no Edit or
+Remove action. They exist only for the current process and are never copied to
+`settings/workspaces.properties`; change the script and run it again. The
+script itself is the saved preference, at `settings/workspace-discovery`.
+Treat it as executable code with your desktop account's permissions.
+
+An SSH discovery row has no port or arbitrary-option field. Put custom ports,
+jump hosts, identities and related settings under the printed destination or
+`Host` alias in `~/.ssh/config`, then test that alias with the system OpenSSH
+commands below.
+
+### An SSH Workspace cannot connect
+
+Remote execution uses the system `/usr/bin/ssh` and `/usr/bin/sftp` clients in
+batch mode. It does not show a password or host-key prompt. Establish the host
+key and non-interactive authentication in a terminal first, then verify the
+same destination or Host alias the Workspace uses:
+
+```
+/usr/bin/ssh -o BatchMode=yes <destination> true
+/usr/bin/sftp -b /dev/null -o BatchMode=yes <destination>
+```
+
+If the profile has an explicit port, pass the same port (`ssh -p <port>` and
+`sftp -P <port>`). Put jump hosts, identities and other options in
+`~/.ssh/config`; the destination field accepts a host or `user@host`, not SSH
+command-line options. Saved SSH Workspaces add only a user label, stable ID,
+working directory, Bazel executable and last-opened time to those connection
+coordinates. Credentials remain in the SSH agent or OpenSSH files.
+
+Workspace selection also checks the SFTP subsystem, remote directory and fixed
+Linux tools used for safe metadata, staging and process control. Its error names
+the missing tool or subsystem. The first implementation supports headless Linux
+hosts with the standard `/bin` and `/usr/bin` utilities; another Unix layout
+does not silently fall back to running the command locally.
+
+### The reverse SSH tunnel is refused
+
+The desktop BES is still listening only on `127.0.0.1`. OpenSSH asks the server
+for an allocated remote-loopback port and forwards that port back to the local
+listener. A server that disables TCP forwarding rejects preflight before the
+instrumentation plan can be approved. Check the server's SSH policy (commonly
+`AllowTcpForwarding`) with its administrator. There is no option to expose the
+BES on a LAN address as a workaround.
+
+### The launch review says `--bes_backend` could not be applied
+
+The app will not run an embedded-BES capture unless the selected Bazel was
+observed accepting its required backend flag. If capability probing failed, the
+review says that the result is unknown; if the flag is absent, it says that the
+Bazel is unsupported. Resolve the named probe or executable problem and retry.
+Running the unchanged command would produce a session with no live events, so
+there is no bypass for this guard. Keeping an existing team BES and using the
+explicit build-event-file fallback remains available when that file capability
+was observed.
+
+### Remote console output has no separate stderr stream
+
+Expected. The primary remote Bazel command uses a forced TTY so Ctrl-C and the
+stop ladder reach the foreground remote process group. A TTY merges stdout and
+stderr. The review dialog says so, and the console preserves that merged text.
+Capability probes and aquery/cquery protobuf streams use non-TTY channels, so
+diagnostics stay separate where required and binary data is not changed.
+
+### A remote file or repository is unavailable after reopening a session
+
+SSH provenance in `manifest.json` is display-only. Opening an old session never
+contacts its recorded host, starts its terminal or executes its recorded
+command. Remote file links, editing, Browse Repository and Terminal use only
+the explicit live connection created by choosing an SSH Workspace. Pick the
+matching entry from **Workspaces › Available Workspaces**, discover one, or
+create one when live access is needed. Capture preflight is separate and runs
+only when starting a new build.
+
+Browse Repository loads a directory only when it is expanded. A message that
+the 5,000-entry display bound was reached means the visible tree is partial,
+not that files were removed. Text files larger than 16 MiB and binary files are
+refused whole rather than truncated. Saves are conflict-aware; Reload before
+trying again if the remote file changed since the editor opened it.
+
+### Terminal cannot start or resize correctly
+
+Terminal starts automatically when its tab is selected. It uses JediTerm for
+xterm-compatible rendering and Pty4J for a real local PTY. A local Workspace
+starts inherited `$SHELL` as a login shell, falling back to `/bin/sh`, with its
+working directory set to that Workspace. An SSH Workspace starts the system
+OpenSSH client inside the PTY. If either cannot start, the visible error should
+name the shell, OpenSSH or native PTY load; there is no silent fallback to the
+old line transcript. For SSH, verify that the same saved destination works with
+the system `ssh` command first. For a packaged macOS application, also verify
+that its signed Pty4J `libpty.dylib` and spawn helper remained in the deploy jar
+and can be extracted at runtime.
+
+The terminal survives navigation to another tab. Disconnect closes only its
+shell channel; closing or replacing the Workspace closes it and, for SSH, the
+shared SSH session. Scrollback keeps the newest 20,000 lines, so older terminal
+display text can disappear without changing any captured build console file.
+
+### A remote capture file was not copied
+
+Each planned remote execution log, profile, BEP fallback or cquery scope file
+is bounded at 32 GiB. An oversized, missing or changing file is refused and the
+session warning names it; BES events already received remain usable. A cleanup
+warning names the unique `/tmp/bbv-capture.…` directory that could not be fully
+removed. Inspect that exact directory on the named host after the build ends;
+do not remove a broad `/tmp` path.
+
 ## Where things live
 
 - Test logs and XML: `bazel-testlogs/<module>/<TestClass>/test.log` and
   `test.xml` (one directory per test class).
-- App logs: console via logback (`app/src/main/resources/logback.xml`);
-  per-session capture logs will live in the session directory
-- Headless app smoke run: `bazel run //app:bbv -- --jvm_flag=-Dbbv.smoke=true`
+- Graphical app log: `logs/application.log` below the application-support
+  directory. Open or reveal it from **Diagnostics**. The active file rolls at
+  8 MiB; compressed history keeps at most seven days and 64 MiB. Use
+  **Diagnostics › Log Detail › Debug**, then Trace only if Debug is not enough.
+  The selected level is stored in `settings/logging.properties`. Only one app
+  process owns this rolling destination; another concurrent instance reports
+  logging as unavailable rather than writing the same files.
+- Headless command logs: stderr only, with Warn as the default. Pass
+  `-Dbbv.log.level=debug` or `trace` to the JVM for more detail; stdout remains
+  command output.
+- Saved Theme: `settings/appearance.properties`. Change it from the **Theme**
+  tab in **Settings › Preferences…**. A `-Dbbv.theme=<id>` process override
+  does not replace the saved choice.
+- Saved local/SSH Workspaces: `settings/workspaces.properties` beside the
+  managed `sessions/` directory. Deleting it forgets names and execution
+  locations, not a repository, captured session or OpenSSH credential.
+- Workspace Discovery script: `settings/workspace-discovery`. The saved script
+  persists and runs locally at graphical startup; its **Discovered** profiles
+  do not persist. Deleting the script disables that saved configuration but
+  does not delete a repository or captured session.
+- Launcher command history and compatibility values:
+  `settings/launcher.properties`. Older local and SSH location values may be
+  read once for Workspace migration, but this file is no longer the Workspace
+  source of truth.
+- Headless app smoke run: `bazel run //app:app -- --jvm_flag=-Dbbv.smoke=true`
   opens the window and exits after two seconds.
 - CI failures: the workflow uploads `bazel-testlogs/**` as an artifact on
   failure — download it from the run page rather than re-deriving locally.
+
+The application-support root is
+`~/Library/Application Support/BazelBuildVisualizer` on macOS,
+`$XDG_DATA_HOME/bazel-build-visualizer` (or
+`~/.local/share/bazel-build-visualizer`) on Linux, and
+`%APPDATA%\BazelBuildVisualizer` on Windows. `-Dbbv.appdir=<path>` overrides it.
+Application logs can contain paths, labels, SSH destinations and failure
+messages; review them before sharing.
 
 ## Sessions and capture (Phase 10)
 
@@ -177,6 +370,11 @@ cannot be ignored. So a stop always ends the client, and the workspace lock is
 always released. When escalation was needed, the session says so in its
 warnings — press Cancel and read "escalated from CANCEL to FORCE_KILL" and you
 know why your stream is short.
+
+For an SSH build, Cancel first writes the TTY interrupt character and later
+rungs signal the reported remote process group. Losing the desktop SSH client
+alone is not counted as a successful stop: a surviving remote Bazel client
+would still hold the remote workspace lock.
 
 If you have a wedged workspace from an older build, or from a client this
 application did not launch:

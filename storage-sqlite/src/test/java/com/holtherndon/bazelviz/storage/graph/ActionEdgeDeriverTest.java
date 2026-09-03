@@ -46,8 +46,10 @@ final class ActionEdgeDeriverTest {
         database = SessionDatabase.open(tempDir.resolve("session.db"));
         MigrationRunner.standard().migrate(database);
         connection = database.writerConnection();
-        exec("INSERT INTO graph_sources (id, kind, state, configuration_match)"
-                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT')");
+        exec("INSERT INTO graph_sources"
+                + " (id, kind, state, configuration_match, unresolved_artifacts,"
+                + " unresolved_depset_references)"
+                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT', 0, 0)");
         exec("INSERT INTO labels (id, value) VALUES (1, '//p:a'), (2, '//p:b'), (3, '//p:c')");
         exec("INSERT INTO artifacts (id, path) VALUES"
                 + " (1, 'bin/a.out'), (2, 'bin/b.out'), (3, 'src.c')");

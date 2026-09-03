@@ -11,8 +11,14 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
+import javax.swing.border.TitledBorder;
+import javax.swing.plaf.basic.BasicHTML;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -61,6 +67,171 @@ class InspectorPanelTest {
 
         assertThat(labelsOf(inspection)).contains("");
         assertThat(labelsOf(inspection)).noneMatch(text -> text.startsWith(InspectorPanel.UNKNOWN));
+    }
+
+    @Test
+    @DisplayName("an openable file is one wrapping blue link without a separate button")
+    void fileFieldsAreClickable() throws Exception {
+        var link = com.holtherndon.bazelviz.ui.files.FileLink.testLog(
+                "test.log", "file:///tmp/test.log");
+        AtomicReference<com.holtherndon.bazelviz.ui.files.FileLink> opened =
+                new AtomicReference<>();
+        InspectorPanel panel = onEdt(InspectorPanel::new);
+        onEdt(() -> {
+            panel.onOpenFile(opened::set);
+            panel.show(new Inspection.Builder("//pkg:test")
+                    .section("Logs")
+                    .file("test.log", link.location(), link)
+                    .build());
+            return null;
+        });
+
+        com.holtherndon.bazelviz.ui.theme.HyperlinkLabel open = onEdt(() ->
+                componentsOf(panel, com.holtherndon.bazelviz.ui.theme.HyperlinkLabel.class)
+                        .stream().findFirst().orElseThrow());
+        assertThat(open.getText()).isEqualTo(link.location());
+        onEdt(() -> {
+            open.activate();
+            return null;
+        });
+        assertThat(opened.get()).isEqualTo(link);
+        assertThat(open.getAccessibleContext().getAccessibleName()).isEqualTo("Open test.log");
+        assertThat(onEdt(() -> buttonsOf(panel))).noneMatch(button -> "Open".equals(button.getText()));
+        onEdt(() -> {
+            layoutAt(panel, 320, 260);
+            return null;
+        });
+        assertThat(onEdt(open::getWidth))
+                .as("the path owns the value column instead of being squeezed beside a button")
+                .isGreaterThan(100);
+    }
+
+    @Test
+    @DisplayName("long values and unknown explanations wrap as the inspector narrows")
+    void longFieldsWrapWithinThePane() throws Exception {
+        // Output paths and labels are often one uninterrupted token. Word
+        // wrapping must still fall back to character boundaries rather than
+        // treating such a value as permission to grow sideways.
+        String value = "bazel-out/"
+                + "very-long-generated-output-segment/".repeat(16)
+                + "artifact.o";
+        String reason = "this value was unavailable because the imported session did not carry "
+                + "the auxiliary source that would have reported it";
+        InspectorPanel panel = onEdt(InspectorPanel::new);
+        onEdt(() -> {
+            panel.show(new Inspection.Builder("//pkg:target")
+                    .section("Details")
+                    .field("Command", value)
+                    .field(Inspection.Field.unknown("Duration", reason))
+                    .build());
+            layoutAt(panel, 440, 320);
+            return null;
+        });
+
+        List<JTextArea> fields = onEdt(() -> textAreasOf(panel));
+        assertThat(fields).hasSize(2);
+        assertThat(fields).extracting(JTextArea::getText)
+                .containsExactly(value, InspectorPanel.UNKNOWN + " — " + reason);
+        assertThat(fields).allSatisfy(field -> {
+            assertThat(field.getLineWrap()).isTrue();
+            assertThat(field.getWrapStyleWord()).isTrue();
+            assertThat(field.getClientProperty(BasicHTML.propertyKey)).isNull();
+        });
+
+        int wideKnown = onEdt(() -> fields.get(0).getPreferredSize().height);
+        int wideUnknown = onEdt(() -> fields.get(1).getPreferredSize().height);
+        onEdt(() -> {
+            layoutAt(panel, 230, 320);
+            return null;
+        });
+        int narrowKnown = onEdt(() -> fields.get(0).getPreferredSize().height);
+        int narrowUnknown = onEdt(() -> fields.get(1).getPreferredSize().height);
+
+        assertThat(narrowKnown).as("the known value gains lines at a narrow width")
+                .isGreaterThan(wideKnown);
+        assertThat(narrowUnknown).as("the unknown reason gains lines at a narrow width")
+                .isGreaterThan(wideUnknown);
+        assertThat(onEdt(() -> panel.bodyForTest().getScrollableTracksViewportWidth()))
+                .isTrue();
+        assertThat(onEdt(() -> panel.scrollForTest().getHorizontalScrollBarPolicy()))
+                .isEqualTo(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        assertThat(onEdt(() -> panel.scrollForTest().getHorizontalScrollBar().isVisible()))
+                .isFalse();
+        assertThat(onEdt(() -> fields.get(0).getWidth()))
+                .isLessThanOrEqualTo(onEdt(() ->
+                        panel.scrollForTest().getViewport().getExtentSize().width));
+    }
+
+    @Test
+    @DisplayName("field names remain accessible labels for plain-text wrapped values")
+    void wrappedValuesKeepAccessibilityAndPlainTextSafety() throws Exception {
+        String hostile = "<html><img src='https://example.invalid/a.png'>reported value";
+        InspectorPanel panel = onEdt(InspectorPanel::new);
+        onEdt(() -> {
+            panel.show(new Inspection.Builder("//pkg:target")
+                    .section("Details")
+                    .field("Command", hostile)
+                    .field(Inspection.Field.unknown("Duration", hostile))
+                    .build());
+            return null;
+        });
+
+        List<JTextArea> fields = onEdt(() -> textAreasOf(panel));
+        JLabel command = onEdt(() -> labelNamed(panel, "Command"));
+        JLabel duration = onEdt(() -> labelNamed(panel, "Duration"));
+
+        assertThat(command.getLabelFor()).isSameAs(fields.get(0));
+        assertThat(duration.getLabelFor()).isSameAs(fields.get(1));
+        assertThat(fields.get(0).getAccessibleContext().getAccessibleName())
+                .isEqualTo("Command");
+        assertThat(fields.get(1).getAccessibleContext().getAccessibleDescription())
+                .contains("Unknown Duration")
+                .contains(hostile);
+        assertThat(fields.get(0).getText()).isEqualTo(hostile);
+        assertThat(fields).allSatisfy(field -> {
+            assertThat(field.isEditable()).isFalse();
+            assertThat(field.isFocusable()).isTrue();
+            field.selectAll();
+            assertThat(field.getSelectedText()).isEqualTo(field.getText());
+        });
+        assertThat(fields.get(0).getToolTipText())
+                .isEqualTo(com.holtherndon.bazelviz.ui.theme.PlainText.tooltip(hostile));
+        assertThat(fields).allSatisfy(field ->
+                assertThat(field.getClientProperty(BasicHTML.propertyKey)).isNull());
+    }
+
+    @Test
+    @DisplayName("sections keep compact row heights and leave unused space below")
+    void sectionsDoNotStretchToFillThePane() throws Exception {
+        InspectorPanel panel = onEdt(InspectorPanel::new);
+        onEdt(() -> {
+            panel.show(new Inspection.Builder("//pkg:target")
+                    .section("Identity").field("Label", "//pkg:target")
+                    .section("Timing").field("Duration", "12.4 ms")
+                    .section("Command").field("Mnemonic", "Javac")
+                    .section("Result").field("Outcome", "succeeded")
+                    .build());
+            layoutAt(panel, 360, 760);
+            return null;
+        });
+
+        List<JPanel> sections = onEdt(() -> sectionPanelsOf(panel.bodyForTest()));
+        assertThat(sections).hasSize(4);
+        assertThat(sections).allSatisfy(section -> {
+            assertThat(section.getHeight())
+                    .as(((TitledBorder) section.getBorder()).getTitle())
+                    .isLessThanOrEqualTo(section.getPreferredSize().height);
+            assertThat(section.getMaximumSize().height)
+                    .isEqualTo(section.getPreferredSize().height);
+        });
+
+        int lastBottom = onEdt(() -> {
+            JPanel last = sections.getLast();
+            return last.getY() + last.getHeight();
+        });
+        assertThat(lastBottom)
+                .as("the sections remain at the top; the trailing glue owns unused height")
+                .isLessThan(onEdt(() -> panel.bodyForTest().getHeight()) - 100);
     }
 
     @Test
@@ -218,8 +389,80 @@ class InspectorPanelTest {
             if (child instanceof JLabel label) {
                 into.add(label.getText());
             }
+            if (child instanceof JTextArea area) {
+                into.add(area.getText());
+            }
             if (child instanceof Container nested) {
                 collectLabels(nested, into);
+            }
+        }
+    }
+
+    private static List<JTextArea> textAreasOf(Container container) {
+        List<JTextArea> fields = new ArrayList<>();
+        collectTextAreas(container, fields);
+        return fields;
+    }
+
+    private static void collectTextAreas(Container container, List<JTextArea> into) {
+        for (Component child : container.getComponents()) {
+            if (child instanceof JTextArea area
+                    && "inspection.fieldValue".equals(area.getName())) {
+                into.add(area);
+            }
+            if (child instanceof Container nested) {
+                collectTextAreas(nested, into);
+            }
+        }
+    }
+
+    private static JLabel labelNamed(Container container, String text) {
+        for (Component child : container.getComponents()) {
+            if (child instanceof JLabel label && text.equals(label.getText())) {
+                return label;
+            }
+            if (child instanceof Container nested) {
+                try {
+                    return labelNamed(nested, text);
+                } catch (AssertionError notHere) {
+                    // Keep looking in sibling containers.
+                }
+            }
+        }
+        throw new AssertionError("no label named " + text);
+    }
+
+    private static List<JPanel> sectionPanelsOf(Container container) {
+        List<JPanel> sections = new ArrayList<>();
+        for (Component child : container.getComponents()) {
+            if (child instanceof JPanel panel && panel.getBorder() instanceof TitledBorder) {
+                sections.add(panel);
+            }
+        }
+        return sections;
+    }
+
+    /** Run every layout manager explicitly; headless components have no peer to validate. */
+    private static void layoutAt(InspectorPanel panel, int width, int height) {
+        panel.setSize(width, height);
+        layoutDeep(panel);
+        JScrollPane scroll = panel.scrollForTest();
+        int viewportWidth = scroll.getViewport().getExtentSize().width;
+        int wantedHeight = Math.max(height, panel.bodyForTest().getPreferredSize().height);
+        panel.bodyForTest().setSize(viewportWidth, wantedHeight);
+        layoutDeep(panel.bodyForTest());
+        // The first pass gives each wrapping text area its width; the second
+        // lets GridBagLayout account for the corresponding wrapped height.
+        panel.bodyForTest().setSize(
+                viewportWidth, Math.max(height, panel.bodyForTest().getPreferredSize().height));
+        layoutDeep(panel.bodyForTest());
+    }
+
+    private static void layoutDeep(Container container) {
+        container.doLayout();
+        for (Component child : container.getComponents()) {
+            if (child instanceof Container nested) {
+                layoutDeep(nested);
             }
         }
     }
@@ -239,6 +482,20 @@ class InspectorPanelTest {
                 collectButtons(nested, into);
             }
         }
+    }
+
+    private static <T extends Component> List<T> componentsOf(
+            Container container, Class<T> type) {
+        List<T> found = new ArrayList<>();
+        for (Component child : container.getComponents()) {
+            if (type.isInstance(child)) {
+                found.add(type.cast(child));
+            }
+            if (child instanceof Container nested) {
+                found.addAll(componentsOf(nested, type));
+            }
+        }
+        return found;
     }
 
     private static <T> T onEdt(java.util.concurrent.Callable<T> work) throws Exception {

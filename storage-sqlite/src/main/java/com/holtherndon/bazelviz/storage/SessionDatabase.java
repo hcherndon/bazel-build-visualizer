@@ -7,6 +7,8 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.sqlite.SQLiteConfig;
 
 /**
@@ -33,6 +35,8 @@ import org.sqlite.SQLiteConfig;
  */
 public final class SessionDatabase implements AutoCloseable {
 
+    private static final Logger log = LoggerFactory.getLogger(SessionDatabase.class);
+
     private static final int BUSY_TIMEOUT_MILLIS = 10_000;
 
     private final Path file;
@@ -49,6 +53,8 @@ public final class SessionDatabase implements AutoCloseable {
 
     /** Opens (creating if absent) the database at {@code file} and applies the standard pragmas. */
     public static SessionDatabase open(Path file) throws SQLException {
+        long startedNanos = System.nanoTime();
+        log.debug("opening session database {}", file);
         Connection writer = DriverManager.getConnection(jdbcUrl(file));
         boolean ok = false;
         try {
@@ -59,6 +65,7 @@ public final class SessionDatabase implements AutoCloseable {
                 writer.close();
             }
         }
+        log.debug("opened session database {} in {} ms", file, elapsedMillis(startedNanos));
         return new SessionDatabase(file, writer);
     }
 
@@ -72,6 +79,7 @@ public final class SessionDatabase implements AutoCloseable {
      * still open when this database is closed are closed then.
      */
     public Connection newReadConnection() throws SQLException {
+        long startedNanos = System.nanoTime();
         Connection connection = DriverManager.getConnection(jdbcUrl(file));
         boolean ok = false;
         try {
@@ -83,6 +91,8 @@ public final class SessionDatabase implements AutoCloseable {
                 connection.close();
             }
         }
+        log.trace("opened read connection for {} in {} ms ({} tracked)",
+                file, elapsedMillis(startedNanos), readConnections.size());
         return connection;
     }
 
@@ -118,6 +128,7 @@ public final class SessionDatabase implements AutoCloseable {
      * it even if the caller does not.
      */
     public Connection newQueryConnection() throws SQLException {
+        long startedNanos = System.nanoTime();
         SQLiteConfig config = new SQLiteConfig();
         config.setReadOnly(true);
         Connection connection = DriverManager.getConnection(jdbcUrl(file), config.toProperties());
@@ -131,6 +142,8 @@ public final class SessionDatabase implements AutoCloseable {
                 connection.close();
             }
         }
+        log.debug("opened read-only query connection for {} in {} ms",
+                file, elapsedMillis(startedNanos));
         return connection;
     }
 
@@ -140,6 +153,8 @@ public final class SessionDatabase implements AutoCloseable {
 
     @Override
     public void close() throws SQLException {
+        long startedNanos = System.nanoTime();
+        int trackedReaders = readConnections.size();
         SQLException failure = null;
         for (Connection read : readConnections) {
             try {
@@ -161,6 +176,8 @@ public final class SessionDatabase implements AutoCloseable {
         if (failure != null) {
             throw failure;
         }
+        log.debug("closed session database {} with {} tracked reader(s) in {} ms",
+                file, trackedReaders, elapsedMillis(startedNanos));
     }
 
     /**
@@ -224,5 +241,10 @@ public final class SessionDatabase implements AutoCloseable {
         }
         existing.addSuppressed(next);
         return existing;
+    }
+
+    private static long elapsedMillis(long startedNanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - startedNanos);
     }
 }

@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.PriorityQueue;
 import java.util.Set;
 
 /**
@@ -92,14 +93,24 @@ public final class MetricQueries implements AutoCloseable {
     private static final String ACTION_ROWS_HEAD =
             "SELECT act.id, m.value, l.value, act.outcome, ";
 
+    /** Only rows belonging to the current, fully successful execution-log import are evidence. */
+    private static final String SUCCEEDED_EXECUTION_LOG_TASK =
+            "(SELECT id FROM enrichment_tasks"
+                    + " WHERE kind = 'EXECUTION_LOG' AND state = 'SUCCEEDED')";
+
     private static final String ACTION_ROWS_TAIL =
             " MIN(att.runner), MAX(att.runner), COUNT(att.runner), COUNT(att.id),"
                     + " SUM(CASE WHEN att.cache_hit = 1 THEN 1 ELSE 0 END),"
                     + " SUM(CASE WHEN att.cache_hit = 0 THEN 1 ELSE 0 END),"
-                    + " COUNT(att.cache_hit), SUM(att.input_bytes), COUNT(att.input_bytes),"
-                    + " SUM(att.queue_micros), SUM(att.setup_micros),"
-                    + " SUM(att.execution_wall_micros), SUM(att.network_micros),"
-                    + " SUM(att.upload_micros), SUM(att.fetch_micros), SUM(att.input_files),"
+                    + " COUNT(att.cache_hit),"
+                    + completeAttemptSum("input_bytes") + ", COUNT(att.input_bytes),"
+                    + completeAttemptSum("queue_micros") + ","
+                    + completeAttemptSum("setup_micros") + ","
+                    + completeAttemptSum("execution_wall_micros") + ","
+                    + completeAttemptSum("network_micros") + ","
+                    + completeAttemptSum("upload_micros") + ","
+                    + completeAttemptSum("fetch_micros") + ","
+                    + completeAttemptSum("input_files") + ","
                     // Any attempt carrying the declaration marks the action; these
                     // are Bazel's own words about the spawn, not a reading of the
                     // runner name.
@@ -108,7 +119,8 @@ public final class MetricQueries implements AutoCloseable {
                     + " FROM actions act"
                     + " LEFT JOIN mnemonics m ON m.id = act.mnemonic_id"
                     + " LEFT JOIN labels l ON l.id = act.label_id"
-                    + " LEFT JOIN action_attempts att ON att.action_id = act.id";
+                    + " LEFT JOIN action_attempts att ON att.action_id = act.id"
+                    + " AND att.task_id = " + SUCCEEDED_EXECUTION_LOG_TASK;
 
     private static final String GROUP_BY_ACTION = " GROUP BY act.id";
 
@@ -140,11 +152,31 @@ public final class MetricQueries implements AutoCloseable {
      * onto the screen.
      */
     private static final String ATTEMPT_DURATION =
-            "SUM(att.total_micros), MIN(att.start_micros),"
-                    + " MAX(att.start_micros + att.total_micros),";
+            "CASE WHEN COUNT(att.id) > 0"
+                    + " AND COUNT(att.total_micros) = COUNT(att.id)"
+                    + " AND MIN(att.total_micros) >= 0"
+                    + " THEN SUM(att.total_micros) END,"
+                    + " CASE WHEN COUNT(att.id) > 0"
+                    + " AND COUNT(att.start_micros) = COUNT(att.id)"
+                    + " THEN MIN(att.start_micros) END,"
+                    + " CASE WHEN COUNT(att.id) > 0"
+                    + " AND COUNT(att.start_micros) = COUNT(att.id)"
+                    + " AND COUNT(att.total_micros) = COUNT(att.id)"
+                    + " AND MIN(att.total_micros) >= 0"
+                    + " THEN MAX(att.start_micros + att.total_micros) END,";
+
+    /** Three absent timing columns for a caller explicitly requesting no duration source. */
+    private static final String NO_DURATION = "NULL, NULL, NULL,";
+
+    private static String completeAttemptSum(String column) {
+        return " CASE WHEN COUNT(att.id) > 0 AND COUNT(att." + column + ") = COUNT(att.id)"
+                + " THEN SUM(att." + column + ") END";
+    }
 
     private final Connection connection;
     private final Optional<GraphQueries> graph;
+    private ProfileTrust cachedProfileTrust;
+    private BazelComponentSummary cachedBazelComponentValidation;
 
     /** Reads the metrics that need no dependency graph. */
     public MetricQueries(Connection connection) {
@@ -174,8 +206,11 @@ public final class MetricQueries implements AutoCloseable {
     public CriticalPath.DurationSource bestDurationSource() throws SQLException {
         String sql = "SELECT (SELECT COUNT(*) FROM actions WHERE start_micros IS NOT NULL"
                 + "   AND end_micros IS NOT NULL AND end_micros > start_micros),"
-                + " (SELECT COUNT(DISTINCT action_id) FROM action_attempts"
-                + "   WHERE action_id IS NOT NULL AND total_micros IS NOT NULL)";
+                + " (SELECT COUNT(*) FROM (SELECT action_id FROM action_attempts"
+                + "   WHERE action_id IS NOT NULL AND task_id = "
+                + SUCCEEDED_EXECUTION_LOG_TASK
+                + "   GROUP BY action_id HAVING COUNT(total_micros) = COUNT(*)"
+                + "   AND MIN(total_micros) >= 0))";
         try (PreparedStatement statement = connection.prepareStatement(sql);
                 ResultSet rows = statement.executeQuery()) {
             rows.next();
@@ -274,7 +309,10 @@ public final class MetricQueries implements AutoCloseable {
         List<ActionMetrics> candidates =
                 enrich(collector.finish(outputTotals), derived, spans);
         List<ActionMetrics> onPath = enrich(
-                criticalPathActions(derived, request.candidateLimit()), derived, spans);
+                criticalPathActions(
+                        derived, request.candidateLimit(), request.durationSource()),
+                derived,
+                spans);
         return new SessionMetrics(
                 request.durationSource(), invocation, tables, spans, sweep, candidates, onPath);
     }
@@ -299,9 +337,11 @@ public final class MetricQueries implements AutoCloseable {
 
     private void forEachAction(CriticalPath.DurationSource source, ActionRowVisitor visitor)
             throws SQLException {
-        String durationExpression = source == CriticalPath.DurationSource.BEP_ACTION
-                ? BEP_DURATION
-                : ATTEMPT_DURATION;
+        String durationExpression = switch (source) {
+            case BEP_ACTION -> BEP_DURATION;
+            case EXECUTION_ATTEMPT -> ATTEMPT_DURATION;
+            case NONE -> NO_DURATION;
+        };
         try (Statement statement = connection.createStatement()) {
             statement.setFetchSize(4_096);
             try (ResultSet rows = statement.executeQuery(
@@ -341,6 +381,18 @@ public final class MetricQueries implements AutoCloseable {
         boolean notCacheable = rows.getInt(24) == 1;
         boolean notRemotable = rows.getInt(25) == 1;
 
+        // The detailed components are subprocess measurements. Pairing them
+        // with a BEP action-wall denominator would manufacture fractions and
+        // an "unaccounted" remainder from two different quantities.
+        if (source != CriticalPath.DurationSource.EXECUTION_ATTEMPT) {
+            queue = OptionalLong.empty();
+            setup = OptionalLong.empty();
+            execution = OptionalLong.empty();
+            network = OptionalLong.empty();
+            upload = OptionalLong.empty();
+            fetch = OptionalLong.empty();
+        }
+
         // An action whose spawns ran under different runners has no single
         // runner, and neither has one whose spawns did not all report theirs.
         // Both come back as unrecorded rather than as the one name that
@@ -354,7 +406,13 @@ public final class MetricQueries implements AutoCloseable {
         if (cacheKnown == 0) {
             cacheState = CacheState.NOT_REPORTED;
         } else if (cacheMisses > 0) {
+            // One executed attempt proves the action was not wholly served by
+            // cache even if a sibling attempt omitted its cache field.
             cacheState = CacheState.MISS;
+        } else if (cacheKnown != attempts) {
+            // A partial set of cache-hit declarations cannot establish that
+            // every attempt was a hit.
+            cacheState = CacheState.NOT_REPORTED;
         } else {
             cacheState = CacheState.HIT;
         }
@@ -592,12 +650,15 @@ public final class MetricQueries implements AutoCloseable {
                 Coverage.of("Output-size coverage", outputs.sized(), outputs.artifacts(),
                         DataSource.BEP,
                         "a file that only ever existed on a remote executor has no local size"),
-                graphCoverage(tally.actions),
+                actionGraphCorrelation(tally.actions),
+                actionGraphCompleteness(tally.actions),
                 targetGraphCoverage(),
                 correlationCoverage()));
 
+        Optional<ConcurrencySweep.Result> observedConcurrency = sweep.sweptSpans() == 0
+                ? Optional.empty() : Optional.of(sweep);
         return new InvocationMetrics(
-                timing, work, bytes, Optional.of(sweep), criticalPaths, tests, ingest, coverage);
+                timing, work, bytes, observedConcurrency, criticalPaths, tests, ingest, coverage);
     }
 
     private static String timingCoverageReason(CriticalPath.DurationSource source) {
@@ -695,7 +756,8 @@ public final class MetricQueries implements AutoCloseable {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT SUM(CASE WHEN action_id IS NOT NULL THEN 1 ELSE 0 END),"
                         + " SUM(CASE WHEN action_id IS NULL THEN 1 ELSE 0 END)"
-                        + " FROM action_attempts");
+                        + " FROM action_attempts WHERE task_id = "
+                        + SUCCEEDED_EXECUTION_LOG_TASK);
                 ResultSet rows = statement.executeQuery()) {
             rows.next();
             correlated = rows.getLong(1);
@@ -742,57 +804,241 @@ public final class MetricQueries implements AutoCloseable {
     private CriticalPaths readCriticalPaths(CriticalPath.DurationSource source)
             throws SQLException {
         OptionalLong bazelMicros = OptionalLong.empty();
+        DataSource bazelSource = DataSource.BEP;
+        String bepUnavailableReason = null;
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT critical_path_micros FROM build_metrics WHERE singleton = 1");
                 ResultSet rows = statement.executeQuery()) {
             if (rows.next()) {
                 bazelMicros = number(rows, 1);
+                if (bazelMicros.isPresent() && bazelMicros.getAsLong() < 0) {
+                    bazelMicros = OptionalLong.empty();
+                    bepUnavailableReason =
+                            "BuildMetrics reported a negative critical-path duration";
+                }
             }
         }
-        List<CriticalPaths.BazelComponent> components = new ArrayList<>();
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT ordinal, description, duration_micros FROM bazel_critical_path"
-                        + " ORDER BY ordinal");
-                ResultSet rows = statement.executeQuery()) {
-            while (rows.next()) {
-                components.add(new CriticalPaths.BazelComponent(
-                        rows.getInt(1), rows.getString(2), number(rows, 3)));
-            }
-        }
-        if (bazelMicros.isEmpty() && !components.isEmpty()) {
+        ProfileTrust profileTrust = profileTrust();
+        BazelComponentSummary componentSummary = profileTrust.trusted()
+                ? bazelComponentSummary(bazelMicros.isEmpty())
+                : BazelComponentSummary.empty();
+        String profileUnavailableReason = null;
+        if (bazelMicros.isEmpty() && componentSummary.totalMicros().isPresent()) {
             // Bazel publishes criticalPathTime in BuildMetrics only from 9.2.0,
             // but writes the components into the profile on every version. The
             // sum of the components is Bazel's own answer either way; it is
             // still Bazel's number and not ours.
-            long total = 0;
-            boolean complete = true;
-            for (CriticalPaths.BazelComponent component : components) {
-                if (component.durationMicros().isEmpty()) {
-                    complete = false;
-                    break;
-                }
-                total += component.durationMicros().getAsLong();
-            }
-            if (complete) {
-                bazelMicros = OptionalLong.of(total);
+            bazelMicros = componentSummary.totalMicros();
+            bazelSource = DataSource.PROFILE;
+        }
+
+        if (componentSummary.problem().isPresent()) {
+            profileUnavailableReason = componentSummary.problem().orElseThrow();
+        } else if (bazelMicros.isEmpty()) {
+            if (!profileTrust.trusted()) {
+                profileUnavailableReason = profileTrust.reason();
+            } else if (componentSummary.count() == 0) {
+                profileUnavailableReason =
+                        "the trace profile contained no critical-path components, and"
+                                + " BuildMetrics carries a critical-path time only from"
+                                + " Bazel 9.2.0";
             }
         }
 
+        String unavailableReason = joinReasons(bepUnavailableReason, profileUnavailableReason);
         Measured<Long> bazel = bazelMicros.isPresent()
-                ? Measured.of(bazelMicros.getAsLong(), DataSource.PROFILE)
+                ? Measured.of(bazelMicros.getAsLong(), bazelSource)
                 : Measured.unknown(DataSource.PROFILE, Completeness.UNAVAILABLE,
-                        "no trace profile was imported, and BuildMetrics carries a critical-path"
-                                + " time only from Bazel 9.2.0");
+                        unavailableReason == null
+                                ? "neither BuildMetrics nor the trace profile reported a usable"
+                                        + " critical-path duration"
+                                : unavailableReason);
+        if (bazelMicros.isPresent() && bazelSource == DataSource.BEP
+                && profileTrust.recorded() && !profileTrust.trusted()) {
+            bazel = bazel.warn("profile component breakdown withheld: " + profileTrust.reason());
+        } else if (bazelMicros.isPresent() && bazelSource == DataSource.BEP
+                && componentSummary.problem().isPresent()) {
+            bazel = bazel.warn("profile component total unavailable: "
+                    + componentSummary.problem().orElseThrow());
+        }
 
-        return new CriticalPaths(bazel, components, derivedCriticalPath(source));
+        DerivedPath derived = derivedCriticalPath(source);
+        return new CriticalPaths(
+                bazel,
+                List.of(),
+                componentSummary.count(),
+                derived.result(),
+                derived.unavailableReason());
     }
 
-    private Optional<CriticalPath.Result> derivedCriticalPath(CriticalPath.DurationSource source)
+    /**
+     * One bounded page of Bazel's own critical-path components.
+     *
+     * <p>Rows are exposed only when the current PROFILE enrichment succeeded and its build id
+     * matches this session. A retained row from a failed retry or another build is not a component
+     * of this invocation. Invalid negative values are withheld rather than failing a lazy page.
+     */
+    public List<CriticalPaths.BazelComponent> bazelCriticalPathComponents(
+            long firstOrdinal, int limit) throws SQLException {
+        if (firstOrdinal < 0) {
+            throw new IllegalArgumentException("first ordinal must be nonnegative: "
+                    + firstOrdinal);
+        }
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive: " + limit);
+        }
+        if (!profileTrust().trusted()) {
+            return List.of();
+        }
+        BazelComponentSummary summary = bazelComponentSummary(false);
+        if (!summary.pageable()) {
+            return List.of();
+        }
+        List<CriticalPaths.BazelComponent> components = new ArrayList<>(limit);
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT ordinal, description, duration_micros FROM bazel_critical_path"
+                        + " WHERE ordinal >= ? ORDER BY ordinal LIMIT ?")) {
+            statement.setLong(1, firstOrdinal);
+            statement.setInt(2, limit);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    components.add(new CriticalPaths.BazelComponent(
+                            rows.getInt(1), rows.getString(2), number(rows, 3)));
+                }
+            }
+        }
+        return List.copyOf(components);
+    }
+
+    /** Counts and validates profile components without retaining their descriptions. */
+    private BazelComponentSummary bazelComponentSummary(boolean totalNeeded) throws SQLException {
+        if (!totalNeeded && cachedBazelComponentValidation != null) {
+            return cachedBazelComponentValidation;
+        }
+        BazelComponentSummary summary = readBazelComponentSummary(totalNeeded);
+        cachedBazelComponentValidation = summary;
+        return summary;
+    }
+
+    private BazelComponentSummary readBazelComponentSummary(boolean totalNeeded)
             throws SQLException {
-        if (graph.isEmpty() || source == CriticalPath.DurationSource.NONE) {
-            return Optional.empty();
+        long count;
+        long durations;
+        OptionalLong minimumDuration;
+        OptionalLong minimumOrdinal;
+        OptionalLong maximumOrdinal;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT COUNT(*), COUNT(duration_micros), MIN(duration_micros),"
+                        + " MIN(ordinal), MAX(ordinal) FROM bazel_critical_path");
+                ResultSet rows = statement.executeQuery()) {
+            rows.next();
+            count = rows.getLong(1);
+            durations = rows.getLong(2);
+            minimumDuration = number(rows, 3);
+            minimumOrdinal = number(rows, 4);
+            maximumOrdinal = number(rows, 5);
+        }
+        if (minimumOrdinal.isPresent() && (minimumOrdinal.getAsLong() < 0
+                || maximumOrdinal.orElseThrow() > Integer.MAX_VALUE)) {
+            return BazelComponentSummary.invalid(
+                    count, "the trace profile reported an invalid critical-path component ordinal");
+        }
+        if (count > 0 && (minimumOrdinal.orElseThrow() != 0
+                || maximumOrdinal.orElseThrow() != count - 1)) {
+            return BazelComponentSummary.invalid(
+                    count,
+                    "the trace profile's critical-path component ordinals are not contiguous");
+        }
+        if (minimumDuration.isPresent() && minimumDuration.getAsLong() < 0) {
+            return BazelComponentSummary.invalid(
+                    count, "the trace profile reported a negative critical-path component duration");
+        }
+        if (durations != count) {
+            return BazelComponentSummary.incomplete(
+                    count, "the trace profile's critical-path component durations are incomplete");
+        }
+        if (!totalNeeded || count == 0) {
+            return BazelComponentSummary.valid(count, OptionalLong.empty());
+        }
+        long total = 0;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT duration_micros FROM bazel_critical_path ORDER BY ordinal");
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                try {
+                    total = Math.addExact(total, rows.getLong(1));
+                } catch (ArithmeticException overflow) {
+                    return BazelComponentSummary.invalid(
+                            count,
+                            "the trace profile's critical-path component total overflowed"
+                                    + " a 64-bit duration");
+                }
+            }
+        }
+        return BazelComponentSummary.valid(count, OptionalLong.of(total));
+    }
+
+    private record BazelComponentSummary(
+            long count, OptionalLong totalMicros, Optional<String> problem, boolean pageable) {
+
+        static BazelComponentSummary empty() {
+            return valid(0, OptionalLong.empty());
+        }
+
+        static BazelComponentSummary valid(long count, OptionalLong total) {
+            return new BazelComponentSummary(count, total, Optional.empty(), true);
+        }
+
+        static BazelComponentSummary incomplete(long count, String problem) {
+            return new BazelComponentSummary(count, OptionalLong.empty(), Optional.of(problem), true);
+        }
+
+        static BazelComponentSummary invalid(long count, String problem) {
+            return new BazelComponentSummary(
+                    count, OptionalLong.empty(), Optional.of(problem), false);
+        }
+    }
+
+    private DerivedPath derivedCriticalPath(CriticalPath.DurationSource source)
+            throws SQLException {
+        if (graph.isEmpty()) {
+            return DerivedPath.unavailable("no imported action graph is available");
+        }
+        if (source == CriticalPath.DurationSource.NONE) {
+            return DerivedPath.unavailable(
+                    "neither BEP actions nor execution-log attempts provided usable durations");
         }
         GraphQueries queries = graph.orElseThrow();
+        Optional<GraphQueries.GraphSource> declaredSource = queries.sources().stream()
+                .filter(candidate -> candidate.kind().equals("DECLARED_ACTIONS"))
+                .findFirst();
+        // A retained index can outlive a failed or mismatched re-import. It is
+        // still a real graph, but it is not evidence about this invocation.
+        // Withhold the derived path rather than compare stale dependencies to
+        // Bazel's current schedule as if both described the same build.
+        if (declaredSource.isEmpty()) {
+            return DerivedPath.unavailable(
+                    "no declared action-graph source was recorded");
+        }
+        GraphQueries.GraphSource recorded = declaredSource.orElseThrow();
+        if (!recorded.isTrustworthy()) {
+            String reason;
+            if (!recorded.state().equals("SUCCEEDED")) {
+                reason = "the declared action-graph import state is " + recorded.state()
+                        + recorded.error().map(error -> ": " + error).orElse("");
+            } else if (!recorded.targetScope().permitsExactClaim()) {
+                reason = recorded.targetScopeProblem()
+                        .orElse("the action graph's target scope is unverified");
+            } else if (!recorded.configurationMatch().permitsExactClaim()) {
+                reason = recorded.mismatchDetail().filter(detail -> !detail.isBlank())
+                        .orElse("the action graph's configuration match is "
+                                + recorded.configurationMatch().name().toLowerCase());
+            } else {
+                reason = recorded.actionGraphCompletenessProblem()
+                        .orElse("the action graph's structural completeness is unverified");
+            }
+            return DerivedPath.unavailable(reason);
+        }
         Optional<CsrGraph> forward;
         try {
             forward = queries.forwardIndex(EdgeDerivation.DECLARED);
@@ -801,32 +1047,172 @@ public final class MetricQueries implements AutoCloseable {
             // not a metrics problem: every other number here is still correct,
             // so the derived path is absent and CriticalPaths says so rather
             // than the whole dashboard failing.
-            return Optional.empty();
+            return DerivedPath.unavailable(
+                    "the declared action-graph index could not be read: "
+                            + readableMessage(unreadable));
         }
         if (forward.isEmpty()) {
-            return Optional.empty();
+            return DerivedPath.unavailable(
+                    "no declared action-graph index was built");
         }
         long[] durations = queries.durationsByNodeIndex(
                 source == CriticalPath.DurationSource.EXECUTION_ATTEMPT,
                 CriticalPath.UNKNOWN_DURATION);
-        return Optional.of(CriticalPath.compute(forward.orElseThrow(), durations, source));
+        CsrGraph graphIndex = forward.orElseThrow();
+        if (graphIndex.nodeCount() != durations.length) {
+            return DerivedPath.unavailable("the declared action-graph index describes "
+                    + graphIndex.nodeCount() + " nodes, but the current graph has "
+                    + durations.length + "; the index is stale");
+        }
+        try {
+            return DerivedPath.available(CriticalPath.compute(graphIndex, durations, source));
+        } catch (IllegalArgumentException invalidDuration) {
+            return DerivedPath.unavailable(
+                    "the dependency-path durations are invalid: "
+                            + readableMessage(invalidDuration));
+        } catch (ArithmeticException overflow) {
+            return DerivedPath.unavailable(
+                    "the dependency-path duration arithmetic overflowed: "
+                            + readableMessage(overflow));
+        }
     }
 
-    private Coverage graphCoverage(long actions) throws SQLException {
+    private ProfileTrust profileTrust() throws SQLException {
+        if (cachedProfileTrust == null) {
+            cachedProfileTrust = readProfileTrust();
+        }
+        return cachedProfileTrust;
+    }
+
+    private ProfileTrust readProfileTrust() throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT COUNT(*), COUNT(action_id) FROM declared_actions");
+                "SELECT et.state, pm.build_id_matches FROM enrichment_tasks et"
+                        + " LEFT JOIN profile_metadata pm ON pm.task_id = et.id"
+                        + " WHERE et.kind = 'PROFILE'")) {
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    return ProfileTrust.untrusted(false,
+                            "no current trace-profile import was recorded, and BuildMetrics"
+                                    + " carries a critical-path time only from Bazel 9.2.0");
+                }
+                String state = rows.getString(1);
+                if (!"SUCCEEDED".equals(state)) {
+                    return ProfileTrust.untrusted(true,
+                            "the current trace-profile import state is " + state);
+                }
+                int matches = rows.getInt(2);
+                if (rows.wasNull()) {
+                    return ProfileTrust.untrusted(true,
+                            "the trace profile's build identity could not be verified");
+                }
+                if (matches != 1) {
+                    return ProfileTrust.untrusted(true,
+                            "the trace profile belongs to a different build");
+                }
+                return new ProfileTrust(true, true, "");
+            }
+        }
+    }
+
+    private static String joinReasons(String first, String second) {
+        if (first == null) {
+            return second;
+        }
+        if (second == null) {
+            return first;
+        }
+        return first + "; " + second;
+    }
+
+    private record ProfileTrust(boolean recorded, boolean trusted, String reason) {
+
+        static ProfileTrust untrusted(boolean recorded, String reason) {
+            return new ProfileTrust(recorded, false, reason);
+        }
+    }
+
+    private static String readableMessage(Throwable failure) {
+        return failure.getMessage() == null
+                ? failure.getClass().getSimpleName() : failure.getMessage();
+    }
+
+    private record DerivedPath(
+            Optional<CriticalPath.Result> result, Optional<String> unavailableReason) {
+
+        static DerivedPath available(CriticalPath.Result result) {
+            return new DerivedPath(Optional.of(result), Optional.empty());
+        }
+
+        static DerivedPath unavailable(String reason) {
+            return new DerivedPath(Optional.empty(), Optional.of(reason));
+        }
+    }
+
+    private Coverage actionGraphCorrelation(long actions) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT gs.state, gs.error_excerpt, COUNT(da.id), COUNT(da.action_id)"
+                        + " FROM graph_sources gs"
+                        + " LEFT JOIN declared_actions da ON da.source_id = gs.id"
+                        + " WHERE gs.kind = 'DECLARED_ACTIONS' GROUP BY gs.id");
                 ResultSet rows = statement.executeQuery()) {
-            rows.next();
-            long declared = rows.getLong(1);
-            long correlated = rows.getLong(2);
-            if (declared == 0) {
-                return Coverage.unavailable("Action-graph coverage", actions, DataSource.AQUERY,
+            if (!rows.next()) {
+                return Coverage.unavailable("Action-graph correlation", actions,
+                        DataSource.AQUERY,
                         "no aquery output was imported for this session");
             }
-            return Coverage.of("Action-graph coverage", correlated, declared, DataSource.AQUERY,
+            String state = rows.getString(1);
+            String error = rows.getString(2);
+            long declared = rows.getLong(3);
+            long correlated = rows.getLong(4);
+            if (!"SUCCEEDED".equals(state)) {
+                return Coverage.unavailable("Action-graph correlation", actions,
+                        DataSource.AQUERY,
+                        "the current aquery import state is " + state
+                                + (error == null || error.isBlank() ? "" : ": " + error));
+            }
+            if (declared == 0) {
+                return Coverage.unavailable("Action-graph correlation", actions,
+                        DataSource.AQUERY,
+                        "no aquery output was imported for this session");
+            }
+            return Coverage.of("Action-graph correlation", correlated, declared,
+                    DataSource.AQUERY,
                     "an action the graph declares and this invocation did not execute has nothing"
                             + " to correlate with, which a cache hit produces by design");
         }
+    }
+
+    /**
+     * Whether the imported action graph retained every dependency-bearing
+     * reference, kept distinct from execution correlation. A cached action can
+     * lower correlation without making the graph incomplete.
+     */
+    private Coverage actionGraphCompleteness(long actions) throws SQLException {
+        String name = "Action-graph completeness";
+        if (graph.isEmpty()) {
+            return Coverage.unavailable(name, actions, DataSource.AQUERY,
+                    "no aquery output was imported for this session");
+        }
+        Optional<GraphQueries.GraphSource> source = graph.orElseThrow().sources().stream()
+                .filter(candidate -> candidate.kind().equals("DECLARED_ACTIONS"))
+                .findFirst();
+        if (source.isEmpty()) {
+            return Coverage.unavailable(name, actions, DataSource.AQUERY,
+                    "no declared action-graph source was recorded");
+        }
+        GraphQueries.GraphSource recorded = source.orElseThrow();
+        long declared = recorded.declaredActions().orElse(actions);
+        if (!recorded.state().equals("SUCCEEDED")) {
+            return Coverage.unavailable(name, declared, DataSource.AQUERY,
+                    "the aquery import state is " + recorded.state()
+                            + recorded.error().map(error -> ": " + error).orElse(""));
+        }
+        Optional<String> problem = recorded.actionGraphCompletenessProblem();
+        if (problem.isPresent()) {
+            return Coverage.unavailable(name, declared, DataSource.AQUERY, problem.orElseThrow());
+        }
+        return Coverage.of(name, declared, declared, DataSource.AQUERY,
+                "every artifact path and depset reference resolved");
     }
 
     private Coverage targetGraphCoverage() throws SQLException {
@@ -851,19 +1237,37 @@ public final class MetricQueries implements AutoCloseable {
     private Coverage correlationCoverage() throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT COUNT(*), SUM(CASE WHEN action_id IS NOT NULL THEN 1 ELSE 0 END)"
-                        + " FROM action_attempts");
+                        + " FROM action_attempts WHERE task_id = "
+                        + SUCCEEDED_EXECUTION_LOG_TASK);
                 ResultSet rows = statement.executeQuery()) {
             rows.next();
             long attempts = rows.getLong(1);
             long matched = rows.getLong(2);
             if (attempts == 0) {
+                Optional<String> state = enrichmentTaskState("EXECUTION_LOG");
+                String reason = state.isEmpty()
+                        ? "no execution log was imported for this session"
+                        : state.filter("SUCCEEDED"::equals).isPresent()
+                                ? "the successful execution log contained no attempts"
+                                : "the current execution-log import state is "
+                                        + state.orElseThrow();
                 return Coverage.unavailable("Correlation coverage", 0, DataSource.EXECUTION_LOG,
-                        "no execution log was imported for this session");
+                        reason);
             }
             return Coverage.of("Correlation coverage", matched, attempts, DataSource.EXECUTION_LOG,
                     "a spawn whose action the build event stream never published cannot be"
                             + " matched to one, which is the normal result without"
                             + " --build_event_publish_all_actions");
+        }
+    }
+
+    private Optional<String> enrichmentTaskState(String kind) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT state FROM enrichment_tasks WHERE kind = ?")) {
+            statement.setString(1, kind);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? Optional.ofNullable(rows.getString(1)) : Optional.empty();
+            }
         }
     }
 
@@ -981,6 +1385,7 @@ public final class MetricQueries implements AutoCloseable {
                 + " JOIN attempt_outputs ao ON ao.attempt_id = att.id AND ao.produced = 1"
                 + " JOIN artifacts art ON art.id = ao.artifact_id AND art.is_directory = 0"
                 + " WHERE att.action_id IS NOT NULL AND art.size_bytes IS NOT NULL"
+                + " AND att.task_id = " + SUCCEEDED_EXECUTION_LOG_TASK
                 + " GROUP BY att.action_id ORDER BY total DESC LIMIT ?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setInt(1, limit);
@@ -1013,31 +1418,67 @@ public final class MetricQueries implements AutoCloseable {
      * bounds both the lookups and the detail query.
      */
     private List<ActionMetrics> criticalPathActions(
-            Optional<CriticalPath.Result> derived, int limit) throws SQLException {
+            Optional<CriticalPath.Result> derived,
+            int limit,
+            CriticalPath.DurationSource durationSource) throws SQLException {
         if (derived.isEmpty() || graph.isEmpty()
                 || derived.orElseThrow().outcome() != CriticalPath.Outcome.COMPUTED) {
             return List.of();
         }
         CriticalPath.Result path = derived.orElseThrow();
-        Map<Integer, Long> actionIds = graph.orElseThrow().actionIdsByNodeIndex();
-        List<Integer> heaviest = path.path().stream()
-                .filter(actionIds::containsKey)
-                .sorted(Comparator.comparingLong((Integer node) ->
-                        path.earliestFinishAt(node) - path.earliestStartAt(node)).reversed())
-                .limit(limit)
-                .toList();
+        if (limit < 1) {
+            return List.of();
+        }
+        Comparator<PathAction> worstFirst = Comparator
+                .comparingLong(PathAction::weightMicros)
+                .thenComparing(Comparator.comparingInt(PathAction::nodeIndex).reversed());
+        Comparator<PathAction> bestFirst = Comparator
+                .comparingLong(PathAction::weightMicros).reversed()
+                .thenComparingInt(PathAction::nodeIndex);
+        PriorityQueue<PathAction> heaviest = new PriorityQueue<>(limit, worstFirst);
+        graph.orElseThrow().forEachActionIdByNodeIndex((node, actionId) -> {
+            if (node < 0 || node >= path.scheduledNodes() || !path.isOnPath(node)) {
+                return;
+            }
+            PathAction candidate = new PathAction(
+                    node,
+                    actionId,
+                    path.earliestFinishAt(node) - path.earliestStartAt(node));
+            if (heaviest.size() < limit) {
+                heaviest.offer(candidate);
+            } else if (bestFirst.compare(candidate, heaviest.peek()) < 0) {
+                heaviest.poll();
+                heaviest.offer(candidate);
+            }
+        });
         if (heaviest.isEmpty()) {
             return List.of();
         }
+        List<PathAction> ranked = new ArrayList<>(heaviest);
+        ranked.sort(bestFirst);
         Map<Long, Integer> nodeByAction = new LinkedHashMap<>();
-        for (int node : heaviest) {
-            nodeByAction.put(actionIds.get(node), node);
+        for (PathAction candidate : ranked) {
+            nodeByAction.putIfAbsent(candidate.actionId(), candidate.nodeIndex());
         }
-        return detail(nodeByAction.keySet());
+        List<ActionMetrics> details = detail(nodeByAction.keySet(), durationSource);
+        Map<Long, ActionMetrics> byAction = details.stream().collect(
+                java.util.stream.Collectors.toMap(ActionMetrics::actionId, action -> action));
+        // detail() is free to return rows in SQLite's preferred order. Restore
+        // the path-weight order chosen above so consumers do not accidentally
+        // rank aggregate subprocess work as if it were a dependency weight.
+        return nodeByAction.keySet().stream()
+                .map(byAction::get)
+                .filter(Objects::nonNull)
+                .toList();
     }
 
+    /** One bounded candidate while selecting resolved actions from a dependency path. */
+    private record PathAction(int nodeIndex, long actionId, long weightMicros) {}
+
     /** Re-reads a bounded set of actions with the full per-action detail. */
-    private List<ActionMetrics> detail(java.util.Collection<Long> ids) throws SQLException {
+    private List<ActionMetrics> detail(
+            java.util.Collection<Long> ids, CriticalPath.DurationSource durationSource)
+            throws SQLException {
         if (ids.isEmpty()) {
             return List.of();
         }
@@ -1045,7 +1486,17 @@ public final class MetricQueries implements AutoCloseable {
         for (int i = 0; i < ids.size(); i++) {
             placeholders.append(i == 0 ? "?" : ",?");
         }
-        String sql = ACTION_ROWS_HEAD + ATTEMPT_DURATION + ACTION_ROWS_TAIL
+        String durationColumns = switch (durationSource) {
+            case BEP_ACTION -> BEP_DURATION;
+            // ActionMetrics always describes the whole action. Keep its
+            // execution-log fields aggregated across all attempts; the exact
+            // conservative node weight remains on CriticalPath.Result and the
+            // Critical Path table labels it separately.
+            case EXECUTION_ATTEMPT -> ATTEMPT_DURATION;
+            case NONE -> throw new IllegalArgumentException(
+                    "a dependency path cannot use an absent duration source");
+        };
+        String sql = ACTION_ROWS_HEAD + durationColumns + ACTION_ROWS_TAIL
                 + " WHERE act.id IN (" + placeholders + ")" + GROUP_BY_ACTION;
         List<ActionMetrics> out = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -1055,9 +1506,7 @@ public final class MetricQueries implements AutoCloseable {
             }
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
-                    out.add(toMetrics(
-                            readRow(rows, CriticalPath.DurationSource.EXECUTION_ATTEMPT),
-                            Map.of()));
+                    out.add(toMetrics(readRow(rows, durationSource), Map.of()));
                 }
             }
         }
@@ -1080,6 +1529,20 @@ public final class MetricQueries implements AutoCloseable {
         if (actions.isEmpty()) {
             return actions;
         }
+        boolean degreeIndexesAvailable = false;
+        if (graph.isPresent()) {
+            try {
+                GraphQueries queries = graph.orElseThrow();
+                boolean sourceTrustworthy = queries.sources().stream()
+                        .filter(source -> source.kind().equals("DECLARED_ACTIONS"))
+                        .anyMatch(GraphQueries.GraphSource::isTrustworthy);
+                degreeIndexesAvailable = sourceTrustworthy
+                                && queries.forwardIndex(EdgeDerivation.DECLARED).isPresent()
+                                && queries.reverseIndex(EdgeDerivation.DECLARED).isPresent();
+            } catch (IOException unreadable) {
+                degreeIndexesAvailable = false;
+            }
+        }
         List<ActionMetrics> out = new ArrayList<>(actions.size());
         for (ActionMetrics action : actions) {
             OptionalLong consumers = OptionalLong.empty();
@@ -1091,14 +1554,16 @@ public final class MetricQueries implements AutoCloseable {
                 OptionalLong node = queries.nodeForAction(action.actionId());
                 if (node.isPresent()) {
                     int index = Math.toIntExact(node.getAsLong());
-                    try {
-                        consumers = OptionalLong.of(
-                                queries.degree(EdgeDerivation.DECLARED, index, true));
-                        dependencies = OptionalLong.of(
-                                queries.degree(EdgeDerivation.DECLARED, index, false));
-                    } catch (IOException unreadable) {
-                        consumers = OptionalLong.empty();
-                        dependencies = OptionalLong.empty();
+                    if (degreeIndexesAvailable) {
+                        try {
+                            consumers = OptionalLong.of(
+                                    queries.degree(EdgeDerivation.DECLARED, index, true));
+                            dependencies = OptionalLong.of(
+                                    queries.degree(EdgeDerivation.DECLARED, index, false));
+                        } catch (IOException unreadable) {
+                            consumers = OptionalLong.empty();
+                            dependencies = OptionalLong.empty();
+                        }
                     }
                     if (derived.isPresent()
                             && derived.orElseThrow().outcome() == CriticalPath.Outcome.COMPUTED

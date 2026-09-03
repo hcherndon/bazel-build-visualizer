@@ -11,6 +11,8 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Applies session-database schema migrations forward, once, transactionally.
@@ -39,6 +41,8 @@ import java.util.Set;
  */
 public final class MigrationRunner {
 
+    private static final Logger log = LoggerFactory.getLogger(MigrationRunner.class);
+
     /** Version recorded for a database that has never been migrated. */
     public static final int UNMIGRATED = 0;
 
@@ -50,7 +54,7 @@ public final class MigrationRunner {
      * version this build actually supports. {@code standardIsTheLatestVersion}
      * in the migration tests keeps the two from drifting.
      */
-    public static final int LATEST_VERSION = SchemaV5.VERSION;
+    public static final int LATEST_VERSION = SchemaV9.VERSION;
 
     private static final String SELECT_METADATA_TABLE =
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'";
@@ -83,11 +87,12 @@ public final class MigrationRunner {
         this.migrations = List.copyOf(sorted);
     }
 
-    /** The runner this application ships: schema v1, then v2, v3, v4, v5. */
+    /** The runner this application ships: schema v1 through v9, in order. */
     public static MigrationRunner standard() {
         return new MigrationRunner(List.of(
                 new V1Migration(), new V2Migration(), new V3Migration(),
-                new V4Migration(), new V5Migration()));
+                new V4Migration(), new V5Migration(), new V6Migration(),
+                new V7Migration(), new V8Migration(), new V9Migration()));
     }
 
     /** The newest version this runner can produce. */
@@ -164,9 +169,12 @@ public final class MigrationRunner {
             throw SchemaVersionException.tooNew(current, latest);
         }
         if (current == latest) {
+            log.trace("database schema is already at version {}", current);
             return current;
         }
 
+        long startedNanos = System.nanoTime();
+        log.info("migrating database schema from version {} to {}", current, latest);
         boolean previousAutoCommit = connection.getAutoCommit();
         connection.setAutoCommit(false);
         int applied = current;
@@ -175,9 +183,12 @@ public final class MigrationRunner {
                 if (migration.version() <= current) {
                     continue;
                 }
+                long migrationStartedNanos = System.nanoTime();
                 migration.apply(connection);
                 applied = migration.version();
                 recordVersion(connection, applied);
+                log.debug("applied database schema version {} in {} ms", applied,
+                        elapsedMillis(migrationStartedNanos));
             }
             connection.commit();
         } catch (SQLException failure) {
@@ -190,6 +201,8 @@ public final class MigrationRunner {
         } finally {
             connection.setAutoCommit(previousAutoCommit);
         }
+        log.info("database schema migration finished at version {} in {} ms",
+                applied, elapsedMillis(startedNanos));
         return applied;
     }
 
@@ -206,5 +219,10 @@ public final class MigrationRunner {
                 ResultSet rows = statement.executeQuery(SELECT_METADATA_TABLE)) {
             return rows.next();
         }
+    }
+
+    private static long elapsedMillis(long startedNanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - startedNanos);
     }
 }

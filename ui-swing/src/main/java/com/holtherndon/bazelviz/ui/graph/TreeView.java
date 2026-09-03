@@ -3,7 +3,10 @@ package com.holtherndon.bazelviz.ui.graph;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.graph.ShortestPath;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
@@ -13,6 +16,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JButton;
@@ -167,6 +173,23 @@ public final class TreeView extends JPanel {
         dependents.addTreeWillExpandListener(dependentsExpander);
     }
 
+    /** Adds shared right-click actions to both lazy dependency trees. */
+    public void installEntityActions(EntityActions actions) {
+        java.util.Objects.requireNonNull(actions, "actions");
+        java.util.Set<EntityActions.Command> omit =
+                java.util.Set.of(EntityActions.Command.OPEN_IN_TREE);
+        actions.installTreeMenu(dependencies, this::refsAtPath, omit);
+        actions.installTreeMenu(dependents, this::refsAtPath, omit);
+    }
+
+    private List<EntityRef> refsAtPath(javax.swing.tree.TreePath path) {
+        Object last = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+        if (!(last instanceof NodeRef ref) || ref.node.label().isEmpty()) {
+            return List.of();
+        }
+        return List.of(new EntityRef.TargetLabel(ref.node.label().orElseThrow()));
+    }
+
     /** Opens this session's graph, off the EDT. */
     public void openSession(SessionSource source) {
         closeSession();
@@ -200,21 +223,36 @@ public final class TreeView extends JPanel {
 
     /** Lets go of the session. */
     public void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches immediately and completes after this session's graph reads have stopped. */
+    public CompletionStage<Void> closeSessionAsync() {
         generation++;
         ExecutorService executor = worker;
         worker = null;
         GraphQueries open = queries;
         queries = null;
-        if (executor != null) {
-            executor.shutdownNow();
-        }
-        closeQuietly(open);
         // Back to the default, so the next session's preferred source is a
         // real change and cannot read as "already selected".
         shownGraph = GraphKind.DECLARED_ACTIONS;
         sourceChoice.setModel(new DefaultComboBoxModel<>());
         clearTrees();
         showCard("empty");
+        if (executor == null && open == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return ViewClose.runAsync("bbv-tree-close", () -> {
+            if (executor != null) {
+                executor.shutdownNow();
+                try {
+                    executor.awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            closeQuietly(open);
+        });
     }
 
     void installSources(List<GraphQueries.GraphSource> sources) {

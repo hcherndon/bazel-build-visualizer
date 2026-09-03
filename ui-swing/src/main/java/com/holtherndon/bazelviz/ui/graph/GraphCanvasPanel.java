@@ -4,11 +4,15 @@ import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.WrapLayout;
+import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
+import java.awt.FlowLayout;
 import java.awt.Font;
 import javax.swing.BorderFactory;
-import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JButton;
@@ -16,6 +20,7 @@ import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JSpinner;
+import javax.swing.JToggleButton;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
 
@@ -64,6 +69,8 @@ public final class GraphCanvasPanel extends JPanel {
     private final GraphCanvas canvas = new GraphCanvas();
     private final JComboBox<GraphExtract.Mode> mode = new JComboBox<>();
     private final JComboBox<GraphLayout.Kind> layout = new JComboBox<>(GraphLayout.Kind.values());
+    private final JComboBox<GraphEdgeDisplay> edgeDisplay =
+            new JComboBox<>(GraphEdgeDisplay.values());
     private final JComboBox<GraphClustering.By> groupBy =
             new JComboBox<>(GraphClustering.By.values());
 
@@ -89,9 +96,17 @@ public final class GraphCanvasPanel extends JPanel {
      */
     private final JSpinner nodeLimitControl = new JSpinner(new SpinnerNumberModel(
             GraphExtract.DEFAULT_NODE_LIMIT, MIN_NODE_LIMIT, MAX_NODE_LIMIT, 1_000));
-    private final JLabel description = new JLabel(" ");
-    private final JLabel omission = new JLabel(" ");
-    private final JLabel selected = new JLabel(" ");
+    private final javax.swing.JTextArea description = WrappingLabel.create(" ");
+    private final javax.swing.JTextArea omission = WrappingLabel.create(" ");
+    private final javax.swing.JTextArea selected = WrappingLabel.create(" ");
+    private final javax.swing.JTextArea scopeExplanation = explanationArea();
+    private final javax.swing.JTextArea appearanceExplanation = explanationArea();
+    private final JPanel depthSetting;
+    private final JPanel budgetSetting;
+    private final JLabel budgetLabel;
+    private final JPanel groupBySetting;
+    private final JToggleButton controlsHelp = new JToggleButton("Control help");
+    private final JPanel controlsHelpPanel = new JPanel();
 
     /**
      * The bar plan 13.6 requires above the limit.
@@ -103,7 +118,7 @@ public final class GraphCanvasPanel extends JPanel {
      */
     private final JPanel overLimit = new JPanel();
 
-    private final JLabel overLimitText = new JLabel(" ");
+    private final javax.swing.JTextArea overLimitText = WrappingLabel.create(" ");
     private final JButton raiseLimit = new JButton("Draw it anyway");
     private final JButton showClusters = new JButton("Group instead");
     private final JButton exportComplete = new JButton("Export all of it…");
@@ -134,8 +149,10 @@ public final class GraphCanvasPanel extends JPanel {
     /** True while {@link #raiseLimits} writes the spinner, so it does not echo. */
     private boolean syncingLimitControl;
     private int nodeLimit = GraphExtract.DEFAULT_NODE_LIMIT;
+    private int clusterLimit = GraphClustering.DEFAULT_CLUSTER_LIMIT;
     private int edgeLimit = GraphExtract.DEFAULT_EDGE_LIMIT;
     private LimitEstimate estimate;
+    private GraphEdgeDisplay hierarchyEdgeDisplay = GraphEdgeDisplay.DECLUTTERED;
 
     /**
      * True when the cluster view on screen was chosen by the application, not
@@ -148,6 +165,7 @@ public final class GraphCanvasPanel extends JPanel {
     private boolean aggregatedAutomatically;
     private java.util.Map<Integer, Long> actionIdByNodeIndex = java.util.Map.of();
     private java.util.function.LongConsumer actionListener = actionId -> {};
+    private EntityActions entityActions;
 
     /**
      * Bumped whenever what is on screen changes, so a weight computation or a
@@ -155,6 +173,12 @@ public final class GraphCanvasPanel extends JPanel {
      * on the EDT only.
      */
     private long weightGeneration;
+
+    /** Discards layout/model callbacks for a view the controls have replaced. */
+    private long renderGeneration;
+
+    /** Discards export status callbacks after the graph or session changes. */
+    private long exportGeneration;
 
     public GraphCanvasPanel() {
         super(new BorderLayout());
@@ -170,64 +194,111 @@ public final class GraphCanvasPanel extends JPanel {
         mode.setModel(new DefaultComboBoxModel<>(new GraphExtract.Mode[] {
             GraphExtract.Mode.NEIGHBOURHOOD, GraphExtract.Mode.DEPENDENCIES,
             GraphExtract.Mode.DEPENDENTS, GraphExtract.Mode.WHOLE, GraphExtract.Mode.CLUSTERS,
-            GraphExtract.Mode.PATH, GraphExtract.Mode.CRITICAL_PATH,
         }));
         // The renderer asks at paint time, so the list re-words itself when
         // the source selector switches graphs: "Path between two targets" over
         // the label graph, "...two actions" over the action graphs.
         mode.setRenderer(new Renderer<>(value -> ((GraphExtract.Mode) value).displayName(noun())));
         layout.setRenderer(new Renderer<>(value -> ((GraphLayout.Kind) value).displayName()));
+        edgeDisplay.setRenderer(
+                new Renderer<>(value -> ((GraphEdgeDisplay) value).displayName()));
         groupBy.setRenderer(new Renderer<>(value -> ((GraphClustering.By) value).displayName()));
         weightChoice.setRenderer(new Renderer<>(value -> ((GraphWeight) value).displayName()));
 
         mode.addActionListener(event -> modeChanged());
-        layout.addActionListener(event -> refresh());
+        layout.addActionListener(event -> {
+            updateExplanations();
+            refresh();
+        });
+        edgeDisplay.addActionListener(event -> edgeDisplayChanged());
         groupBy.addActionListener(event -> refresh());
-        weightChoice.addActionListener(event -> weightChanged());
+        weightChoice.addActionListener(event -> {
+            updateExplanations();
+            weightChanged();
+        });
         depth.addChangeListener(event -> refresh());
         nodeLimitControl.addChangeListener(event -> nodeLimitTyped());
 
-        JPanel controls = new JPanel();
-        controls.setLayout(new BoxLayout(controls, BoxLayout.X_AXIS));
-        controls.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
-        controls.add(new JLabel("Show:"));
-        controls.add(mode);
-        controls.add(Box.createHorizontalStrut(8));
-        controls.add(new JLabel("Depth:"));
-        controls.add(depth);
-        controls.add(Box.createHorizontalStrut(8));
-        controls.add(new JLabel("Node limit:"));
-        controls.add(nodeLimitControl);
-        controls.add(Box.createHorizontalStrut(8));
-        controls.add(new JLabel("Layout:"));
-        controls.add(layout);
-        controls.add(Box.createHorizontalStrut(8));
-        controls.add(new JLabel("Group by:"));
-        controls.add(groupBy);
-        controls.add(Box.createHorizontalStrut(8));
-        controls.add(new JLabel("Weight:"));
-        controls.add(weightChoice);
-        controls.add(Box.createHorizontalStrut(8));
-        JButton fit = new JButton("Fit");
+        mode.setName("graph.scope");
+        depth.setName("graph.depth");
+        nodeLimitControl.setName("graph.nodeBudget");
+        layout.setName("graph.layout");
+        edgeDisplay.setName("graph.edges");
+        groupBy.setName("graph.groupBy");
+        weightChoice.setName("graph.nodeEncoding");
+        scopeExplanation.setName("graph.scopeExplanation");
+        appearanceExplanation.setName("graph.appearanceExplanation");
+
+        JPanel controlsRow = new JPanel(new WrapLayout(FlowLayout.LEADING, 8, 3));
+        controlsRow.setName("graph.controlsRow");
+        controlsRow.setBorder(BorderFactory.createTitledBorder("Graph controls"));
+        controlsRow.add(labeledSetting("Scope", mode, "graph.scopeLabel"));
+        depthSetting = labeledSetting(
+                "Traversal depth", depth, "graph.depthLabel");
+        controlsRow.add(depthSetting);
+        budgetSetting = labeledSetting(
+                "Node budget", nodeLimitControl, "graph.nodeBudgetLabel");
+        budgetLabel = (JLabel) budgetSetting.getComponent(0);
+        controlsRow.add(budgetSetting);
+        groupBySetting = labeledSetting(
+                "Group nodes by", groupBy, "graph.groupByLabel");
+        controlsRow.add(groupBySetting);
+        controlsRow.add(labeledSetting("Layout", layout, "graph.layoutLabel"));
+        controlsRow.add(labeledSetting("Dependencies", edgeDisplay, "graph.edgesLabel"));
+        controlsRow.add(labeledSetting(
+                "Node size and colour", weightChoice, "graph.nodeEncodingLabel"));
+
+        JButton fit = new JButton("Fit graph");
+        fit.setName("graph.fit");
+        fit.setToolTipText(PlainText.tooltip("Fit every laid-out node and its visible labels."));
         fit.addActionListener(event -> canvas.fitToView());
-        controls.add(fit);
         // The drag overlay's explicit way back. A new layout resets dragged
         // positions on its own; this is for undoing a rearrangement of the
         // drawing that is otherwise staying.
-        JButton resetPositions = new JButton("Reset positions");
+        JButton resetPositions = new JButton("Reset moved nodes");
+        resetPositions.setName("graph.resetPositions");
         resetPositions.setToolTipText(PlainText.tooltip(
                 "Put every dragged node back where the layout placed it."));
         resetPositions.addActionListener(event -> canvas.resetDragOffsets());
-        controls.add(resetPositions);
         // Plan 17.7 lists "export visible graph" among the canvas's ordinary
         // actions, not only among the things offered when a graph is too big.
-        JButton export = new JButton("Export…");
+        JButton export = new JButton("Export graph…");
+        export.setName("graph.export");
         export.addActionListener(event -> exportChosen());
-        controls.add(export);
-        controls.add(Box.createHorizontalGlue());
 
-        overLimit.setLayout(new BoxLayout(overLimit, BoxLayout.X_AXIS));
+        controlsHelp.setName("graph.controlsHelp");
+        controlsHelp.setToolTipText(PlainText.tooltip(
+                "Show plain-language explanations for the selected graph controls."));
+        controlsHelp.getAccessibleContext().setAccessibleDescription(
+                "Show plain-language explanations for the selected graph controls.");
+        controlsRow.add(controlsHelp);
+        controlsRow.add(fit);
+        controlsRow.add(resetPositions);
+        controlsRow.add(export);
+
+        controlsHelpPanel.setName("graph.controlsHelpPanel");
+        controlsHelpPanel.setLayout(new BoxLayout(controlsHelpPanel, BoxLayout.Y_AXIS));
+        controlsHelpPanel.setBorder(BorderFactory.createEmptyBorder(0, 4, 2, 4));
+        controlsHelpPanel.add(scopeExplanation);
+        controlsHelpPanel.add(appearanceExplanation);
+        controlsHelpPanel.setVisible(false);
+        controlsHelp.addActionListener(event -> {
+            controlsHelpPanel.setVisible(controlsHelp.isSelected());
+            controlsHelp.setText(controlsHelp.isSelected() ? "Hide control help" : "Control help");
+            revalidate();
+            repaint();
+        });
+
+        JPanel controls = new JPanel(new BorderLayout());
+        controls.setName("graph.controls");
+        controls.setBorder(BorderFactory.createEmptyBorder(2, 8, 1, 8));
+        controls.add(controlsRow, BorderLayout.NORTH);
+        controls.add(controlsHelpPanel, BorderLayout.CENTER);
+
+        overLimit.setLayout(new BorderLayout(6, 2));
+        overLimit.setName("graph.limitWarning");
         overLimit.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+        overLimitText.setName("graph.limitWarningText");
         PlainText.disableHtml(overLimitText);
         overLimitText.setFont(overLimitText.getFont().deriveFont(Font.BOLD));
         raiseLimit.addActionListener(event -> drawItAnyway());
@@ -235,13 +306,14 @@ public final class GraphCanvasPanel extends JPanel {
                 event -> mode.setSelectedItem(GraphExtract.Mode.CLUSTERS));
         exportComplete.addActionListener(event -> exportCompleteChosen());
         refine.addActionListener(event -> narrow());
-        overLimit.add(overLimitText);
-        overLimit.add(Box.createHorizontalStrut(8));
-        overLimit.add(raiseLimit);
-        overLimit.add(refine);
-        overLimit.add(showClusters);
-        overLimit.add(exportComplete);
-        overLimit.add(Box.createHorizontalGlue());
+        JPanel limitActions = new JPanel(new WrapLayout(FlowLayout.LEADING, 6, 2));
+        limitActions.setName("graph.limitActions");
+        limitActions.add(raiseLimit);
+        limitActions.add(refine);
+        limitActions.add(showClusters);
+        limitActions.add(exportComplete);
+        overLimit.add(overLimitText, BorderLayout.NORTH);
+        overLimit.add(limitActions, BorderLayout.CENTER);
         overLimit.setVisible(false);
 
         JPanel status = new JPanel();
@@ -264,6 +336,8 @@ public final class GraphCanvasPanel extends JPanel {
         canvas.onFocusRequested(this::focusOnPosition);
         installFocusMenu();
         modeChanged();
+        edgeDisplay.setSelectedItem(GraphEdgeDisplay.DECLUTTERED);
+        updateExplanations();
         showNothing("Open a session with a dependency graph to draw it.");
     }
 
@@ -319,8 +393,9 @@ public final class GraphCanvasPanel extends JPanel {
      * <p>Composed once, off the event thread, by
      * {@code GraphQueries.displayLabelsByNodeIndex()}: "Mnemonic — output
      * basename", degrading honestly where pieces are absent. The canvas draws
-     * these; the complete export keeps the target labels from
-     * {@link #attach}, whose {@code label} column would otherwise lie.
+     * these above the owning target label; the complete export keeps the target
+     * labels from {@link #attach}, whose {@code label} column would otherwise
+     * lie.
      */
     public void attachActionDisplayLabels(String[] displayLabelsByNodeIndex) {
         this.actionDisplayLabels = displayLabelsByNodeIndex;
@@ -352,8 +427,14 @@ public final class GraphCanvasPanel extends JPanel {
             return;
         }
         this.shownGraph = graph;
+        mode.repaint();
+        updateExplanations();
         this.rootNode = -1;
         this.aggregatedAutomatically = false;
+        // Node numbering is graph-specific. Remove the old model before the
+        // asynchronous replacement starts so it cannot be clicked or exported
+        // under the new source's name.
+        showNothing("Loading the " + graph.displayName() + "…");
         GraphExtract.Mode chosen = (GraphExtract.Mode) mode.getSelectedItem();
         boolean rooted = chosen == GraphExtract.Mode.NEIGHBOURHOOD
                 || chosen == GraphExtract.Mode.DEPENDENCIES
@@ -419,6 +500,7 @@ public final class GraphCanvasPanel extends JPanel {
         this.actionIdByNodeIndex = java.util.Map.of();
         this.rootNode = -1;
         this.aggregatedAutomatically = false;
+        mode.setSelectedItem(GraphExtract.Mode.NEIGHBOURHOOD);
         canvas.setModel(GraphModel.empty());
         showNothing("No dependency graph is open.");
     }
@@ -429,22 +511,41 @@ public final class GraphCanvasPanel extends JPanel {
      * <p>Plan 13.5's "path between two actions", which the trees can state in
      * words but only the canvas can show the shape of.
      */
-    public void showPath(java.util.List<Integer> nodes, GraphExtract.Mode pathMode) {
+    public boolean showPath(java.util.List<Integer> nodes, GraphExtract.Mode pathMode) {
         if (service == null || nodes.isEmpty()) {
-            return;
+            return false;
+        }
+        try {
+            // Check only the size here. The bounded copy and edge materialization
+            // happen on GraphLayoutService's worker, never on the Swing EDT.
+            GraphExtract.requirePathWithinLimits(
+                    nodes.size(), pathMode, nodeLimit, edgeLimit);
+        } catch (GraphExtract.PathLimitExceededException tooLarge) {
+            canvas.setModel(GraphModel.empty());
+            setText(description, tooLarge.getMessage());
+            setText(omission, " ");
+            overLimit.setVisible(false);
+            return false;
         }
         mode.setSelectedItem(pathMode);
         setText(description, "Drawing…");
+        long wanted = ++renderGeneration;
         service.submitPath(
-                GraphLayoutService.Request.forPath(shownGraph, pathMode),
-                nodes, this::rendered, this::failed);
+                GraphLayoutService.Request.forPath(shownGraph, pathMode)
+                        .withLimits(nodeLimit, edgeLimit),
+                nodes,
+                result -> rendered(result, wanted),
+                failure -> failed(failure, wanted));
+        return true;
     }
 
     /** Draws the neighbourhood of one graph node. */
     public void showNode(int nodeIndex) {
         this.rootNode = nodeIndex;
         if (mode.getSelectedItem() == GraphExtract.Mode.WHOLE
-                || mode.getSelectedItem() == GraphExtract.Mode.CLUSTERS) {
+                || mode.getSelectedItem() == GraphExtract.Mode.CLUSTERS
+                || mode.getSelectedItem() == GraphExtract.Mode.PATH
+                || mode.getSelectedItem() == GraphExtract.Mode.CRITICAL_PATH) {
             mode.setSelectedItem(GraphExtract.Mode.NEIGHBOURHOOD);
             return;
         }
@@ -466,8 +567,10 @@ public final class GraphCanvasPanel extends JPanel {
         // through the change listener as a second refresh.
         syncingLimitControl = true;
         try {
-            nodeLimitControl.setValue(
-                    Math.max(MIN_NODE_LIMIT, Math.min(MAX_NODE_LIMIT, nodes)));
+            if (mode.getSelectedItem() != GraphExtract.Mode.CLUSTERS) {
+                nodeLimitControl.setValue(
+                        Math.max(MIN_NODE_LIMIT, Math.min(MAX_NODE_LIMIT, nodes)));
+            }
         } finally {
             syncingLimitControl = false;
         }
@@ -480,6 +583,14 @@ public final class GraphCanvasPanel extends JPanel {
             return;
         }
         int wanted = (Integer) nodeLimitControl.getValue();
+        if (mode.getSelectedItem() == GraphExtract.Mode.CLUSTERS) {
+            if (wanted == clusterLimit) {
+                return;
+            }
+            clusterLimit = wanted;
+            refresh();
+            return;
+        }
         if (wanted == nodeLimit) {
             return;
         }
@@ -541,7 +652,8 @@ public final class GraphCanvasPanel extends JPanel {
                 javax.swing.JPopupMenu menu = new javax.swing.JPopupMenu();
                 javax.swing.JMenuItem focus = new javax.swing.JMenuItem(
                         "Focus here — redraw around "
-                                + canvas.model().displayLabelAt(position));
+                                + canvas.model().canvasLabelAt(position));
+                PlainText.disableHtml(focus);
                 focus.addActionListener(action -> focusOnPosition(position));
                 menu.add(focus);
                 javax.swing.JMenuItem resetPositions =
@@ -549,13 +661,57 @@ public final class GraphCanvasPanel extends JPanel {
                 resetPositions.setEnabled(canvas.hasDragOffsets());
                 resetPositions.addActionListener(action -> canvas.resetDragOffsets());
                 menu.add(resetPositions);
+                appendEntityActions(menu, position);
                 menu.show(canvas, event.getX(), event.getY());
             }
         });
     }
 
+    /** Adds shared actions for nodes carrying target labels. */
+    public void installEntityActions(EntityActions actions) {
+        this.entityActions = java.util.Objects.requireNonNull(actions, "actions");
+    }
+
+    private void appendEntityActions(javax.swing.JPopupMenu menu, int position) {
+        EntityActions actions = entityActions;
+        java.util.Optional<String> label = targetLabelAt(position);
+        if (actions == null || label.isEmpty()) {
+            return;
+        }
+        javax.swing.JPopupMenu shared = actions.popupFor(
+                java.util.List.of(new EntityRef.TargetLabel(label.orElseThrow())),
+                java.util.Set.of(EntityActions.Command.OPEN_IN_GRAPH));
+        if (shared.getComponentCount() == 0) {
+            return;
+        }
+        menu.addSeparator();
+        while (shared.getComponentCount() > 0) {
+            java.awt.Component item = shared.getComponent(0);
+            shared.remove(0);
+            menu.add(item);
+        }
+    }
+
+    private java.util.Optional<String> targetLabelAt(int position) {
+        GraphModel model = canvas.model();
+        if (model.isCluster() || position < 0 || position >= model.size()) {
+            return java.util.Optional.empty();
+        }
+        int node = model.nodeAt(position);
+        String[] labels = currentLabels();
+        if (labels == null || node < 0 || node >= labels.length
+                || labels[node] == null || labels[node].isBlank()) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(labels[node]);
+    }
+
     public int nodeLimit() {
         return nodeLimit;
+    }
+
+    int clusterLimitForTesting() {
+        return clusterLimit;
     }
 
     public int edgeLimit() {
@@ -570,14 +726,113 @@ public final class GraphCanvasPanel extends JPanel {
         boolean rooted = chosen == GraphExtract.Mode.NEIGHBOURHOOD
                 || chosen == GraphExtract.Mode.DEPENDENCIES
                 || chosen == GraphExtract.Mode.DEPENDENTS;
-        depth.setEnabled(rooted);
-        groupBy.setEnabled(chosen == GraphExtract.Mode.CLUSTERS);
+        boolean clustered = chosen == GraphExtract.Mode.CLUSTERS;
+        boolean path = chosen == GraphExtract.Mode.PATH
+                || chosen == GraphExtract.Mode.CRITICAL_PATH;
+        depthSetting.setVisible(rooted);
+        groupBySetting.setVisible(clustered);
+        budgetSetting.setVisible(!path);
+        layout.setEnabled(!path);
+        budgetLabel.setText(clustered ? "Group budget:" : "Node budget:");
+        budgetLabel.setToolTipText(PlainText.tooltip(clustered
+                ? "The most groups this drawing may contain."
+                : "The most nodes this drawing may contain."));
+        syncingLimitControl = true;
+        try {
+            nodeLimitControl.setValue(clustered ? clusterLimit : nodeLimit);
+        } finally {
+            syncingLimitControl = false;
+        }
         // A cluster box is a summary, not a node: it has no degree, no
         // transitive count and no output, so the selector goes quiet rather
         // than offering weights nothing could honour.
-        weightChoice.setEnabled(chosen != GraphExtract.Mode.CLUSTERS);
-        layout.setSelectedItem(GraphLayout.defaultFor(chosen));
-        refresh();
+        weightChoice.setEnabled(!clustered);
+        GraphLayout.Kind defaultLayout = GraphLayout.defaultFor(chosen);
+        boolean layoutChanged = layout.getSelectedItem() != defaultLayout;
+        layout.setSelectedItem(defaultLayout);
+        updateExplanations();
+        revalidate();
+        // Changing the combo selection fires its refresh listener
+        // synchronously. Refresh here only when that listener did not run.
+        if (!layoutChanged) {
+            refresh();
+        }
+    }
+
+    private void edgeDisplayChanged() {
+        GraphEdgeDisplay chosen = (GraphEdgeDisplay) edgeDisplay.getSelectedItem();
+        GraphLayout.Kind chosenLayout = (GraphLayout.Kind) layout.getSelectedItem();
+        if (chosenLayout == GraphLayout.Kind.HIERARCHY && chosen != null) {
+            hierarchyEdgeDisplay = chosen;
+        }
+        canvas.setEdgeDisplay(
+                chosenLayout == GraphLayout.Kind.HIERARCHY
+                        ? hierarchyEdgeDisplay : GraphEdgeDisplay.ALL);
+        updateExplanations();
+        updateOmission();
+    }
+
+    private void updateExplanations() {
+        GraphExtract.Mode chosenMode = (GraphExtract.Mode) mode.getSelectedItem();
+        if (chosenMode != null) {
+            String scopeText = scopeDescription(chosenMode);
+            setText(scopeExplanation, scopeText);
+            mode.setToolTipText(PlainText.tooltip(scopeText));
+            mode.getAccessibleContext().setAccessibleDescription(scopeText);
+        }
+        GraphLayout.Kind chosenLayout = (GraphLayout.Kind) layout.getSelectedItem();
+        boolean hierarchy = chosenLayout == GraphLayout.Kind.HIERARCHY;
+        GraphEdgeDisplay wantedEdges = hierarchy
+                ? hierarchyEdgeDisplay : GraphEdgeDisplay.ALL;
+        if (edgeDisplay.getSelectedItem() != wantedEdges) {
+            edgeDisplay.setSelectedItem(wantedEdges);
+        }
+        edgeDisplay.setEnabled(hierarchy);
+        canvas.setEdgeDisplay(wantedEdges);
+        GraphEdgeDisplay chosenEdges = (GraphEdgeDisplay) edgeDisplay.getSelectedItem();
+        GraphWeight chosenWeight = selectedWeight();
+        StringBuilder text = new StringBuilder();
+        if (chosenLayout != null) {
+            text.append(chosenLayout.description());
+            layout.setToolTipText(PlainText.tooltip(chosenLayout.description()));
+            layout.getAccessibleContext().setAccessibleDescription(chosenLayout.description());
+        }
+        if (chosenEdges != null) {
+            if (text.length() > 0) {
+                text.append("  ");
+            }
+            text.append(chosenEdges.description());
+            edgeDisplay.setToolTipText(PlainText.tooltip(chosenEdges.description()));
+            edgeDisplay.getAccessibleContext().setAccessibleDescription(chosenEdges.description());
+        }
+        if (chosenMode != GraphExtract.Mode.CLUSTERS) {
+            text.append("  Node size and colour encode ")
+                    .append(chosenWeight.subject()).append('.');
+            String weightText = "Node size and colour encode " + chosenWeight.subject() + ".";
+            weightChoice.setToolTipText(PlainText.tooltip(weightText));
+            weightChoice.getAccessibleContext().setAccessibleDescription(weightText);
+        } else {
+            String weightText = "Grouped summaries do not have a node size or colour encoding.";
+            text.append("  ").append(weightText);
+            weightChoice.setToolTipText(PlainText.tooltip(weightText));
+            weightChoice.getAccessibleContext().setAccessibleDescription(weightText);
+        }
+        setText(appearanceExplanation, text.toString());
+    }
+
+    private String scopeDescription(GraphExtract.Mode chosen) {
+        return switch (chosen) {
+            case NEIGHBOURHOOD ->
+                    "Shows dependencies and reverse dependencies around the selected " + noun()
+                            + ".";
+            case DEPENDENCIES -> "Shows what the selected " + noun() + " needs.";
+            case DEPENDENTS -> "Shows what directly or indirectly needs the selected " + noun()
+                    + ".";
+            case WHOLE -> "Shows the complete imported graph when it fits the stated budget.";
+            case CLUSTERS -> "Groups the complete graph without sampling or dropping nodes.";
+            case PATH -> "Shows the path chosen in the Tree tab.";
+            case CRITICAL_PATH -> "Shows the visualizer-computed dependency critical path.";
+        };
     }
 
     /** The selected weight, straight from the control. */
@@ -601,8 +856,13 @@ public final class GraphCanvasPanel extends JPanel {
         long wanted = ++weightGeneration;
         GraphWeight weight = selectedWeight();
         if (weight == GraphWeight.DURATION) {
-            canvas.restyle(model.withDurationWeight());
-            selectionChanged(canvas.selectedPositions());
+            GraphLayoutService active = service;
+            if (active != null) {
+                active.prepare(
+                        model::withDurationWeight,
+                        styled -> applyRestyle(styled, model, wanted, active),
+                        failure -> weightFailed(weight, wanted, failure));
+            }
             return;
         }
         setText(selected, "Computing " + weight.subject() + "…");
@@ -611,28 +871,49 @@ public final class GraphCanvasPanel extends JPanel {
 
     /** Asks the service for the weight's values over what is drawn. */
     private void submitWeights(GraphWeight weight, GraphModel model, long wanted) {
-        if (service == null) {
+        GraphLayoutService active = service;
+        if (active == null) {
             return;
         }
-        service.weights(
+        active.weights(
                 shownGraph, weight, model.extract(),
-                set -> weightsArrived(set, wanted),
-                failure -> {
-                    if (wanted == weightGeneration) {
-                        setText(selected, "The " + weight.subject()
-                                + " could not be computed: " + failure.getMessage());
-                    }
-                });
+                set -> weightsArrived(set, model, wanted, active),
+                failure -> weightFailed(weight, wanted, failure));
     }
 
     /** Applies computed weights, unless the drawing has moved on. */
-    private void weightsArrived(GraphLayoutService.WeightSet set, long wanted) {
-        if (wanted != weightGeneration) {
+    private void weightsArrived(
+            GraphLayoutService.WeightSet set,
+            GraphModel model,
+            long wanted,
+            GraphLayoutService active) {
+        if (wanted != weightGeneration || active != service || canvas.model() != model) {
             return;
         }
-        canvas.restyle(canvas.model().withWeights(
-                set.weight(), set.valueByNode(), set.truncated(), set.note()));
+        active.prepare(
+                () -> model.withWeights(
+                        set.weight(), set.valueByNode(), set.truncated(), set.note()),
+                styled -> applyRestyle(styled, model, wanted, active),
+                failure -> weightFailed(set.weight(), wanted, failure));
+    }
+
+    private void applyRestyle(
+            GraphModel styled,
+            GraphModel previous,
+            long wanted,
+            GraphLayoutService active) {
+        if (wanted != weightGeneration || active != service || canvas.model() != previous) {
+            return;
+        }
+        canvas.restyle(styled);
         selectionChanged(canvas.selectedPositions());
+    }
+
+    private void weightFailed(GraphWeight weight, long wanted, Throwable failure) {
+        if (wanted == weightGeneration) {
+            setText(selected, "The " + weight.subject()
+                    + " could not be computed: " + failure.getMessage());
+        }
     }
 
     /** Rebuilds the request from the controls and submits it. */
@@ -659,7 +940,8 @@ public final class GraphCanvasPanel extends JPanel {
 
         GraphLayoutService.Request request = switch (chosen) {
             case CLUSTERS -> GraphLayoutService.Request.clustered(
-                    shownGraph, (GraphClustering.By) groupBy.getSelectedItem());
+                    shownGraph, (GraphClustering.By) groupBy.getSelectedItem())
+                    .withClusterLimit(clusterLimit);
             case WHOLE -> GraphLayoutService.Request.whole(
                     shownGraph, nodeLimit, edgeLimit);
             default -> GraphLayoutService.Request.around(
@@ -670,12 +952,28 @@ public final class GraphCanvasPanel extends JPanel {
                 .withLayout((GraphLayout.Kind) layout.getSelectedItem())
                 .withLimits(nodeLimit, edgeLimit);
 
-        description.setText("Drawing…");
-        service.estimate(request, found -> this.estimate = found, failure -> { });
-        service.submit(request, this::rendered, this::failed);
+        weightGeneration++;
+        exportGeneration++;
+        setText(description, "Drawing…");
+        long wanted = ++renderGeneration;
+        service.estimate(
+                request,
+                found -> {
+                    if (wanted == renderGeneration) {
+                        this.estimate = found;
+                    }
+                },
+                failure -> { });
+        service.submit(
+                request,
+                result -> rendered(result, wanted),
+                failure -> failed(failure, wanted));
     }
 
-    private void rendered(GraphLayoutService.Rendered result) {
+    private void rendered(GraphLayoutService.Rendered result, long wanted) {
+        if (wanted != renderGeneration) {
+            return;
+        }
         // Plan 13.6: above the limit, switch to cluster mode. Switch, not
         // offer -- a user who asked for the whole build and got a blank canvas
         // with an explanation has been told no; one who gets the same build
@@ -689,8 +987,34 @@ public final class GraphCanvasPanel extends JPanel {
             return;
         }
 
-        long wanted = ++weightGeneration;
-        GraphModel model = GraphModel.of(result, currentDisplayLabels(), currentDurations());
+        GraphLayoutService active = service;
+        if (active == null) {
+            return;
+        }
+        String[] displayLabels = currentDisplayLabels();
+        String[] ownerLabels = currentLabels();
+        long[] durations = currentDurations();
+        active.prepare(
+                () -> GraphModel.of(result, displayLabels, ownerLabels, durations),
+                model -> preparedRendering(result, model, wanted, active),
+                failure -> failed(failure, wanted));
+    }
+
+    private void preparedRendering(
+            GraphLayoutService.Rendered result,
+            GraphModel model,
+            long wanted,
+            GraphLayoutService active) {
+        if (wanted != renderGeneration || active != service) {
+            return;
+        }
+        if (aggregatedAutomatically && result.isCluster() && result.refused()) {
+            // Automatic grouping was attempted, but the grouping itself did
+            // not fit. Treat this as the cluster refusal it is so the bar
+            // raises the Group budget rather than the unrelated Node budget.
+            aggregatedAutomatically = false;
+        }
+        long weightWanted = ++weightGeneration;
         canvas.setModel(model);
         setText(description, aggregatedAutomatically
                 ? "Too big to draw " + noun() + " by " + noun() + ", so it is grouped. "
@@ -705,7 +1029,7 @@ public final class GraphCanvasPanel extends JPanel {
         // computation delays the colours, never the graph.
         GraphWeight weight = selectedWeight();
         if (weight != GraphWeight.DURATION && !model.isCluster() && model.size() > 0) {
-            submitWeights(weight, model, wanted);
+            submitWeights(weight, model, weightWanted);
         }
     }
 
@@ -714,8 +1038,13 @@ public final class GraphCanvasPanel extends JPanel {
         if (!over) {
             return;
         }
+        boolean clustered = result.isCluster() && !aggregatedAutomatically;
+        showClusters.setVisible(!result.isCluster());
+        refine.setText(clustered ? "Try another grouping" : "Narrow it");
         if (aggregatedAutomatically) {
             setText(overLimitText, "Grouped because the whole build is too big to draw.");
+        } else if (clustered) {
+            setText(overLimitText, "Too many groups to draw at this group budget.");
         } else {
             setText(overLimitText, result.refused()
                     ? "Too big to draw in detail."
@@ -724,10 +1053,16 @@ public final class GraphCanvasPanel extends JPanel {
         // "Draw it anyway" only means something when the exact size is known,
         // which is the whole-graph case. For a traversal that stopped at its
         // budget, doubling the budget is the honest offer.
-        raiseLimit.setToolTipText(PlainText.tooltip(result.refused()
-                ? "Raise the limit to " + result.extract().totalNodes()
-                        + " " + noun() + "s and draw all of it."
-                : "Double the search budget and look further."));
+        if (clustered && result.clustering() != null) {
+            raiseLimit.setToolTipText(PlainText.tooltip(
+                    "Raise the group budget to " + result.clustering().clusterCount()
+                            + " and draw every group."));
+        } else {
+            raiseLimit.setToolTipText(PlainText.tooltip(result.refused()
+                    ? "Raise the limit to " + result.extract().totalNodes()
+                            + " " + noun() + "s and draw all of it."
+                    : "Double the search budget and look further."));
+        }
     }
 
     /**
@@ -743,6 +1078,28 @@ public final class GraphCanvasPanel extends JPanel {
         boolean rooted = chosen == GraphExtract.Mode.NEIGHBOURHOOD
                 || chosen == GraphExtract.Mode.DEPENDENCIES
                 || chosen == GraphExtract.Mode.DEPENDENTS;
+        if (aggregatedAutomatically) {
+            if (rootNode < 0) {
+                setText(description,
+                        "Pick an action first — narrowing means drawing the graph around one.");
+            } else {
+                mode.setSelectedItem(GraphExtract.Mode.NEIGHBOURHOOD);
+            }
+            return;
+        }
+        if (chosen == GraphExtract.Mode.CLUSTERS) {
+            GraphClustering.By grouping = (GraphClustering.By) groupBy.getSelectedItem();
+            // Package and mnemonic counts are independent, so neither may be
+            // called universally coarser. Try the next explicit dimension and
+            // report its exact count if it also refuses.
+            GraphClustering.By next = switch (grouping) {
+                case TARGET -> GraphClustering.By.PACKAGE;
+                case PACKAGE -> GraphClustering.By.MNEMONIC;
+                case MNEMONIC -> GraphClustering.By.TARGET;
+            };
+            groupBy.setSelectedItem(next);
+            return;
+        }
         if (rooted) {
             int depthNow = (Integer) depth.getValue();
             if (depthNow > 1) {
@@ -764,19 +1121,30 @@ public final class GraphCanvasPanel extends JPanel {
     /** Plan 13.6's "raise limit", which must be a decision rather than a default. */
     private void drawItAnyway() {
         GraphModel model = canvas.model();
-        long wantedNodes = Math.max(model.extract().totalNodes(), nodeLimit * 2L);
-        long wantedEdges = Math.max(model.extract().totalEdges(), edgeLimit * 2L);
         if (aggregatedAutomatically) {
-            // Back to the view they asked for in the first place. Leaving them
-            // in the grouped one after they pressed "draw it anyway" would be
-            // ignoring the press. The mode change refreshes, so raiseLimits
-            // must set the ceiling without also drawing at the old mode.
+            long wantedNodes = Math.max(model.extract().totalNodes(), nodeLimit * 2L);
+            long wantedEdges = Math.max(model.extract().totalEdges(), edgeLimit * 2L);
             this.nodeLimit = (int) Math.min(Integer.MAX_VALUE, wantedNodes);
             this.edgeLimit = (int) Math.min(Integer.MAX_VALUE, wantedEdges);
             aggregatedAutomatically = false;
             mode.setSelectedItem(GraphExtract.Mode.WHOLE);
             return;
         }
+        if (model.isCluster() && model.clustering() != null) {
+            clusterLimit = (int) Math.min(
+                    MAX_NODE_LIMIT,
+                    Math.max(model.clustering().clusterCount(), clusterLimit * 2L));
+            syncingLimitControl = true;
+            try {
+                nodeLimitControl.setValue(Math.min(MAX_NODE_LIMIT, clusterLimit));
+            } finally {
+                syncingLimitControl = false;
+            }
+            refresh();
+            return;
+        }
+        long wantedNodes = Math.max(model.extract().totalNodes(), nodeLimit * 2L);
+        long wantedEdges = Math.max(model.extract().totalEdges(), edgeLimit * 2L);
         raiseLimits(
                 (int) Math.min(Integer.MAX_VALUE, wantedNodes),
                 (int) Math.min(Integer.MAX_VALUE, wantedEdges));
@@ -817,14 +1185,20 @@ public final class GraphCanvasPanel extends JPanel {
      */
     public void exportVisible(java.nio.file.Path target, GraphExport.Format format) {
         GraphModel model = canvas.model();
-        if (service == null) {
+        if (model.size() == 0) {
+            setText(selected, "Nothing is drawn to export yet.");
             return;
         }
-        service.onGraph(
+        GraphLayoutService active = service;
+        if (active == null) {
+            return;
+        }
+        long wanted = ++exportGeneration;
+        active.onGraph(
                 shownGraph,
                 graph -> GraphExport.visible(model, target, format),
-                this::exported,
-                this::exportFailed);
+                result -> exported(result, wanted, active),
+                failure -> exportFailed(failure, wanted, active));
     }
 
     /**
@@ -835,24 +1209,34 @@ public final class GraphCanvasPanel extends JPanel {
      * bounded, the data is not.
      */
     public void exportComplete(java.nio.file.Path target, GraphExport.Format format) {
-        if (service == null) {
+        GraphLayoutService active = service;
+        if (active == null) {
             return;
         }
         String[] labels = currentLabels();
         long[] durations = currentDurations();
-        service.onGraph(
+        String nodeNoun = noun();
+        long wanted = ++exportGeneration;
+        active.onGraph(
                 shownGraph,
-                graph -> GraphExport.whole(graph, labels, durations, target, format),
-                this::exported,
-                this::exportFailed);
+                graph -> GraphExport.whole(
+                        graph, labels, durations, target, format, nodeNoun),
+                result -> exported(result, wanted, active),
+                failure -> exportFailed(failure, wanted, active));
     }
 
-    private void exported(GraphExport.Result result) {
-        setText(selected, result.describe());
+    private void exported(
+            GraphExport.Result result, long wanted, GraphLayoutService active) {
+        if (wanted == exportGeneration && active == service) {
+            setText(selected, result.describe());
+        }
     }
 
-    private void exportFailed(Throwable failure) {
-        setText(selected, "The export failed: " + failure.getMessage());
+    private void exportFailed(
+            Throwable failure, long wanted, GraphLayoutService active) {
+        if (wanted == exportGeneration && active == service) {
+            setText(selected, "The export failed: " + failure.getMessage());
+        }
     }
 
     private void exportCompleteChosen() {
@@ -870,7 +1254,8 @@ public final class GraphCanvasPanel extends JPanel {
         Object[] choices = {"Visible graph", "Complete graph"};
         int chosen = javax.swing.JOptionPane.showOptionDialog(
                 this,
-                "Export what is drawn, or everything the session holds?",
+                "Export the current extracted node set (including paint-hidden links),"
+                        + " or everything the session holds?",
                 "Export graph",
                 javax.swing.JOptionPane.DEFAULT_OPTION,
                 javax.swing.JOptionPane.QUESTION_MESSAGE,
@@ -936,6 +1321,10 @@ public final class GraphCanvasPanel extends JPanel {
         narrow();
     }
 
+    String refineTextForTesting() {
+        return refine.getText();
+    }
+
     int depthForTesting() {
         return (Integer) depth.getValue();
     }
@@ -948,16 +1337,51 @@ public final class GraphCanvasPanel extends JPanel {
         mode.setSelectedItem(value);
     }
 
+    void setGroupByForTesting(GraphClustering.By value) {
+        groupBy.setSelectedItem(value);
+    }
+
     /** Picks a weight exactly as the selector would, for tests. */
     void setWeightForTesting(GraphWeight value) {
         weightChoice.setSelectedItem(value);
+    }
+
+    void setLayoutForTesting(GraphLayout.Kind value) {
+        layout.setSelectedItem(value);
+    }
+
+    GraphLayout.Kind layoutForTesting() {
+        return (GraphLayout.Kind) layout.getSelectedItem();
+    }
+
+    void setEdgeDisplayForTesting(GraphEdgeDisplay value) {
+        edgeDisplay.setSelectedItem(value);
+    }
+
+    GraphEdgeDisplay edgeDisplayForTesting() {
+        return (GraphEdgeDisplay) edgeDisplay.getSelectedItem();
+    }
+
+    boolean edgeDisplayEnabledForTesting() {
+        return edgeDisplay.isEnabled();
+    }
+
+    String appearanceExplanationForTesting() {
+        return appearanceExplanation.getText();
+    }
+
+    String scopeExplanationForTesting() {
+        return scopeExplanation.getText();
     }
 
     GraphWeight weightForTesting() {
         return selectedWeight();
     }
 
-    private void failed(Throwable failure) {
+    private void failed(Throwable failure, long wanted) {
+        if (wanted != renderGeneration) {
+            return;
+        }
         canvas.setModel(GraphModel.empty());
         setText(description, "The graph could not be drawn: " + failure.getMessage());
         setText(omission, " ");
@@ -969,6 +1393,7 @@ public final class GraphCanvasPanel extends JPanel {
     }
 
     private void selectionChanged(int[] positions) {
+        updateOmission();
         if (positions.length == 0) {
             setText(selected, legend());
             return;
@@ -987,7 +1412,7 @@ public final class GraphCanvasPanel extends JPanel {
 
     /** One selected node, in the words of the selected weight. */
     private String describeSelection(GraphModel model, int position) {
-        String text = model.displayLabelAt(position);
+        String text = model.canvasLabelAt(position);
         GraphWeight weight = model.weight();
         if (weight == GraphWeight.DURATION) {
             return model.durationAt(position)
@@ -1103,7 +1528,12 @@ public final class GraphCanvasPanel extends JPanel {
     }
 
     private void showNothing(String why) {
+        renderGeneration++;
         weightGeneration++;
+        exportGeneration++;
+        if (service != null) {
+            service.cancel();
+        }
         canvas.setModel(GraphModel.empty());
         overLimit.setVisible(false);
         setText(description, why);
@@ -1114,6 +1544,35 @@ public final class GraphCanvasPanel extends JPanel {
     private static void setText(JLabel label, String text) {
         label.setText(text == null || text.isBlank() ? " " : text);
         label.setToolTipText(PlainText.tooltip(label.getText()));
+    }
+
+    private static void setText(javax.swing.JTextArea label, String text) {
+        label.setText(text == null || text.isBlank() ? " " : text);
+        label.setToolTipText(PlainText.tooltip(label.getText()));
+    }
+
+    private static JPanel labeledSetting(String text, javax.swing.JComponent control, String name) {
+        JPanel setting = new JPanel(new FlowLayout(FlowLayout.LEADING, 4, 0));
+        JLabel label = new JLabel(text + ":");
+        label.setLabelFor(control);
+        label.setName(name);
+        PlainText.disableHtml(label);
+        setting.add(label);
+        setting.add(control);
+        return setting;
+    }
+
+    private static javax.swing.JTextArea explanationArea() {
+        javax.swing.JTextArea area = new javax.swing.JTextArea(1, 20);
+        area.setEditable(false);
+        area.setFocusable(true);
+        area.setOpaque(false);
+        area.setBorder(BorderFactory.createEmptyBorder(1, 8, 3, 8));
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setFont(javax.swing.UIManager.getFont("Label.font"));
+        area.setForeground(javax.swing.UIManager.getColor("Label.foreground"));
+        return area;
     }
 
     /** Renders an enum by its display name rather than its constant. */

@@ -118,6 +118,28 @@ public final class BazelWorkspaceFixture {
     }
 
     /**
+     * A wildcard build with one valid target and one deliberately invalid manual target.
+     *
+     * <p>{@code bazel build //...} excludes the manual rule and succeeds, while a query command's
+     * wildcard includes it and fails during analysis. This pins the reason graph enrichment must
+     * use the exact target labels the primary command reported instead of re-expanding its text.
+     */
+    public static BazelWorkspaceFixture withBrokenManualTarget(Path directory)
+            throws IOException {
+        BazelWorkspaceFixture fixture = create(directory);
+        fixture.writeBuildFile(genrule("good", null, "echo good") + "\n" + """
+                genrule(
+                    name = "manual_broken",
+                    srcs = [":missing_target"],
+                    outs = ["manual_broken.txt"],
+                    cmd = "echo broken > $@",
+                    tags = ["manual"],
+                )
+                """);
+        return fixture;
+    }
+
+    /**
      * A workspace with {@code passing} tests that succeed and {@code failing}
      * tests that do not, plus one genrule so the build has a non-test action.
      *

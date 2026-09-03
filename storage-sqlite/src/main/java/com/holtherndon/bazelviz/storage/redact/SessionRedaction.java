@@ -60,7 +60,9 @@ public final class SessionRedaction {
         /** A target label, pseudonymised only when the policy says so. */
         LABEL,
         /** An environment value, read together with its name. */
-        ENVIRONMENT_VALUE
+        ENVIRONMENT_VALUE,
+        /** A Bazel option value, read with the option name as a command flag. */
+        OPTION_VALUE
     }
 
     /**
@@ -138,11 +140,18 @@ public final class SessionRedaction {
                 Column.of("profile_spans", "id", "name", Treatment.TEXT),
                 Column.of("profile_spans", "id", "primary_output", Treatment.PATH),
                 Column.of("bazel_critical_path", "id", "description", Treatment.TEXT),
+                // pprof's shared strings hold Starlark function names and source paths.
+                Column.of("starlark_profile_strings", "string_index", "value", Treatment.TEXT),
+                Column.of("starlark_profile_metadata", "id", "validation_detail", Treatment.TEXT),
                 Column.of("graph_sources", "id", "command", Treatment.TEXT),
                 Column.of("graph_sources", "id", "error_excerpt", Treatment.TEXT),
                 Column.of("graph_sources", "id", "mismatch_detail", Treatment.TEXT),
+                Column.of("graph_sources", "id", "target_scope_detail", Treatment.TEXT),
                 Column.of("graph_sources", "id", "raw_output_path", Treatment.PATH),
-                Column.of("declared_actions", "id", "execution_platform", Treatment.LABEL));
+                Column.of("declared_actions", "id", "execution_platform", Treatment.LABEL),
+                new Column("queried_configuration_options",
+                        List.of("configuration_id", "option_set_name", "ordinal"),
+                        "option_value", Treatment.OPTION_VALUE, "option_name"));
     }
 
     /**
@@ -195,13 +204,23 @@ public final class SessionRedaction {
                 "profile_metadata.anchor_source_key", "profile_metadata.anchor_meaning",
                 "profile_threads.name", "build_phases.name",
                 "profile_spans.category", "profile_counters.series",
+                "starlark_profile_metadata.format",
+                "starlark_profile_metadata.validation_state",
+                "starlark_profile_sample_labels.value_kind",
                 "graph_sources.kind", "graph_sources.state",
                 "graph_sources.configuration_match",
+                "graph_sources.target_scope",
                 // A content hash of the action's own inputs and command; it
                 // identifies an action and reveals none of it.
                 "declared_actions.configuration_checksum", "declared_actions.action_key",
                 "configured_target_nodes.configuration_checksum",
                 "configured_target_nodes.rule_class", "configured_target_edges.attribute",
+                "queried_configurations.checksum", "queried_configurations.mnemonic",
+                "queried_configurations.platform_name",
+                "queried_configuration_fragments.fragment_name",
+                "queried_configuration_fragments.option_set_name",
+                "queried_configuration_options.option_set_name",
+                "queried_configuration_options.option_name",
                 "action_edges.derivation",
                 "graph_indexes.kind", "graph_indexes.direction", "graph_indexes.file_name",
                 "graph_indexes.checksum");
@@ -329,6 +348,10 @@ public final class SessionRedaction {
             case TEXT -> redactor.text(value, column.field());
             case LABEL -> redactor.label(value, column.field());
             case ENVIRONMENT_VALUE -> redactor.environmentValue(name, value, column.field());
+            case OPTION_VALUE -> redactor.environmentValue(
+                    name == null || name.startsWith("--") ? name : "--" + name,
+                    value,
+                    column.field());
         };
     }
 

@@ -40,19 +40,65 @@ import java.util.OptionalLong;
  *
  * @param bazelReportedMicros Bazel's own total, from {@code BuildMetrics} or
  *     the profile
- * @param bazelComponents the components Bazel listed, in its order
+ * @param bazelComponents any already-loaded components Bazel listed, in its order
+ * @param bazelComponentCount exact number of components Bazel listed; the UI may page
+ *     them instead of retaining them here
  * @param derived this application's computation over the action graph, absent
  *     when there is no graph to compute it over
+ * @param derivedUnavailableReason exact reason the derived path is absent,
+ *     when the collector could determine one
  */
 public record CriticalPaths(
         Measured<Long> bazelReportedMicros,
         List<BazelComponent> bazelComponents,
-        Optional<CriticalPath.Result> derived) {
+        long bazelComponentCount,
+        Optional<CriticalPath.Result> derived,
+        Optional<String> derivedUnavailableReason) {
 
     public CriticalPaths {
         Objects.requireNonNull(bazelReportedMicros, "bazelReportedMicros");
+        bazelReportedMicros.value().ifPresent(value -> {
+            if (value < 0) {
+                throw new IllegalArgumentException(
+                        "Bazel-reported critical-path duration must be nonnegative");
+            }
+        });
         bazelComponents = List.copyOf(bazelComponents);
+        if (bazelComponentCount < 0) {
+            throw new IllegalArgumentException(
+                    "Bazel critical-path component count must be nonnegative");
+        }
+        if (bazelComponentCount < bazelComponents.size()) {
+            throw new IllegalArgumentException(
+                    "Bazel critical-path component count cannot be smaller than the loaded list");
+        }
         Objects.requireNonNull(derived, "derived");
+        Objects.requireNonNull(derivedUnavailableReason, "derivedUnavailableReason");
+        if (derived.isPresent()) {
+            derivedUnavailableReason = Optional.empty();
+        }
+    }
+
+    /** Compatibility constructor for callers that already loaded every Bazel component. */
+    public CriticalPaths(
+            Measured<Long> bazelReportedMicros,
+            List<BazelComponent> bazelComponents,
+            Optional<CriticalPath.Result> derived,
+            Optional<String> derivedUnavailableReason) {
+        this(
+                bazelReportedMicros,
+                bazelComponents,
+                bazelComponents.size(),
+                derived,
+                derivedUnavailableReason);
+    }
+
+    /** Compatibility constructor for callers that have no more specific absence reason. */
+    public CriticalPaths(
+            Measured<Long> bazelReportedMicros,
+            List<BazelComponent> bazelComponents,
+            Optional<CriticalPath.Result> derived) {
+        this(bazelReportedMicros, bazelComponents, derived, Optional.empty());
     }
 
     /** Neither path is available. */
@@ -60,7 +106,8 @@ public record CriticalPaths(
         return new CriticalPaths(
                 Measured.unknown(DataSource.PROFILE, Completeness.UNAVAILABLE, whyBazelMissing),
                 List.of(),
-                Optional.empty());
+                Optional.empty(),
+                Optional.of("no imported action graph is available"));
     }
 
     /** One entry of Bazel's own critical path, exactly as Bazel worded it. */
@@ -70,6 +117,12 @@ public record CriticalPaths(
         public BazelComponent {
             Objects.requireNonNull(description, "description");
             Objects.requireNonNull(durationMicros, "durationMicros");
+            if (ordinal < 0) {
+                throw new IllegalArgumentException("Bazel component ordinal must be nonnegative");
+            }
+            if (durationMicros.isPresent() && durationMicros.getAsLong() < 0) {
+                throw new IllegalArgumentException("Bazel component duration must be nonnegative");
+            }
         }
     }
 
@@ -90,30 +143,30 @@ public record CriticalPaths(
                 .orElse("Visualizer-computed dependency critical path");
     }
 
-    /** True when both paths have a number, which is the only case worth comparing. */
+    /** True when both paths have comparable numbers with complete dependency timing. */
     public boolean bothAvailable() {
-        return bazelReportedMicros.isKnown()
+        return bazelReportedMicros.isCompleteObservation()
                 && derived.filter(result -> result.outcome() == CriticalPath.Outcome.COMPUTED)
+                        .filter(result -> !result.isPartial())
                         .isPresent();
     }
 
     /**
-     * Bazel's total minus the derived one, when both exist.
+     * Bazel's total minus the derived one, when both exist and all graph nodes were timed.
      *
      * <p>Deliberately signed and deliberately not called a "difference in
-     * accuracy". A positive gap means the build took longer than its
-     * dependencies required, which points at scheduling; a negative one means
-     * the derived path is longer than what Bazel measured, which happens when
-     * the graph contains actions this invocation did not execute — a cache hit
-     * has a dependency edge and no execution time — and is a statement about
-     * coverage rather than about the build.
+     * accuracy". A partial dependency result is deliberately not compared:
+     * its missing durations are part of the numeric difference, so presenting
+     * that value as scheduling or wait time would manufacture an explanation
+     * from absent data.
      */
     public OptionalLong schedulingGapMicros() {
         if (!bothAvailable()) {
             return OptionalLong.empty();
         }
-        return OptionalLong.of(
-                bazelReportedMicros.value().orElseThrow() - derived.orElseThrow().makespanMicros());
+        return OptionalLong.of(Math.subtractExact(
+                bazelReportedMicros.value().orElseThrow(),
+                derived.orElseThrow().makespanMicros()));
     }
 
     /**
@@ -127,22 +180,36 @@ public record CriticalPaths(
         StringBuilder text = new StringBuilder();
         text.append(bazelDisplayName()).append(": ");
         if (bazelReportedMicros.isKnown()) {
-            text.append(bazelReportedMicros.value().orElseThrow() / 1000).append(" ms across ")
-                    .append(bazelComponents.size()).append(" components");
+            text.append(MetricFormat.duration(bazelReportedMicros.value().orElseThrow()));
+            if (bazelComponentCount == 0) {
+                text.append("; ").append(bazelReportedMicros.warning()
+                        .orElse("the component breakdown is unavailable"));
+            } else {
+                text.append(" across ").append(MetricFormat.count(bazelComponentCount))
+                        .append(" components");
+                bazelReportedMicros.warning()
+                        .ifPresent(warning -> text.append("; ").append(warning));
+            }
         } else {
             text.append("not reported")
                     .append(bazelReportedMicros.warning().map(why -> " (" + why + ")").orElse(""));
+            if (bazelComponentCount > 0) {
+                text.append("; ").append(MetricFormat.count(bazelComponentCount))
+                        .append(" components were recorded, but their total is unavailable");
+            }
         }
         text.append(". ").append(derivedDisplayName()).append(": ");
         if (derived.isEmpty()) {
-            text.append("not computed — there is no imported action graph to compute it over");
+            text.append("not computed — ")
+                    .append(derivedUnavailableReason.orElse(
+                            "there is no imported action graph to compute it over"));
         } else {
             text.append(derived.orElseThrow().describe());
         }
         if (bothAvailable()) {
             long gap = schedulingGapMicros().orElseThrow();
-            text.append(" The two differ by ").append(Math.abs(gap) / 1000)
-                    .append(" ms; they measure different things and a difference is expected.");
+            text.append(" The two differ by ").append(MetricFormat.duration(Math.abs(gap)))
+                    .append("; they measure different things and a difference is expected.");
         }
         return text.toString();
     }

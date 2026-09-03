@@ -4,15 +4,19 @@ import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
 import com.holtherndon.bazelviz.analysis.CriticalPaths;
 import com.holtherndon.bazelviz.analysis.MetricFormat;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
+import com.holtherndon.bazelviz.ui.lifecycle.ExecutorClose;
 import com.holtherndon.bazelviz.ui.metrics.MetricsService;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.ResponsiveGridLayout;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
-import com.holtherndon.bazelviz.ui.theme.WrapLayout;
+import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
-import java.awt.FlowLayout;
+import java.awt.CardLayout;
+import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
@@ -23,15 +27,19 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.swing.BorderFactory;
-import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import org.slf4j.Logger;
@@ -71,47 +79,35 @@ public final class OverviewPanel extends JPanel {
 
     private final Duration refreshInterval;
 
-    private final JLabel headline = new JLabel(" ");
-    private final JLabel subhead = new JLabel(" ");
-    // WrapLayout, not GridLayout: a fixed 4-column grid sizes every column to
-    // its widest cell's preferred width, so one tile with a long note (a
-    // findings caveat, a "not reported by this build") sets the width of all
-    // four columns no matter how narrow the window is. WrapLayout keeps each
-    // tile at its own width and wraps to another row instead — see its
-    // javadoc, and ScrollableViewport below, for why both halves are needed.
-    private final JPanel tiles = new JPanel(new WrapLayout(FlowLayout.LEFT, 12, 12));
-    private final JPanel details = new JPanel();
+    private final JTextArea headline = WrappingLabel.create(" ");
+    private final JTextArea subhead = WrappingLabel.create(" ");
+
+    /** One responsive summary grid, regardless of which of its two reads supplied a card. */
+    private final JPanel tiles = new JPanel(new ResponsiveGridLayout(4, 210, 12, 12));
+    private final List<JPanel> snapshotTiles = new ArrayList<>();
+    private final List<JPanel> metricTileCards = new ArrayList<>();
+
+    /** Stable detail rows that split only when both columns remain comfortably readable. */
+    private final JPanel details =
+            new JPanel(new ResponsiveGridLayout(2, 600, 12, 12));
+    private JPanel sessionDetail;
+    private JPanel bazelDetail;
+    private JPanel mnemonicDetail;
+    private JPanel completenessDetail;
     private final JLabel emptyLabel =
             new JLabel("No session is open.", SwingConstants.CENTER);
 
-    private ScheduledExecutorService refresher;
-    private SessionSource source;
+    /** Invalidates results independently of how quickly replacement workers start. */
+    private final AtomicLong generation = new AtomicLong();
 
-    /**
-     * Written by the refresher thread and read by the EDT during close, so it
-     * is volatile. It used to be a plain field: a close arriving while
-     * {@code openEntityReader()} was still in flight read null and left the
-     * reader open for the life of the process.
-     */
-    private volatile EntityReader reader;
+    /** The reader, timer and render state owned by exactly one call to {@link #openSession}. */
+    private volatile RefreshContext activeContext;
 
-    /** Cleared once a refresh succeeds, so only the first failure is shown. */
-    private volatile boolean everRendered;
+    /** The most recently detached context's close, retained only until a newer one detaches. */
+    private CompletableFuture<Void> detachedClose = CompletableFuture.completedFuture(null);
 
-    /**
-     * The scheduled refresh, cancelled once there is nothing left to see.
-     *
-     * <p>A session whose stream reached its end marker cannot change, so
-     * re-counting it every two seconds for as long as the window is open is
-     * work with a guaranteed answer. The timer stops itself when the numbers
-     * stop being able to move.
-     */
-    private volatile java.util.concurrent.ScheduledFuture<?> scheduled;
     private java.util.function.Consumer<OverviewSnapshot> snapshotListener = snapshot -> { };
     private java.util.function.Consumer<NavEntry> navigate = entry -> { };
-    private final JPanel metricTiles = new JPanel(new WrapLayout(FlowLayout.LEFT, 12, 12));
-    private final JPanel metricDetail = new JPanel();
-
     /**
      * The scroll pane's view. A plain {@code JPanel} here would hand the
      * scroll pane its own preferred width, which is exactly what let the
@@ -122,6 +118,11 @@ public final class OverviewPanel extends JPanel {
      * is actually given one.
      */
     private final ScrollableViewport body = new ScrollableViewport(new BorderLayout());
+    private final JScrollPane scroll;
+    private final JPanel dashboard = new JPanel();
+    private final CardLayout contentLayout = new CardLayout();
+    private final JPanel content = new JPanel(contentLayout);
+    private final JPanel emptyState = new JPanel(new BorderLayout());
 
     public OverviewPanel() {
         this(REFRESH_INTERVAL);
@@ -136,8 +137,6 @@ public final class OverviewPanel extends JPanel {
         super(new BorderLayout());
         this.refreshInterval = Objects.requireNonNull(refreshInterval, "refreshInterval");
 
-        PlainText.disableHtml(headline);
-        PlainText.disableHtml(subhead);
         PlainText.disableHtml(emptyLabel);
         headline.setFont(headline.getFont().deriveFont(Font.BOLD, headline.getFont().getSize() + 4f));
         subhead.setEnabled(false);
@@ -151,28 +150,33 @@ public final class OverviewPanel extends JPanel {
         header.add(subhead);
 
         tiles.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
-        metricTiles.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
-        metricDetail.setLayout(new BoxLayout(metricDetail, BoxLayout.Y_AXIS));
-        metricDetail.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
-        details.setLayout(new BoxLayout(details, BoxLayout.Y_AXIS));
         details.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
 
-        JPanel stacked = new JPanel();
-        stacked.setLayout(new BoxLayout(stacked, BoxLayout.Y_AXIS));
-        stacked.add(tiles);
-        stacked.add(metricTiles);
-        stacked.add(metricDetail);
+        dashboard.setLayout(new BoxLayout(dashboard, BoxLayout.Y_AXIS));
+        header.setAlignmentX(LEFT_ALIGNMENT);
+        tiles.setAlignmentX(LEFT_ALIGNMENT);
+        details.setAlignmentX(LEFT_ALIGNMENT);
+        header.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
+        tiles.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
+        details.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
+        dashboard.add(header);
+        dashboard.add(tiles);
+        dashboard.add(details);
 
-        body.add(stacked, BorderLayout.NORTH);
-        body.add(details, BorderLayout.CENTER);
+        // The summary is the page, not a modal card. Let it use the viewport
+        // instead of manufacturing wide gutters on a large monitor.
+        body.add(dashboard, BorderLayout.NORTH);
 
-        JScrollPane scroll = new JScrollPane(body);
+        scroll = new JScrollPane(body);
         scroll.setBorder(BorderFactory.createEmptyBorder());
+        scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
 
         emptyLabel.setEnabled(false);
-        add(header, BorderLayout.NORTH);
-        add(scroll, BorderLayout.CENTER);
+        emptyState.add(emptyLabel, BorderLayout.CENTER);
+        content.add(scroll, "dashboard");
+        content.add(emptyState, "empty");
+        add(content, BorderLayout.CENTER);
         showEmpty();
     }
 
@@ -209,29 +213,40 @@ public final class OverviewPanel extends JPanel {
      */
     public void showMetrics(MetricsService.Result result) {
         Objects.requireNonNull(result, "result");
+        showDashboard();
         CriticalPaths paths = result.metrics().invocation().criticalPaths();
-        metricTiles.removeAll();
+        metricTileCards.clear();
         // Two cards, never one. Plan 24 requires the two critical paths to stay
         // distinct, and a single "Critical path" card would be the exact
         // collapse it forbids.
-        metricTiles.add(tile("Bazel's critical path",
+        metricTileCards.add(tile(paths.bazelDisplayName(),
                 paths.bazelReportedMicros().value()
                         .map(EntityFormat::duration).orElse(EntityFormat.UNKNOWN),
                 paths.bazelReportedMicros().isKnown()
-                        ? paths.bazelComponents().size() + " components"
+                        ? paths.bazelReportedMicros().warning().orElseGet(() ->
+                                paths.bazelComponentCount() == 0
+                                        ? "component breakdown unavailable"
+                                        : MetricFormat.count(paths.bazelComponentCount())
+                                                + " components")
                         : "not reported by this build",
-                NavEntry.TIMELINE));
-        metricTiles.add(tile("Derived dependency path",
+                NavEntry.CRITICAL_PATH));
+        metricTileCards.add(tile(paths.derivedDisplayName(),
                 paths.derived()
+                        .filter(derived -> derived.outcome()
+                                == com.holtherndon.bazelviz.analysis.CriticalPath.Outcome.COMPUTED)
                         .map(derived -> EntityFormat.duration(derived.makespanMicros()))
                         .orElse(EntityFormat.UNKNOWN),
                 paths.derived()
-                        .map(derived -> derived.isPartial()
-                                ? "a lower bound, some actions untimed"
-                                : derived.path().size() + " actions")
-                        .orElse("no imported action graph"),
-                NavEntry.GRAPH));
-        metricTiles.add(tile("Peak concurrency",
+                        .map(derived -> derived.outcome()
+                                == com.holtherndon.bazelviz.analysis.CriticalPath.Outcome.COMPUTED
+                                        ? (derived.isPartial()
+                                                ? "a lower bound, some actions untimed"
+                                                : derived.path().size() + " actions")
+                                        : derived.describe())
+                        .orElseGet(() -> paths.derivedUnavailableReason()
+                                .orElse("no confirmed action graph")),
+                NavEntry.CRITICAL_PATH));
+        metricTileCards.add(tile("Peak concurrency",
                 result.metrics().invocation().concurrency()
                         .map(sweep -> EntityFormat.count(sweep.peakActive()))
                         .orElse(EntityFormat.UNKNOWN),
@@ -241,14 +256,14 @@ public final class OverviewPanel extends JPanel {
                         .orElse("nothing was timed"),
                 NavEntry.TIMELINE));
         long incomplete = result.metrics().invocation().coverage().incomplete().size();
-        metricTiles.add(tile("Findings",
+        metricTileCards.add(tile("Findings",
                 EntityFormat.count(result.findings().size()),
                 incomplete == 0
                         ? "every source complete"
                         : incomplete + " coverage gaps to read them against",
                 NavEntry.FINDINGS));
+        rebuildTiles();
 
-        metricDetail.removeAll();
         List<String[]> rows = new java.util.ArrayList<>();
         rows.add(new String[] {"Duration source",
                 result.metrics().durationSource().description()});
@@ -256,46 +271,82 @@ public final class OverviewPanel extends JPanel {
             rows.add(new String[] {coverage.name(),
                     coverage.describe().substring(coverage.name().length() + 2)});
         }
-        metricDetail.add(section("Data completeness", rows));
+        completenessDetail = section("Data completeness", rows);
+        rebuildDetails();
         revalidate();
         repaint();
     }
 
     /** Opens a session and starts refreshing. Returns immediately. */
-    public void openSession(SessionSource newSource) {
+    public synchronized void openSession(SessionSource newSource) {
         Objects.requireNonNull(newSource, "newSource");
         closeSession();
-        source = newSource;
         headline.setText("Reading…");
         subhead.setText(" ");
-        refresher = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        showDashboard();
+
+        long mine = generation.incrementAndGet();
+        ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "bbv-overview");
             thread.setDaemon(true);
             return thread;
         });
-        everRendered = false;
-        ScheduledExecutorService running = refresher;
-        running.execute(() -> {
-            try {
-                reader = newSource.openEntityReader();
-            } catch (RuntimeException failure) {
-                log.error("could not open the overview", failure);
-                SwingUtilities.invokeLater(() -> headline.setText(failure.getMessage()));
+        RefreshContext context = new RefreshContext(mine, newSource, worker);
+        activeContext = context;
+        worker.execute(() -> startRefreshing(context));
+    }
+
+    /** Opens this context's reader and installs its timer without touching another context. */
+    private void startRefreshing(RefreshContext context) {
+        try {
+            context.reader = Objects.requireNonNull(
+                    context.source.openEntityReader(), "openEntityReader returned null");
+            if (!owns(context)) {
+                closeStaleReader(context);
                 return;
             }
-            refreshOnce(newSource);
-            scheduled = running.scheduleWithFixedDelay(
-                    () -> refreshOnce(newSource),
+            refreshOnce(context);
+            if (!owns(context)) {
+                closeStaleReader(context);
+                return;
+            }
+            if (context.finished) {
+                return;
+            }
+            context.scheduled = context.worker.scheduleWithFixedDelay(
+                    () -> refreshOnce(context),
                     refreshInterval.toMillis(),
                     refreshInterval.toMillis(),
                     TimeUnit.MILLISECONDS);
-        });
+            // Closing or observing the final event can race the assignment above.
+            if (!owns(context) || context.finished) {
+                stopRefreshing(context);
+                if (!owns(context)) {
+                    closeStaleReader(context);
+                }
+            }
+        } catch (RuntimeException failure) {
+            if (!owns(context)) {
+                closeStaleReader(context);
+                return;
+            }
+            log.error("could not open the overview", failure);
+            SwingUtilities.invokeLater(() -> {
+                if (owns(context)) {
+                    headline.setText(failure.getMessage());
+                }
+            });
+        }
     }
 
-    /** Cancels the periodic refresh without touching the reader. */
-    private void stopRefreshing() {
-        java.util.concurrent.ScheduledFuture<?> running = scheduled;
-        scheduled = null;
+    private boolean owns(RefreshContext context) {
+        return activeContext == context && generation.get() == context.generation;
+    }
+
+    /** Cancels this context's periodic refresh without touching another context. */
+    private static void stopRefreshing(RefreshContext context) {
+        ScheduledFuture<?> running = context.scheduled;
+        context.scheduled = null;
         if (running != null) {
             running.cancel(false);
         }
@@ -303,64 +354,111 @@ public final class OverviewPanel extends JPanel {
 
     /** Stops refreshing and releases the reader, off the EDT. */
     public void closeSession() {
-        stopRefreshing();
-        ScheduledExecutorService stopping = refresher;
-        EntityReader closing = reader;
-        source = null;
-        refresher = null;
-        reader = null;
+        closeSessionAsync().whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                log.warn("overview session did not close cleanly", failure);
+            }
+        });
+    }
+
+    /** Detaches immediately and completes after this refresh context has stopped. */
+    public synchronized CompletionStage<Void> closeSessionAsync() {
+        RefreshContext closing = activeContext;
+        activeContext = null;
+        generation.incrementAndGet();
         showEmpty();
-        if (stopping == null) {
-            return;
+        if (closing == null) {
+            return detachedClose;
         }
-        Thread closer = new Thread(() -> {
-            stopping.shutdownNow();
-            try {
-                stopping.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
+        closing.finished = true;
+        stopRefreshing(closing);
+        detachedClose = closeContext(closing).toCompletableFuture();
+        return detachedClose;
+    }
+
+    private static CompletionStage<Void> closeContext(RefreshContext context) {
+        CompletionStage<Void> workerStopped =
+                ExecutorClose.cancelAsync(context.worker, "bbv-overview");
+        // Do not close JDBC beneath an operation that ignored interruption. A
+        // failed stage reports the bounded leak and deliberately skips this continuation.
+        return workerStopped.thenCompose(ignored -> closeReader(context));
+    }
+
+    /** Closes a late reader even when the earlier bounded worker close has already failed. */
+    private static void closeStaleReader(RefreshContext context) {
+        closeReader(context).whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                log.warn("stale overview reader did not close cleanly", failure);
             }
-            if (closing != null) {
-                closing.close();
+        });
+    }
+
+    /** Claims this context's reader once and shares the same asynchronous close with all callers. */
+    private static CompletionStage<Void> closeReader(RefreshContext context) {
+        synchronized (context) {
+            if (context.readerClose == null) {
+                EntityReader closingReader = context.reader;
+                context.readerClose = closingReader == null
+                        ? CompletableFuture.completedFuture(null)
+                        : ViewClose.runAsync(
+                                "bbv-overview-reader-close", closingReader::close)
+                                .toCompletableFuture();
             }
-        }, "bbv-overview-close");
-        closer.setDaemon(true);
-        closer.start();
+            return context.readerClose;
+        }
+    }
+
+    private static final class RefreshContext {
+
+        private final long generation;
+        private final SessionSource source;
+        private final ScheduledExecutorService worker;
+        private volatile EntityReader reader;
+        private CompletableFuture<Void> readerClose;
+        private volatile ScheduledFuture<?> scheduled;
+        private volatile boolean everRendered;
+        private volatile boolean finished;
+
+        private RefreshContext(
+                long generation, SessionSource source, ScheduledExecutorService worker) {
+            this.generation = generation;
+            this.source = source;
+            this.worker = worker;
+        }
     }
 
     /** Renders a snapshot. Must be called on the EDT; visible for testing. */
     public void show(OverviewSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot");
+        showDashboard();
         headline.setText(headlineFor(snapshot));
         subhead.setText(subheadFor(snapshot));
         snapshotListener.accept(snapshot);
 
-        tiles.removeAll();
+        snapshotTiles.clear();
         // Every target analysis reported, not only the ones that completed. A
         // build interrupted during analysis has configured targets and no
         // completed ones -- six and zero in one measured interrupt -- so a tile
         // counting completions would show that build as having no targets.
-        tiles.add(tile("Targets", EntityFormat.count(snapshot.targets()), targetsNote(snapshot),
+        snapshotTiles.add(tile("Targets", EntityFormat.count(snapshot.targets()), targetsNote(snapshot),
                 NavEntry.TARGETS));
         // "Executed", because a cache hit publishes no event and is therefore
         // not here. The unqualified word would name a total the source cannot
         // support.
-        tiles.add(tile("Actions executed", EntityFormat.count(snapshot.actions()),
+        snapshotTiles.add(tile("Actions executed", EntityFormat.count(snapshot.actions()),
                 snapshot.actionsFailed() + " failed", NavEntry.ACTIONS));
-        tiles.add(tile("Tests", EntityFormat.count(snapshot.tests()),
+        snapshotTiles.add(tile("Tests", EntityFormat.count(snapshot.tests()),
                 snapshot.testsFailed() + " not passing", NavEntry.TESTS));
         // No artifacts view exists in plan 17.1's navigation, so this card has
         // nowhere to send a reader and does not pretend to.
-        tiles.add(tile("Artifacts", EntityFormat.count(snapshot.artifacts()), " "));
+        snapshotTiles.add(tile("Artifacts", EntityFormat.count(snapshot.artifacts()), " "));
+        rebuildTiles();
 
-        details.removeAll();
-        details.add(section("This session counted", sessionRows(snapshot)));
-        details.add(Box.createVerticalStrut(12));
-        details.add(section("Bazel reported", bazelRows(snapshot)));
-        if (!snapshot.topMnemonics().isEmpty()) {
-            details.add(Box.createVerticalStrut(12));
-            details.add(section(mnemonicHeading(snapshot), mnemonicRows(snapshot)));
-        }
+        sessionDetail = section("This session counted", sessionRows(snapshot));
+        bazelDetail = section("Bazel reported", bazelRows(snapshot));
+        mnemonicDetail = snapshot.topMnemonics().isEmpty()
+                ? null : section(mnemonicHeading(snapshot), mnemonicRows(snapshot));
+        rebuildDetails();
         revalidate();
         repaint();
     }
@@ -368,27 +466,44 @@ public final class OverviewPanel extends JPanel {
     private void showEmpty() {
         headline.setText(" ");
         subhead.setText(" ");
+        snapshotTiles.clear();
+        metricTileCards.clear();
         tiles.removeAll();
-        metricTiles.removeAll();
-        metricDetail.removeAll();
+        sessionDetail = null;
+        bazelDetail = null;
+        mnemonicDetail = null;
+        completenessDetail = null;
         details.removeAll();
-        JPanel wrapper = new JPanel(new BorderLayout());
-        wrapper.add(emptyLabel, BorderLayout.CENTER);
-        details.add(wrapper);
+        contentLayout.show(content, "empty");
         revalidate();
         repaint();
     }
 
-    private void refreshOnce(SessionSource opened) {
-        EntityReader current = reader;
+    private void showDashboard() {
+        contentLayout.show(content, "dashboard");
+    }
+
+    private void refreshOnce(RefreshContext context) {
+        if (!owns(context)) {
+            closeStaleReader(context);
+            return;
+        }
+        if (context.finished) {
+            return;
+        }
+        EntityReader current = context.reader;
         if (current == null) {
             return;
         }
         try {
             OverviewSnapshot snapshot = current.overview();
+            if (!owns(context)) {
+                closeStaleReader(context);
+                return;
+            }
             SwingUtilities.invokeLater(() -> {
-                if (source == opened) {
-                    everRendered = true;
+                if (owns(context)) {
+                    context.everRendered = true;
                     show(snapshot);
                 }
             });
@@ -396,7 +511,8 @@ public final class OverviewPanel extends JPanel {
                 // The stream ended, so every number here is final. Aborted
                 // events arrive after buildFinished and the flag comes after
                 // them, so this is the first moment nothing more can arrive.
-                stopRefreshing();
+                context.finished = true;
+                stopRefreshing(context);
             }
         } catch (RuntimeException failure) {
             // A refresh failing mid-capture is not fatal: the next tick tries
@@ -404,9 +520,13 @@ public final class OverviewPanel extends JPanel {
             // But the *first* one has nothing to preserve, and staying silent
             // left the panel reading "Reading…" for ever with no explanation.
             log.warn("overview refresh failed", failure);
-            if (!everRendered) {
+            if (!owns(context)) {
+                closeStaleReader(context);
+                return;
+            }
+            if (!context.everRendered && owns(context)) {
                 SwingUtilities.invokeLater(() -> {
-                    if (source == opened && !everRendered) {
+                    if (owns(context) && !context.everRendered) {
                         headline.setText("The overview could not be read.");
                         subhead.setText(failure.getMessage());
                     }
@@ -496,7 +616,8 @@ public final class OverviewPanel extends JPanel {
         rows.add(new String[] {"Bazel CPU time", millis(snapshot.bazelCpuMillis())});
         rows.add(new String[] {"Analysis phase", millis(snapshot.analysisPhaseMillis())});
         rows.add(new String[] {"Execution phase", millis(snapshot.executionPhaseMillis())});
-        rows.add(new String[] {"Critical path", EntityFormat.duration(snapshot.criticalPathMicros())});
+        rows.add(new String[] {"Bazel-reported critical path",
+                EntityFormat.duration(snapshot.criticalPathMicros())});
         return rows;
     }
 
@@ -535,6 +656,28 @@ public final class OverviewPanel extends JPanel {
                 : EntityFormat.duration(value.getAsLong() * 1_000L);
     }
 
+    private void rebuildTiles() {
+        tiles.removeAll();
+        snapshotTiles.forEach(tiles::add);
+        metricTileCards.forEach(tiles::add);
+    }
+
+    private void rebuildDetails() {
+        details.removeAll();
+        if (sessionDetail != null) {
+            details.add(sessionDetail);
+        }
+        if (bazelDetail != null) {
+            details.add(bazelDetail);
+        }
+        if (completenessDetail != null) {
+            details.add(completenessDetail);
+        }
+        if (mnemonicDetail != null) {
+            details.add(mnemonicDetail);
+        }
+    }
+
     private JPanel tile(String name, String value, String note) {
         return tile(name, value, note, null);
     }
@@ -557,22 +700,13 @@ public final class OverviewPanel extends JPanel {
         panel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createEtchedBorder(),
                 BorderFactory.createEmptyBorder(8, 10, 8, 10)));
-        if (destination != null) {
-            panel.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
-            panel.setToolTipText(PlainText.tooltip("Open " + destination.title()));
-            panel.addMouseListener(new java.awt.event.MouseAdapter() {
-                @Override
-                public void mouseClicked(java.awt.event.MouseEvent event) {
-                    navigate.accept(destination);
-                }
-            });
-        }
-        JLabel nameLabel = PlainText.disableHtml(new JLabel(name));
+        JTextArea nameLabel = WrappingLabel.create(name);
+        nameLabel.setFont(nameLabel.getFont().deriveFont(Font.BOLD));
         nameLabel.setEnabled(false);
         JLabel valueLabel = PlainText.disableHtml(new JLabel(value));
         valueLabel.setFont(valueLabel.getFont().deriveFont(
                 Font.BOLD, valueLabel.getFont().getSize() + 8f));
-        JLabel noteLabel = PlainText.disableHtml(new JLabel(note));
+        JTextArea noteLabel = WrappingLabel.create(note);
         noteLabel.setEnabled(false);
         nameLabel.setAlignmentX(LEFT_ALIGNMENT);
         valueLabel.setAlignmentX(LEFT_ALIGNMENT);
@@ -580,7 +714,53 @@ public final class OverviewPanel extends JPanel {
         panel.add(nameLabel);
         panel.add(valueLabel);
         panel.add(noteLabel);
+        if (destination != null) {
+            installNavigation(
+                    panel, nameLabel, valueLabel, noteLabel, name, value, destination);
+        }
         return panel;
+    }
+
+    /** Makes the whole visible card, including its child labels, one accessible action. */
+    private void installNavigation(
+            JPanel panel,
+            javax.swing.JComponent nameLabel,
+            javax.swing.JComponent valueLabel,
+            javax.swing.JComponent noteLabel,
+            String name,
+            String value,
+            NavEntry destination) {
+        String help = "Open " + destination.title();
+        Runnable open = () -> navigate.accept(destination);
+        java.awt.event.MouseAdapter opener = new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseClicked(java.awt.event.MouseEvent event) {
+                panel.requestFocusInWindow();
+                open.run();
+            }
+        };
+        java.awt.Cursor hand = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR);
+        for (javax.swing.JComponent target :
+                List.of(panel, nameLabel, valueLabel, noteLabel)) {
+            target.setCursor(hand);
+            target.setToolTipText(PlainText.tooltip(help));
+            target.addMouseListener(opener);
+        }
+
+        panel.setFocusable(true);
+        panel.getAccessibleContext().setAccessibleName(name + ": " + value);
+        panel.getAccessibleContext().setAccessibleDescription(help);
+        String action = "open-card";
+        panel.getInputMap(WHEN_FOCUSED).put(
+                javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, 0), action);
+        panel.getInputMap(WHEN_FOCUSED).put(
+                javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_SPACE, 0), action);
+        panel.getActionMap().put(action, new javax.swing.AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent event) {
+                open.run();
+            }
+        });
     }
 
     private static JPanel section(String heading, List<String[]> rows) {
@@ -589,21 +769,25 @@ public final class OverviewPanel extends JPanel {
         panel.setAlignmentX(LEFT_ALIGNMENT);
         GridBagConstraints name = new GridBagConstraints();
         name.gridx = 0;
-        name.anchor = GridBagConstraints.WEST;
+        name.weightx = 0.38;
+        name.anchor = GridBagConstraints.NORTHWEST;
+        name.fill = GridBagConstraints.HORIZONTAL;
         name.insets = new Insets(1, 4, 1, 12);
         GridBagConstraints value = new GridBagConstraints();
         value.gridx = 1;
-        value.weightx = 1;
-        value.anchor = GridBagConstraints.WEST;
+        value.weightx = 0.62;
+        value.anchor = GridBagConstraints.NORTHWEST;
         value.fill = GridBagConstraints.HORIZONTAL;
         value.insets = new Insets(1, 0, 1, 4);
         for (int row = 0; row < rows.size(); row++) {
             name.gridy = row;
             value.gridy = row;
-            JLabel nameLabel = PlainText.disableHtml(new JLabel(rows.get(row)[0]));
+            JTextArea nameLabel = WrappingLabel.create(rows.get(row)[0]);
             nameLabel.setEnabled(false);
             panel.add(nameLabel, name);
-            panel.add(PlainText.disableHtml(new JLabel(rows.get(row)[1])), value);
+            JTextArea valueLabel = WrappingLabel.create(rows.get(row)[1]);
+            valueLabel.setToolTipText(PlainText.tooltip(rows.get(row)[1]));
+            panel.add(valueLabel, value);
         }
         return panel;
     }
@@ -620,7 +804,8 @@ public final class OverviewPanel extends JPanel {
 
     /** Visible for testing: whether a session is attached. */
     public Optional<SessionSource> attachedSession() {
-        return Optional.ofNullable(source);
+        RefreshContext context = activeContext;
+        return context == null ? Optional.empty() : Optional.of(context.source);
     }
 
     /**
@@ -631,5 +816,30 @@ public final class OverviewPanel extends JPanel {
      */
     public ScrollableViewport contentForTest() {
         return body;
+    }
+
+    /** Visible for testing: the responsive summary-card grid. */
+    JPanel tilesForTest() {
+        return tiles;
+    }
+
+    /** Visible for testing: the responsive detail-card grid. */
+    JPanel detailsForTest() {
+        return details;
+    }
+
+    /** Visible for testing: the real scroll pane used at narrow widths. */
+    JScrollPane scrollForTest() {
+        return scroll;
+    }
+
+    /** Visible for testing: the dashboard that fills the scroll viewport. */
+    JPanel dashboardForTest() {
+        return dashboard;
+    }
+
+    /** Visible for testing: the true full-pane empty state, not a dashboard card. */
+    JPanel emptyStateForTest() {
+        return emptyState;
     }
 }

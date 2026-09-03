@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
+import com.holtherndon.bazelviz.format.session.SessionManager;
+import com.holtherndon.bazelviz.format.session.SessionManifest;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.testsupport.bazel.BazelBinary;
@@ -69,18 +71,51 @@ class RealBazelGraphTest {
         Path raw = ManagedSessionLayout.at(result.sessionRoot()).rawDirectory();
         assertThat(Files.size(raw.resolve("aquery.proto"))).isPositive();
         assertThat(Files.size(raw.resolve("cquery.proto"))).isPositive();
+        SessionManifest manifest = new SessionManager(directory.resolve("sessions"), "test")
+                .readManifest(result.sessionRoot());
+        assertThat(manifest.auxiliaryCommands()).hasValueSatisfying(commands -> {
+            assertThat(commands).anySatisfy(command -> {
+                assertThat(command.label()).isEqualTo("aquery");
+                assertThat(command.argv()).contains("--query_file=" + raw.resolve(
+                        com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner
+                                .AQUERY_EXPRESSION_FILE));
+            });
+            assertThat(commands).anySatisfy(command -> {
+                assertThat(command.label()).isEqualTo("cquery");
+                assertThat(command.argv()).contains("--query_file=" + raw.resolve(
+                        com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner
+                                .CQUERY_EXPRESSION_FILE));
+            });
+        });
+        assertThat(Files.readString(raw.resolve(
+                com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner
+                        .AQUERY_EXPRESSION_FILE)))
+                .isEqualTo("deps(set(\"//:t3\"))\n");
+        assertThat(Files.readString(raw.resolve(
+                com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner
+                        .CQUERY_EXPRESSION_FILE)))
+                .isEqualTo("deps(set(\"//:t3\"))\n");
 
         try (SessionDatabase database = open(result)) {
             Connection c = database.newReadConnection();
 
             assertThat(scalar(c, "SELECT count(*) FROM declared_actions")).isPositive();
-            assertThat(scalar(c, "SELECT count(*) FROM configured_target_nodes")).isPositive();
+            assertThat(scalar(c, "SELECT count(*) FROM configured_target_nodes"))
+                    .describedAs("cquery includes the configured dependency closure")
+                    .isGreaterThan(1);
+            assertThat(scalar(c, "SELECT count(*) FROM configured_target_nodes n"
+                    + " JOIN labels l ON l.id = n.label_id WHERE l.value = '//:t0'"))
+                    .describedAs("the leaf dependency appears in All Targets")
+                    .isPositive();
 
             // The whole point of the configuration check: this query analysed
             // the build that just ran, so it is the one state that permits the
             // graph to be called this build's (Q6).
             assertThat(text(c, "SELECT configuration_match FROM graph_sources"
                     + " WHERE kind = 'DECLARED_ACTIONS'")).isEqualTo("EXACT");
+            assertThat(scalar(c, "SELECT count(*) FROM graph_sources"
+                    + " WHERE target_scope = 'EXACT_BEP_TARGETS'"))
+                    .isEqualTo(2);
 
             // Declared actions link to executed ones, and some do not, because
             // neither population contains the other (Q7).
@@ -152,15 +187,73 @@ class RealBazelGraphTest {
         }
     }
 
+    @Test
+    @DisplayName("both graph queries reuse the wildcard targets Bazel actually selected")
+    void wildcardScopeUsesRecordedTargets(@TempDir Path directory) throws Exception {
+        Optional<Path> bazel = BazelBinary.find();
+        assumeTrue(bazel.isPresent(), BazelBinary::whyUnavailable);
+        BazelWorkspaceFixture workspace =
+                BazelWorkspaceFixture.withBrokenManualTarget(directory.resolve("ws"));
+
+        CaptureResult result = capture(
+                directory, bazel.orElseThrow(), workspace, Optional.empty(),
+                List.of("build", "//..."));
+
+        assertThat(result.buildSucceeded()).isTrue();
+        Path raw = ManagedSessionLayout.at(result.sessionRoot()).rawDirectory();
+        assertThat(Files.readString(raw.resolve(
+                com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner
+                        .AQUERY_EXPRESSION_FILE)))
+                .isEqualTo("deps(set(\"//:good\"))\n");
+        assertThat(Files.readString(raw.resolve(
+                com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlanner
+                        .CQUERY_EXPRESSION_FILE)))
+                .isEqualTo("deps(set(\"//:good\"))\n");
+        assertThat(Files.size(raw.resolve("aquery.proto"))).isPositive();
+        assertThat(Files.size(raw.resolve("cquery.proto"))).isPositive();
+        try (SessionDatabase database = open(result)) {
+            Connection connection = database.newReadConnection();
+            assertThat(text(connection, "SELECT state FROM graph_sources"
+                    + " WHERE kind = 'DECLARED_ACTIONS'"))
+                    .isEqualTo("SUCCEEDED");
+            assertThat(text(connection, "SELECT state FROM graph_sources"
+                    + " WHERE kind = 'CONFIGURED_TARGETS'"))
+                    .isEqualTo("SUCCEEDED");
+            assertThat(scalar(connection, "SELECT count(*) FROM graph_sources"
+                    + " WHERE target_scope = 'EXACT_BEP_TARGETS'"))
+                    .isEqualTo(2);
+            assertThat(scalar(connection, "SELECT count(*) FROM declared_actions d"
+                    + " JOIN labels l ON l.id = d.label_id"
+                    + " WHERE l.value = '//:manual_broken'"))
+                    .isZero();
+            assertThat(scalar(connection, "SELECT count(*) FROM configured_target_nodes n"
+                    + " JOIN labels l ON l.id = n.label_id WHERE l.value = '//:good'"))
+                    .isPositive();
+            assertThat(scalar(connection, "SELECT count(*) FROM configured_target_nodes n"
+                    + " JOIN labels l ON l.id = n.label_id"
+                    + " WHERE l.value = '//:manual_broken'"))
+                    .isZero();
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static CaptureResult capture(
             Path directory, Path bazel, BazelWorkspaceFixture workspace, Optional<String> version)
             throws Exception {
+        return capture(directory, bazel, workspace, version, List.of("build", "//:t3"));
+    }
+
+    private static CaptureResult capture(
+            Path directory,
+            Path bazel,
+            BazelWorkspaceFixture workspace,
+            Optional<String> version,
+            List<String> command) throws Exception {
         Path sessionsRoot = directory.resolve("sessions");
         CaptureRequest request = CaptureRequest.of(
                         sessionsRoot, "test", bazel.toString(), workspace.root(),
-                        List.of("build", "//..."))
+                        command)
                 .withPreset(CapturePreset.FULL_GRAPH_DIAGNOSTICS)
                 .withEnvironment(BazelBinary.VERSION_ENV, version);
         try (CaptureCoordinator coordinator = new CaptureCoordinator(

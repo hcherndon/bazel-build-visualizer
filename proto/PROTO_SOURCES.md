@@ -6,7 +6,7 @@ root so the repo-relative `import` statements inside the files resolve without
 rewriting. Do not edit these files by hand; bump the pins in
 `update-protos.sh` and re-run it to update.
 
-Retrieval date: 2026-08-21
+Retrieval date: 2026-09-02
 
 ## Bazel (build event protocol and friends)
 
@@ -50,6 +50,18 @@ Files (paths relative to `src/main/proto/`, identical to googleapis repo root):
 | `google/api/field_behavior.proto` | transitive: imported by `publish_build_event.proto` |
 | `google/api/http.proto` | transitive: imported by `annotations.proto` |
 | `google/api/launch_stage.proto` | transitive: imported by `client.proto` |
+
+## google/pprof (Starlark CPU profiles)
+
+- Source repo: https://github.com/google/pprof
+- Pinned commit: `ca85771921e4d23ebb56030bf1e488f215f26d36`
+- License: Apache-2.0 (copy: `third_party-licenses/PPROF_LICENSE`)
+
+Files (paths relative to `src/main/proto/`, using the declared proto package):
+
+| File | Notes |
+| --- | --- |
+| `perftools/profiles/profile.proto` | gzip pprof schema written by Bazel's `--starlark_cpu_profile` |
 
 ## Not vendored
 

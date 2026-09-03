@@ -10,7 +10,7 @@ class NavEntryTest {
 
     @Test
     void sidebarEntriesMatchThePlanInDisplayOrder() {
-        // Twelve, where plan 17.1 lists eleven. Console and Capture were
+        // Eighteen, where plan 17.1 lists eleven. Console and Capture were
         // merged into one Console card, Failures was renamed Errors, Query is
         // in no phase of the plan at all, and the old Graph card split into
         // Graph (the canvas) and Tree (the dependency trees); NavEntry's own
@@ -18,10 +18,16 @@ class NavEntryTest {
         assertThat(Arrays.stream(NavEntry.values()).map(NavEntry::title))
                 .containsExactly(
                         "Console",
+                        "Terminal",
+                        "Browse Repository",
                         "Overview",
                         "Timeline",
+                        "Critical Path",
+                        "Starlark Profile",
                         "Actions",
-                        "Targets",
+                        "Top Level Targets",
+                        "All Targets",
+                        "Configurations",
                         "Graph",
                         "Tree",
                         "Tests",
@@ -29,6 +35,25 @@ class NavEntryTest {
                         "Events",
                         "Findings",
                         "Query");
+    }
+
+    @Test
+    void executionToolsFollowConsole() {
+        assertThat(NavEntry.values()[0]).isEqualTo(NavEntry.BUILD);
+        assertThat(NavEntry.values()[1]).isEqualTo(NavEntry.TERMINAL);
+        assertThat(NavEntry.values()[2]).isEqualTo(NavEntry.REPOSITORY);
+        assertThat(NavEntry.TERMINAL.title()).isEqualTo("Terminal");
+        assertThat(NavEntry.REPOSITORY.title()).isEqualTo("Browse Repository");
+    }
+
+    @Test
+    void targetExplorersAreSeparateAndAdjacent() {
+        assertThat(NavEntry.TARGETS.title()).isEqualTo("Top Level Targets");
+        assertThat(NavEntry.ALL_TARGETS.title()).isEqualTo("All Targets");
+        assertThat(NavEntry.ALL_TARGETS.cardName()).isEqualTo("alltargets");
+        assertThat(NavEntry.ALL_TARGETS.ordinal()).isEqualTo(NavEntry.TARGETS.ordinal() + 1);
+        assertThat(NavEntry.CONFIGURATIONS.ordinal())
+                .isEqualTo(NavEntry.ALL_TARGETS.ordinal() + 1);
     }
 
     @Test
@@ -79,6 +104,10 @@ class NavEntryTest {
     void planFixedArrivalPhasesAreCorrect() {
         assertThat(NavEntry.OVERVIEW.arrivalPhase()).isEqualTo(3);
         assertThat(NavEntry.TIMELINE.arrivalPhase()).isEqualTo(6);
+        assertThat(NavEntry.CRITICAL_PATH.arrivalPhase()).isEqualTo(8);
+        assertThat(NavEntry.STARLARK_PROFILE.arrivalPhase()).isEqualTo(10);
+        assertThat(NavEntry.STARLARK_PROFILE.ordinal())
+                .isEqualTo(NavEntry.CRITICAL_PATH.ordinal() + 1);
         // One phase each, and they are different phases: plan 24 gives
         // Phase 5 the dependency and reverse-dependency trees, the
         // selected-action neighbourhood, the path-between-nodes and the

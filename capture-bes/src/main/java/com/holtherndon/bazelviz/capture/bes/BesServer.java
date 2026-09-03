@@ -3,7 +3,6 @@ package com.holtherndon.bazelviz.capture.bes;
 import io.grpc.Server;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import java.io.IOException;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
@@ -17,11 +16,13 @@ import org.slf4j.LoggerFactory;
  *
  * <h2>Loopback is enforced by construction</h2>
  *
- * <p>The bind address is {@link InetAddress#getLoopbackAddress()}, not a
- * configurable host. There is no setting that makes this listen on a LAN
- * interface, because "bind loopback only" is a v1 requirement and a setting is
- * something that gets changed. The port is asked of the operating system so two
- * captures can run at once.
+ * <p>The bind address is the explicit IPv4 loopback literal, not a configurable
+ * host. This must match the local target of the SSH reverse forward; using the
+ * JVM's preferred loopback address could bind only {@code ::1} while OpenSSH
+ * connects to {@code 127.0.0.1}. There is no setting that makes this listen on
+ * a LAN interface, because "bind loopback only" is a v1 requirement and a
+ * setting is something that gets changed. The port is asked of the operating
+ * system so two captures can run at once.
  *
  * <h2>Start before Bazel, always</h2>
  *
@@ -69,7 +70,7 @@ public final class BesServer implements AutoCloseable {
         if (server != null) {
             throw new IllegalStateException("this BES server is already listening on " + endpoint);
         }
-        InetSocketAddress address = new InetSocketAddress(InetAddress.getLoopbackAddress(), config.port());
+        InetSocketAddress address = new InetSocketAddress("127.0.0.1", config.port());
         server = NettyServerBuilder.forAddress(address)
                 .addService(service.bindService())
                 .executor(executor)

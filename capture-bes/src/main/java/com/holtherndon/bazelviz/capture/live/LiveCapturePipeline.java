@@ -832,7 +832,15 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
         }
         lastProgressMillis = now;
         try {
-            listener.progressed(progress());
+            CaptureProgress snapshot = progress();
+            log.trace("capture progress: received={}, journaled={}, normalized={},"
+                            + " journalBacklog={}, normalizeBacklog={}, bytes={}, streams={},"
+                            + " decodeFailures={}, lagged={}",
+                    snapshot.received(), snapshot.journaled(), snapshot.normalized(),
+                    snapshot.journalBacklog(), snapshot.normalizeBacklog(),
+                    snapshot.bytesJournaled(), snapshot.streams().size(),
+                    snapshot.decodeFailures(), snapshot.lagged());
+            listener.progressed(snapshot);
         } catch (RuntimeException misbehaving) {
             log.warn("a capture progress listener failed", misbehaving);
         }

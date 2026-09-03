@@ -109,7 +109,8 @@ final class TimelineColoursTest {
         assertThat(TimelineColours.IN_FLIGHT)
                 .isNotEqualTo(TimelineColours.SUCCESS)
                 .isNotEqualTo(TimelineColours.FAILED)
-                .isNotEqualTo(TimelineColours.UNKNOWN);
+                .isNotEqualTo(TimelineColours.UNKNOWN)
+                .isNotEqualTo(TimelineColours.LOCAL);
         // The bins agree with the spans.
         assertThat(TimelineColours.forBin(
                         indexOf(0), TimelineColours.Mode.OUTCOME, 0, 0))
@@ -156,6 +157,15 @@ final class TimelineColoursTest {
         for (TimelineColours.Mode mode : TimelineColours.Mode.values()) {
             assertThat(mode.isAvailable(enriched)).as("%s", mode).isTrue();
             assertThat(mode.unavailableReason(enriched)).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("colour mode controls show descriptive names instead of enum constants")
+    void modesHaveDisplayNames() {
+        for (TimelineColours.Mode mode : TimelineColours.Mode.values()) {
+            assertThat(mode.displayName()).isNotBlank().doesNotContain("_");
+            assertThat(mode.toString()).isEqualTo(mode.displayName());
         }
     }
 

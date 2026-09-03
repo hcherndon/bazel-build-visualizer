@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * Runs one user-written read-only statement against an open session database
  * and pages its results — the query surface Perfetto's query page provides for
- * traces, over the 59 tables a captured build normalizes into.
+ * traces, over the tables a captured build normalizes into.
  *
  * <h2>One guarantee, and the guards that keep the rest true</h2>
  *
@@ -531,8 +531,8 @@ public final class AdHocQueries implements AutoCloseable {
      * Every table and view in the open database, with its columns, read from
      * {@code sqlite_master} and {@code PRAGMA table_info}.
      *
-     * <p>Blocking, but bounded by the schema rather than the build: 59 tables
-     * and a few hundred columns on a current session.
+     * <p>Blocking, but bounded by the schema rather than the build: the table
+     * catalog and its columns on a current session.
      */
     public List<SchemaTable> schema() {
         // Temp views live in temp.sqlite_master, a different catalog from the

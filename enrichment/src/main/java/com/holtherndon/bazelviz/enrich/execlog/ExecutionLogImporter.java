@@ -81,6 +81,7 @@ public final class ExecutionLogImporter {
         boolean previousAutoCommit = connection.getAutoCommit();
         connection.setAutoCommit(false);
         try {
+            clearPreviousExecutionLog();
             Result result = read(file, taskId);
             connection.commit();
             tasks.finish(taskId, result.state(), Optional.of(result.summary()),
@@ -98,6 +99,23 @@ public final class ExecutionLogImporter {
             return result;
         } finally {
             connection.setAutoCommit(previousAutoCommit);
+        }
+    }
+
+    /**
+     * Replaces execution-log-derived rows inside the import transaction.
+     *
+     * <p>A failed retry rolls this deletion back. A successful retry therefore
+     * contains exactly the new log, never a mixture under the reused task id.
+     */
+    private void clearPreviousExecutionLog() throws SQLException {
+        try (java.sql.Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DELETE FROM attempt_env_vars");
+            statement.executeUpdate("DELETE FROM attempt_outputs");
+            statement.executeUpdate("DELETE FROM action_attempts");
+            statement.executeUpdate("DELETE FROM input_set_children");
+            statement.executeUpdate("DELETE FROM input_set_files");
+            statement.executeUpdate("DELETE FROM input_sets");
         }
     }
 

@@ -48,6 +48,8 @@ class TargetsViewWiringTest {
     /** Exactly what {@code MainWindow.wiredCommands()} stands behind today. */
     private static final Set<EntityActions.Command> AS_WIRED_IN_THE_WINDOW = EnumSet.of(
             EntityActions.Command.OPEN_TARGET,
+            EntityActions.Command.VIEW_CONFIGURATION,
+            EntityActions.Command.OPEN_BUILD_FILE,
             EntityActions.Command.OPEN_IN_TREE,
             EntityActions.Command.OPEN_IN_GRAPH,
             EntityActions.Command.SHOW_ACTIONS_FOR_LABEL,
@@ -173,6 +175,10 @@ class TargetsViewWiringTest {
         SwingUtilities.invokeAndWait(() -> view.revealLabel(chosen.label()));
         await(() -> onEdt(() -> chosen.label().equals(view.selectedLabelForTest())));
 
+        assertThat(onEdt(view::selectedTargetRefsForTest))
+                .contains(new EntityRef.ConfigurationChecksum(
+                        chosen.configurationId().orElseThrow()));
+
         // Armed: the three label jumps and the source event, which this row
         // has. Still off: the one command with no read path behind it.
         for (EntityActions.Command command : List.of(
@@ -221,12 +227,64 @@ class TargetsViewWiringTest {
         opened.close();
     }
 
+    @Test
+    @Timeout(180)
+    @DisplayName("top-level package rows offer only their owning BUILD file")
+    void packageBuildMenu(@TempDir Path temporary) throws Exception {
+        SqliteSessionSource opened = openImportedSession(temporary);
+        Recorder recorder = new Recorder();
+        EntityActions actions = new EntityActions(AS_WIRED_IN_THE_WINDOW, recorder);
+        TargetsView view = onEdt(() -> {
+            TargetsView created = new TargetsView();
+            created.installEntityActions(actions);
+            created.openSession(opened);
+            return created;
+        });
+        await(() -> onEdt(() -> view.packageCountForTest() > 0));
+
+        List<EntityRef> packageRefs = onEdt(() -> view.packageRefsForTest(0));
+        Set<EntityActions.Command> omissions = onEdt(() -> view.packageOmissionsForTest(0));
+        javax.swing.JPopupMenu packageMenu =
+                onEdt(() -> actions.popupFor(packageRefs, omissions));
+        assertThat(packageRefs).singleElement().isInstanceOf(EntityRef.TargetLabel.class);
+        assertThat(java.util.Arrays.stream(packageMenu.getComponents())
+                        .filter(javax.swing.JMenuItem.class::isInstance)
+                        .map(javax.swing.JMenuItem.class::cast)
+                        .map(javax.swing.JMenuItem::getText))
+                .containsExactly(EntityActions.Command.OPEN_BUILD_FILE.title());
+
+        SwingUtilities.invokeAndWait(view::closeSession);
+        opened.close();
+    }
+
+    @Test
+    @Timeout(180)
+    @DisplayName("Top Level Targets switches between packages and a flat label list")
+    void packageAndFlatViews(@TempDir Path temporary) throws Exception {
+        SqliteSessionSource opened = openImportedSession(temporary);
+        TargetsView view = onEdt(() -> {
+            TargetsView created = new TargetsView();
+            created.openSession(opened);
+            return created;
+        });
+        await(() -> onEdt(() -> view.packageCountForTest() > 0));
+
+        assertThat(onEdt(view::browseModesForTest))
+                .containsExactly("Packages", "All Targets");
+        SwingUtilities.invokeAndWait(view::showAllTargetsForTest);
+        await(() -> onEdt(() -> view.flatLabelCountForTest() > 0));
+        assertThat(onEdt(() -> view.flatLabelForTest(0))).startsWith("//");
+
+        SwingUtilities.invokeAndWait(view::closeSession);
+        opened.close();
+    }
+
     /** A target row the session recorded a source event for. */
     private static TargetRow firstTargetWithASourceEvent(SqliteSessionSource opened) {
         try (EntityReader reader = opened.openEntityReader()) {
             for (TargetQueries.PackageSummary summary : reader.packages()) {
                 for (TargetRow row : reader.targetsInPackage(summary.path())) {
-                    if (row.bepEventId().isPresent()) {
+                    if (row.bepEventId().isPresent() && row.configurationId().isPresent()) {
                         return row;
                     }
                 }

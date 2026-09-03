@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * What the timeline's inline inspector shows for one clicked segment.
+ * What the timeline's side inspector shows for one clicked segment.
  *
  * <p>A value, on purpose: the controller builds one on a worker thread from
  * whatever the database says and hands it to the EDT, so the view — which

@@ -1,35 +1,37 @@
-# Explicit-SQL persistence: per-session DB + catalog DB.
+"""Compatibility facade for the package-local SQLite storage targets."""
 
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
+load("@rules_java//java:defs.bzl", "java_library")
 
-bbv_java_library(
+java_library(
     name = "storage-sqlite",
-    # All api (exports):
-    # - graph-core: the CSR index lives there, which knows nothing about
-    #   SQLite; the builder here is the one place the edge table and the
-    #   index meet.
-    # - analysis-core: plan 6.1 puts metrics, aggregation, percentiles and
-    #   data-quality reports in analysis-core, and "query implementations"
-    #   and "aggregate persistence" here. So the aggregate types are theirs
-    #   and the streaming is ours, and this edge is what joins the two. It
-    #   points this way and only this way: analysis-core still depends on
-    #   core-model and graph-core alone, which is what lets extraction,
-    #   clustering, layout and every formula be tested without a database.
     exports = [
-        "//analysis-core",
-        "//core-model",
-        "//graph-core",
-        "@maven//:org_xerial_sqlite_jdbc",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/catalog:catalog",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich:enrich",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities:entities",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/export:export",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph:graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics:metrics",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/query:query",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/redact:redact",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
     ],
-    deps = [
-        "//analysis-core",
-        "//core-model",
-        "//graph-core",
-        "@maven//:org_xerial_sqlite_jdbc",
-    ],
+    visibility = ["//visibility:public"],
 )
 
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    deps = [":storage-sqlite"],
+    tests = [
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/catalog:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/entities:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/events:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/export:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/graph:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/metrics:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/query:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/redact:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage/schema:tests",
+        "//storage-sqlite/src/test/java/com/holtherndon/bazelviz/storage:tests",
+    ],
 )

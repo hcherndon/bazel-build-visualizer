@@ -452,3 +452,49 @@ Stated so that nothing below is mistaken for a finding.
 - Behaviour when the build is cancelled mid-flight: whether the execution log is
   left truncated, and whether the compact log's zstd frame is closed.
 - `--execution_log_sort`, present on all four versions and never exercised.
+
+---
+
+## 8. The Starlark CPU pprof
+
+Measured on 2026-09-02 with a real Starlark-heavy fixture under Bazel 6.5.0,
+7.6.1, 8.4.1, and 9.2.0. Each invocation used
+`--starlark_cpu_profile=<file>` and its own output user root. The four gzip
+files were decoded against the upstream pprof schema and then imported through
+the production streaming importer.
+
+### C1 — the wire format and units are stable across all four versions
+
+Every file is a gzip-compressed pprof `Profile` with exactly one sample type:
+`CPU` measured in `microseconds`. `period_type` repeats those strings and the
+period is 10,000 µs. Observed sample values are positive multiples of that
+period. The importer still validates these facts rather than branching on a
+Bazel version.
+
+### C2 — stacks are leaf-first and symbols carry a definition start line
+
+`Sample.location_id[0]` is the leaf, as required by pprof. Bazel emitted one
+function per location in these probes, with a name, system name, filename, and
+definition start line. Location line values reflect the first sampled frame
+line and Bazel's encoder warns that sampled line attribution is unreliable.
+The application therefore reverses stacks only for root-to-leaf drawing,
+aggregates by function/file, and never claims a line heat map.
+
+### C3 — CPU samples have no wall-clock placement or stable cross-build id
+
+No sample timestamp or thread id was present. `time_nanos` identifies the
+profile start and `duration_nanos` its monotonic duration, but cannot place
+individual stacks on the Timeline. Function and location ids are derived from
+process-local object identity and cannot be compared across sessions. CPU is
+summed across all Starlark threads; it can exceed wall duration and excludes
+blocked or unscheduled runnable time.
+
+### C4 — the file carries no invocation identity or loss counter
+
+Unlike the JSON trace profile, the Starlark pprof contains no build UUID,
+Bazel version, or command line. A profile written into the managed directory by
+the approved invocation has capture provenance; a future manual attachment
+must be labelled unverified. The format also reports no dropped signal/sample
+count, so the application cannot turn sampling loss into a numeric coverage
+claim. A valid file with zero samples remains distinct from no file or a failed
+import.

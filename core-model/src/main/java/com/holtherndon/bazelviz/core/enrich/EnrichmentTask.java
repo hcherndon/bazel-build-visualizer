@@ -40,6 +40,7 @@ public record EnrichmentTask(
     public enum Kind {
         EXECUTION_LOG("Execution log"),
         PROFILE("Trace profile"),
+        STARLARK_CPU_PROFILE("Starlark CPU profile"),
         FILESYSTEM_STAT("Output sizes from disk");
 
         private final String displayName;

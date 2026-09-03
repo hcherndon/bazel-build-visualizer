@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-08-24. This file states what exists in the tree, not what
+Last updated: 2026-09-01. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## Phases
@@ -22,14 +22,14 @@ renumbered or re-scoped here.
 | 9 | Session export, redaction, and macOS packaging | **Complete** — all five exit criteria met and proved by test (see below) |
 | 10 | Scale hardening and compatibility release gate | **Complete** — six of seven exit criteria met and measured, one partial with a stated reason (see below) |
 
-## Phase 0 checklist (as of 2026-08-21)
+## Phase 0 checklist (as of 2026-08-29)
 
 | Task | Status |
 |---|---|
 | Repo + Gradle multi-module skeleton (15 modules + build-logic, wrapper 9.7.1) | Done |
 | Convention plugins (`bbv.java-common` / `-library` / `-application`), reproducible archives, dependency locking wiring | Done |
 | Java 25 toolchain auto-provisioning (foojay resolver) | Done — baseline raised from 21 to 25 on 2026-08-21, see below |
-| Logging (slf4j everywhere, logback in `app`, uncaught-handler in `Main`) | Done |
+| Logging (slf4j everywhere, logback in `app`, uncaught-handler in `Main`) | Done — GUI has persistent Error/Warn/Info/Debug/Trace control, bounded rolling files, exact queue-loss reporting and operation-level instrumentation; CLI remains stderr-only |
 | FlatLaf window shell (`app` `Main`, `ui-swing` `MainWindow`/`Themes`, smoke mode) | Done |
 | Synthetic data generators (`test-support`: `SyntheticActionGenerator`, `SyntheticEdges`, Tier 1-3 scales, O(1) access) | Done |
 | Bazel BEP/BES proto vendoring + Java/gRPC codegen in `proto` | Done — Bazel 9.2.0 and googleapis pinned, provenance in `proto/PROTO_SOURCES.md`, wire round-trip covered by `BepProtoSmokeTest` |
@@ -582,7 +582,7 @@ terminally. See ADR-008 for the exposure and the exit.
 | Derive artifact producer/consumer edges | Done — plan 13.1 as one statement; source artifacts excluded by the join, pairs deduplicated by the group-by |
 | Implement external edge sorting | Done, by delegation — SQLite's external merge sort, and the code says so rather than claiming a fresh one |
 | Build forward/reverse CSR indexes | Done — `CsrFile` with magic, version, counts, CRC32C and atomic rename; reverse derived from forward so they cannot disagree |
-| Add graph completeness diagnostics | Done — on `graph_sources`, not in a second table; see the audit for why the second table was removed |
+| Add graph completeness diagnostics | Done — `graph_sources` records exact unresolved-artifact and unresolved-depset-reference counts; schema v7 leaves migrated values unknown rather than fabricating zero |
 | UI: dependency and reverse-dependency trees, selected-action neighbourhood, path-between-nodes, graph-source selector | Done — the Graph card, which therefore arrives in Phase 5 rather than 7 |
 | aquery/cquery ground truth recorded | Done — `docs/aquery-and-cquery.md`, four versions, twelve findings, with a "not measured" section |
 
@@ -736,7 +736,7 @@ that made the suite unrunnable.
 |---|---|
 | Implement graph extraction API | Done — `GraphExtract`: dependencies, reverse dependencies, neighbourhood, path and whole-graph, each bounded and each carrying the totals it drew from |
 | Implement clustering | Done — `GraphClustering` by package, target or mnemonic; every node in exactly one group and every edge counted, with `clusteredNodes`/`clusteredEdges` exposed so the arithmetic is checkable |
-| Implement layered, radial and critical-path layouts | Done — plus grid for cluster summaries. All four are O(V+E), deterministic, and cancellable |
+| Implement dependency-hierarchy, layered, radial and critical-path layouts | Done — plus grid for cluster summaries. All five are O(V+E), deterministic, and cancellable; dependency hierarchy is the default for graph views |
 | Implement spatial index | Done — `GraphSpatialIndex`, a uniform grid (plan 13.6's "or equivalent"); 20,000 hit tests over 50,000 nodes in 2 ms |
 | Implement custom Java2D graph canvas | Done — `GraphCanvas`, painting from a prepared model with no route to a database or to a layout function |
 | Add semantic zoom | Done — plan 13.6's far, medium and near bands, with label thresholds and an edge budget at far zoom that reports itself |
@@ -756,8 +756,8 @@ about what a user sees.
 | Large graphs automatically aggregate | Met — a whole-build request that will not fit switches itself to cluster mode rather than returning a blank canvas with an explanation. The grouping accounts for every action and every dependency, which the test asserts by summing the boxes. |
 | Exact totals remain visible | Met — every rendering carries a sentence naming the graph's totals whether or not anything was omitted, because a view of five actions from a build of sixty is otherwise indistinguishable from a build with five actions. |
 | Raising limits is explicit | Met — nothing raises itself. The limit stays where it was until "Draw it anyway" is pressed, and pressing it returns to the view that was asked for rather than leaving the user in the grouped one. |
-| Layout is cancellable | Met — all four layouts, given an already-raised flag over a 100,000-node graph, return a placement of nothing rather than a partial one. A superseded request is cancelled and the last one submitted is what appears. |
-| Panning and selection remain responsive | Met — measured at the plan's own limits. 50,000 nodes and 200,000 edges: extract, layout, index and label in 14 ms; a fitted frame in 35 ms; a near-zoom frame, where every visible edge and label is drawn, in 4 ms; 20,000 hit tests in 2 ms. |
+| Layout is cancellable | Met — all five layouts, given an already-raised flag over a 100,000-node graph, return a placement of nothing rather than a partial one. A superseded request is cancelled and the last one submitted is what appears. |
+| Panning and selection remain responsive | Met — measured at the plan's own limits. 50,000 nodes and about 200,000 edges: extract, hierarchy layout, indexes and two-line labels in 12 ms; a fitted overview frame in 48 ms; a near-zoom frame with All dependencies in 36 ms; one node's cross-links revealed in under 1 ms; 20,000 hit tests in 14 ms. |
 
 ### Interpretations worth knowing
 
@@ -774,11 +774,13 @@ rendering. The timeline overlay remains an unshipped Phase 6 deliverable rather
 than a Phase 8 omission, and it is recorded here as one so the prediction does
 not stand as a claim.
 
-**The far zoom band stops drawing individual edges above 30,000 of them.** Plan
-13.6's far band asks for aggregate edge thickness rather than individual edges,
-and there is a measured reason: 200,000 hairlines took 366 ms a frame and
-resolved to a grey smear. The omission is transient, reverses on zoom, and is
-named on screen by `hiddenDetail()` — a blank area that looked edgeless would be
+**The far zoom band simplifies edges explicitly.** Plan 13.6's far band asks
+for aggregate edge thickness rather than individual edges, and there is a
+measured reason: 200,000 hairlines took 366 ms a frame and resolved to a grey
+smear. Older layouts stop drawing individual edges above 30,000. The hierarchy
+instead keeps an evenly distributed backbone of at most two primary branches
+per horizontal pixel. Every omission is transient, reverses on zoom, and is
+named exactly by `hiddenDetail()` — a blank area that looked edgeless would be
 a claim about the build, and a false one.
 
 **A uniform grid, not a quadtree.** Plan 13.6 says "quadtree or equivalent". The
@@ -792,9 +794,10 @@ supplies, and a mode a user could select but never satisfy would be a dead
 control.
 
 **Clustering refuses rather than truncating, twice over.** A graph with more
-groups than the cluster limit returns nothing with the exact count, exactly as
-`GraphExtract.whole` does for nodes. The answer to "too many packages" is to
-group by mnemonic, which is always a small set, and the message says so.
+groups than the Group budget returns nothing with the exact count, exactly as
+`GraphExtract.whole` does for nodes. The refusal offers a larger Group budget
+or another named grouping dimension; package and mnemonic counts are not
+falsely ordered. The Node budget remains independent.
 
 ## Phase 7 audit
 
@@ -904,7 +907,7 @@ were computed on every collection and displayed nowhere — the same "work wired
 to nothing" the last two audits each found several of, at a larger scale. Six
 were genuinely dead API and were deleted. Two were plan requirements the rules
 had missed, found by asking what each unread accessor was *for*: plan 16.1
-requires a chain finding to show slack and graph coverage, and it showed
+requires a chain finding to show slack and graph completeness, and it showed
 neither. One was a link whose words promised to draw the dependency chain and
 whose handler opened the graph and stopped, which is the Phase 7 finding
 recurring in a new place and is fixed the same way — by making the link carry an
@@ -938,7 +941,7 @@ ceiling without going near the memory that made the suite unrunnable earlier.
 | Add recent-session library | Done — plan 10.6's catalog, a two-table index that a rescan rebuilds from the directories |
 | Add retention and cleanup | Done — a plan is shown, the sweep takes the plan rather than the policy, and a pinned session is never a candidate |
 | Add macOS file associations | Done — `.bviz` only, declared through jpackage and verified in the built `Info.plist` |
-| Add macOS app menu and open-file handlers | Done — About, Open File and Quit; Preferences deliberately not installed until there is a settings screen |
+| Add macOS app menu and open-file handlers | Done — About, Open File and Quit at Phase 9; post-v1 macOS Preferences now opens the same tabbed Theme/Discovery window as the Settings menu |
 | Build Apple Silicon and Intel packages | Partial with a stated reason — jpackage does not cross-compile, so this is one task run on two machines; `docs/packaging.md` says so rather than a build naming one package after both |
 | Add signing/notarization hooks without embedding credentials | Done — both read the environment, and `notarize` refuses without a keychain profile name rather than prompting for an Apple ID it should never see |
 
@@ -1080,7 +1083,7 @@ that are not are named.
 | **Invocation** (6 items) | Met. The executable selector was the one gap and was added in this phase. |
 | **Capture** (6 items) | Met. Embedded BES, file fallback, binary and JSON import, raw preservation, interrupted recovery, and disclosure of missing sequences — the last verified on all four Bazel versions. |
 | **Analysis** (6 items) | Met. |
-| **Visualization** (5 items) | **4 of 5.** "Every display limit is visible and configurable" — every limit is visible and stated, and only the graph's node and edge limits are raisable from the UI. There is no settings screen. |
+| **Visualization** (5 items) | **4 of 5.** "Every display limit is visible and configurable" — every limit is visible and stated, and only the graph's node and edge limits are raisable from the UI. There was no settings screen at v1; post-v1 Preferences has Theme and Discovery tabs, not display limits. |
 | **Persistence** (5 items) | Met. |
 | **Performance** (4 items) | Met, with objective 1's burst target as the stated shortfall. |
 | **Quality** (5 items) | **4 of 5.** "Packaging works on Apple Silicon and Intel macOS" — Apple Silicon built and launched; Intel unverified because jpackage does not cross-compile. |
@@ -1356,7 +1359,7 @@ it is a different tab and was not reported.
   of any size, a page at a time, unmodified. A new **Query** card
   (`NavEntry.QUERY`, eleventh and last, in no phase of plan 17.1) holds a SQL
   editor, a schema tree read from `sqlite_master` and `PRAGMA table_info` at run
-  time — the 59 tables across five schema versions had no reachable description
+  time — the tables across the evolving schema had no reachable description
   at all before this — and a paged result grid.
   Nothing typed there can **write** to the session, and that part is a
   guarantee: `SessionDatabase.newQueryConnection()` opens with
@@ -1433,8 +1436,8 @@ it is a different tab and was not reported.
   which, with `SHOW_EVENTS_FOR_LABEL` (no events-by-label read path exists
   yet), is in the vocabulary but deliberately **not** in the wired set, so
   nothing offers it: absent commands are honestly absent, never disabled
-  stubs. The Timeline's planned inline inspector adopts by calling
-  `buttonStripFor` — no facility change needed.
+  stubs. The Timeline's side inspector and segment context menu adopt the same
+  `EntityActions` facility — no vocabulary or handler fork is needed.
   The Events tab parses the target label **at render time** — an explicit
   decision over any schema or capture-path change. Where the payload is
   decoded (the inspector), the label comes structurally from the proto via
@@ -1494,7 +1497,8 @@ it is a different tab and was not reported.
   `TimelineColours` gained green: completed success is `SUCCESS`, failure
   stays `FAILED` red, and `IN_FLIGHT` blue is reserved for the band — a
   finished action can no longer wear the colour of one still running.
-  *Click:* a clicked segment opens an inline inspector on the Timeline card
+  *Click:* a clicked segment fills a persistent inspector on the right side of
+  the Timeline card
   (previously the click selected a row in the Actions tab without switching
   to it — visibly nothing). The inspector shows what is already in hand
   immediately, the controller fetches the action's details off the EDT
@@ -1602,7 +1606,7 @@ it is a different tab and was not reported.
   unknown, never zero), and inputs (presented as the immediate dependency
   count and labelled as exactly that — no distinct raw-input count exists in
   the session). The weight drives node radius, edge thickness and the colour
-  ramp only; positions stay with the LAYERED/RADIAL/LINEAR/GRID layouts (no
+  ramp only; positions stay with the HIERARCHY/LAYERED/RADIAL/LINEAR/GRID layouts (no
   force-directed layout, unchanged rule), the layout cache key is untouched,
   and re-selecting a weight restyles via `GraphCanvas.restyle` without
   re-fitting the camera or dropping the selection. Unknown weights draw grey
@@ -1916,32 +1920,35 @@ it is a different tab and was not reported.
   rather than by arithmetic, and the time axis stays outside the pane,
   pinned — behind a strut of the label column's width, which also fixes the
   axis having been offset by that width all along. Vertically the policy is
-  as-needed with a 16-pixel unit; horizontally there is **no** scrolling
+  always-visible with a 16-pixel unit; horizontally there is **no** scrolling
   ever: the canvas is `Scrollable` with `getScrollableTracksViewportWidth()`
   true and the policy `HORIZONTAL_SCROLLBAR_NEVER`, because horizontal
   position belongs to the pan/zoom transform and two mechanisms for one axis
   would fight. When the lanes do not fill the window the canvas tracks the
   viewport's height instead, so the aggregate density plot keeps the full
-  height it drew in before. The wheel over the plot still means zoom and only
-  zoom — the event is consumed in the canvas handler *and* the pane's own
-  wheel scrolling is off, because a gesture that zoomed and scrolled at once
-  would be unusable. Scroll state is the viewport's, not the
+  height it drew in before. Wheel input over the plot, time axis, or lane
+  labels follows one rule: ordinary wheel/two-finger vertical input scrolls the
+  shared viewport, Shift-wheel (including native horizontal trackpad events on
+  macOS) pans time, and Control/Command + wheel zooms around the pointer.
+  The event is routed explicitly and the pane's own wheel handling stays off,
+  so Swing cannot apply a second platform-dependent delta. Scroll state is the
+  viewport's, not the
   `TimelineViewport` record's (which stays immutable and time-only): the
   position is read before and reapplied after every model swap — the
   `EventsView` live-refresh pattern — clamped to what the new plot is
   actually tall enough to show, so a live rebuild neither returns a reading
   user to the top nor parks them past the end; and the reveal paths
-  (`MainWindow.revealOnTimeline`, the inline inspector's own click) scroll
+  (`MainWindow.revealOnTimeline`, the side inspector's own click) scroll
   the selected span's lane into view, vertically only. New tests in
   `TimelineVerticalSpaceTest`: a depth-1 lane against a depth-6 one, every
   one of the six sub-rows separately hittable, preferred height reported as
   band-plus-lanes with the row header agreeing, position preserved across a
   live rebuild and clamped when a regroup shortens the plot, reveal
-  scrolling the lane fully into view, and wheel-zooms-without-scrolling. The
-  existing coordinate-driven timeline tests
-  (`TimelineSpanPlacementTest`, `TimelineViewTest`, `TimelineLiveBandTest`,
-  `TimelineInspectorTest`) pass unchanged: their clicks were already inside
-  the first sub-row, which is now taller rather than shorter.
+  scrolling the lane fully into view, ordinary-wheel vertical movement, and
+  modified-wheel zoom that leaves the vertical position alone. The existing
+  coordinate-driven timeline tests (`TimelineSpanPlacementTest`,
+  `TimelineViewTest`, `TimelineLiveBandTest`, `TimelineInspectorTest`) also
+  cover primary-button pan and Shift-drag range selection.
 
 - **Table headers grew up: 3-state sort where honest, a column menu
   everywhere, and column state that survives restarts** (2026-08-24). New
@@ -2029,7 +2036,7 @@ it is a different tab and was not reported.
   `BorderLayout.SOUTH` label-actions region, its headline becomes the title
   and the inspected event's target label becomes both the subtitle and the
   refs the menu acts on (no label → neither, as before); `TimelineView`'s
-  inline inspector drops `inspectorTitle`/`inspectorActions`, its Close rides
+  side inspector drops `inspectorTitle`/`inspectorActions`, its Close rides
   the header's edge via `addTrailing`, and `SpanDetails`'s first line — which
   the controller already words as the segment's one-line identity, "Action 7
   (Javac) — SUCCESS" — becomes the subtitle with the rest as the body, so
@@ -2045,44 +2052,78 @@ it is a different tab and was not reported.
   behind it. `InspectorPanelTest`, `EventsViewEntityActionsTest` and
   `TimelineInspectorTest` now assert against the menu instead of a strip.
 
-- **The timeline's lane labels stopped being a dead zone for the wheel, and
-  its vertical scrollbar stopped being invisible** (2026-08-24).
-  `TimelineView`'s `plotScroll` carries `setWheelScrollingEnabled(false)`
-  pane-wide so the canvas's own `MouseWheelListener` can own "wheel means
-  zoom" without the scroll pane's default handling fighting it — correct for
-  the canvas, but `LaneLabels` (the row header) had no wheel listener of its
-  own, so wheeling over the lane names did nothing at all. `LaneLabels` now
-  gets a constructor-installed `MouseWheelListener` that scrolls the shared
-  viewport by `getPreciseWheelRotation()` times `VERTICAL_SCROLL_UNIT` — the
-  same unit its `Scrollable#getScrollableUnitIncrement` already reports —
-  through the existing clamping `scrollTo` helper, so a trackpad's fractional
-  notches feel the same here as they do over the plot, and the canvas's own
-  wheel path is untouched: it still zooms, and only zooms. Separately,
-  `VERTICAL_SCROLLBAR_AS_NEEDED` plus FlatLaf's thin, low-contrast default
-  thumb meant the bar appeared and disappeared with the plot's height and was
-  easy to miss even shown, so a scrollable plot too often looked exactly like
-  a non-scrollable one. The policy is now `VERTICAL_SCROLLBAR_ALWAYS`, and a
-  new `TimelineView.styleVerticalScrollbar` applies FlatLaf's per-component
-  `"FlatLaf.style"` client property to `plotScroll`'s vertical scrollbar only
-  — a wider, higher-contrast thumb via the `width`/`thumbArc`/`thumb`/
-  `hoverThumbColor` style keys, computed from `FlatLaf.isLafDark()` so it
-  reads against either theme. Scoped to this one scroll bar: `ui/theme/
-  Themes.java`'s global defaults are unchanged, and any look-and-feel other
-  than FlatLaf simply ignores the client property. No new limit constant —
-  `VERTICAL_SCROLL_UNIT` is reused rather than duplicated, and the scrollbar's
-  width/arc are styling, not a documented limit, so `docs/limits.md` is
-  unchanged. `TimelineVerticalSpaceTest`'s scrollbar-policy assertion now
-  expects `VERTICAL_SCROLLBAR_ALWAYS`; its wheel-consumption assertions for
-  the canvas (`isWheelScrollingEnabled()` still false, the canvas gesture
-  still zooms without scrolling) are untouched. New
-  `wheelOverLaneLabelsScrollsTheSharedViewport` dispatches a precise wheel
-  event straight at `LaneLabels`' listener the same way the existing canvas
-  test does, and asserts both halves: the shared viewport moved by the
-  expected pixel delta, and the plot's zoom transform did not change.
+- **The timeline has conventional scrolling, deliberate zoom, and readable
+  small events** (2026-09-01; extends the 2026-08-24 lane-scroll work).
+  `TimelineView` routes wheel input consistently over the canvas, pinned time
+  axis, and lane labels. Ordinary wheel and two-finger vertical gestures scroll
+  the shared viewport; fractional trackpad deltas accumulate instead of being
+  rounded away. Native horizontal trackpad events pan left/right through time;
+  Shift-wheel provides the portable form. Control/Command + wheel zooms around
+  the pointer. Primary drag pans after a three-pixel intent threshold, while
+  Shift + primary drag keeps the existing time-range selection. Panning and
+  zooming stop Follow live; vertical lane movement does not. Toolbar **−**,
+  **+**, and **Fit build** controls make those operations available without a
+  gesture.
+
+  On macOS, a small reflection-only `MacMagnificationSupport` adapter also
+  accepts the JDK's native magnification event. Bazel and jpackage launchers
+  export `java.desktop/com.apple.eawt.event` to the unnamed module; a manual
+  graphical jar or IDE launch must add the same VM option. The adapter checks
+  the platform and export, and disables itself if either is unavailable, so
+  the portable modified-wheel and button controls remain the fallback. This
+  adds no third-party dependency.
+
+  Exact spans now have `TimelineView.SPAN_VERTICAL_INSET` (2 px per side), an
+  inner theme-aware border, hover and selection outlines, alternating lane
+  washes, sub-row boundaries, and stable time-grid guides. A failure has a
+  second top rule as a non-colour cue. A proportional bar narrower than
+  `TimelineView.SHORT_SPAN_MARKER_WIDTH` (3 px) becomes a visible needle; its
+  hit area expands to `TimelineView.MINIMUM_SPAN_HIT_WIDTH` (7 px), while
+  hover, selection, storage, and the inspector retain the real interval. The
+  status line gives the exact needle count and says that zoom restores
+  proportional width. Reverse-order hit testing chooses the topmost painted
+  span when the capped overlap row contains several. Axis ticks use a stable
+  1-2-5 step and zoom-dependent precision, and hover/inspector durations use
+  adaptive units, so microsecond work no longer displays as repeated `0.00s`.
+
+  A moved time range is no longer allowed to paint an old exact `SpanWindow`
+  as if it covered the new viewport. When that window still overlaps, its known
+  exact spans remain stable in their lanes and only the uncovered time edge is
+  shaded as loading. With no overlap, exact aggregate density remains visible
+  until the matching window arrives; its aggregate label explicitly says
+  **Whole build** instead of presenting global density beside per-lane names.
+  Covered empty windows now correctly say no spans instead of being mistaken
+  for density. Density height and its pinned label use the viewport rectangle,
+  never Swing's transient dirty-paint clip, so partial repaints cannot move the
+  chart. Viewport refresh
+  uses `TimelineView.VIEWPORT_REFRESH_DELAY_MILLIS` (60 ms) to coalesce
+  continuous gestures, and
+  `TimelineController.LatestRequestQueue` bounds exact-window work to one read
+  in progress and one replaceable pending request. Revision checks prevent a
+  superseded read from reaching Swing. Detail requests have a separate revision,
+  so an earlier slow selection cannot replace the latest inspector. This keeps
+  rapid pan/zoom responsive and prevents a queue of stale database reads without
+  blocking the EDT or dropping source data.
+
+  Segment details now live in a horizontally split right pane, leaving the
+  timeline footer compact and the plot's vertical space intact. The body wraps
+  and scrolls. Right-clicking an exact action or live target selects it first
+  and opens the shared context menu from refs already in memory, with the
+  Timeline's own **Show on timeline** command omitted. No menu path performs
+  I/O on the EDT.
+
+  The vertical scrollbar remains `VERTICAL_SCROLLBAR_ALWAYS` and keeps its
+  timeline-scoped, theme-aware FlatLaf styling. Focused tests cover plain and
+  modified and horizontal wheel paths, fractional deltas, primary-button gating,
+  native-pinch fallback and anchoring, adaptive ticks and durations, short-span
+  geometry and hit testing, stable partial-window rendering, right-pane and
+  menu wiring, and both bounded latest-wins handoffs.
+  All four new visual/interaction constants are listed in `docs/limits.md`; no
+  schema, parser, source-data limit, or performance claim changed.
 
 - **The build system is Bazel 9.2.0** (2026-08-24, ADR-009 accepted; Gradle
-  removed). One `bazel test //...` replaces `./gradlew build`: fifteen
-  modules as `BUILD.bazel` packages over `tools/bbv.bzl` convention macros
+  removed). At cutover, one `bazel test //...` replaced `./gradlew build`:
+  fifteen modules as `BUILD.bazel` packages over `tools/bbv.bzl` convention macros
   (the successor of `build-logic/`'s three plugins — native-access grant,
   2 GiB test heaps, headless AWT, UTF-8 + `-parameters`, each written once),
   one `MODULE.bazel` dependency universe locked in `maven_install.json`
@@ -2102,19 +2143,21 @@ it is a different tab and was not reported.
   over the deploy jar, env-gated exactly as before; CI runs
   `bazelisk test //... --config=ci` on both OSes with the real-bazel
   exclusion visible in the config, uploading `bazel-testlogs` on failure.
-  Layout-coupled tests were reworked, not weakened: `EdtDisciplineTest`
+  Cutover's layout-coupled tests were reworked, not weakened: `EdtDisciplineTest`
   scans the module's own code source (floor raised to the measured 40
   components), `LimitsDocTest` and `Phase9ExitCriteriaTest` resolve their
-  documents through runfiles. One Bazel-specific workaround stands:
+  documents through runfiles. One Bazel-specific workaround was needed:
   the execroot symlink forest refuses top-level directories named
   `bazel-*`, so the `bazel-runner` module's compile inputs are byte-exact
   in-process copies relocated under `bazel-out` (`tools/relocate.bzl`) —
-  name, label and layout unchanged. Post-merge fix (2026-08-25): a root
+  name, label and layout unchanged at cutover. ADR-010 later retired this by
+  moving the source to `runner/` and leaving source-free compatibility aliases
+  at `//bazel-runner`. Post-merge fix (2026-08-25): a root
   `.bazelignore` shields `//...` traversal from the git worktrees under
   `.claude/`, whose BUILD files and bazel-* symlinks otherwise load as
   packages of this workspace and break the build at loading.
 
-  The UI suite now compiles 20 functional source groups into independent test
+  The parity-era UI suite compiled 20 functional source groups into independent test
   libraries and exposes matching scoped suites such as `tests-capture`,
   `tests-events` and `tests-timeline`; `//ui-swing:tests` still aggregates every
   per-class target. A test edit therefore invalidates only its functional
@@ -2137,16 +2180,25 @@ it is a different tab and was not reported.
   for Workspace, Bazel executable, Capture detail and Bazel command (without
   bazel), plus named **Choose workspace…** and **Choose Bazel…** buttons. Its
   combo offers exactly Live Essentials, Performance Diagnostics (recommended
-  and selected by default), and Full Graph Diagnostics. The selected explanation
-  states the current behavior rather than the intended names: Live omits the
-  execution log and profile, Performance adds them, and Full currently adds no
-  source beyond Performance. A separate bold warning remains visible for every
-  choice because `CaptureCoordinator` currently runs `aquery`, `cquery`, and
-  graph indexing after every live capture, with the same disk/CPU/indexing cost
-  regardless of preset. `CapturePreset.CUSTOM` stays compatible with
+  and selected by default), and Full Graph Diagnostics. Its concise inline
+  summary states the selected scope and still says graph queries run after the
+  build. The full scope and cost explanation now live in tooltips on the choice
+  and summary, removing three explanation-only rows without hiding that
+  `CaptureCoordinator` runs `aquery`, `cquery`, and graph indexing after every
+  live capture, with the same disk/CPU/indexing cost regardless of preset.
+  `CapturePreset.CUSTOM` stays compatible with
   stored/model code but is deliberately absent until there is an
-  individual-source editor. The separate `InstrumentationPlanDialog` and every
-  ADR-007 preflight choice are unchanged.
+  individual-source editor.
+
+  The separate `InstrumentationPlanDialog` is now a **Review build** dialog
+  grouped around the launch decision. Working directory, original command,
+  effective command and environment policy remain visible. Added or replaced
+  instrumentation, post-build commands, and Bazel/workspace/output details are
+  compact keyboard-accessible disclosures; mandatory decisions, errors and
+  warnings remain expanded. Every ADR-007 flag explanation and veto remains,
+  and the dialog now also renders the plan's auxiliary commands, carried and
+  dropped options, outputs, source availability and failure policy. A focused
+  disclosure test pins the expand/collapse and accessibility behavior.
 
   `LauncherStateStore` keeps the four values and `LauncherHistory` under the
   existing `settings/` directory. A dedicated `bbv-launcher-settings` thread
@@ -2168,9 +2220,695 @@ it is a different tab and was not reported.
   and releases a pending preflight/plan on the capture worker; a running build
   is cancelled there and still finalizes its journal. History is
   exactly 50 unique commands, newest first; a duplicate is promoted, Up/Down
-  recalls while leaving the field editable, and the bound is printed below
-  the field. Ctrl+Space completion reuses the existing autocomplete library
+  recalls while leaving the field editable, and the bound plus shortcuts are
+  on the field's tooltip. Ctrl+Space completion reuses the existing autocomplete library
   over a fixed, test-pinned set of common Bazel subcommands. Focused headless
   coverage is in `LauncherPanelTest`, `LauncherHistoryTest`,
   `LauncherStateStoreTest`, `LaunchControllerTest`, and the updated
   `NavEntryTest`; no dependency or build-file change was needed.
+
+  Capture status is now one titled inline strip: phase, all three pressure
+  counters and current context remain visible, full clipped context stays in a
+  tooltip, and activity plus stop controls appear only during an active build.
+  The growing console is framed separately as **Build output**.
+
+- **The Graph card now opens as an explained dependency hierarchy**
+  (2026-08-25). Its source/search strip and two wrapped control groups replace
+  the previous unlabeled toolbar: every field has a visible accessible label,
+  Scope and Drawing summaries describe the active choices, and the controls
+  are named for UI tests. Layout now offers five choices. The new default,
+  **Dependency hierarchy**, builds a deterministic mode-aware spanning forest
+  in O(V+E) primitive-array passes, centres parents over contiguous child
+  spans, and places cycles and disconnected components under separate roots.
+  Layered, radial, linear and grid remain available.
+
+  The hierarchy draws primary branches with orthogonal stem/bus/stem routes
+  and rounded nodes. Shared, cyclic and other non-tree edges remain exact
+  cross-links in `GraphModel`. **Decluttered (recommended)** hides only those
+  cross-links, prints their exact hidden count, and reveals links incident to
+  one selected node; **All dependencies** restores every edge. This setting never
+  re-extracts or relayouts the graph. Visible export includes paint-only hidden
+  cross-links and states that in its provenance, so decluttering never becomes
+  data loss. Action nodes now show their distinct
+  action name and `Target: //…` on separate lines; tooltips, selection text,
+  visible DOT and visible CSV carry both, while complete export retains its
+  canonical target-label contract.
+
+  At overview scale, an evenly distributed backbone keeps at most two primary
+  branches per horizontal pixel and reports the exact simplified count; medium
+  and near zoom restore every primary branch. Node and Group budgets are now
+  separate, with exact refusal actions for each. Find is debounced, and Open
+  presents ambiguous matches instead of silently choosing one. Model building,
+  restyling and the per-node cross-link incidence index run on the graph worker,
+  keeping selection and control changes off Swing's event thread. Superseded
+  preparations and stale session/source navigation callbacks cannot install;
+  a source switch clears incompatible node numbering immediately. Reciprocal
+  cycle edges classify as one primary branch plus one explicit closing link,
+  and a 50,000-node chain remains fully inside Fit.
+
+  `GraphLayoutTest` covers hierarchy centring, dependency direction, cycles,
+  disconnected components, deterministic roots, cancellation and defaults.
+  `GraphCanvasTest`, `GraphCanvasPanelTest`, `GraphExplorerViewTest`,
+  `GraphExportTest` and `GraphLayoutServiceTest` pin ownership, accessibility,
+  edge visibility, exact counts, exports, old-layout availability and cache
+  behavior. `GraphCanvasScaleTest` now exercises hierarchy with two-line
+  action/target labels at 50,000 nodes and about 200,000 edges: 12 ms for
+  extraction/layout/indexing, a 48 ms fitted overview frame, a 36 ms near frame
+  with All dependencies, under 1 ms to reveal one node's cross-links, and 14 ms
+  for 20,000 hit tests on the current machine. No schema, dependency or
+  graph-kind change was needed; the overview-density constant is documented in
+  `docs/limits.md`.
+
+- **The main analysis views now use their space more deliberately**
+  (2026-08-26). Overview summary and metric cards now share one full-viewport
+  responsive grid. Detail cards form stable two-column rows only when both
+  columns retain 600 px; otherwise they stack. Coverage no longer puts every
+  section into half-width masonry: data coverage, Bazel's critical path and
+  enrichment tasks each own a full-width row, while only the shorter runner
+  and phase cards pair above 480 px per column. Critical descriptions receive
+  78% of their row and task values 78% of theirs. Titled borders now name the
+  two resizable regions **Build summary** and **Coverage & enrichment**. The
+  same section frame now distinguishes the list from the inspector in Actions,
+  Targets, Tests, Errors and Events, the three Findings regions, and Query's
+  editor and results. Long values and notes wrap
+  without horizontal overflow, and a closed session uses a true full-pane
+  empty state. Metrics delivery rechecks
+  its session generation on the UI thread, so a result queued before teardown
+  cannot reopen that dashboard or refill Findings afterward. The shared Actions,
+  Targets, Tests and Errors inspector likewise wraps field values and
+  unknown-value reasons in a vertically scrolling body; its sections keep
+  their natural height instead of stretching across unused space.
+
+  The Graph card's source/search controls and drawing controls now form two
+  compact wrapping rows. Explanations move behind **Source help** and **Control
+  help**, while active source warnings and exact partial-result status remain
+  visible. Its normal collapsed header is capped by a geometry test at 200 px.
+  The Events inspector now renders the selected decoded record in the existing
+  RSyntaxTextArea dependency with line numbers and read-only JSON or Protocol
+  Buffer highlighting. Empty and failed states revert to plain text, source
+  bytes and decoded wording remain exact, and the palette follows the active
+  look and feel with explicit readable dark-theme token colours. Focused
+  layout, accessibility, text-preservation and theme tests cover all four
+  changes; no schema, source limit or dependency changed.
+
+- **Local build evidence now opens where it is discovered** (2026-08-26).
+  Test-log URIs and action primary outputs are blue, wrapping hyperlinks in the
+  shared inspector and open read-only in reusable modeless text windows. The
+  link occupies the value column itself; there is no adjacent button to squeeze
+  a long path into a one-character-wide strip.
+  Any main-repository target label shown by Actions, Targets, Tests, Errors,
+  Events, Tree, Graph or an inspector offers **Open Build File…** from its
+  context menu. Session manifests supply live-capture paths; imported sessions
+  fall back to the normalized build-invocation row. BUILD files open editable
+  with Python highlighting, Save/Reload and the active UI theme. Resolution,
+  reads and writes stay off the EDT. The resolver rejects external repositories,
+  traversal, remote file URIs, missing files and binary input. The viewer
+  refuses files above its documented 16 MiB limit, and saves use replacement
+  files plus a content stamp so an external edit is never overwritten.
+  Focused resolver, document, editor, inspector and shared-action tests pin the
+  behavior; RSyntaxTextArea was already part of the application, so no new
+  third-party dependency was added.
+
+  The selected Event now also has a **Files** tab. Merely selecting an event
+  still reads only its ordinary inspection; visiting Files is what decodes its
+  direct `File` messages and performs local metadata reads on the existing
+  event-detail worker. Named sets, action outputs and streams, important and
+  directory outputs, test outputs and build-tool logs are covered. The table
+  shows protocol path/URI, kind, declared or actual size, local presence,
+  modification time and digest. Its selected-row links open an existing local
+  regular file in the shared read-only viewer, copy the best available path,
+  or reveal it in Finder. The viewer selects language-aware highlighting for
+  common source, data and documentation formats; binary and oversized files
+  leave a visible explanation instead of being rendered. Referenced named sets are
+  identified but not silently folded into the selected event. Metadata rows
+  are bounded at the documented 10,000 per event, with the exact direct-file
+  total and retained count stated when that display limit is reached.
+
+  The former Targets card is now **Top Level Targets** and keeps the existing
+  lazy package tree; a main-workspace package row itself has a right-click
+  **Open Build File…** action. A separate **All Targets** card sits directly
+  beneath it and is dormant until visited. It reads the imported cquery
+  `configured_target_nodes`, not the top-level BEP `targets` table, so
+  transitive analysed labels actually appear. It keyset-pages distinct,
+  fully-qualified `//package:target` labels in windows of 200 while stating the
+  exact loaded and total label counts plus cquery state and configuration-match
+  status. A label with multiple analysed configurations expands to full
+  configuration checksums. Configuration rows and inspection data load only
+  when selected or expanded, and all reads remain off the EDT. A session with
+  no cquery source, or a failed/empty source, explains that state instead of
+  silently repeating the top-level list or claiming an empty build. The SQL
+  grouping, paging and lazy UI have focused tests, including a cquery-only
+  transitive label; no schema or dependency changed. Large-session latency has
+  not yet been separately benchmarked, so no performance number is claimed.
+
+- **Top-level browsing and the configured-target capture now have their full
+  scopes** (2026-08-27). The **Top Level Targets** card again has its promised
+  **Packages / All Targets** selector. Packages retains the lazy two-level
+  tree; All Targets is a direct, alphabetized list of the same BEP top-level
+  labels, keyset-paged 200 at a time with exact loaded/total status and no
+  package expansion row. It does not read cquery data and therefore cannot be
+  confused with the separate **All Targets** navigation card below it.
+  `TargetQueriesTest` pins the population boundary with a label present only in
+  cquery, and `TargetsViewWiringTest` pins the selector and lazy flat load.
+
+  The graph query planner previously passed the requested patterns directly to
+  cquery. Real Bazel returned only the query result labels, so the separate All
+  Targets card could still contain little more than the top-level set. Both
+  graph queries now use one `deps(...)` expression over the requested patterns;
+  the cquery proto therefore contains the transitive configured-target closure,
+  and aquery supplies the action dependencies needed to derive edges for a
+  single requested target. A real-Bazel capture of `//:t3` proves that `//:t0`
+  from its dependency chain is imported and that action edges remain present.
+  The auxiliary commands are populated in `InstrumentationPlan`, shown in the
+  Review build dialog and CLI, recorded in both the manifest and
+  `instrumentation-plan.json`, and run after the measured build from that same
+  plan. Running concurrently remains deliberately forbidden because it would
+  contend for Bazel's workspace/server lock and perturb the build timings.
+
+- **Aquery and cquery now use the build's real target expansion, and evidence text acts
+  like text** (2026-08-28). A real Bazel capture exposed a semantic difference
+  hidden by the small graph fixture: `build` and `test` wildcard expansion can
+  omit `manual` targets while cquery expands the same text to include them. In
+  Bazel's own workspace that made the primary build succeed and the subsequent
+  graph query fail during analysis, leaving its graph unavailable. Both planned
+  commands now name `raw/aquery.query` or `raw/cquery.query`; after the build,
+  capture streams the exact
+  distinct BEP top-level labels from SQLite into it as a quoted
+  `deps(set(...))` expression into each. Labels containing `+` remain valid, memory stays
+  bounded, and the plan/manifest retain the exact stable argv. A build that
+  reported no targets explicitly falls back to the requested patterns and
+  records that the scope may be wider. A nonempty target table is exact only
+  when the BEP final marker was received; truncated streams retain an
+  unverified subset. Subprocess failures now create a failed
+  `CONFIGURED_TARGETS` graph-source row with Bazel's stderr, so All Targets
+  explains the failure rather than looking as if cquery never started. A real
+  wildcard fixture with a deliberately broken manual rule proves the build,
+  aquery, and cquery all succeed while that unselected rule remains absent.
+
+  Shared inspector values and the read-only text used by Overview, Coverage,
+  Findings and Graph explanations are now focusable/selectable and retain
+  normal platform Copy behavior. Event metadata uses matching one-line
+  selectable fields; decoded/raw Event text was already selectable. Finally,
+  file viewers and their failure explanations are normal `JFrame` application
+  windows instead of owner-bound `JDialog`s, so the OS can place the main
+  window or another viewer in front according to activation order. Focused
+  headless tests pin selectability and window type; no dependency, schema or
+  source limit changed. The earlier granular app-target rename is also carried
+  through jpackage and the current run instructions, so the literal
+  `bazel build //...` gate no longer needs to exclude packaging.
+
+- **Configurations are now inspectable and comparable across the build**
+  (2026-08-28). A separate **Configurations** card follows All Targets. It
+  pages the union of BEP and cquery checksums, showing mnemonic, platform, CPU,
+  tool status, BEP top-level target use, cquery target use and executed-action
+  use without conflating the two sources. Selecting a checksum shows its full
+  identity and source status, then lazily pages effective cquery options and
+  BEP make variables. One selected configuration can be held as a baseline
+  while another is selected anywhere in the list; the comparison names
+  changed, one-sided and withheld effective options and compares the recorded
+  metadata. It explicitly warns that matching options do not prove Bazel
+  transitions are safe to remove.
+
+  Target rows with an exact checksum now offer **View Configuration** from
+  their shared actions and right-click menus. The action opens Configurations,
+  locates the checksum off the EDT, selects it in the paged list and loads its
+  details. Labels spanning multiple configurations do not guess which one the
+  user meant.
+
+  Schema v6 retains cquery configuration metadata, fragments and option values
+  under the cquery graph-source row. Import remains streaming at the
+  configuration boundary and batches child rows. Bazel 6.5/7.6 sessions say
+  option details are unavailable rather than showing an empty comparison;
+  Bazel 8.4/9.2 sessions retain the full payload. Secret-named option values
+  are withheld on normalization with explicit presence and redacted again by
+  flag name on export. Summary, value and difference grids all page 200 rows
+  at a time and state exact totals; the tab does no SQL until visited. Schema,
+  importer, query, privacy, navigation and headless UI tests cover the path.
+
+- **The repository build graph is package-local and uses explicit rules**
+  (2026-08-28, ADR-010 accepted). Every production and test Java package has a
+  `BUILD.bazel` beside its source. Production code compiles as native
+  `java_library` targets with direct dependencies that follow its imports;
+  tests compile once per Java package and retain an explicit
+  contrib_rules_jvm `java_junit5_test` runner per class. Module-root aggregate
+  libraries, test suites and established run/packaging/benchmark labels remain
+  available for compatibility and discovery, but repository code depends on
+  the package-local targets.
+
+  The former target-generating `tools/bbv.bzl` macros, the `ui-swing`
+  source-group dictionary, the benchmark/test generation loops and the custom
+  source-relocation rule are gone. `tools/java_test_settings.bzl` contains only
+  shared values: JUnit dependencies, JVM flags and the real-Bazel environment
+  and safety tags. The protobuf genrule, JMH annotation processor and packaging
+  shell targets remain because they perform required work rather than wrapping
+  ordinary Java targets.
+
+  Two real Java-package dependency cycles were resolved instead of hiding them
+  in broad libraries: UI value formatting no longer makes session services
+  depend back on Events, and the high-level Bazel launcher no longer makes the
+  low-level subprocess package depend on command parsing. The physical
+  `bazel-runner/` source moved to `runner/`, eliminating Bazel's reserved-path
+  relocation workaround while `//bazel-runner` aliases preserve its
+  established entry labels. `EdtDisciplineTest` now discovers UI classes
+  across the declared main-classpath jars while excluding its own test jar, so
+  package splitting does not narrow the EDT-safety audit. This change
+  structurally narrows invalidation and exposes more compile actions to
+  Bazel's scheduler; no wall-clock speedup is
+  claimed until comparable cold and warm measurements are recorded in
+  `docs/performance.md`.
+
+  Real-Bazel runners retain their host-state tags and explicit JUnit runtime.
+  `RealBazelNormalizationTest` is additionally `exclusive`: its live-reader
+  case hit `SQLITE_BUSY` when four child-Bazel tests competed locally, then
+  passed alone. Other real-Bazel tests remain parallel.
+
+- **An explicit SSH workspace can now run and repair a build without a desktop
+  checkout** (2026-08-28, ADR-011 accepted). `runner.runtime.CommandExecutor`
+  and `runner.files.ExecutionFileSystem` make command and file access properties
+  of one execution session instead of assumptions hidden in callers. Local
+  implementations preserve the previous behavior. The SSH implementation owns
+  one private system-OpenSSH control master and reuses it for command, reverse-
+  forward, terminal and SFTP channels. Logical `ExecutionPath` values carry
+  filesystem ownership, so a remote Linux path cannot accidentally reach
+  desktop `Files`. Remote metadata/listing/version helpers use fixed non-TTY
+  commands; file content transfer uses SFTP; editor saves retain the same
+  content-stamp conflict check and replacement contract as local files.
+
+  With the selected SSH execution already connected, capture preflight borrows
+  that connection rather than opening another one. It resolves the remote
+  working directory and Bazel, searches for workspace markers, probes
+  capabilities and effective rc options on that host, starts the existing
+  desktop-loopback BES, then asks OpenSSH for an allocated remote-loopback
+  reverse forward. It creates a unique mode-0700 staging directory under remote
+  `/tmp` before the instrumentation plan is shown. The
+  review names destination, working directory, both BES addresses and staging,
+  and discloses that the forced-TTY primary Bazel command has merged stdout and
+  stderr. Probes and aquery/cquery remain non-TTY. A failed capability probe or
+  a Bazel without the required `--bes_backend` now blocks an embedded-BES launch
+  instead of running the original command with no event destination.
+  Remote environment assembly places GNU `env`'s `--` option terminator before
+  assignments such as Bazelisk's `USE_BAZEL_VERSION`; the reverse order made
+  `env` try to execute a program named `--` and left every capability unknown.
+  Non-TTY helpers also run through `setsid --wait`, preserving their real exit
+  status when `setsid` must fork; without the wait, a missing remote file could
+  be reported as successful and its empty `stat` output as malformed metadata.
+  A live Bazel 9.2 Linux capture over OpenSSH verified the corrected production
+  path with the `//src/java_tools/...` wildcard: the tunneled stream completed
+  with 326 envelopes, no decode failures and no capture warning.
+  Cancellation uses the TTY interrupt first and later signals the isolated
+  remote process group; losing only the local SSH client is not treated as a
+  stopped Bazel client.
+
+  After the build, each planned execution log, profile or BEP fallback is
+  downloaded into the managed session's local `raw/` directory before import,
+  under `CaptureCoordinator.MAX_REMOTE_CAPTURE_FILE_BYTES` (32 GiB per file).
+  Aquery and cquery stream their protobuf stdout directly into bounded local
+  files, while cquery's generated target expression is uploaded to staging.
+  Missing, failed or oversized transfers become named warnings and unavailable
+  sources; BES bytes already journaled remain valid. Cleanup deletes only the
+  exact planned staging files and the validated generated directory. The
+  manifest records local/SSH execution provenance without credentials.
+
+  The 2026-08-30 ADR-011 amendment moved execution selection out of the
+  launcher and into an application-level **Workspaces** home screen. The app
+  opens there with recent entries newest first; a profile has a stable ID and
+  user label and names one local or SSH repository plus its Bazel executable.
+  Several profiles can point at different repositories on the same machine.
+  New, Edit and Remove are inline and I/O-free; the Workspaces menu also offers
+  recent selection, reconnect and close. Choosing a local profile validates and
+  installs direct command/filesystem services. Choosing an SSH profile is the
+  explicit action that opens one private control connection before the shell is
+  shown. The Console launcher then displays the selected workspace instead of
+  asking for the machine, directory and executable again.
+
+  `WorkspaceStore` persists at most 100 entries in
+  `settings/workspaces.properties`, through a bounded sibling temporary file
+  and atomic replacement. Reads and writes refuse the EDT and return safe
+  diagnostics; malformed state is not silently truncated or overwritten.
+  Existing local launcher values and its up-to-20 saved SSH connections have a
+  deterministic migration path. Passwords, private keys and authentication
+  options are never stored; OpenSSH configuration and the user's agent remain
+  authoritative. Opening or importing captured data bypasses execution
+  selection without choosing or reconnecting a workspace.
+
+  Workspace Discovery adds one saved, bounded local script on the
+  **Discovery** tab in **Settings › Preferences…**. A non-empty script must
+  have a shebang and is invoked directly off the EDT, so that shebang chooses
+  both its interpreter and the editor's syntax highlighting. The parser accepts
+  exact pipe-delimited local and SSH rows, reports malformed rows, and creates
+  deterministic profiles that use `bazel`. Startup and manual invocations
+  replace the entire in-memory discovered set. The chooser and workspace menu
+  mark those profiles **Discovered**, keep them openable, disable Edit/Remove,
+  and never pass them to `WorkspaceStore`. Execution/output/row diagnostics are
+  bounded, retain valid partial rows, and do not silently keep results from an
+  earlier run. The SSH field is an OpenSSH destination or `Host` alias;
+  non-default ports, jump hosts and identities therefore stay in SSH config.
+
+  **Browse Repository** uses the same filesystem abstraction for local and live
+  SSH workspaces, loads one directory only when expanded, and states its exact
+  5,000-visible-entry bound. Its regular files open through the existing
+  language-aware 16 MiB viewer/editor. Directory and regular-file rows now use
+  a fixed, bundled SVG icon set: known source and data names receive their
+  language or format icon, Bazel-family files use the project's green BZL
+  document icon, properties use the settings icon, and unknown regular files
+  use the text-document icon. The case-insensitive name
+  mapping selects only packaged resources; a repository filename is never
+  parsed as SVG, turned into a resource URL, or used to fetch an icon. Failed
+  icon loading leaves the text tree usable.
+
+  Thirty-two selected SVGs are vendored from Material Icon Theme 5.38.1 at
+  commit `448ab3977ef83b817c2c722ce7cd5034d195b39f` under MIT and total 14,407
+  bytes. The user-supplied `bazel.svg` and `bazel-folder.svg` are original
+  project artwork, do not contain the official Bazel logo, and total 9,080
+  bytes. All 34 icons total 23,487 bytes.
+  Language and project marks identify file types only and do not imply
+  endorsement. FlatLaf Extras 3.7.2 supplies the Swing icon adapter over JSVG
+  2.1.0. Both are pure Java, were current releases from active projects at
+  review time (2026-07-09 and 2026-05-05), and add 904,150 bytes of resolved
+  jars before deploy-jar compression. The renderer and assets are local-only;
+  no runtime download, remote file operation, or native dependency was added.
+  Their exact upstream license texts join the deploy jar's collision-safe
+  legal bundle, and the deploy-jar test pins those reviewed texts by SHA-256.
+
+  Exact Bazel convenience links at the repository root (`bazel-out`,
+  `bazel-bin`, `bazel-testlogs`, legacy `bazel-genfiles`, and
+  `bazel-<workspace-directory>`) use the Bazel-folder icon and are expandable.
+  Expansion canonicalizes and lists the target on the existing repository
+  worker. It remains lazy, serialized, and subject to the exact 5,000-visible-
+  entry cap. Ordinary and nested symlinks remain leaves, preventing automatic
+  traversal and recursive link cycles. Bazel output targets commonly live
+  outside the workspace root; following one of these explicit root links uses
+  only the already-selected local or SSH filesystem's authority.
+
+  **Terminal** remains available for every selected local or SSH workspace.
+  Navigating to it starts the bound login shell
+  automatically and idempotently, and the shell stays alive across navigation.
+  JediTerm supplies colours, keyboard and mouse input, selection, paste, resize
+  and alternate-screen programs. For a local workspace, Pty4J starts the
+  inherited login shell (falling back to `/bin/sh`) in the selected working
+  directory with `TERM=xterm-256color`. For SSH, it gives the existing system
+  OpenSSH client a local PTY so window-size changes reach the remote PTY; it
+  does not replace SSH or its authentication. The remote login shell starts
+  from sane Linux TTY modes, including normal Enter-key handling.
+  Scrollback remains visibly bounded at 20,000 lines. Terminal channel and PTY
+  lifecycle work uses the window-owned virtual-thread blocking-I/O executor and
+  its named, single-virtual-thread timer. An injected JediTerm executor manager
+  prevents the library from creating its default cached and scheduled platform
+  pools. SSH Terminal close gives the local OpenSSH process one second to
+  stop, then forcibly kills and boundedly reaps it if necessary. Local terminal
+  close likewise has bounded graceful and forcible waits.
+  A streaming guard in front of JediTerm caps one unterminated CSI sequence at
+  1,000 characters and one unterminated OSC or DCS string at 65,536 characters.
+  The guard counts without retaining a second copy; an overlong sequence closes
+  the terminal and shows the exact safety-limit error instead of allowing
+  JediTerm 3.74's accumulator to grow without bound. Ordinary output and
+  terminated control sequences pass through unchanged. Both views perform
+  blocking work away from Swing's event thread and close with their owning
+  execution. Opening a historical remote session only displays its provenance:
+  it never selects a workspace, reconnects, starts a terminal, fetches a file
+  or executes a recorded command.
+
+  JediTerm core/UI 3.74 and Pty4J 0.13.8 are pinned with SHA-256 checksums.
+  ADR-011 records their licence, exact-source, maintenance, compatibility,
+  footprint and native-packaging reviews. Package-local dependencies keep
+  JediTerm in the UI terminal package and Pty4J in the SSH runner package;
+  JNA, Kotlin and annotations arrive only as the locked transitives they need.
+  The deploy jar has a collision-safe `META-INF/third-party/` index plus the
+  exact JediTerm Apache-2.0, Pty4J EPL-1.0 and terminal-stack transitive license
+  and notice files. That payload also covers WinPTY and Windows Terminal
+  binaries embedded by Pty4J. A deploy-jar test checks every upstream legal
+  file's reviewed packaged copy by SHA-256 so dependency merging cannot
+  silently drop one.
+
+  Focused workspace profile/store/migration/menu, runner/runtime/SSH/filesystem,
+  capture, manifest codec, launcher, repository, terminal and editor tests cover
+  the new seams and ownership rules. No remote latency, transfer-throughput or
+  build-speed figure is claimed until a repeatable remote benchmark environment
+  exists.
+
+- **Several Workspaces can be open safely at the same time** (2026-09-01,
+  ADR-012 accepted). The graphical composition root now owns a Workspace
+  manager and a registry of ordinary native Workspace windows. Stable profile
+  IDs are unique in that registry, so choosing an already-open saved or
+  discovered profile focuses its existing window. Each entry owns its own
+  local/SSH execution, capture controller, Terminal, repository browser,
+  selected captured session, editors and workers; closing one entry does not
+  replace or tear down another. The manager hides after a Workspace opens, is
+  available from every Workspaces menu, and returns when the last Workspace
+  window closes. Process-global About, Preferences, Open File and Quit handlers
+  route through the controller instead of retaining one arbitrary frame.
+
+  `WorkspaceWindowStateStore` loads and atomically replaces the bounded
+  `settings/workspace-window-state.properties` snapshot off the EDT. It keeps
+  at most eight ordered stable IDs, optional normal bounds and maximized state.
+  Invalid geometry is omitted with a diagnostic rather than dropping the
+  Workspace. Saved profiles restore immediately; a previously open discovered
+  ID restores only after startup discovery emits that ID again. Restoration
+  opens Console, leaves the command draft blank and does not restore an
+  analysis session or Terminal. Unavailable discovered IDs remain visible with
+  a **Forget** action and retain one of the eight exact restore slots until
+  forgotten.
+
+  Saved-profile launcher history and table/query-result state are isolated
+  below a SHA-256-ID directory in `settings/workspace-windows`; discovered
+  windows create no private settings. Startup moves the bounded history from
+  the pre-Workspace `launcher.properties` file into saved profile settings that
+  safely match its old execution context; a durable marker makes that merge
+  one-time, so commands which later age out are not reintroduced. Profile
+  removal deletes private state only after the profile-store replacement
+  succeeds, while startup orphan cleanup is skipped for an unusable store.
+  Query-library and catalog access is
+  serialized across windows, and the manager performs the one startup catalog
+  reconciliation. `SessionMutationCoordinator` adds process-level active
+  session leases around every opened `SessionSource`; cleanup rechecks those
+  leases, current pin state and catalog location under the candidate's mutation
+  lock before deleting. This keeps a session opened in any window even when it
+  became active after the confirmation plan was created. Portable archives use
+  the same UUID lock plus unique staging directories, so same-session imports
+  cannot share or remove partial extraction data.
+
+  `CaptureLeaseRegistry` is thread-safe and admits different canonical
+  repositories concurrently. A local key uses the real repository path; an SSH
+  key uses the configured connection authority and canonical remote root. A
+  conflict reports the owning Workspace, and stale or repeated lease-handle
+  closure cannot release a replacement. Launch failure, plan discard, capture
+  completion, cancellation and asynchronous window shutdown release the lease
+  after capture resources finish closing. Workspace close prompts before
+  cancelling active work and before discarding dirty editor content; accepted
+  close stops routing immediately but remains restorable until capture,
+  Terminal, repository/editor work and execution teardown finish. The shared
+  import/archive/export/catalog lane gets a ten-second cooperative grace and a
+  two-second forced reap grace. An underlying operation that ignores
+  interruption may outlive that bound on its daemon thread; the incomplete
+  cleanup is logged and cannot freeze Swing or application quit.
+
+  Focused store, registry, lifecycle and app-routing tests cover ordering,
+  corruption, bounds, same-ID focus, same-key races, stale handles and late
+  asynchronous close. Session-mutation race tests additionally cover an active
+  session in another window, activation after cleanup planning and concurrent
+  same-UUID archive adoption. The regular Bazel gates exclude `bazel-sweep` as
+  before.
+
+- **Appearance is selectable, persistent and live across the application**
+  (2026-08-28; moved into Preferences on 2026-08-31). The **Theme** tab in
+  **Settings › Preferences…** offers six bundled FlatLaf choices: Light,
+  Dark, IntelliJ Light, Darcula, macOS Light and macOS Dark. Stable IDs allow a
+  process-only `bbv.theme` override while the selection is saved atomically in
+  `settings/appearance.properties`. Missing, unreadable and unknown settings
+  recover to Light. Startup reads this small file before the EDT and installs
+  the result before constructing the window, so a saved dark appearance does
+  not first flash a light frame. Rapid selector changes are coalesced and
+  written on the existing blocking-I/O executor. Closing the last window,
+  smoke mode and the desktop quit handler all wait asynchronously for the
+  newest queued choice before stopping that executor; no file write blocks the
+  EDT. A failed live save leaves the applied appearance in place and tells the
+  user it may reset on restart.
+
+  FlatLaf refreshes ordinary Swing controls in place. Explicit theme hooks also
+  recolour syntax-highlighted event, file and query editors; graph and timeline
+  custom painting; hyperlink controls; and an active JediTerm surface without
+  reconnecting its SSH channel. Focused tests cover every bundled theme,
+  startup precedence and recovery, serialized persistence, Preferences
+  selection and tab wiring, light/dark syntax round trips, and the custom
+  graph, timeline, query and terminal surfaces. The existing locked FlatLaf
+  dependency supplies all six themes; no dependency, schema or named limit
+  changed.
+
+- **Application observability is persistent, bounded and selectable**
+  (2026-08-29). Graphical startup now attaches an application-owned rolling
+  Logback destination under `logs/application.log`. **Diagnostics › Log
+  Detail** changes Error, Warn, Info, Debug or Trace immediately and persists
+  the explicit choice atomically; `bbv.log.level` remains a process-only
+  override. The same menu opens the current file in the existing modeless text
+  viewer, reveals it in the system file browser and reports the exact number of
+  records the bounded queue could not retain. Headless commands remain
+  console-only, keep stdout clean and default to Warn.
+
+  Session transitions, import stages, schema migration, local and SSH process
+  lifecycle, file operations, preflight, BES progress, capture completion,
+  graph enrichment and UI navigation now emit level-appropriate summaries.
+  Trace uses periodic progress rather than per-event, per-row or per-byte
+  records. Raw payloads, file and terminal content, environment values, SFTP
+  scripts, control-socket paths and full raw command vectors are not
+  intentionally logged. Paths, labels, SSH destinations, session identifiers
+  and failure messages remain diagnostic and sensitive, as documented in
+  `docs/privacy.md`.
+
+  File writes run on one daemon writer behind an 8,192-record queue, never on
+  the caller or EDT. Overflow increments an exact counter and produces warning
+  records after the writer catches up. Close waits up to five seconds; records
+  still queued at the deadline are counted as dropped. A record already inside
+  the OS/file-appender write is no longer queued and may finish asynchronously
+  after that wait. The active file rolls at 8 MiB, with seven days and 64 MiB
+  of compressed history; a final writer-side cleanup makes both archive bounds
+  exact. An operating-system lease refuses a second rolling writer, and the
+  encoder escapes control text so one event cannot forge another physical log
+  record. Focused backend, rollover, retention, shutdown-race, packaged-CLI,
+  settings, coalescing and Swing-menu tests pin the behavior. No third-party
+  dependency or schema changed; the five new bounds are listed in
+  `docs/limits.md`.
+
+- **Session-empty states are centered consistently** (2026-09-01). All
+  Targets and Configurations now use one shared, selectable, wrapping
+  plain-text empty-state panel, so their status remains centered at narrow and
+  wide sizes instead of sitting at the left or top edge. Findings now replaces
+  its entire split dashboard with that same full-pane state while no session is
+  attached, then restores the dashboard for loading, results, and errors.
+  Closing All Targets always restores its empty card, and Findings rejects a
+  metrics callback queued before its service was detached, so stale work cannot
+  reopen either pane. All empty-session messages use the theme's muted label
+  foreground, including selectable messages and the coverage pane, so adjacent
+  tabs no longer render the same state with different text colours.
+  Query and repository browsing retain their useful no-session controls. No
+  dependency, schema, I/O path, or named limit changed.
+
+- **Reveal Action selects the requested action across paged data**
+  (2026-09-01). Explicit cross-view navigation now resolves the action off the
+  Swing event thread, clears visible filters that exclude it, locates its
+  keyset page from the bounded anchor index, loads that page, and preserves the
+  request until the exact row is selected and scrolled into view. Clearing a
+  timeline range clears its overlay and table filter together; a newer filter
+  cancels an older reveal; and a failed page ends with an explicit error.
+  The always-available **Show all actions** toolbar control clears mnemonic,
+  outcome, output, label, and time-range filters together, cancels any pending
+  reveal, clears its selection and inspector, and returns to the first page.
+  Passive timeline synchronization remains cache-only. Focused UI,
+  failure-path, range, reset, race, and anchor-index tests cover unloaded and
+  filtered-out rows plus every action sort in both directions. No dependency,
+  schema, I/O contract, or named limit changed.
+
+- **Critical Path is now a first-class analysis page** (2026-09-02). It sits
+  directly after Timeline and keeps Bazel's trace-profile path separate from
+  the visualizer-computed dependency lower bound in both its summary and its
+  two ordered tables. The comparison cards show both totals, their signed
+  difference only when every graph node was timed, and observed idle time.
+  A partial dependency path withholds the difference because missing duration
+  cannot be separated from scheduler delay. Overview's two critical-path cards
+  now open this page.
+
+  Bazel components remain the exact progress descriptions and optional
+  durations the profile supplied; the UI explicitly declines to guess action
+  identities for them. Their exact count and aggregate duration are read
+  without materializing every description, and visible descriptions load by
+  ordinal through the same bounded table paging used by the dependency path.
+  The dependency table preserves every graph node on the
+  computed chain, including declared nodes which did not execute or could not
+  be correlated. Its inspector exposes path weight, earliest start and finish,
+  slack, target, mnemonic, output and any available execution-log queue,
+  setup, execution, network, transfer, runner, cache, and concurrency signals.
+  Execution-log path weights use the shortest correlated attempt so raced work
+  cannot inflate a dependency lower bound; the adjacent action detail keeps its
+  existing aggregate-work meaning across every attempt and labels that
+  distinction.
+  Identified rows use the common context menu, double-click reveals the exact
+  executed action, and a fixed command opens the chain in Graph.
+
+  Both path tables page 200 rows at a time and retain eight recent pages;
+  Bazel rows remain in SQLite while dependency graph identities are resolved
+  only for the visible page. Both bounds, each exact logical path length, the timing source, timed-node
+  coverage, graph-configuration trust, and unavailable data remain visible.
+  The existing 25-candidate metric query supplies only a bounded convenience
+  cache of rich execution details, never the path itself; another step remains
+  reachable through Reveal action. A batched `GraphQueries.nodes` lookup keeps
+  requested order and missing nodes while respecting SQLite's bind limit, and
+  `CriticalPath.Result` now retains compact untimed and selected-chain masks so
+  measured zero remains distinct from unknown and a zero-slack tied branch is
+  not mislabeled as the displayed chain. The chain itself is one primitive
+  `int[]` behind a read-only list view, avoiding millions of boxed node ids.
+  Zero-duration and untimed prerequisites remain in the reconstructed chain
+  even when they do not change its numeric length. Contributor selection
+  streams primitive node/action correlations into a fixed 25-entry heap rather
+  than materializing or sorting the full graph. All reads and reader disposal
+  stay off Swing's event thread; a reader
+  is deliberately left open and teardown reports failure if its query worker
+  ignores bounded cancellation, rather than closing JDBC underneath live work.
+  Replacement aquery and cquery attempts now invalidate
+  their matching CSR registry rows before parsing; process failures record the
+  same failed source even without a protobuf, and rebuilt indexes record their
+  producing graph source. Thus a query, import, or rebuild failure cannot leave
+  the preceding graph reachable as the current critical-path input, even when
+  its old CSR file remains on disk. Graph navigation waits for a reader still
+  loading and refuses failed or absent declared sources rather than claiming an
+  empty drawing. Focused algorithm, storage, paging, page,
+  navigation, Overview, shared-metrics, empty-state, and lifecycle tests cover
+  the new seams. Schema v7 adds nullable unresolved-artifact and
+  unresolved-depset-reference counts to `graph_sources`. New imports persist
+  exact zeros or positive counts; migrated sessions remain unknown. Dependency
+  paths and scheduling-gap claims are withheld unless import state,
+  configuration match, target scope, and both structural checks are trustworthy.
+  Schema v8 adds `target_scope` and `target_scope_detail`: exact completed-BEP
+  labels are trusted, while requested-pattern fallback, truncated-BEP labels,
+  preparation failures, and migrated rows remain explicitly unverified.
+  Action-graph correlation remains a separate ratio because cached actions do
+  not execute. No dependency or fixed architectural decision changed; the two
+  new paging bounds are recorded in `docs/limits.md`.
+
+- **Starlark CPU profiling is captured, queryable, and explorable**
+  (2026-09-02). Performance and Full capture presets now probe and disclose
+  Bazel's `--starlark_cpu_profile`, retain an explicit user value, permit a
+  launch-review veto, and write `raw/starlark-cpu.pprof.gz`. SSH builds stage
+  and copy the same artifact through the bounded remote-output path before
+  local import. The flag is removed from post-build aquery/cquery commands.
+  Failed or absent profile capture remains an independent enrichment outcome
+  and never invalidates the BEP, execution log, or JSON trace profile.
+
+  Schema v9 stores pprof metadata, strings, sample types, mappings, functions,
+  locations, every sample value/frame/label, and separate rebuildable physical
+  call nodes, function/file aggregates, and caller/callee edges. Metadata
+  reports exact attributed/unattributed CPU and record partitions for function,
+  file, and fully symbolized call-context views. Four resolved views
+  make the common joins directly available on Query. Import streams the gzip
+  outer message rather than materializing `Profile`, accepts packed and Bazel's
+  unpacked repeated fields, validates the `CPU` / `microseconds` type and all
+  cardinalities/references, writes bounded JDBC batches, and replaces the
+  previous complete result transactionally. The raw period is preserved and
+  exposed in microseconds only when its independent CPU unit converts exactly;
+  inline symbols feed flat cumulative metrics while ambiguous physical call
+  contexts are reported as partial. Compact hostile child collections,
+  expanded symbols, expanded bytes, record bytes, stacks, and total row
+  populations have explicit refusal limits in `docs/limits.md`; raw and prior
+  complete data survive a failed replacement. Schema redaction classifies the
+  string table and validation detail as sensitive.
+
+  **Starlark Profile** sits after Critical Path. Its Summary, searchable/paged
+  Hot Functions and Files, selected-function caller/callee tables, and custom
+  Java2D Flame view load from a dedicated reader off the Swing event thread.
+  Heavy tabs are lazy, tables page 200 rows and cache eight pages, and Flame
+  draws at most 5,000 root-to-leaf contexts while stating exact total and
+  omitted counts. Source-bearing rows open through the current local/SSH
+  Workspace resolver. The page explicitly says sampled CPU is not wall/wait
+  time, can exceed wall duration across threads, has no sample timestamps, and
+  does not support reliable line heat maps. A failed replacement task prevents
+  retained older rows from being presented as current.
+
+  Parser/importer, schema migration/view/constraint, redaction, planner/veto,
+  auxiliary filtering, SSH transfer, SQLite reader, paging, flame geometry,
+  lifecycle, navigation, and source-action tests cover the new seams. A real
+  Bazel enrichment test checks the managed gzip pprof and validated units; a
+  manual smoke imported real profiles from Bazel 6.5.0, 7.6.1, 8.4.1, and
+  9.2.0. The four produced the same 10,000 µs `CPU` / `microseconds` shape.
+  `docs/starlark-profiling.md` records interpretation, query examples, and why
+  JFR, full JSON trace recording, and invasive server-wide allocation tracking
+  are not silently enabled. This extends ADR-004/005/007 and the existing
+  UI-reader boundary; no fixed architectural decision changed, so no ADR was
+  added.

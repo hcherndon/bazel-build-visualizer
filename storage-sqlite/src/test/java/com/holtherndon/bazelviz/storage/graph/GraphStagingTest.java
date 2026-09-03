@@ -94,6 +94,35 @@ final class GraphStagingTest {
     }
 
     @Test
+    @DisplayName("referenced artifact ids that were never declared are counted")
+    void undeclaredArtifactReferencesAreCounted() throws Exception {
+        try (GraphStaging staging = new GraphStaging(connection)) {
+            exec("INSERT INTO stage_depset (id) VALUES (1)");
+            exec("INSERT INTO stage_depset_artifact (depset, artifact) VALUES (1, 41)");
+            exec("INSERT INTO stage_action (ordinal) VALUES (0)");
+            exec("INSERT INTO stage_action_output (ordinal, artifact) VALUES (0, 42)");
+            exec("INSERT INTO stage_action (ordinal, primary_output) VALUES (1, 43)");
+
+            staging.resolvePaths();
+
+            assertThat(staging.unresolvedArtifacts()).isEqualTo(3);
+        }
+    }
+
+    @Test
+    @DisplayName("undeclared action-input and child depsets are counted as missing links")
+    void undeclaredDepsetReferencesAreCounted() throws Exception {
+        try (GraphStaging staging = new GraphStaging(connection)) {
+            exec("INSERT INTO stage_action (ordinal) VALUES (0)");
+            exec("INSERT INTO stage_action_input (ordinal, depset) VALUES (0, 41)");
+            exec("INSERT INTO stage_depset (id) VALUES (1)");
+            exec("INSERT INTO stage_depset_child (parent, child) VALUES (1, 42)");
+
+            assertThat(staging.unresolvedDepsetReferences()).isEqualTo(2);
+        }
+    }
+
+    @Test
     @DisplayName("closing drops every staging table so a reused connection stages fresh")
     void closingDropsTheTables() throws Exception {
         try (GraphStaging staging = new GraphStaging(connection)) {

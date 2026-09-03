@@ -12,7 +12,7 @@ import java.util.OptionalDouble;
  * <h2>Why a dashboard has to lead with this</h2>
  *
  * <p>Plan 15.5 gives the shape verbatim — timing coverage, runner coverage,
- * input-size coverage, action-graph coverage, target-graph coverage,
+ * input-size coverage, action-graph correlation, target-graph coverage,
  * correlation confidence — and the reason is that every other number on the
  * screen is a statement about the covered subset. A cache-hit rate over the
  * 30% of actions whose cache state was recorded is not the build's cache-hit

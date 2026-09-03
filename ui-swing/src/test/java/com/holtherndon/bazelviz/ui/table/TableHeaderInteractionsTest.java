@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.awt.GraphicsEnvironment;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JMenu;
@@ -343,6 +345,40 @@ final class TableHeaderInteractionsTest {
                     .hasSize(afterLoad + 1);
             return null;
         });
+    }
+
+    @Test
+    @DisplayName("permanent close flushes the final layout and suppresses a late load")
+    void closeFlushesAndInvalidatesLateLoad(@TempDir Path settings) throws Exception {
+        ColumnStateStore store = new ColumnStateStore(settings, "closing");
+        store.save(new ColumnState(
+                List.of("A", "B", "C"), java.util.Map.of(), Set.of("C"), Optional.empty()));
+        ArrayDeque<Runnable> io = new ArrayDeque<>();
+        AtomicReference<TableHeaderInteractions> interactions = new AtomicReference<>();
+        AtomicReference<CompletionStage<Void>> closing = new AtomicReference<>();
+
+        onEdt(() -> {
+            JTable table = new JTable(model());
+            TableHeaderInteractions installed =
+                    TableHeaderInteractions.install(table, new RecordingAdapter());
+            installed.attachPersistence(store, io::add);
+            installed.setColumnVisible("B", false);
+            interactions.set(installed);
+            closing.set(installed.closeAsync());
+            return null;
+        });
+
+        assertThat(io).hasSize(2);
+        assertThat(closing.get().toCompletableFuture()).isNotDone();
+        io.remove().run(); // the already accepted load; its EDT adoption is now stale
+        io.remove().run(); // the final close-time save
+        closing.get().toCompletableFuture().join();
+        onEdt(() -> null); // drain the stale adoption callback
+
+        assertThat(interactions.get().visibleColumnIds())
+                .as("the pre-close load must not overwrite the live final state")
+                .containsExactly("A", "C");
+        assertThat(store.load().hidden()).containsExactly("B");
     }
 
     private static <T> T onEdt(Callable<T> work) throws Exception {

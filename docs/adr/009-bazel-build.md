@@ -1,6 +1,7 @@
 # ADR-009: Bazel as the build system
 
-Status: **accepted** (2026-08-24; amended 2026-08-25; drafted 2026-08-22 as proposed).
+Status: **accepted** (2026-08-24; amended 2026-08-25 and 2026-08-28; drafted
+2026-08-22 as proposed).
 Supersedes [ADR-003](003-gradle.md), which is marked accordingly. Accepted
 with the migration itself: the version pins were re-verified against the
 Bazel Central Registry on the acceptance date and all resolved unchanged,
@@ -46,13 +47,17 @@ fetches Bazel, Bazel fetches the JDK. Specifically:
   default; the foojay resolver's job disappears rather than migrates. The
   ADR-008 constraints ride along unchanged: preview features stay
   forbidden, and `--enable-native-access=ALL-UNNAMED` moves into the shared
-  macros as the single written occurrence.
+  macros as the single written occurrence. ADR-010 later moved that value to
+  `tools/java_test_settings.bzl` while removing the rule wrappers.
 - **Conventions:** the build-logic convention plugins become `tools/bbv.bzl`
   macros (`bbv_java_library`, `bbv_java_test_suite`, `bbv_java_binary`)
   with the same contract: a module's BUILD file stays ~5 lines, policy
   edits happen once. Gradle's `api`/`implementation` split maps to
   `exports`/`deps`, which Bazel's strict-deps checking enforces harder than
-  Gradle could.
+  Gradle could. **Superseded for the current source tree by
+  [ADR-010](010-package-local-bazel-targets.md):** the parity-era module-wide
+  macros are replaced by explicit package-local native rules. The policy
+  remains centralized only where it is a value rather than a rule generator.
 - **Dependencies:** rules_jvm_external 7.1; the version catalog transplants
   verbatim into one `maven.install`; `maven_install.json` +
   `MODULE.bazel.lock` are committed and replace the 17 Gradle lockfiles.
@@ -75,8 +80,9 @@ fetches Bazel, Bazel fetches the JDK. Specifically:
   each group then compiles once, exposes a named scoped suite, and carries only
   its own test binaries' cache keys. Execution remains per class in both forms.
   This 2026-08-25 amendment narrows invalidation without pretending every test
-  class is independently compilable. The seven
-  real-Bazel test classes (six whole classes plus `RealBazelCliRunTest`,
+  class is independently compilable. ADR-010 supersedes that target shape:
+  tests compile once per Java package, with an explicit runner per class. The
+  seven real-Bazel test classes (six whole classes plus `RealBazelCliRunTest`,
   split out of the mixed `CliRunTest`) run un-sandboxed with inherited
   environment and uncached results. CI excludes them **visibly**, as the
   `--config=ci` tag filter in `.bazelrc`, and they run on developer
@@ -110,16 +116,18 @@ fetches Bazel, Bazel fetches the JDK. Specifically:
   `.bazelproject` replaces Gradle import. Watched as the top
   contributor-experience risk during the module-by-module step, while
   Gradle import still exists as the escape hatch.
-- ~100 lines of owned Starlark (macros + codegen genrules) replace two
-  maintained Gradle plugins — frozen, parity-gated code, but ours.
+- At cutover, ~100 lines of owned Starlark (macros + codegen genrules)
+  replaced two maintained Gradle plugins. ADR-010 removes the Java rule
+  generators; the pinned protobuf codegen remains.
 - Benchmarks now *compile* in `bazel build //...` (rot protection);
   running them stays manual. The `printRuntimeCp` helper dies with no
   consumer. The "-D properties don't reach forked JVMs" finding retires,
   replaced by the java_binary stub's `--jvm_flag=`.
 - Convenience symlinks are ignored by **anchored** names
   (`/bazel-bin`, …) — a blanket `bazel-*` would hide the tracked
-  `bazel-runner/` module from `git status`, the same anchoring lesson the
-  .gitignore already records for `build/`.
+  `bazel-runner/` compatibility package from `git status`, the same anchoring
+  lesson the .gitignore already records for `build/`. ADR-010 moves its source
+  to `runner/` to avoid Bazel's reserved execroot prefix.
 - ADR-003 stays in the tree marked superseded, reasoning intact. Its best
   idea — conventions in exactly one place — is not superseded at all; it
   just changed language.

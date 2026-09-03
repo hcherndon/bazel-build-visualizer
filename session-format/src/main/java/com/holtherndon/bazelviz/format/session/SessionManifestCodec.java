@@ -5,6 +5,7 @@ import com.holtherndon.bazelviz.core.session.SessionState;
 import com.holtherndon.bazelviz.core.source.Completeness;
 import com.holtherndon.bazelviz.format.session.SessionManifest.AuxiliaryCommand;
 import com.holtherndon.bazelviz.format.session.SessionManifest.CaptureSourceEntry;
+import com.holtherndon.bazelviz.format.session.SessionManifest.ExecutionLocation;
 import com.holtherndon.bazelviz.format.session.json.JsonException;
 import com.holtherndon.bazelviz.format.session.json.JsonReader;
 import com.holtherndon.bazelviz.format.session.json.JsonValue;
@@ -63,6 +64,7 @@ public final class SessionManifestCodec {
     private static final String KEY_STATE = "state";
     private static final String KEY_WORKING_DIRECTORY = "workingDirectory";
     private static final String KEY_WORKSPACE_ROOT = "workspaceRoot";
+    private static final String KEY_EXECUTION_LOCATION = "executionLocation";
     private static final String KEY_BAZEL_EXECUTABLE = "bazelExecutable";
     private static final String KEY_BAZEL_VERSION = "bazelVersion";
     private static final String KEY_ORIGINAL_COMMAND = "originalCommand";
@@ -90,6 +92,7 @@ public final class SessionManifestCodec {
             KEY_STATE,
             KEY_WORKING_DIRECTORY,
             KEY_WORKSPACE_ROOT,
+            KEY_EXECUTION_LOCATION,
             KEY_BAZEL_EXECUTABLE,
             KEY_BAZEL_VERSION,
             KEY_ORIGINAL_COMMAND,
@@ -125,6 +128,11 @@ public final class SessionManifestCodec {
 
     private static final String AUX_KEY_LABEL = "label";
     private static final String AUX_KEY_ARGV = "argv";
+
+    private static final String LOCATION_KEY_KIND = "kind";
+    private static final String LOCATION_KEY_DISPLAY_NAME = "displayName";
+    private static final String LOCATION_KEY_SSH_DESTINATION = "sshDestination";
+    private static final String LOCATION_KEY_SSH_PORT = "sshPort";
 
     private final ManifestMigrations migrations;
 
@@ -191,6 +199,7 @@ public final class SessionManifestCodec {
                 .state(parseState(requiredString(root, KEY_STATE, location), location))
                 .workingDirectory(optionalString(root, KEY_WORKING_DIRECTORY))
                 .workspaceRoot(optionalString(root, KEY_WORKSPACE_ROOT))
+                .executionLocation(executionLocation(root, location))
                 .bazelExecutable(optionalString(root, KEY_BAZEL_EXECUTABLE))
                 .bazelVersion(optionalString(root, KEY_BAZEL_VERSION))
                 .originalCommand(optionalStringList(root, KEY_ORIGINAL_COMMAND, location))
@@ -210,6 +219,38 @@ public final class SessionManifestCodec {
                 .containsEnvironmentValues(optionalBoolean(root, KEY_CONTAINS_ENVIRONMENT_VALUES, location))
                 .unknownFields(unknownMembers(root, KNOWN_KEYS));
         return builder.build();
+    }
+
+    private static Optional<ExecutionLocation> executionLocation(JsonObject root, String location)
+            throws SessionFormatException {
+        Optional<JsonValue> member = root.member(KEY_EXECUTION_LOCATION);
+        if (member.isEmpty()) {
+            return Optional.empty();
+        }
+        if (!(member.get() instanceof JsonObject object)) {
+            throw new SessionFormatException(
+                    "manifest at " + location + ": '" + KEY_EXECUTION_LOCATION + "' must be an object");
+        }
+        String kindText = requiredString(object, LOCATION_KEY_KIND, location);
+        ExecutionLocation.Kind kind;
+        try {
+            kind = ExecutionLocation.Kind.valueOf(kindText);
+        } catch (IllegalArgumentException e) {
+            throw new SessionFormatException(
+                    "manifest at " + location + " records execution location kind '" + kindText
+                            + "', which this build does not recognize",
+                    e);
+        }
+        try {
+            return Optional.of(new ExecutionLocation(
+                    kind,
+                    requiredString(object, LOCATION_KEY_DISPLAY_NAME, location),
+                    optionalString(object, LOCATION_KEY_SSH_DESTINATION),
+                    optionalInt(object, LOCATION_KEY_SSH_PORT)));
+        } catch (IllegalArgumentException | ArithmeticException e) {
+            throw new SessionFormatException(
+                    "manifest at " + location + " has an invalid execution location: " + e.getMessage(), e);
+        }
     }
 
     private static Map<String, JsonValue> unknownMembers(JsonObject object, Set<String> known) {
@@ -425,6 +466,15 @@ public final class SessionManifestCodec {
         members.put(KEY_STATE, new JsonString(manifest.state().name()));
         putString(members, KEY_WORKING_DIRECTORY, manifest.workingDirectory());
         putString(members, KEY_WORKSPACE_ROOT, manifest.workspaceRoot());
+        manifest.executionLocation().ifPresent(executionLocation -> {
+            Map<String, JsonValue> fields = new LinkedHashMap<>();
+            fields.put(LOCATION_KEY_KIND, new JsonString(executionLocation.kind().name()));
+            fields.put(LOCATION_KEY_DISPLAY_NAME, new JsonString(executionLocation.displayName()));
+            putString(fields, LOCATION_KEY_SSH_DESTINATION, executionLocation.sshDestination());
+            executionLocation.sshPort()
+                    .ifPresent(port -> fields.put(LOCATION_KEY_SSH_PORT, JsonNumber.of(port)));
+            members.put(KEY_EXECUTION_LOCATION, new JsonObject(fields));
+        });
         putString(members, KEY_BAZEL_EXECUTABLE, manifest.bazelExecutable());
         putString(members, KEY_BAZEL_VERSION, manifest.bazelVersion());
         putStrings(members, KEY_ORIGINAL_COMMAND, manifest.originalCommand());

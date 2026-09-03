@@ -57,7 +57,8 @@ final class MetricQueriesTest {
 
         exec("INSERT INTO mnemonics (id, value) VALUES (1, 'CppCompile'), (2, 'Javac')");
         exec("INSERT INTO labels (id, value) VALUES (1, '//pkg/a:lib'), (2, '//pkg/b:app')");
-        exec("INSERT INTO enrichment_tasks (id, kind, state) VALUES (1, 'EXEC_LOG', 'DONE')");
+        exec("INSERT INTO enrichment_tasks (id, kind, state)"
+                + " VALUES (1, 'EXECUTION_LOG', 'SUCCEEDED')");
 
         // 1: timed by both sources, one remote spawn, a cache miss.
         action(1, "out/a.o", 1, 1, "SUCCESS", 1_000L, 3_000L);
@@ -169,6 +170,15 @@ final class MetricQueriesTest {
     }
 
     @Test
+    @DisplayName("invocation concurrency is unavailable when no span occupies time")
+    void invocationConcurrencyIsAbsentWithoutUsableSpans() throws Exception {
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.NONE);
+
+        assertThat(metrics.concurrency().sweptSpans()).isZero();
+        assertThat(metrics.invocation().concurrency()).isEmpty();
+    }
+
+    @Test
     @DisplayName("an action whose spawns ran under different runners has no runner")
     void mixedRunnersAreNotResolved() throws Exception {
         SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
@@ -235,6 +245,8 @@ final class MetricQueriesTest {
 
         var paths = metrics.invocation().criticalPaths();
         assertThat(paths.bazelReportedMicros().value()).hasValue(4321L);
+        assertThat(paths.bazelReportedMicros().source())
+                .isEqualTo(com.holtherndon.bazelviz.core.source.DataSource.BEP);
         // No graph was imported here, so there is no derived path -- and
         // Bazel's number does not move into the empty slot.
         assertThat(paths.derived()).isEmpty();
@@ -247,6 +259,240 @@ final class MetricQueriesTest {
     }
 
     @Test
+    @DisplayName("profile components are identified as the fallback critical-path source")
+    void profileFallbackKeepsItsProvenance() throws Exception {
+        exec("DELETE FROM build_metrics");
+        trustedProfile();
+        exec("INSERT INTO bazel_critical_path (id, ordinal, description, duration_micros)"
+                + " VALUES (1, 0, 'first', 1000), (2, 1, 'second', 2500)");
+
+        var paths = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT)
+                .invocation().criticalPaths();
+        var reported = paths.bazelReportedMicros();
+
+        assertThat(reported.value()).hasValue(3_500L);
+        assertThat(reported.source())
+                .isEqualTo(com.holtherndon.bazelviz.core.source.DataSource.PROFILE);
+        assertThat(paths.bazelComponentCount()).isEqualTo(2);
+        assertThat(paths.bazelComponents()).isEmpty();
+
+        try (MetricQueries queries = new MetricQueries(database.newReadConnection())) {
+            assertThat(queries.bazelCriticalPathComponents(0, 1))
+                    .singleElement()
+                    .satisfies(component -> {
+                        assertThat(component.ordinal()).isZero();
+                        assertThat(component.description()).isEqualTo("first");
+                        assertThat(component.durationMicros()).hasValue(1_000L);
+                    });
+            assertThat(queries.bazelCriticalPathComponents(1, 10))
+                    .singleElement()
+                    .satisfies(component -> {
+                        assertThat(component.ordinal()).isEqualTo(1);
+                        assertThat(component.description()).isEqualTo("second");
+                        assertThat(component.durationMicros()).hasValue(2_500L);
+                    });
+            assertThat(queries.bazelCriticalPathComponents(2, 10)).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("a valid profile fallback supersedes an invalid BuildMetrics duration")
+    void validProfileSupersedesInvalidBuildMetrics() throws Exception {
+        exec("UPDATE build_metrics SET critical_path_micros = -5");
+        trustedProfile();
+        exec("INSERT INTO bazel_critical_path (id, ordinal, description, duration_micros)"
+                + " VALUES (1, 0, 'valid profile value', 2500)");
+
+        var reported = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT)
+                .invocation().criticalPaths().bazelReportedMicros();
+
+        assertThat(reported.value()).hasValue(2_500L);
+        assertThat(reported.source())
+                .isEqualTo(com.holtherndon.bazelviz.core.source.DataSource.PROFILE);
+    }
+
+    @Test
+    @DisplayName("an incomplete profile component total stays unavailable")
+    void incompleteProfileTotalIsUnavailable() throws Exception {
+        exec("DELETE FROM build_metrics");
+        trustedProfile();
+        exec("INSERT INTO bazel_critical_path (id, ordinal, description, duration_micros)"
+                + " VALUES (1, 0, 'known', 1000), (2, 1, 'unknown', NULL)");
+
+        var reported = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT)
+                .invocation().criticalPaths().bazelReportedMicros();
+
+        assertThat(reported.value()).isEmpty();
+        assertThat(reported.warning()).hasValueSatisfying(reason ->
+                assertThat(reason).contains("component durations are incomplete"));
+    }
+
+    @Test
+    @DisplayName("negative and overflowing profile totals stay unavailable")
+    void invalidProfileTotalsAreUnavailable() throws Exception {
+        exec("DELETE FROM build_metrics");
+        trustedProfile();
+        exec("INSERT INTO bazel_critical_path (id, ordinal, description, duration_micros)"
+                + " VALUES (1, 0, 'negative', -1)");
+
+        var negative = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT)
+                .invocation().criticalPaths().bazelReportedMicros();
+        assertThat(negative.value()).isEmpty();
+        assertThat(negative.warning()).hasValueSatisfying(reason ->
+                assertThat(reason).contains("negative"));
+
+        exec("DELETE FROM bazel_critical_path");
+        exec("INSERT INTO bazel_critical_path (id, ordinal, description, duration_micros)"
+                + " VALUES (1, 0, 'huge', " + Long.MAX_VALUE + "),"
+                + " (2, 1, 'overflow', 1)");
+        var overflow = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT)
+                .invocation().criticalPaths().bazelReportedMicros();
+        assertThat(overflow.value()).isEmpty();
+        assertThat(overflow.warning()).hasValueSatisfying(reason ->
+                assertThat(reason).contains("overflowed"));
+    }
+
+    @Test
+    @DisplayName("noncontiguous profile component ordinals cannot drive paging")
+    void noncontiguousProfileComponentsAreWithheld() throws Exception {
+        exec("DELETE FROM build_metrics");
+        trustedProfile();
+        exec("INSERT INTO bazel_critical_path (id, ordinal, description, duration_micros)"
+                + " VALUES (1, 0, 'first', 1000), (2, 2, 'gap', 2500)");
+
+        var paths = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT)
+                .invocation().criticalPaths();
+
+        assertThat(paths.bazelReportedMicros().value()).isEmpty();
+        assertThat(paths.bazelReportedMicros().warning()).hasValueSatisfying(reason ->
+                assertThat(reason).contains("ordinals are not contiguous"));
+        assertThat(paths.bazelComponentCount()).isEqualTo(2);
+        try (MetricQueries queries = new MetricQueries(database.newReadConnection())) {
+            assertThat(queries.bazelCriticalPathComponents(0, 10)).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("profile components from another build are withheld")
+    void mismatchedProfileComponentsAreWithheld() throws Exception {
+        exec("INSERT INTO enrichment_tasks (id, kind, state)"
+                + " VALUES (2, 'PROFILE', 'SUCCEEDED')");
+        exec("INSERT INTO profile_metadata (id, task_id, build_id_matches, anchor_meaning)"
+                + " VALUES (1, 2, 0, 'EXACT_START')");
+        exec("INSERT INTO bazel_critical_path (id, ordinal, description, duration_micros)"
+                + " VALUES (1, 0, 'another build', 1000)");
+
+        var paths = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT)
+                .invocation().criticalPaths();
+
+        assertThat(paths.bazelReportedMicros().value()).hasValue(4_321L);
+        assertThat(paths.bazelReportedMicros().warning()).hasValueSatisfying(reason ->
+                assertThat(reason).contains("different build"));
+        assertThat(paths.bazelComponents()).isEmpty();
+        try (MetricQueries queries = new MetricQueries(database.newReadConnection())) {
+            assertThat(queries.bazelCriticalPathComponents(0, 10)).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("profile rows retained after a failed retry are withheld")
+    void failedProfileDoesNotExposeStaleComponents() throws Exception {
+        exec("DELETE FROM build_metrics");
+        exec("INSERT INTO enrichment_tasks (id, kind, state)"
+                + " VALUES (2, 'PROFILE', 'FAILED')");
+        exec("INSERT INTO profile_metadata (id, task_id, build_id_matches, anchor_meaning)"
+                + " VALUES (1, 2, 1, 'EXACT_START')");
+        exec("INSERT INTO bazel_critical_path (id, ordinal, description, duration_micros)"
+                + " VALUES (1, 0, 'retained stale row', 1000)");
+
+        var paths = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT)
+                .invocation().criticalPaths();
+
+        assertThat(paths.bazelReportedMicros().value()).isEmpty();
+        assertThat(paths.bazelReportedMicros().warning()).hasValueSatisfying(reason ->
+                assertThat(reason).contains("trace-profile import state is FAILED"));
+        assertThat(paths.bazelComponents()).isEmpty();
+        try (MetricQueries queries = new MetricQueries(database.newReadConnection())) {
+            assertThat(queries.bazelCriticalPathComponents(0, 10)).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("critical-path component pages reject unbounded or invalid requests")
+    void criticalPathComponentPageBoundsAreExplicit() throws Exception {
+        try (MetricQueries queries = new MetricQueries(database.newReadConnection())) {
+            assertThat(org.assertj.core.api.Assertions.catchThrowable(
+                    () -> queries.bazelCriticalPathComponents(-1, 1)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("first ordinal");
+            assertThat(org.assertj.core.api.Assertions.catchThrowable(
+                    () -> queries.bazelCriticalPathComponents(0, 0)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("limit");
+        }
+    }
+
+    @Test
+    @DisplayName("failed execution-log retries do not expose retained attempts")
+    void failedExecutionLogDoesNotExposeStaleAttempts() throws Exception {
+        exec("UPDATE enrichment_tasks SET state = 'FAILED' WHERE id = 1");
+
+        try (MetricQueries queries = new MetricQueries(database.newReadConnection())) {
+            assertThat(queries.bestDurationSource())
+                    .isEqualTo(CriticalPath.DurationSource.BEP_ACTION);
+        }
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+        assertThat(metrics.invocation().work().attempts()).isZero();
+        assertThat(metrics.invocation().coverage().find("Correlation coverage"))
+                .hasValueSatisfying(coverage -> {
+                    assertThat(coverage.covered()).isZero();
+                    assertThat(coverage.reason()).hasValueSatisfying(reason ->
+                            assertThat(reason).contains("execution-log import state is FAILED"));
+                });
+    }
+
+    @Test
+    @DisplayName("an action is execution-log timed only when every attempt has a duration")
+    void mixedAttemptDurationsDoNotCountAsTimed() throws Exception {
+        attempt(5, 6, 1, "retry", 0, 3_100L, null, 100L);
+        exec("UPDATE action_attempts SET total_micros = NULL WHERE action_id IN (2, 5)");
+
+        try (MetricQueries queries = new MetricQueries(database.newReadConnection())) {
+            assertThat(queries.bestDurationSource())
+                    .isEqualTo(CriticalPath.DurationSource.BEP_ACTION);
+        }
+        SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
+        assertThat(metrics.invocation().coverage().find("Timing coverage"))
+                .hasValueSatisfying(coverage -> assertThat(coverage.covered()).isZero());
+    }
+
+    @Test
+    @DisplayName("declared-action rows retained after a failed import do not report correlation")
+    void failedActionGraphDoesNotExposeStaleCorrelation() throws Exception {
+        exec("INSERT INTO graph_sources"
+                + " (id, kind, state, configuration_match, target_scope, error_excerpt)"
+                + " VALUES (1, 'DECLARED_ACTIONS', 'FAILED', 'EXACT',"
+                + " 'EXACT_BEP_TARGETS', 'retry failed')");
+        exec("INSERT INTO declared_actions (id, source_id, graph_id, action_id, node_index)"
+                + " VALUES (1, 1, 0, 1, 0)");
+
+        Coverage correlation = collect(CriticalPath.DurationSource.BEP_ACTION)
+                .invocation().coverage().find("Action-graph correlation").orElseThrow();
+
+        assertThat(correlation.covered()).isZero();
+        assertThat(correlation.reason()).hasValueSatisfying(reason ->
+                assertThat(reason).contains("current aquery import state is FAILED")
+                        .contains("retry failed"));
+    }
+
+    private void trustedProfile() throws SQLException {
+        exec("INSERT INTO enrichment_tasks (id, kind, state)"
+                + " VALUES (2, 'PROFILE', 'SUCCEEDED')");
+        exec("INSERT INTO profile_metadata (id, task_id, build_id_matches, anchor_meaning)"
+                + " VALUES (1, 2, 1, 'EXACT_START')");
+    }
+
+    @Test
     @DisplayName("coverage names every source and explains every hole")
     void coverageIsExplained() throws Exception {
         SessionMetrics metrics = collect(CriticalPath.DurationSource.EXECUTION_ATTEMPT);
@@ -254,15 +500,18 @@ final class MetricQueriesTest {
 
         assertThat(coverage.entries()).extracting(Coverage::name).containsExactly(
                 "Timing coverage", "Runner coverage", "Cache-state coverage",
-                "Input-size coverage", "Output-size coverage", "Action-graph coverage",
-                "Target-graph coverage", "Correlation coverage");
+                "Input-size coverage", "Output-size coverage", "Action-graph correlation",
+                "Action-graph completeness", "Target-graph coverage", "Correlation coverage");
         assertThat(coverage.isComplete()).isFalse();
         for (Coverage entry : coverage.incomplete()) {
             assertThat(entry.reason()).as("%s must say why", entry.name()).isNotEmpty();
         }
         // No aquery or cquery ran, so those are unavailable rather than zero
         // per cent of something.
-        assertThat(coverage.find("Action-graph coverage").orElseThrow().describe())
+        assertThat(coverage.find("Action-graph correlation").orElseThrow().describe())
+                .contains("unavailable")
+                .contains("no aquery output");
+        assertThat(coverage.find("Action-graph completeness").orElseThrow().describe())
                 .contains("unavailable")
                 .contains("no aquery output");
     }
@@ -338,6 +587,23 @@ final class MetricQueriesTest {
                         .aggregate(GroupAggregate.Dimension.MNEMONIC).orElseThrow()
                         .groups().getFirst().duration().name())
                 .isEqualTo("Action wall duration");
+    }
+
+    @Test
+    @DisplayName("BEP wall durations are not mixed with subprocess timing components")
+    void bepDurationsDoNotMixAttemptComponents() throws Exception {
+        exec("UPDATE action_attempts SET queue_micros = 100, setup_micros = 50,"
+                + " execution_wall_micros = 1750, network_micros = 0,"
+                + " upload_micros = 0, fetch_micros = 0 WHERE action_id = 1");
+
+        var first = collect(CriticalPath.DurationSource.BEP_ACTION).candidates().stream()
+                .filter(action -> action.actionId() == 1)
+                .findFirst().orElseThrow();
+
+        assertThat(first.durationMicros()).hasValue(2_000L);
+        assertThat(first.queueMicros()).isEmpty();
+        assertThat(first.queueFraction()).isEmpty();
+        assertThat(first.unaccountedMicros()).isEmpty();
     }
 
     @Test

@@ -13,19 +13,32 @@ import com.holtherndon.bazelviz.core.measure.Measured;
 import com.holtherndon.bazelviz.core.source.Completeness;
 import com.holtherndon.bazelviz.core.source.DataSource;
 import com.holtherndon.bazelviz.graph.CsrBuilder;
+import com.holtherndon.bazelviz.storage.SessionDatabase;
+import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
 import com.holtherndon.bazelviz.storage.metrics.SessionMetrics;
+import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
+import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
+import java.awt.Component;
+import java.awt.Container;
 import java.lang.reflect.Field;
+import java.lang.reflect.Proxy;
+import java.nio.file.Path;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import javax.swing.JScrollPane;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * What the findings card puts on screen, rendered headlessly from a result the
@@ -36,6 +49,53 @@ import org.junit.jupiter.api.Test;
  * test that needs no database is evidence that the view needs none either.
  */
 final class FindingsViewTest {
+
+    @Test
+    @DisplayName("the no-session message replaces and fills the whole Findings pane")
+    void emptyStateFillsThePane() {
+        FindingsView view = new FindingsView();
+        view.setSize(960, 600);
+        layoutTree(view);
+
+        assertThat(view.emptyStateForTest().isVisible()).isTrue();
+        assertThat(view.emptyStateForTest().getLocation()).isEqualTo(new java.awt.Point());
+        assertThat(view.emptyStateForTest().getSize()).isEqualTo(view.getSize());
+
+        view.show(new MetricsService.Result(
+                metrics(bothPaths(), List.of()), List.of(), FindingThresholds.defaults()));
+        layoutTree(view);
+        assertThat(view.emptyStateForTest().isVisible()).isFalse();
+
+        view.detach();
+        layoutTree(view);
+        assertThat(view.emptyStateForTest().isVisible()).isTrue();
+        assertThat(view.emptyStateForTest().getSize()).isEqualTo(view.getSize());
+    }
+
+    @Test
+    @DisplayName("a queued result cannot reopen Findings after its session is detached")
+    void detachedViewDropsQueuedResult(@TempDir Path directory) throws Exception {
+        BlockingQueue<Runnable> uiQueue = new LinkedBlockingQueue<>();
+        FindingsView view = new FindingsView();
+
+        try (SessionDatabase database = SessionDatabase.open(directory.resolve("session.db"))) {
+            MigrationRunner.standard().migrate(database);
+            SessionSource source = metricsOnlySource(database);
+            try (MetricsService service = new MetricsService(
+                    source, uiQueue::add, FindingThresholds.defaults())) {
+                view.attach(service);
+                Runnable queued = uiQueue.poll(10, TimeUnit.SECONDS);
+                assertThat(queued).as("the queued Findings delivery").isNotNull();
+
+                view.detach();
+                queued.run();
+
+                assertThat(view.emptyStateForTest().isVisible()).isTrue();
+                assertThat(view.findingTitlesForTest()).isEmpty();
+                assertThat(view.headlineForTest()).isBlank();
+            }
+        }
+    }
 
     private static InvocationMetrics invocation(CriticalPaths paths, List<Coverage> coverage) {
         ConcurrencySweep.Spans spans = new ConcurrencySweep.Spans();
@@ -154,14 +214,37 @@ final class FindingsViewTest {
     void anAbsentPathExplainsItself() {
         FindingsView view = new FindingsView();
         CriticalPaths onlyBazel = new CriticalPaths(
-                Measured.of(900_000L, DataSource.PROFILE), List.of(), Optional.empty());
+                Measured.of(900_000L, DataSource.PROFILE),
+                List.of(),
+                Optional.empty(),
+                Optional.of("the action graph has unresolved artifact references"));
 
         view.show(new MetricsService.Result(
                 metrics(onlyBazel, List.of()), List.of(), FindingThresholds.defaults()));
 
         assertThat(view.summaryTextForTest())
-                .contains("no imported action graph to compute it over");
+                .contains("the action graph has unresolved artifact references")
+                .doesNotContain("no imported action graph to compute it over");
         assertThat(view.headlineForTest()).contains("No findings");
+    }
+
+    @Test
+    @DisplayName("the Bazel path row preserves an exact profile provenance warning")
+    void bazelProfileMismatchWarningIsVisible() {
+        FindingsView view = new FindingsView();
+        CriticalPaths warned = new CriticalPaths(
+                Measured.of(900_000L, DataSource.BEP)
+                        .warn("profile component breakdown withheld: build id mismatch"),
+                List.of(),
+                Optional.empty(),
+                Optional.of("no graph"));
+
+        view.show(new MetricsService.Result(
+                metrics(warned, List.of()), List.of(), FindingThresholds.defaults()));
+
+        assertThat(view.summaryTextForTest())
+                .contains("profile component breakdown withheld: build id mismatch")
+                .doesNotContain("component breakdown unavailable");
     }
 
     @Test
@@ -171,7 +254,7 @@ final class FindingsViewTest {
         List<Coverage> coverage = List.of(
                 Coverage.of("Timing coverage", 4, 13, DataSource.EXECUTION_LOG,
                         "most actions never spawn a subprocess"),
-                Coverage.unavailable("Action-graph coverage", 13, DataSource.AQUERY,
+                Coverage.unavailable("Action-graph correlation", 13, DataSource.AQUERY,
                         "no aquery output was imported"));
 
         view.show(new MetricsService.Result(
@@ -181,7 +264,7 @@ final class FindingsViewTest {
         assertThat(view.summaryTextForTest())
                 .contains("Timing coverage")
                 .contains("30.8%")
-                .contains("Action-graph coverage")
+                .contains("Action-graph correlation")
                 .contains("unavailable");
     }
 
@@ -273,7 +356,7 @@ final class FindingsViewTest {
         List<Coverage> coverage = List.of(
                 Coverage.of("Timing coverage", 4, 13, DataSource.EXECUTION_LOG,
                         "most actions never spawn a subprocess"),
-                Coverage.unavailable("Action-graph coverage", 13, DataSource.AQUERY,
+                Coverage.unavailable("Action-graph correlation", 13, DataSource.AQUERY,
                         "no aquery output was imported"));
 
         view.show(new MetricsService.Result(
@@ -383,19 +466,19 @@ final class FindingsViewTest {
                 .isTrue();
     }
 
-    private static void clickButtonLabelled(java.awt.Container root, String text) {
+    private static void clickButtonLabelled(Container root, String text) {
         javax.swing.AbstractButton button = findButton(root, text);
         assertThat(button).as("a button labelled \"%s\"", text).isNotNull();
         button.doClick();
     }
 
-    private static javax.swing.AbstractButton findButton(java.awt.Container root, String text) {
-        for (java.awt.Component component : root.getComponents()) {
+    private static javax.swing.AbstractButton findButton(Container root, String text) {
+        for (Component component : root.getComponents()) {
             if (component instanceof javax.swing.AbstractButton button
                     && text.equals(button.getText())) {
                 return button;
             }
-            if (component instanceof java.awt.Container container) {
+            if (component instanceof Container container) {
                 javax.swing.AbstractButton found = findButton(container, text);
                 if (found != null) {
                     return found;
@@ -403,5 +486,49 @@ final class FindingsViewTest {
             }
         }
         return null;
+    }
+
+    private static void layoutTree(Container container) {
+        for (int pass = 0; pass < 4; pass++) {
+            invalidateTree(container);
+            layoutChildren(container);
+        }
+    }
+
+    private static void invalidateTree(Container container) {
+        container.invalidate();
+        for (Component child : container.getComponents()) {
+            if (child instanceof Container nested) {
+                invalidateTree(nested);
+            }
+        }
+    }
+
+    private static void layoutChildren(Container container) {
+        container.doLayout();
+        for (Component child : container.getComponents()) {
+            if (child instanceof Container nested) {
+                layoutChildren(nested);
+            }
+        }
+    }
+
+    private static SessionSource metricsOnlySource(SessionDatabase database) {
+        return (SessionSource) Proxy.newProxyInstance(
+                SessionSource.class.getClassLoader(), new Class<?>[] {SessionSource.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "openMetricQueries" -> metricQueries(database);
+                    case "close" -> null;
+                    case "toString" -> "FindingsMetricsSession";
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+    }
+
+    private static MetricQueries metricQueries(SessionDatabase database) {
+        try {
+            return new MetricQueries(database.newReadConnection());
+        } catch (SQLException failure) {
+            throw new IllegalStateException(failure);
+        }
     }
 }

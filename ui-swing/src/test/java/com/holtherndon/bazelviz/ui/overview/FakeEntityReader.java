@@ -8,6 +8,7 @@ import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
+import com.holtherndon.bazelviz.storage.entities.ConfigurationQueries;
 import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
 import com.holtherndon.bazelviz.storage.entities.ErrorRow;
 import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
@@ -31,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * the numbers move, and a panel that refreshes on a timer calls it once per
  * interval however fast they move.
  */
-final class FakeEntityReader implements EntityReader {
+class FakeEntityReader implements EntityReader {
 
     private final AtomicLong overviewReads = new AtomicLong();
 
@@ -127,6 +128,46 @@ final class FakeEntityReader implements EntityReader {
     }
 
     @Override
+    public long topLevelTargetLabelCount() {
+        return 0;
+    }
+
+    @Override
+    public List<String> firstTopLevelTargetLabels(int limit) {
+        return List.of();
+    }
+
+    @Override
+    public List<String> topLevelTargetLabelsAfter(String label, int limit) {
+        return List.of();
+    }
+
+    @Override
+    public long targetLabelCount() {
+        return 0;
+    }
+
+    @Override
+    public List<TargetQueries.LabelSummary> firstTargetLabels(int limit) {
+        return List.of();
+    }
+
+    @Override
+    public List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit) {
+        return List.of();
+    }
+
+    @Override
+    public List<TargetQueries.ConfiguredTarget> configuredTargetsByLabel(String label) {
+        return List.of();
+    }
+
+    @Override
+    public Optional<TargetQueries.ConfiguredSource> configuredTargetSource() {
+        return Optional.empty();
+    }
+
+    @Override
     public Optional<TargetRow> target(long id) {
         return Optional.empty();
     }
@@ -140,6 +181,28 @@ final class FakeEntityReader implements EntityReader {
     public List<TargetQueries.OutputGroup> outputGroups(long configuredTargetId) {
         return List.of();
     }
+
+    @Override public long configurationCount() { return 0; }
+    @Override public List<ConfigurationQueries.Summary> configurations(long offset, int limit) {
+        return List.of();
+    }
+    @Override public Optional<ConfigurationQueries.Summary> configuration(String checksum) {
+        return Optional.empty();
+    }
+    @Override public OptionalLong configurationPosition(String checksum) {
+        return OptionalLong.empty();
+    }
+    @Override public Optional<ConfigurationQueries.Source> configurationSource() {
+        return Optional.empty();
+    }
+    @Override public long configurationValueCount(String checksum) { return 0; }
+    @Override public List<ConfigurationQueries.Value> configurationValues(
+            String checksum, long offset, int limit) { return List.of(); }
+    @Override public long configurationDifferenceCount(String baseline, String candidate) {
+        return 0;
+    }
+    @Override public List<ConfigurationQueries.Difference> configurationDifferences(
+            String baseline, String candidate, long offset, int limit) { return List.of(); }
 
     @Override
     public long testCount() {

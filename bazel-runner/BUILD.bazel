@@ -1,73 +1,17 @@
-# Launching and supervising Bazel processes.
-
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite", "bbv_real_bazel_test")
-load("//tools:relocate.bzl", "relocated_srcs")
-
-# This module's directory name starts with "bazel-", which the execroot
-# symlink forest refuses to plant (see tools/relocate.bzl). All compile
-# inputs are therefore byte-exact copies relocated into bazel-out; labels,
-# packages and the on-disk layout are unchanged.
-relocated_srcs(
-    name = "relocated-main-srcs",
-    srcs = glob(["src/main/java/**/*.java"]),
-)
-
-relocated_srcs(
-    name = "relocated-test-srcs",
-    srcs = glob(
-        ["src/test/java/**/*.java"],
-        exclude = ["src/test/java/com/holtherndon/bazelviz/runner/caps/RealBazelCapabilityTest.java"],
-    ),
-)
-
-relocated_srcs(
-    name = "relocated-real-bazel-srcs",
-    srcs = ["src/test/java/com/holtherndon/bazelviz/runner/caps/RealBazelCapabilityTest.java"],
-)
-
-bbv_java_library(
+alias(
     name = "bazel-runner",
-    srcs = [":relocated-main-srcs"],
-    # api: launch plans and capability reports speak core-model types.
-    exports = ["//core-model"],
-    deps = [
-        "//core-model",
-        # implementation (not exported): the capability detector's primary
-        # probe is `bazel help flags-as-proto`, whose output is a
-        # base64-encoded bazel_flags.FlagCollection. Parsing it is the
-        # difference between knowing a flag exists and scraping help text for
-        # it. No type in this module's API exposes a generated protobuf
-        # class — FlagSpec restates what we need, so a caller never needs
-        # protobuf on its compile classpath.
-        "//proto",
-    ],
+    actual = "//runner:runner",
+    visibility = ["//visibility:public"],
 )
 
-# Real Bazel binaries are not available to unit tests, so the tests drive the
-# detector and the launcher against scripted fake executables and against
-# recorded help output from Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0 (plan rule
-# 18: create a real fixture before encoding an assumption).
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    srcs = glob(
-        ["src/test/java/**/*.java"],
-        exclude = ["src/test/java/com/holtherndon/bazelviz/runner/caps/RealBazelCapabilityTest.java"],
-    ),
-    compile_srcs = [":relocated-test-srcs"],
-    deps = [
-        ":bazel-runner",
-        "//proto",
-        "//test-support",
-    ],
+    tests = ["//runner:tests"],
+    visibility = ["//visibility:public"],
 )
 
-bbv_real_bazel_test(
+alias(
     name = "RealBazelCapabilityTest",
-    srcs = [":relocated-real-bazel-srcs"],
-    test_class = "com.holtherndon.bazelviz.runner.caps.RealBazelCapabilityTest",
-    deps = [
-        ":bazel-runner",
-        "//proto",
-        "//test-support",
-    ],
+    actual = "//runner/src/test/java/com/holtherndon/bazelviz/runner/caps:RealBazelCapabilityTest",
+    visibility = ["//visibility:public"],
 )

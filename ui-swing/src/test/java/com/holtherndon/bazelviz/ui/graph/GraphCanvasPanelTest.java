@@ -2,17 +2,23 @@ package com.holtherndon.bazelviz.ui.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.graph.GraphIndexBuilder;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
+import com.holtherndon.bazelviz.ui.theme.WrapLayout;
+import java.awt.Component;
+import java.awt.Container;
 import java.nio.file.Path;
 import java.util.List;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -107,6 +113,92 @@ final class GraphCanvasPanelTest {
     }
 
     @Test
+    @DisplayName("the drawing form has explicit accessible labels and explained defaults")
+    void drawingControlsAreExplicitAndExplained() {
+        assertThat(namedLabel(panel, "graph.scopeLabel").getLabelFor())
+                .isSameAs(namedComponent(panel, "graph.scope"));
+        assertThat(namedLabel(panel, "graph.depthLabel").getLabelFor())
+                .isSameAs(namedComponent(panel, "graph.depth"));
+        assertThat(namedLabel(panel, "graph.nodeBudgetLabel").getLabelFor())
+                .isSameAs(namedComponent(panel, "graph.nodeBudget"));
+        assertThat(namedLabel(panel, "graph.layoutLabel").getLabelFor())
+                .isSameAs(namedComponent(panel, "graph.layout"));
+        assertThat(namedLabel(panel, "graph.edgesLabel").getLabelFor())
+                .isSameAs(namedComponent(panel, "graph.edges"));
+        assertThat(namedLabel(panel, "graph.nodeEncodingLabel").getLabelFor())
+                .isSameAs(namedComponent(panel, "graph.nodeEncoding"));
+
+        assertThat(panel.layoutForTesting()).isEqualTo(GraphLayout.Kind.HIERARCHY);
+        assertThat(panel.edgeDisplayForTesting()).isEqualTo(GraphEdgeDisplay.DECLUTTERED);
+        assertThat(panel.appearanceExplanationForTesting())
+                .contains("Top-down primary dependency branches")
+                .contains("shared and cyclic links")
+                .contains("Node size and colour encode duration");
+        assertThat(java.util.List.of(GraphLayout.Kind.values())).contains(
+                GraphLayout.Kind.HIERARCHY,
+                GraphLayout.Kind.LAYERED,
+                GraphLayout.Kind.RADIAL,
+                GraphLayout.Kind.LINEAR,
+                GraphLayout.Kind.GRID);
+    }
+
+    @Test
+    @DisplayName("the drawing controls use one compact row and reveal help on request")
+    void drawingControlsAreCompactAndResponsive() throws Exception {
+        JPanel controls = (JPanel) namedComponent(panel, "graph.controlsRow");
+        Component helpPanel = namedComponent(panel, "graph.controlsHelpPanel");
+        assertThat(controls.getLayout()).isInstanceOf(WrapLayout.class);
+        assertThat(helpPanel.isVisible()).isFalse();
+        assertThat(((javax.swing.JTextArea) namedComponent(panel, "graph.limitWarningText"))
+                .getLineWrap()).isTrue();
+        assertThat(((Container) namedComponent(panel, "graph.limitActions")).getLayout())
+                .isInstanceOf(WrapLayout.class);
+
+        int[] heights = new int[2];
+        SwingUtilities.invokeAndWait(() -> {
+            controls.setSize(1_900, 200);
+            heights[0] = controls.getPreferredSize().height;
+            controls.setSize(600, 500);
+            heights[1] = controls.getPreferredSize().height;
+        });
+
+        assertThat(heights[0]).as("wide default controls height").isLessThan(90);
+        assertThat(heights[1]).as("narrow controls reflow").isGreaterThan(heights[0]);
+
+        javax.swing.JToggleButton help = (javax.swing.JToggleButton)
+                namedComponent(panel, "graph.controlsHelp");
+        SwingUtilities.invokeAndWait(help::doClick);
+        assertThat(helpPanel.isVisible()).isTrue();
+        assertThat(((javax.swing.JTextArea) namedComponent(panel, "graph.scopeExplanation"))
+                .getLineWrap()).isTrue();
+        assertThat(((javax.swing.JTextArea) namedComponent(panel, "graph.appearanceExplanation"))
+                .getLineWrap()).isTrue();
+        SwingUtilities.invokeAndWait(() -> {
+            helpPanel.setSize(600, 200);
+            ((Container) helpPanel).doLayout();
+        });
+        assertThat(helpPanel.getPreferredSize().height)
+                .as("expanded help stays bounded")
+                .isLessThan(120);
+        assertThat(panel.scopeExplanationForTesting()).contains("selected action");
+        assertThat(panel.appearanceExplanationForTesting())
+                .contains("Top-down primary dependency branches")
+                .contains("shared and cyclic links");
+    }
+
+    @Test
+    @DisplayName("scope help follows the selected action or target graph")
+    void scopeHelpUsesTheCurrentNodeKind() {
+        assertThat(panel.scopeExplanationForTesting()).contains("selected action");
+
+        panel.setShownGraph(com.holtherndon.bazelviz.core.graph.GraphKind.CONFIGURED_TARGETS);
+
+        assertThat(panel.scopeExplanationForTesting())
+                .contains("selected target")
+                .doesNotContain("selected action");
+    }
+
+    @Test
     @DisplayName("attached display labels are what the canvas names actions with")
     void displayLabelsReachTheCanvas() throws Exception {
         // The per-action names — "Mnemonic — output basename" — arrive
@@ -124,9 +216,50 @@ final class GraphCanvasPanelTest {
         GraphModel model = panel.canvas().model();
         for (int i = 0; i < model.size(); i++) {
             assertThat(model.displayLabelAt(i)).startsWith("Javac — t");
+            assertThat(model.canvasLabelAt(i))
+                    .contains("Javac — t")
+                    .contains("target //a:target");
         }
         // Two actions no longer read as the same string.
         assertThat(model.displayLabelAt(0)).isNotEqualTo(model.displayLabelAt(1));
+    }
+
+    @Test
+    @DisplayName("selection names both the action and the target it belongs to")
+    void selectionNamesTargetOwnership() throws Exception {
+        String[] display = new String[6];
+        for (int i = 0; i < display.length; i++) {
+            display[i] = "Javac — t" + i + ".o";
+        }
+        panel.attachActionDisplayLabels(display);
+        panel.showNode(2);
+        awaitDrawn();
+
+        panel.canvas().select(0);
+
+        assertThat(panel.legendText())
+                .contains("Javac — t")
+                .contains("target //a:target")
+                .contains("not timed in this session");
+    }
+
+    @Test
+    @DisplayName("the original layouts remain selectable beside the hierarchy")
+    void existingLayoutsRemainSelectable() throws Exception {
+        panel.showNode(2);
+        awaitDrawn();
+
+        SwingUtilities.invokeAndWait(() -> panel.setLayoutForTesting(GraphLayout.Kind.LAYERED));
+        awaitCondition(
+                () -> panel.canvas().model().layout().kind() == GraphLayout.Kind.LAYERED,
+                "the layered drawing");
+
+        assertThat(panel.layoutForTesting()).isEqualTo(GraphLayout.Kind.LAYERED);
+        assertThat(panel.edgeDisplayForTesting()).isEqualTo(GraphEdgeDisplay.ALL);
+        assertThat(panel.edgeDisplayEnabledForTesting()).isFalse();
+        assertThat(panel.appearanceExplanationForTesting())
+                .contains("Longest-path columns")
+                .contains("Draw every dependency");
     }
 
     @Test
@@ -204,10 +337,14 @@ final class GraphCanvasPanelTest {
     void detachClears() throws Exception {
         panel.showNode(2);
         awaitDrawn();
+        SwingUtilities.invokeAndWait(() -> panel.setModeForTesting(
+                com.holtherndon.bazelviz.analysis.GraphExtract.Mode.WHOLE));
 
         panel.detach();
 
         assertThat(panel.canvas().model().size()).isZero();
+        assertThat(panel.modeForTesting())
+                .isEqualTo(com.holtherndon.bazelviz.analysis.GraphExtract.Mode.NEIGHBOURHOOD);
         assertThat(panel.descriptionText()).contains("No dependency graph is open");
         assertThat(panel.legendText()).isBlank();
     }
@@ -265,6 +402,47 @@ final class GraphCanvasPanelTest {
         assertThat(model.layout().xAt(0)).isLessThan(model.layout().xAt(1));
         assertThat(model.layout().xAt(1)).isLessThan(model.layout().xAt(2));
         assertThat(panel.descriptionText()).startsWith("Path between two actions:");
+    }
+
+    @Test
+    @DisplayName("an oversized path is refused with exact counts and can use raised limits")
+    void pathsRespectTheCurrentDrawingBudgets() throws Exception {
+        panel.raiseLimits(2, 10);
+
+        assertThat(panel.showPath(
+                List.of(0, 2, 5),
+                com.holtherndon.bazelviz.analysis.GraphExtract.Mode.CRITICAL_PATH))
+                .isFalse();
+        assertThat(panel.descriptionText())
+                .contains("3 actions and 2 dependencies")
+                .contains("budget of 2 actions and 10 dependencies")
+                .contains("Nothing was drawn");
+        assertThat(panel.canvas().model().size()).isZero();
+
+        panel.raiseLimits(3, 2);
+        assertThat(panel.showPath(
+                List.of(0, 2, 5),
+                com.holtherndon.bazelviz.analysis.GraphExtract.Mode.CRITICAL_PATH))
+                .isTrue();
+        awaitDrawn();
+        assertThat(panel.canvas().model().extract().nodes()).containsExactly(0, 2, 5);
+    }
+
+    @Test
+    @DisplayName("opening a node from a path returns to a neighbourhood")
+    void nodeNavigationLeavesPathMode() throws Exception {
+        panel.showPath(
+                List.of(0, 2, 5), com.holtherndon.bazelviz.analysis.GraphExtract.Mode.PATH);
+        awaitDrawn();
+
+        panel.showNode(2);
+        awaitCondition(
+                () -> panel.modeForTesting()
+                                == com.holtherndon.bazelviz.analysis.GraphExtract.Mode.NEIGHBOURHOOD
+                        && panel.descriptionText().startsWith("Neighbourhood"),
+                "the node neighbourhood to replace the path");
+
+        assertThat(panel.canvas().model().extract().nodes()).contains(2);
     }
 
     @Test
@@ -385,6 +563,82 @@ final class GraphCanvasPanelTest {
         // One number, two faces. A bar that raised the limit while the
         // control still showed the old one would make the control a lie.
         assertThat((Integer) panel.nodeLimitControlForTesting().getValue()).isEqualTo(7);
+    }
+
+    @Test
+    @DisplayName("cluster scope exposes a separate group budget instead of a dead node limit")
+    void clusterScopeUsesAGroupBudget() throws Exception {
+        int originalNodeBudget = panel.nodeLimit();
+
+        SwingUtilities.invokeAndWait(() -> panel.setModeForTesting(
+                com.holtherndon.bazelviz.analysis.GraphExtract.Mode.CLUSTERS));
+        assertThat(namedLabel(panel, "graph.nodeBudgetLabel").getText())
+                .isEqualTo("Group budget:");
+        assertThat((Integer) panel.nodeLimitControlForTesting().getValue())
+                .isEqualTo(com.holtherndon.bazelviz.analysis.GraphClustering.DEFAULT_CLUSTER_LIMIT);
+
+        SwingUtilities.invokeAndWait(() -> panel.nodeLimitControlForTesting().setValue(7));
+        assertThat(panel.clusterLimitForTesting()).isEqualTo(7);
+        assertThat(panel.nodeLimit()).isEqualTo(originalNodeBudget);
+
+        SwingUtilities.invokeAndWait(() -> panel.setModeForTesting(
+                com.holtherndon.bazelviz.analysis.GraphExtract.Mode.WHOLE));
+        assertThat(namedLabel(panel, "graph.nodeBudgetLabel").getText())
+                .isEqualTo("Node budget:");
+        assertThat((Integer) panel.nodeLimitControlForTesting().getValue())
+                .isEqualTo(originalNodeBudget);
+    }
+
+    @Test
+    @DisplayName("a failed automatic grouping raises the group budget, not the node budget")
+    void automaticGroupingRefusalUsesClusterRecovery() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            panel.setModeForTesting(
+                    com.holtherndon.bazelviz.analysis.GraphExtract.Mode.CLUSTERS);
+            panel.setGroupByForTesting(
+                    com.holtherndon.bazelviz.analysis.GraphClustering.By.TARGET);
+            panel.nodeLimitControlForTesting().setValue(1);
+            panel.setModeForTesting(com.holtherndon.bazelviz.analysis.GraphExtract.Mode.WHOLE);
+            panel.raiseLimits(2, 2);
+        });
+        awaitCondition(
+                () -> panel.modeForTesting()
+                                == com.holtherndon.bazelviz.analysis.GraphExtract.Mode.CLUSTERS
+                        && panel.isOverLimitShown()
+                        && panel.descriptionText().contains("more than the 1"),
+                "the exact cluster refusal");
+
+        assertThat(panel.isAutomaticallyGrouped()).isFalse();
+        assertThat(panel.overLimitText()).contains("Too many groups");
+        assertThat(panel.refineTextForTesting()).isEqualTo("Try another grouping");
+        int nodeBudget = panel.nodeLimit();
+
+        panel.drawItAnywayForTesting();
+        awaitDrawn();
+
+        assertThat(panel.clusterLimitForTesting()).isGreaterThanOrEqualTo(6);
+        assertThat(panel.nodeLimit()).isEqualTo(nodeBudget);
+        assertThat(panel.canvas().model().isCluster()).isTrue();
+        assertThat(panel.canvas().model().clustering().clusters()).hasSize(6);
+    }
+
+    @Test
+    @DisplayName("switching graph sources removes the old whole-graph model immediately")
+    void sourceSwitchCannotExposeOldNodeNumbering() throws Exception {
+        SwingUtilities.invokeAndWait(() -> panel.setModeForTesting(
+                com.holtherndon.bazelviz.analysis.GraphExtract.Mode.WHOLE));
+        awaitDrawn();
+        assertThat(panel.canvas().model().size()).isEqualTo(6);
+
+        boolean[] clearedInsideSwitch = new boolean[1];
+        SwingUtilities.invokeAndWait(() -> {
+            panel.setShownGraph(
+                    com.holtherndon.bazelviz.core.graph.GraphKind.CONFIGURED_TARGETS);
+            clearedInsideSwitch[0] = panel.canvas().model().size() == 0;
+        });
+
+        assertThat(clearedInsideSwitch[0]).isTrue();
+        assertThat(panel.canvas().selectedPositions()).isEmpty();
     }
 
     @Test
@@ -519,5 +773,29 @@ final class GraphCanvasPanelTest {
                 com.holtherndon.bazelviz.analysis.GraphExtract.DEFAULT_EDGE_LIMIT);
         awaitDrawn();
         assertThat(panel.descriptionText()).contains("from a graph of 6");
+    }
+
+    private static JLabel namedLabel(Container root, String name) {
+        Component found = namedComponent(root, name);
+        if (found instanceof JLabel label) {
+            return label;
+        }
+        throw new AssertionError(name + " is not a label");
+    }
+
+    private static Component namedComponent(Container root, String name) {
+        for (Component child : root.getComponents()) {
+            if (name.equals(child.getName())) {
+                return child;
+            }
+            if (child instanceof Container nested) {
+                try {
+                    return namedComponent(nested, name);
+                } catch (AssertionError ignored) {
+                    // Keep looking in sibling containers.
+                }
+            }
+        }
+        throw new AssertionError("No component named " + name);
     }
 }

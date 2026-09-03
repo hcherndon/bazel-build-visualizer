@@ -5,6 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.graph.CsrGraph;
+import com.holtherndon.bazelviz.core.measure.Measured;
+import com.holtherndon.bazelviz.core.source.Completeness;
+import com.holtherndon.bazelviz.core.source.DataSource;
+import java.util.List;
+import java.util.Optional;
+import java.util.OptionalLong;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -50,6 +56,8 @@ final class CriticalPathTest {
         assertThat(result.outcome()).isEqualTo(CriticalPath.Outcome.COMPUTED);
         assertThat(result.path()).containsExactly(0, 2, 3);
         assertThat(result.makespanMicros()).isEqualTo(115);
+        assertThatThrownBy(() -> result.path().set(0, 99))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test
@@ -69,6 +77,27 @@ final class CriticalPathTest {
         assertThat(result.isOnPath(0)).isTrue();
         assertThat(result.isOnPath(2)).isTrue();
         assertThat(result.isOnPath(3)).isTrue();
+    }
+
+    @Test
+    @DisplayName("equal zero-slack branches do not both claim membership in the selected path")
+    void selectedPathMembershipIsDistinctFromZeroSlack() {
+        CsrGraph equalBranches = CsrBuilder.build(4, visitor -> {
+            visitor.edge(0, 1);
+            visitor.edge(0, 2);
+            visitor.edge(1, 3);
+            visitor.edge(2, 3);
+        });
+
+        CriticalPath.Result result = CriticalPath.compute(
+                equalBranches, new long[] {10, 30, 30, 5},
+                CriticalPath.DurationSource.BEP_ACTION);
+
+        assertThat(result.slackAt(1)).isZero();
+        assertThat(result.slackAt(2)).isZero();
+        assertThat(result.path()).containsExactly(0, 1, 3);
+        assertThat(result.isOnPath(1)).isTrue();
+        assertThat(result.isOnPath(2)).isFalse();
     }
 
     @Test
@@ -98,6 +127,49 @@ final class CriticalPathTest {
     }
 
     @Test
+    @DisplayName("an untimed node remains distinct from a node measured at zero")
+    void perNodeTimingPresenceDistinguishesUnknownFromMeasuredZero() {
+        CriticalPath.Result result = CriticalPath.compute(
+                diamond(), new long[] {10, CriticalPath.UNKNOWN_DURATION, 0, 5},
+                CriticalPath.DurationSource.BEP_ACTION);
+
+        assertThat(result.isUntimedAt(1)).isTrue();
+        assertThat(result.isUntimedAt(2)).isFalse();
+        assertThat(result.earliestFinishAt(2) - result.earliestStartAt(2)).isZero();
+    }
+
+    @Test
+    @DisplayName("an untimed prerequisite remains visible before a timed action")
+    void untimedPrefixesRemainOnThePath() {
+        CsrGraph chain = CsrBuilder.build(2, visitor -> visitor.edge(0, 1));
+
+        CriticalPath.Result result = CriticalPath.compute(
+                chain,
+                new long[] {CriticalPath.UNKNOWN_DURATION, 25},
+                CriticalPath.DurationSource.BEP_ACTION);
+
+        assertThat(result.path()).containsExactly(0, 1);
+        assertThat(result.makespanMicros()).isEqualTo(25);
+        assertThat(result.isPartial()).isTrue();
+    }
+
+    @Test
+    @DisplayName("an all-zero chain retains its full dependency history")
+    void zeroDurationChainsRemainWhole() {
+        CsrGraph chain = CsrBuilder.build(4, visitor -> {
+            visitor.edge(0, 1);
+            visitor.edge(1, 2);
+            visitor.edge(2, 3);
+        });
+
+        CriticalPath.Result result = CriticalPath.compute(
+                chain, new long[] {0, 0, 0, 0}, CriticalPath.DurationSource.BEP_ACTION);
+
+        assertThat(result.path()).containsExactly(0, 1, 2, 3);
+        assertThat(result.makespanMicros()).isZero();
+    }
+
+    @Test
     @DisplayName("a fully timed graph is not partial")
     void completeGraphsAreNotPartial() {
         CriticalPath.Result result = CriticalPath.compute(
@@ -108,23 +180,182 @@ final class CriticalPathTest {
     }
 
     @Test
-    @DisplayName("a cycle produces no path, and names the actions in it")
+    @DisplayName("a partial dependency path is not compared numerically with Bazel's path")
+    void partialPathsWithholdTheSchedulingGap() {
+        CriticalPath.Result partial = CriticalPath.compute(
+                diamond(),
+                new long[] {10, CriticalPath.UNKNOWN_DURATION, 100, 5},
+                CriticalPath.DurationSource.BEP_ACTION);
+        CriticalPaths paths = new CriticalPaths(
+                Measured.of(150L, DataSource.PROFILE),
+                List.of(),
+                Optional.of(partial));
+
+        assertThat(paths.bothAvailable()).isFalse();
+        assertThat(paths.schedulingGapMicros()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a partial Bazel observation is not compared with the dependency path")
+    void partialBazelTotalsWithholdTheSchedulingGap() {
+        CriticalPath.Result complete = CriticalPath.compute(
+                diamond(), DIAMOND_WEIGHTS, CriticalPath.DurationSource.BEP_ACTION);
+        CriticalPaths paths = new CriticalPaths(
+                new Measured<>(Optional.of(150L), DataSource.BEP,
+                        Completeness.TRUNCATED, Optional.of("capture ended early")),
+                List.of(),
+                Optional.of(complete));
+
+        assertThat(paths.bothAvailable()).isFalse();
+        assertThat(paths.schedulingGapMicros()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a negative Bazel critical-path total is refused")
+    void negativeBazelTotalsAreRefused() {
+        assertThatThrownBy(() -> new CriticalPaths(
+                        Measured.of(-1L, DataSource.BEP), List.of(), Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("nonnegative");
+    }
+
+    @Test
+    @DisplayName("the exact Bazel component count can exceed the unloaded component list")
+    void bazelComponentCountDescribesPagedRowsWithoutMaterializingThem() {
+        CriticalPaths paths = new CriticalPaths(
+                Measured.of(150_000L, DataSource.PROFILE),
+                List.of(),
+                4_000_000L,
+                Optional.empty(),
+                Optional.of("no graph"));
+
+        assertThat(paths.bazelComponents()).isEmpty();
+        assertThat(paths.bazelComponentCount()).isEqualTo(4_000_000L);
+        assertThat(paths.describe())
+                .contains("across 4,000,000 components")
+                .doesNotContain("component breakdown is unavailable");
+    }
+
+    @Test
+    @DisplayName("component metadata that would make paging dishonest is refused")
+    void invalidBazelComponentMetadataIsRefused() {
+        CriticalPaths.BazelComponent component = new CriticalPaths.BazelComponent(
+                0, "one", OptionalLong.of(1));
+
+        assertThatThrownBy(() -> new CriticalPaths(
+                        Measured.of(1L, DataSource.PROFILE),
+                        List.of(component),
+                        0,
+                        Optional.empty(),
+                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("smaller than the loaded list");
+        assertThatThrownBy(() -> new CriticalPaths.BazelComponent(
+                        -1, "invalid", OptionalLong.empty()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ordinal");
+        assertThatThrownBy(() -> new CriticalPaths.BazelComponent(
+                        0, "invalid", OptionalLong.of(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("duration");
+    }
+
+    @Test
+    @DisplayName("a Bazel total without profile rows does not claim zero components")
+    void bazelTotalCanExistWithoutComponentBreakdown() {
+        CriticalPaths paths = new CriticalPaths(
+                Measured.of(150_000L, DataSource.BEP),
+                List.of(),
+                Optional.empty(),
+                Optional.of("no graph"));
+
+        assertThat(paths.describe())
+                .contains("150.0 ms; the component breakdown is unavailable")
+                .doesNotContain("across 0 components");
+    }
+
+    @Test
+    @DisplayName("sub-millisecond path values remain distinct from zero")
+    void descriptionsPreserveSubMillisecondDurations() {
+        CriticalPath.Result derived = CriticalPath.compute(
+                CsrBuilder.build(1, visitor -> { }), new long[] {999},
+                CriticalPath.DurationSource.BEP_ACTION);
+        CriticalPaths paths = new CriticalPaths(
+                Measured.of(1_000L, DataSource.PROFILE), List.of(), Optional.of(derived));
+
+        assertThat(derived.describe()).contains("999 µs").doesNotContain("0 ms");
+        assertThat(paths.describe())
+                .contains("1.0 ms")
+                .contains("999 µs")
+                .contains("differ by 1 µs")
+                .doesNotContain("differ by 0 ms");
+    }
+
+    @Test
+    @DisplayName("a cycle produces no path and reports every node it prevents ordering")
     void cyclesAreRefusedAndReported() {
-        CsrGraph cyclic = CsrBuilder.build(3, visitor -> {
+        CsrGraph cyclic = CsrBuilder.build(4, visitor -> {
             visitor.edge(0, 1);
             visitor.edge(1, 2);
             visitor.edge(2, 0);
+            visitor.edge(2, 3);
         });
 
         CriticalPath.Result result = CriticalPath.compute(
-                cyclic, new long[] {1, 1, 1}, CriticalPath.DurationSource.BEP_ACTION);
+                cyclic, new long[] {1, 1, 1, 1}, CriticalPath.DurationSource.BEP_ACTION);
 
         assertThat(result.outcome()).isEqualTo(CriticalPath.Outcome.CYCLIC);
         assertThat(result.path()).isEmpty();
-        assertThat(result.cyclicNodes()).containsExactlyInAnyOrder(0, 1, 2);
+        assertThat(result.nodeCount()).isEqualTo(4);
+        assertThat(result.unorderedNodes()).containsExactlyInAnyOrder(0, 1, 2, 3);
+        assertThat(result.describe())
+                .contains("4 of 4 actions could not be ordered")
+                .contains("in or downstream of the cycle");
         // A producer-to-consumer graph cannot have a cycle, so this means the
         // graph is wrong rather than the build -- and the message says so.
         assertThat(result.describe()).contains("the graph is wrong rather than the build");
+    }
+
+    @Test
+    @DisplayName("a large cycle is reported without a second graph pass or boxed node copy")
+    void largeCyclesRetainPrimitiveUnorderedNodes() {
+        int nodes = 100_000;
+        CsrGraph ring = CsrBuilder.build(nodes, visitor -> {
+            for (int node = 0; node < nodes; node++) {
+                visitor.edge(node, (node + 1) % nodes);
+            }
+        });
+
+        CriticalPath.Result result = CriticalPath.compute(
+                ring, new long[nodes], CriticalPath.DurationSource.BEP_ACTION);
+
+        assertThat(result.outcome()).isEqualTo(CriticalPath.Outcome.CYCLIC);
+        assertThat(result.nodeCount()).isEqualTo(nodes);
+        assertThat(result.unorderedNodes()).hasSize(nodes);
+        assertThat(result.unorderedNodes().get(0)).isZero();
+        assertThat(result.unorderedNodes().get(nodes - 1)).isEqualTo(nodes - 1);
+    }
+
+    @Test
+    @DisplayName("negative durations other than the unknown sentinel are refused")
+    void invalidNegativeDurationsAreRefused() {
+        assertThatThrownBy(() -> CriticalPath.compute(
+                        diamond(), new long[] {10, -2, 100, 5},
+                        CriticalPath.DurationSource.BEP_ACTION))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("node 1")
+                .hasMessageContaining("nonnegative or UNKNOWN_DURATION");
+    }
+
+    @Test
+    @DisplayName("a path whose total cannot fit in a long is refused")
+    void overflowingSchedulesAreRefused() {
+        CsrGraph chain = CsrBuilder.build(2, visitor -> visitor.edge(0, 1));
+
+        assertThatThrownBy(() -> CriticalPath.compute(
+                        chain, new long[] {Long.MAX_VALUE, 1},
+                        CriticalPath.DurationSource.BEP_ACTION))
+                .isInstanceOf(ArithmeticException.class);
     }
 
     @Test
@@ -132,7 +363,7 @@ final class CriticalPathTest {
     void durationSourceIsCarried() {
         assertThat(CriticalPath.compute(diamond(), DIAMOND_WEIGHTS,
                         CriticalPath.DurationSource.EXECUTION_ATTEMPT).describe())
-                .contains("spawn durations from the execution log");
+                .contains("shortest recorded spawn duration per action from the execution log");
         assertThat(CriticalPath.compute(diamond(), DIAMOND_WEIGHTS,
                         CriticalPath.DurationSource.BEP_ACTION).describe())
                 .contains("action durations from the build event stream");
@@ -160,6 +391,16 @@ final class CriticalPathTest {
 
         assertThat(result.outcome()).isEqualTo(CriticalPath.Outcome.EMPTY);
         assertThat(result.describe()).contains("no dependency graph");
+    }
+
+    @Test
+    @DisplayName("a non-empty graph cannot claim to use no duration source")
+    void nonEmptyGraphsRequireADurationSource() {
+        assertThatThrownBy(() -> CriticalPath.compute(
+                        CsrBuilder.build(1, visitor -> { }), new long[] {0},
+                        CriticalPath.DurationSource.NONE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("non-empty dependency graph");
     }
 
     @Test

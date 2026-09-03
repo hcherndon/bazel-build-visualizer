@@ -1,7 +1,11 @@
 package com.holtherndon.bazelviz.ui.inspect;
 
+import com.holtherndon.bazelviz.ui.files.FileLink;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.HyperlinkLabel;
+import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
+import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
@@ -13,6 +17,7 @@ import java.awt.Insets;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.LongConsumer;
+import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -20,6 +25,7 @@ import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import javax.swing.SwingConstants;
 import javax.swing.UIManager;
 
@@ -57,11 +63,13 @@ public final class InspectorPanel extends JPanel {
      */
     private final InspectorHeader header = new InspectorHeader();
     private final JButton sourceButton = new JButton("Show source event");
-    private final JPanel body = new JPanel();
+    private final ScrollableViewport body = new ScrollableViewport();
+    private final JScrollPane scroll = new JScrollPane(body);
     private final JLabel emptyLabel =
             new JLabel("Select a row to inspect it.", SwingConstants.CENTER);
 
     private LongConsumer sourceEventHandler = eventId -> { };
+    private Consumer<FileLink> openFileHandler = link -> { };
     private Inspection current = Inspection.NONE;
 
     public InspectorPanel() {
@@ -80,8 +88,12 @@ public final class InspectorPanel extends JPanel {
         body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
         body.setBorder(BorderFactory.createEmptyBorder(0, 8, 8, 8));
 
-        JScrollPane scroll = new JScrollPane(body);
         scroll.setBorder(BorderFactory.createEmptyBorder());
+        // The body explicitly tracks the viewport width. Keeping the policy
+        // at NEVER makes that contract visible in the widget too: a long
+        // build-reported value grows downward by wrapping, never sideways by
+        // adding a second axis of scrolling.
+        scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         scroll.setMinimumSize(new Dimension(280, 120));
 
@@ -95,6 +107,11 @@ public final class InspectorPanel extends JPanel {
     /** Called on the EDT with the event id when the user asks to see the source. */
     public void onShowSourceEvent(LongConsumer handler) {
         this.sourceEventHandler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /** Called on the EDT when an openable file field's Open button is pressed. */
+    public void onOpenFile(Consumer<FileLink> handler) {
+        this.openFileHandler = Objects.requireNonNull(handler, "handler");
     }
 
     /**
@@ -134,6 +151,11 @@ public final class InspectorPanel extends JPanel {
                 body.add(sectionPanel(section));
                 body.add(Box.createVerticalStrut(8));
             }
+            // Section panels stop at the height their rows actually need.
+            // This one flexible member takes the viewport's remaining height,
+            // keeping Identity/Timing/Command/Result packed at the top instead
+            // of stretching each one into an equal slice of the pane.
+            body.add(Box.createVerticalGlue());
         }
         header.revalidate();
         header.repaint();
@@ -151,8 +173,18 @@ public final class InspectorPanel extends JPanel {
         return current;
     }
 
-    private static JPanel sectionPanel(Inspection.Section section) {
-        JPanel panel = new JPanel(new GridBagLayout());
+    /** Visible for tests: the width-tracking body inside the scroll pane. */
+    ScrollableViewport bodyForTest() {
+        return body;
+    }
+
+    /** Visible for tests: the pane whose horizontal axis must never overflow. */
+    JScrollPane scrollForTest() {
+        return scroll;
+    }
+
+    private JPanel sectionPanel(Inspection.Section section) {
+        JPanel panel = new CompactSectionPanel();
         panel.setBorder(BorderFactory.createTitledBorder(section.heading()));
         panel.setAlignmentX(LEFT_ALIGNMENT);
 
@@ -173,24 +205,43 @@ public final class InspectorPanel extends JPanel {
             value.gridy = row;
             JLabel nameLabel = PlainText.disableHtml(new JLabel(field.name()));
             nameLabel.setEnabled(false);
+            Component fieldValue = valueLabel(field);
+            // Besides making the visual relationship explicit, labelFor gives
+            // assistive technology the same field-name/value pairing a sighted
+            // reader gets from the two columns.
+            nameLabel.setLabelFor(fieldValue);
             panel.add(nameLabel, name);
-            panel.add(valueLabel(field), value);
+            panel.add(fieldValue, value);
             row++;
         }
         return panel;
     }
 
-    private static Component valueLabel(Inspection.Field field) {
+    private Component valueLabel(Inspection.Field field) {
         if (field.isKnown()) {
-            JLabel label = PlainText.disableHtml(new JLabel(field.value().orElseThrow()));
-            label.setToolTipText(PlainText.tooltip(field.value().orElseThrow()));
-            return label;
+            String text = field.value().orElseThrow();
+            JTextArea label = wrappingValue(field.name(), text);
+            label.setToolTipText(PlainText.tooltip(text));
+            label.getAccessibleContext().setAccessibleDescription(
+                    "Recorded value for " + field.name() + ".");
+            if (field.fileLink().isEmpty()) {
+                return label;
+            }
+            FileLink link = field.fileLink().orElseThrow();
+            HyperlinkLabel open = new HyperlinkLabel(text, () -> openFileHandler.accept(link));
+            open.setName("inspection.openFile");
+            open.setToolTipText(PlainText.tooltip(
+                    "Open " + text + " in a separate, non-modal text window."));
+            open.getAccessibleContext().setAccessibleName("Open " + field.name());
+            open.getAccessibleContext().setAccessibleDescription(
+                    "Open the recorded " + field.name() + " in a separate text window.");
+            return open;
         }
-        // The two halves are one label rather than two components so they wrap
+        // The two halves are one component rather than two so they wrap
         // and elide together: an explanation that scrolled out of view beside a
         // word saying "unknown" would be no explanation at all.
         String note = field.unknownNote().map(why -> " — " + why).orElse("");
-        JLabel label = PlainText.disableHtml(new JLabel(UNKNOWN + note));
+        JTextArea label = wrappingValue(field.name(), UNKNOWN + note);
         label.setFont(label.getFont().deriveFont(Font.ITALIC));
         Color disabled = UIManager.getColor("Label.disabledForeground");
         if (disabled != null) {
@@ -198,6 +249,41 @@ public final class InspectorPanel extends JPanel {
         }
         label.setToolTipText(PlainText.tooltip(field.unknownNote()
                 .orElse("This value was not reported, and is not zero.")));
+        label.getAccessibleContext().setAccessibleDescription(field.unknownNote()
+                .map(why -> "Unknown " + field.name() + ": " + why)
+                .orElse("Unknown " + field.name()
+                        + "; this value was not reported and is not zero."));
         return label;
+    }
+
+    /** A plain-text field value that yields to its pane's width. */
+    private static JTextArea wrappingValue(String fieldName, String text) {
+        JTextArea label = WrappingLabel.create(text);
+        label.setName("inspection.fieldValue");
+        label.getAccessibleContext().setAccessibleName(fieldName);
+
+        // JTextArea's default minimum width follows its text view. GridBagLayout
+        // is then allowed to treat that minimum as a reason not to shrink the
+        // value column. Height still comes from the font; width belongs to the
+        // viewport, where wrapping can turn it into as many lines as needed.
+        Dimension minimum = label.getMinimumSize();
+        label.setMinimumSize(new Dimension(0, minimum.height));
+        return label;
+    }
+
+    /** A section grows for wrapped rows, never merely because the viewport is tall. */
+    private static final class CompactSectionPanel extends JPanel {
+
+        private static final long serialVersionUID = 1L;
+
+        CompactSectionPanel() {
+            super(new GridBagLayout());
+        }
+
+        @Override
+        public Dimension getMaximumSize() {
+            Dimension preferred = getPreferredSize();
+            return new Dimension(Integer.MAX_VALUE, preferred.height);
+        }
     }
 }

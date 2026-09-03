@@ -8,6 +8,7 @@ import com.holtherndon.bazelviz.core.session.SessionState;
 import com.holtherndon.bazelviz.core.source.Completeness;
 import com.holtherndon.bazelviz.format.session.SessionManifest.AuxiliaryCommand;
 import com.holtherndon.bazelviz.format.session.SessionManifest.CaptureSourceEntry;
+import com.holtherndon.bazelviz.format.session.SessionManifest.ExecutionLocation;
 import com.holtherndon.bazelviz.format.session.json.JsonReader;
 import com.holtherndon.bazelviz.format.session.json.JsonValue;
 import com.holtherndon.bazelviz.format.session.json.JsonValue.JsonArray;
@@ -77,6 +78,7 @@ class SessionManifestCodecTest {
         assertThat(manifest.state()).isEqualTo(SessionState.READY);
         assertThat(manifest.createdMicros()).isEqualTo(1_755_800_000_000_000L);
         assertThat(manifest.workspaceRoot()).contains("/work/repo");
+        assertThat(manifest.executionLocation()).isEmpty();
         assertThat(manifest.originalCommand()).contains(List.of("bazel", "build", "//..."));
         assertThat(manifest.eventCount()).hasValue(1234L);
         assertThat(manifest.schemaVersion()).hasValue(1);
@@ -104,6 +106,7 @@ class SessionManifestCodecTest {
                 .doesNotContain("finalizedMicros")
                 .doesNotContain("workingDirectory")
                 .doesNotContain("workspaceRoot")
+                .doesNotContain("executionLocation")
                 .doesNotContain("bazelExecutable")
                 .doesNotContain("bazelVersion")
                 .doesNotContain("originalCommand")
@@ -119,6 +122,7 @@ class SessionManifestCodecTest {
 
         assertThat(reloaded.finalizedMicros()).isEmpty();
         assertThat(reloaded.workingDirectory()).isEmpty();
+        assertThat(reloaded.executionLocation()).isEmpty();
         assertThat(reloaded.originalCommand()).isEmpty();
         assertThat(reloaded.injectedFlags()).isEmpty();
         assertThat(reloaded.auxiliaryCommands()).isEmpty();
@@ -152,6 +156,8 @@ class SessionManifestCodecTest {
                 .finalizedAtMicros(2_000L)
                 .workingDirectory(Optional.of("/work"))
                 .workspaceRoot(Optional.of("/work/repo"))
+                .executionLocation(Optional.of(ExecutionLocation.ssh(
+                        "Build server", "builder@example.internal", OptionalInt.of(2222))))
                 .bazelExecutable(Optional.of("/usr/bin/bazel"))
                 .bazelVersion(Optional.of("7.4.1"))
                 .originalCommand(Optional.of(List.of("bazel", "test", "//...")))
@@ -179,6 +185,23 @@ class SessionManifestCodecTest {
                 .build();
 
         assertThat(codec.readText(codec.writeText(original), "memory")).isEqualTo(original);
+    }
+
+    @Test
+    void rejectsAnInvalidSshExecutionLocation() {
+        String source = V1_MANIFEST.replace(
+                "\"workspaceRoot\": \"/work/repo\",",
+                """
+                "workspaceRoot": "/work/repo",
+                "executionLocation": {
+                  "kind": "SSH",
+                  "displayName": "Build server",
+                  "sshPort": 70000
+                },""");
+
+        assertThatThrownBy(() -> codec.readText(source, "invalid-remote.json"))
+                .isInstanceOf(SessionFormatException.class)
+                .hasMessageContaining("invalid execution location");
     }
 
     @Test

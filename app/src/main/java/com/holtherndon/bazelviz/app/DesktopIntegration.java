@@ -1,11 +1,9 @@
 package com.holtherndon.bazelviz.app;
 
-import com.holtherndon.bazelviz.ui.MainWindow;
 import java.awt.Desktop;
 import java.awt.GraphicsEnvironment;
 import java.awt.Window;
 import java.io.File;
-import java.nio.file.Path;
 import java.util.List;
 import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
@@ -31,14 +29,15 @@ import org.slf4j.LoggerFactory;
  * {@code APP_OPEN_FILE} rather than through {@code main}. Without a handler the
  * app opens and shows an empty window, which looks exactly like the
  * association not working. The handler routes to
- * {@link MainWindow#openPath(Path)}, which is the same route the Open menu and
- * a command-line argument take.
+ * the application controller, which chooses the active workspace window or a
+ * workspace-less analysis shell. This is the same classification route used
+ * by the Open menu and a command-line argument.
  *
- * <h2>There is no Preferences item</h2>
+ * <h2>Preferences uses the same window route as the Swing menu</h2>
  *
- * <p>{@code APP_PREFERENCES} is available and is deliberately not installed:
- * there is no settings screen yet, and a menu item that opens an empty dialog
- * is worse than an item that is not there. It goes in with the settings screen.
+ * <p>Where the desktop owns an application Preferences item, it opens the same
+ * modeless settings window as {@code Settings > Preferences}. Unsupported
+ * platforms keep the ordinary Swing menu.
  */
 final class DesktopIntegration {
 
@@ -47,13 +46,13 @@ final class DesktopIntegration {
     private DesktopIntegration() {}
 
     /** Installs the handlers the platform supports. Safe everywhere. */
-    static void install(MainWindow window) {
+    static void install(ApplicationController application) {
         if (GraphicsEnvironment.isHeadless() || !Desktop.isDesktopSupported()) {
             return;
         }
         Desktop desktop = Desktop.getDesktop();
         if (desktop.isSupported(Desktop.Action.APP_ABOUT)) {
-            desktop.setAboutHandler(event -> showAboutDialog(window));
+            desktop.setAboutHandler(event -> showAboutDialog(application.activeParent()));
             log.debug("Installed desktop About handler");
         }
         if (desktop.isSupported(Desktop.Action.APP_OPEN_FILE)) {
@@ -66,11 +65,16 @@ final class DesktopIntegration {
                 // depending on a JDK detail staying true.
                 SwingUtilities.invokeLater(() -> {
                     for (File file : files) {
-                        window.openPath(file.toPath());
+                        application.openPath(file.toPath());
                     }
                 });
             });
             log.debug("Installed desktop Open File handler");
+        }
+        if (desktop.isSupported(Desktop.Action.APP_PREFERENCES)) {
+            desktop.setPreferencesHandler(event ->
+                    SwingUtilities.invokeLater(application::showPreferences));
+            log.debug("Installed desktop Preferences handler");
         }
         if (desktop.isSupported(Desktop.Action.APP_QUIT_HANDLER)) {
             desktop.setQuitHandler((event, response) -> {
@@ -78,8 +82,16 @@ final class DesktopIntegration {
                 // which removes the lock files that would otherwise make the
                 // next launch think another process holds them.
                 log.info("Desktop quit requested");
-                window.dispose();
-                response.performQuit();
+                application.requestQuit().whenComplete((approved, failure) -> {
+                    if (failure != null) {
+                        log.warn("Application windows did not close cleanly", failure);
+                        response.cancelQuit();
+                    } else if (Boolean.TRUE.equals(approved)) {
+                        response.performQuit();
+                    } else {
+                        response.cancelQuit();
+                    }
+                });
             });
             log.debug("Installed desktop Quit handler");
         }

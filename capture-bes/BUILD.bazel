@@ -1,102 +1,60 @@
-# Loopback gRPC Build Event Service endpoint for live capture.
+"""Compatibility facade for the package-local live-capture targets."""
 
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite", "bbv_real_bazel_test")
+load("@rules_java//java:defs.bzl", "java_library")
 
-bbv_java_library(
+java_library(
     name = "capture-bes",
-    # api: the live capture pipeline is the component that joins the Phase 2
-    # parts together, so this module reaches the runner, the session layer
-    # and the storage layer. capture-file comes in for two reasons that are
-    # not incidental: the binary-file fallback for a BES conflict (plan 8.5)
-    # is its growing-file tail reader, and normalization is shared with the
-    # importer so that a captured session and an imported one produce
-    # identical rows.
     exports = [
-        "//bazel-runner",
-        "//capture-file",
-        "//core-model",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
     ],
-    deps = [
-        "//bazel-runner",
-        "//capture-file",
-        "//core-model",
-        # implementation:
-        "//bep-codec",
-        # Post-build enrichment. The coordinator runs it because it is the
-        # only thing that knows when the build finished and still holds the
-        # session's writer connection; the imports themselves know nothing
-        # about capture.
-        "//enrichment",
-        "//proto",
-        "@maven//:io_grpc_grpc_api",
-        "@maven//:io_grpc_grpc_protobuf",
-        "@maven//:io_grpc_grpc_stub",
-        # grpc-netty-shaded is a compile dependency, not runtime-only:
-        # binding loopback only (plan 22.1) needs
-        # NettyServerBuilder.forAddress, and the transport-agnostic
-        # ServerBuilder.forPort can only bind every interface. The shaded
-        # artifact keeps Netty's own classes off the application classpath.
-        "@maven//:io_grpc_grpc_netty_shaded",
-    ],
+    visibility = ["//visibility:public"],
 )
 
-_TEST_DEPS = [
-    ":capture-bes",
-    "//bep-codec",
-    "//proto",
-    "//test-support",
-    "@maven//:io_grpc_grpc_api",
-    "@maven//:io_grpc_grpc_stub",
-    "@maven//:io_grpc_grpc_netty_shaded",
-]
-
-REAL_BAZEL_CLASSES = [
-    "com.holtherndon.bazelviz.capture.bes.RealBazelBesTest",
-    "com.holtherndon.bazelviz.capture.live.RealBazelCaptureTest",
-    "com.holtherndon.bazelviz.capture.live.RealBazelEnrichmentTest",
-    "com.holtherndon.bazelviz.capture.live.RealBazelGraphTest",
-    "com.holtherndon.bazelviz.capture.live.RealBazelNormalizationTest",
-]
-
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    exclude = [
-        "src/test/java/" + clazz.replace(".", "/") + ".java"
-        for clazz in REAL_BAZEL_CLASSES + [
-            "com.holtherndon.bazelviz.capture.live.BazelVersionMatrixTest",
-        ]
+    tests = [
+        "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/bes:tests",
+        "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/live:tests",
     ],
-    deps = _TEST_DEPS,
 )
 
-[
-    bbv_real_bazel_test(
-        name = clazz.rpartition(".")[2],
-        srcs = ["src/test/java/" + clazz.replace(".", "/") + ".java"],
-        test_class = clazz,
-        deps = _TEST_DEPS + [":tests-lib"],
-    )
-    for clazz in REAL_BAZEL_CLASSES
-]
-
-# THE FOUR-VERSION SWEEP. It downloads and starts four Bazel server versions
-# and has crashed a development machine at over 120 GB resident (the fixture
-# rc caps each child at -Xmx1g, but four servers plus test JVMs is still a
-# deliberate, supervised run). `manual` keeps it out of every //... wildcard;
-# the rc's default `test --test_tag_filters=-bazel-sweep` is the second
-# fence. Run it one target, one version at a time, on purpose:
+# THE FOUR-VERSION SWEEP. It downloads and starts several Bazel servers and
+# has previously exhausted the development machine's memory. Both this stable
+# wrapper and the package-local test are manual and carry the bazel-sweep tag.
+# Run one version at a time, deliberately:
 #
 #   bazel test //capture-bes:BazelVersionMatrixTest --test_tag_filters= --test_output=streamed
-#
-bbv_real_bazel_test(
+test_suite(
     name = "BazelVersionMatrixTest",
-    srcs = ["src/test/java/com/holtherndon/bazelviz/capture/live/BazelVersionMatrixTest.java"],
     tags = [
         "bazel-sweep",
-        "no-sandbox",
-        "external",
         "manual",
     ],
-    test_class = "com.holtherndon.bazelviz.capture.live.BazelVersionMatrixTest",
-    deps = _TEST_DEPS + [":tests-lib"],
+    tests = ["//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/live:BazelVersionMatrixTest"],
+)
+
+alias(
+    name = "RealBazelBesTest",
+    actual = "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/bes:RealBazelBesTest",
+)
+
+alias(
+    name = "RealBazelCaptureTest",
+    actual = "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/live:RealBazelCaptureTest",
+)
+
+alias(
+    name = "RealBazelEnrichmentTest",
+    actual = "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/live:RealBazelEnrichmentTest",
+)
+
+alias(
+    name = "RealBazelGraphTest",
+    actual = "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/live:RealBazelGraphTest",
+)
+
+alias(
+    name = "RealBazelNormalizationTest",
+    actual = "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/live:RealBazelNormalizationTest",
 )

@@ -11,6 +11,7 @@ import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
 import com.holtherndon.bazelviz.storage.entities.ErrorRow;
+import com.holtherndon.bazelviz.storage.entities.ConfigurationQueries;
 import com.holtherndon.bazelviz.storage.entities.OverviewQueries;
 import com.holtherndon.bazelviz.storage.entities.OverviewSnapshot;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
@@ -48,6 +49,7 @@ final class SqliteEntityReader implements EntityReader {
     private final TargetQueries targets;
     private final TestQueries tests;
     private final ErrorQueries errors;
+    private final ConfigurationQueries configurations;
     private final EnrichmentQueries enrichment;
     private boolean closed;
 
@@ -59,6 +61,7 @@ final class SqliteEntityReader implements EntityReader {
         this.targets = new TargetQueries(connection);
         this.tests = new TestQueries(connection);
         this.errors = new ErrorQueries(connection);
+        this.configurations = new ConfigurationQueries(connection);
         this.enrichment = new EnrichmentQueries(connection);
     }
 
@@ -128,6 +131,50 @@ final class SqliteEntityReader implements EntityReader {
     }
 
     @Override
+    public long topLevelTargetLabelCount() {
+        return call("counting top-level target labels", targets::topLevelLabelCount);
+    }
+
+    @Override
+    public List<String> firstTopLevelTargetLabels(int limit) {
+        return call("reading the first top-level target-label page",
+                () -> targets.firstTopLevelLabelPage(limit));
+    }
+
+    @Override
+    public List<String> topLevelTargetLabelsAfter(String label, int limit) {
+        return call("reading top-level target labels after " + label,
+                () -> targets.topLevelLabelPageAfter(label, limit));
+    }
+
+    @Override
+    public long targetLabelCount() {
+        return call("counting distinct target labels", targets::labelCount);
+    }
+
+    @Override
+    public List<TargetQueries.LabelSummary> firstTargetLabels(int limit) {
+        return call("reading the first target-label page", () -> targets.firstLabelPage(limit));
+    }
+
+    @Override
+    public List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit) {
+        return call("reading target labels after " + label,
+                () -> targets.labelPageAfter(label, limit));
+    }
+
+    @Override
+    public List<TargetQueries.ConfiguredTarget> configuredTargetsByLabel(String label) {
+        return call("reading cquery configurations for " + label,
+                () -> targets.configuredByLabel(label));
+    }
+
+    @Override
+    public Optional<TargetQueries.ConfiguredSource> configuredTargetSource() {
+        return call("reading the cquery target source", targets::configuredSource);
+    }
+
+    @Override
     public Optional<TargetRow> target(long id) {
         return call("reading target " + id, () -> targets.byId(id));
     }
@@ -141,6 +188,60 @@ final class SqliteEntityReader implements EntityReader {
     public List<TargetQueries.OutputGroup> outputGroups(long configuredTargetId) {
         return call("reading output groups of " + configuredTargetId,
                 () -> targets.outputGroups(configuredTargetId));
+    }
+
+    @Override
+    public long configurationCount() {
+        return call("counting configurations", configurations::count);
+    }
+
+    @Override
+    public List<ConfigurationQueries.Summary> configurations(long offset, int limit) {
+        return call("reading configurations at offset " + offset,
+                () -> configurations.page(offset, limit));
+    }
+
+    @Override
+    public Optional<ConfigurationQueries.Summary> configuration(String checksum) {
+        return call("reading configuration " + checksum,
+                () -> configurations.summary(checksum));
+    }
+
+    @Override
+    public OptionalLong configurationPosition(String checksum) {
+        return call("locating configuration " + checksum,
+                () -> configurations.position(checksum));
+    }
+
+    @Override
+    public Optional<ConfigurationQueries.Source> configurationSource() {
+        return call("reading configuration source", configurations::source);
+    }
+
+    @Override
+    public long configurationValueCount(String checksum) {
+        return call("counting values for configuration " + checksum,
+                () -> configurations.valueCount(checksum));
+    }
+
+    @Override
+    public List<ConfigurationQueries.Value> configurationValues(
+            String checksum, long offset, int limit) {
+        return call("reading values for configuration " + checksum,
+                () -> configurations.values(checksum, offset, limit));
+    }
+
+    @Override
+    public long configurationDifferenceCount(String baseline, String candidate) {
+        return call("comparing configurations " + baseline + " and " + candidate,
+                () -> configurations.differenceCount(baseline, candidate));
+    }
+
+    @Override
+    public List<ConfigurationQueries.Difference> configurationDifferences(
+            String baseline, String candidate, long offset, int limit) {
+        return call("reading configuration differences at offset " + offset,
+                () -> configurations.differences(baseline, candidate, offset, limit));
     }
 
     @Override

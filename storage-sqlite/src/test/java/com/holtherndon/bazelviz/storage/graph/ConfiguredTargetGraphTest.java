@@ -88,6 +88,8 @@ final class ConfiguredTargetGraphTest {
         // core -> base existed once per configuration and is one label edge;
         // bin -> core is the other. bin -> main.c has no node to land on.
         assertThat(built.orElseThrow().edgeCount()).isEqualTo(2);
+        assertThat(scalar("SELECT count(*) FROM graph_indexes"
+                + " WHERE kind = 'CONFIGURED_TARGETS' AND source_id = 1")).isEqualTo(2);
     }
 
     @Test

@@ -1,35 +1,22 @@
-# Deterministic synthetic data generators (Tier 1-3) and the real-Bazel
-# fixtures. This is a MAIN library — other modules use it from their tests.
+load("@rules_java//java:defs.bzl", "java_library")
 
-load("//tools:bbv.bzl", "bbv_java_library", "bbv_java_test_suite")
-
-bbv_java_library(
+java_library(
     name = "test-support",
-    # All api (exports):
-    # - proto: real BEP fixtures are built from the generated protobuf
-    #   classes, not from hand-rolled byte arrays — a fixture that does not
-    #   go through the real schema cannot prove a parser handles the real
-    #   schema.
-    # - protobuf-java-util: protobuf-JSON (JsonFormat) for the BEP JSON
-    #   fixtures. Bazel's --build_event_json_file output is protobuf-JSON, so
-    #   emitting it any other way would produce a fixture that is not the
-    #   format under test.
     exports = [
         "//core-model",
         "//proto",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/synthetic",
         "@maven//:com_google_protobuf_protobuf_java_util",
     ],
-    deps = [
-        "//core-model",
-        "//proto",
-        "@maven//:com_google_protobuf_protobuf_java_util",
-    ],
+    visibility = ["//visibility:public"],
 )
 
-# Gradle's printRuntimeCp helper task died with no consumer (ADR-009);
-# `bazel run` and deploy jars are the replacement if the need returns.
-
-bbv_java_test_suite(
+test_suite(
     name = "tests",
-    deps = [":test-support"],
+    tests = [
+        "//test-support/src/test/java/com/holtherndon/bazelviz/testsupport/bep:tests",
+        "//test-support/src/test/java/com/holtherndon/bazelviz/testsupport/synthetic:tests",
+    ],
 )

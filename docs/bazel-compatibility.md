@@ -43,7 +43,9 @@ Three details are load-bearing and each cost an experiment to learn:
   server, no lock, ~0.7 s.
 - **Bazelisk must be pinned.** Outside a workspace it has no `.bazelversion`
   to read and will happily probe a different Bazel than the build will use, so
-  the resolved version is passed back through `USE_BAZEL_VERSION`.
+  the resolved version is passed back through `USE_BAZEL_VERSION`. On a Linux
+  SSH host, GNU `env`'s `--` option terminator must precede that assignment;
+  after an assignment it is treated as the executable name and the probe fails.
 - **stdout must not be merged with stderr.** The base64 is on stdout, a batch
   mode notice and JVM warnings on stderr, and merging them corrupts the
   payload. It is one line of 470–584 KB with no trailing newline.
@@ -51,6 +53,13 @@ Three details are load-bearing and each cost an experiment to learn:
 A failed probe yields `UNKNOWN` for every capability, never `UNSUPPORTED`. One
 unrecognized flag in a user's `.bazelrc` makes the probe exit 2 with empty
 stdout on every version.
+
+For an SSH workspace the resolver, version check, flag probe and effective-rc
+inspection run through the same non-TTY remote executor that will launch the
+build. This preserves the capability-over-version rule across the machine
+boundary and avoids probing a desktop Bazel for a Linux invocation. The remote
+transport itself has separate Linux/OpenSSH prerequisites in ADR-011 and
+`docs/troubleshooting.md`; it does not change the Bazel flag matrix.
 
 ## Measured flag matrix
 
@@ -67,6 +76,7 @@ stdout on every version.
 | Compact execution log | `--execution_log_compact_file` | **no** | yes | yes | yes |
 | Binary execution log | `--execution_log_binary_file` | yes | yes | yes | yes |
 | JSON trace profile | `--generate_json_trace_profile` | yes | yes | yes | yes |
+| Starlark CPU pprof | `--starlark_cpu_profile` | yes | yes | yes | yes |
 | Announce profile path | `--experimental_announce_profile_path` | yes | yes | **no** | **no** |
 | Query output format | `--output` (aquery/cquery) | yes | yes | yes | yes |
 
@@ -201,6 +211,7 @@ confirmed by running builds with them.
 | `--profile`, `--generate_json_trace_profile`, `--[no]slim_profile` | yes | yes | yes | yes |
 | `--experimental_profile_include_primary_output` | yes | yes | yes | yes |
 | `--record_full_profiler_data` | no | yes | yes | yes |
+| `--starlark_cpu_profile` | yes | yes | yes | yes |
 
 Four behaviours the planner depends on:
 
@@ -223,6 +234,26 @@ the second; `profile_start_ts` on 8.4.1+ holds it exactly.
 
 Full measurements, including the correlation behaviour and what was not
 measured, are in `docs/exec-log-and-profile.md`.
+
+## Starlark CPU pprof
+
+Measured on 2026-09-02 with real builds on all four supported versions. Each
+version wrote a gzip-compressed pprof profile with one `CPU` / `microseconds`
+sample type and a 10,000 µs period. Sample values were positive multiples of
+that period. The files carried function names, filenames, definition start
+lines, locations and leaf-first stacks, but no build UUID/version, per-sample
+timestamp, stable thread id, mapping, or dropped-sample count in these probes.
+The importer validates `period_type` independently of the sample type and only
+exposes a microsecond period when a CPU value in ns, us, ms, or s converts
+exactly. Unsupported period metadata does not invalidate otherwise sound
+sample stacks.
+
+Location ids and function ids come from process-local object identity and are
+not comparable across builds. Bazel's encoder also documents sampled line
+attribution as unreliable; the application therefore aggregates functions and
+files and uses `Function.start_line` only to navigate to source. CPU across all
+Starlark threads is not wall time and may exceed the profile duration. See
+`docs/starlark-profiling.md` for the UI and query contract.
 
 ## Release matrix (Phase 10)
 
@@ -287,6 +318,7 @@ was measured; the full records are in `docs/bazel-ground-truth.md`,
 | Limitation | Versions | Effect |
 |---|---|---|
 | `--experimental_announce_profile_path` removed | 8.4.1, 9.2.0 | The profile path is derived from the flag the tool itself injected rather than read from the stream. |
+| Query wildcard expansion can include a broken `manual` target that `build //...` skips | 9.2.0 measured | Capture writes the exact completed-BEP top-level labels to `aquery.query` and `cquery.query`; both commands read that set instead of re-expanding the wildcard. Missing final-marker and requested-pattern fallbacks remain untrusted. |
 
 ### Action timing, which differs on every version
 
@@ -315,9 +347,11 @@ rather than replaced by the derived one.
 
 ## What is not covered
 
-Everything above was measured on macOS arm64 only. Linux and Windows are
-unverified, and each report's own "Unverified" section lists what the
-experiments could not settle — including the exact 7.x release that added
-`FlagInfo` fields 11–16, whether `help flags-as-proto` exists before 6.5, and
-whether the named-set ordering guarantee holds over gRPC BES as it does over the
-JSON file.
+The Bazel-version matrix above was measured on macOS arm64 only. SSH execution
+targets Linux and probes the selected remote binary at run time, but no
+four-version remote release sweep or cross-host performance comparison has been
+recorded. Windows execution is unverified. Each report's own "Unverified"
+section lists what the experiments could not settle — including the exact 7.x
+release that added `FlagInfo` fields 11–16, whether `help flags-as-proto` exists
+before 6.5, and whether the named-set ordering guarantee holds over gRPC BES as
+it does over the JSON file.

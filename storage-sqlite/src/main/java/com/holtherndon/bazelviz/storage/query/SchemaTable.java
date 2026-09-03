@@ -7,13 +7,13 @@ import java.util.List;
  * {@code sqlite_master} and {@code PRAGMA table_info} at runtime rather than
  * from a generated list.
  *
- * <p>Runtime is the only honest source. The session database carries five
- * schema versions' worth of migrations and 59 tables, a session may have been
+ * <p>Runtime is the only honest source. The session database carries many
+ * schema versions' worth of migrations and tables, a session may have been
  * written by a build whose DDL differs from this one's, and there is no
  * generated schema page to fall back on — so the browser reads what the file
  * actually contains.
  *
- * <p>No row count. Counting 59 tables on a five-million-action session is a
+ * <p>No row count. Counting every table on a five-million-action session is a
  * scan per table, and showing a count that had not been taken yet as {@code 0}
  * would break rule 11. Ask for one with {@code SELECT COUNT(*) FROM …}.
  *

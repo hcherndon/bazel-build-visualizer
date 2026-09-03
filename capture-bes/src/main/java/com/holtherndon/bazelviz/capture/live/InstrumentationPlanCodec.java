@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.format.session.AtomicFiles;
 import com.holtherndon.bazelviz.format.session.json.JsonValue;
 import com.holtherndon.bazelviz.format.session.json.JsonWriter;
 import com.holtherndon.bazelviz.runner.plan.AddedFlag;
+import com.holtherndon.bazelviz.runner.plan.AuxiliaryCommandPlan;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
 import com.holtherndon.bazelviz.runner.plan.ReplacedFlag;
@@ -35,7 +36,7 @@ import java.util.Objects;
 public final class InstrumentationPlanCodec {
 
     /** Bumped when the shape changes, so a reader knows what it is looking at. */
-    public static final int FORMAT_VERSION = 1;
+    public static final int FORMAT_VERSION = 3;
 
     private InstrumentationPlanCodec() {}
 
@@ -57,7 +58,20 @@ public final class InstrumentationPlanCodec {
         preflight.executable().effectiveVersion()
                 .ifPresent(version -> root.put("bazelVersion", JsonValue.of(version)));
         root.put("capabilityDetection", JsonValue.of(preflight.capabilities().detection().name()));
-        root.put("besEndpoint", JsonValue.of(preflight.endpoint().besBackendUri()));
+        String desktopBesListener = preflight.endpoint().besBackendUri();
+        String advertisedBesEndpoint = preflight.remote()
+                .map(Preflight.RemoteDetails::remoteBesBackend)
+                .orElse(desktopBesListener);
+        // Keep besEndpoint as the address that was actually placed on Bazel's command line.
+        // For SSH captures that is the remote loopback end of the reverse tunnel, not the
+        // desktop listener behind it. Both are retained so the evidence is unambiguous.
+        root.put("besEndpoint", JsonValue.of(advertisedBesEndpoint));
+        root.put("desktopBesListener", JsonValue.of(desktopBesListener));
+        root.put("executionHost", JsonValue.of(preflight.isRemote() ? "SSH" : "LOCAL"));
+        preflight.remote().ifPresent(remote -> {
+            root.put("sshHost", JsonValue.of(remote.host()));
+            root.put("remoteStagingDirectory", JsonValue.of(remote.stagingDirectory()));
+        });
         preflight.workspace().workspaceRoot()
                 .ifPresent(root2 -> root.put("workspaceRoot", JsonValue.of(root2.toString())));
         root.put("workingDirectory", JsonValue.of(plan.original().workingDirectory().toString()));
@@ -65,6 +79,7 @@ public final class InstrumentationPlanCodec {
         root.put("effectiveCommand", JsonValue.JsonArray.ofStrings(plan.effective().toArgv()));
         root.put("addedFlags", addedFlags(plan.addedFlags()));
         root.put("replacedFlags", replacedFlags(plan.replacedFlags()));
+        root.put("auxiliaryCommands", auxiliaryCommands(plan.auxiliaryCommands()));
         root.put("conflicts", conflicts(plan.conflicts()));
         root.put("warnings", JsonValue.JsonArray.ofStrings(plan.warnings()));
         root.put("errors", JsonValue.JsonArray.ofStrings(plan.errors()));
@@ -103,6 +118,27 @@ public final class InstrumentationPlanCodec {
             member.put("replacement", JsonValue.of(flag.replacement()));
             member.put("approvedBy", JsonValue.of(flag.approvedBy()));
             member.put("reason", JsonValue.of(flag.reason()));
+            entries.add(new JsonValue.JsonObject(member));
+        }
+        return JsonValue.JsonArray.of(entries);
+    }
+
+    private static JsonValue auxiliaryCommands(List<AuxiliaryCommandPlan> commands) {
+        List<JsonValue> entries = new ArrayList<>(commands.size());
+        for (AuxiliaryCommandPlan command : commands) {
+            Map<String, JsonValue> member = new LinkedHashMap<>();
+            member.put("label", JsonValue.of(command.label()));
+            member.put("purpose", JsonValue.of(command.purpose()));
+            member.put("argv", JsonValue.JsonArray.ofStrings(command.argv()));
+            member.put("timing", JsonValue.of(command.timing().name()));
+            member.put("carriedOptions",
+                    JsonValue.JsonArray.ofStrings(command.carriedOptions()));
+            member.put("droppedOptions",
+                    JsonValue.JsonArray.ofStrings(command.droppedOptions()));
+            member.put("produces", JsonValue.of(command.produces().name()));
+            member.put("outputPath", JsonValue.of(command.outputPath().toString()));
+            member.put("estimatedCost", JsonValue.of(command.estimatedCost().displayName()));
+            member.put("failureIsFatal", JsonValue.of(command.failureIsFatal()));
             entries.add(new JsonValue.JsonObject(member));
         }
         return JsonValue.JsonArray.of(entries);

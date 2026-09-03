@@ -1762,6 +1762,9 @@ Above the limit:
 
 ## 13.7 Layout strategies
 
+- Dependency hierarchy as the default for dependency views: a deterministic
+  top-down spanning forest with orthogonal primary branches. Preserve shared,
+  cyclic, and other non-tree dependencies as explicit cross-links.
 - Layered DAG layout for dependency subgraphs
 - Radial layout for selected-node neighborhoods
 - Linear layout for critical paths
@@ -1973,7 +1976,8 @@ Every dashboard must show coverage, for example:
 Timing coverage:        99.8% of actions
 Runner coverage:        87.4% of actions
 Input-size coverage:    72.1% of input artifacts
-Action-graph coverage:  complete
+Action-graph correlation:  83.2% of declared actions
+Action-graph completeness: complete
 Target-graph coverage:  unavailable
 Correlation confidence: 96.3% definitive, 2.8% probable, 0.9% unresolved
 ```
@@ -2136,20 +2140,75 @@ Avoid:
 > stable `NavEntry.BUILD`/`build` identifiers remain, but the visible entry is
 > **Console** and comes first. Its labelled four-row form persists workspace,
 > Bazel executable, capture detail, the editable command and 50-entry unique
-> command history under `settings/`, with disk I/O off the EDT. The three
-> visible capture choices explain their actual current scope: Live omits the
-> execution log/profile, Performance adds them, and Full currently adds no
-> source beyond Performance. A prominent warning applies to all three because
-> every live capture currently runs and indexes both graph queries after the
-> build. Custom remains a model value but is not offered without an
-> individual-source editor. Workspace validation and settings I/O run off the
+> command history under `settings/`, with disk I/O off the EDT. The four input
+> rows no longer grow three extra explanation rows: each capture choice has a
+> concise inline summary that still says graph queries run after the build,
+> while its complete scope and cost explanation live on the choice and summary
+> tooltips. Command history and completion help likewise live on the command
+> field. Live omits the execution log/profile, Performance adds them, and Full
+> currently adds no source beyond Performance. The capture state is one framed
+> inline strip; progress and stop controls appear only while a build is active,
+> and full context remains available when its inline label clips. The console
+> output is framed separately. Custom remains a model value but is not offered
+> without an individual-source editor. Workspace validation and settings I/O run off the
 > EDT; settings use atomic replacement, merge late loads per edited field and
 > history entry, and persist close-before-load edits without updating a
 > disposed panel. Desired and in-flight save snapshots are serialized so a
 > stale completion cannot become the final disk state. Controller close also
 > suppresses queued UI callbacks and releases pending preflight resources on
-> its worker. ADR-007's effective-command dialog remains a
-> separate required review after validation.
+> its worker. ADR-007's required review remains separate after validation. Its
+> working directory, original command, effective command and environment stay
+> visible; capture changes, post-build commands, and Bazel/output details are
+> logically grouped keyboard-accessible disclosures. Decisions and warnings
+> stay expanded. Every added flag and veto, replacement, auxiliary command,
+> capability result, output and source-availability explanation remains in the
+> review.
+>
+> **As built (2026-08-30; ADR-011 amendment):** workspace location moved out of
+> the Console launcher into the initial **Workspaces** screen. A named profile
+> selects one local or SSH repository and Bazel executable, with several
+> repositories allowed on the same machine. Choosing it opens the shell without
+> requiring a captured session; the launcher shows that selection and keeps the
+> editable command, capture detail and history. **Browse Repository** and
+> **Terminal** are workspace-owned entries, bringing the sidebar to sixteen.
+> Terminal starts a local login shell or SSH login shell automatically when
+> selected and persists across navigation. Captured-session analysis remains
+> independent: opening historical data never selects a Workspace, reconnects to
+> a recorded host or executes its recorded command. An SSH capture borrows the
+> connection already owned by the selected Workspace and adds only
+> capture-scoped tunnel and staging resources.
+>
+> **As built (2026-08-31; ADR-011 amendment):** the **Discovery** tab in
+> **Settings › Preferences…** holds the Workspace Discovery script editor. The
+> saved script executes directly on a blocking-I/O worker according to its
+> shebang at startup and on request; the same shebang selects editor
+> highlighting. Pipe-delimited local and SSH rows become tagged **Discovered**
+> choices. Every run replaces that ephemeral list, and those profiles never
+> enter `workspaces.properties`. They remain openable but have no individual
+> Edit or Remove action; row and process failures are reported through bounded
+> diagnostics. OpenSSH destinations may be configured `Host` aliases; ports,
+> jump hosts and identities remain in OpenSSH configuration.
+>
+> **As built (2026-08-31; Preferences consolidation):** Preferences is one
+> modeless window with **Theme** and **Discovery** tabs. Theme owns the
+> six-choice selector formerly under **View › Theme**; live application,
+> atomic persistence and the process-only `bbv.theme` override are unchanged.
+> The Settings menu and native macOS Preferences action open the same window.
+>
+> **As built (2026-09-01; ADR-012):** each open Workspace owns a separate
+> native application window, execution connection, Terminal, repository
+> browser, capture and selected analysis session. Opening the same stable
+> profile focuses its existing window. The process-global Workspace manager
+> hides while shells are open, can be recalled, and returns after the last one
+> closes. Up to eight ordered windows and their geometry restore after restart;
+> discovered entries restore only when startup discovery produces the same ID.
+> An unavailable discovered entry retains one of those exact restore slots
+> until it is explicitly forgotten; the app does not silently evict an older
+> entry to open a ninth.
+> Restoration starts on Console and never reopens a captured session, starts a
+> Terminal or reruns a command. A process-global canonical-repository lease
+> permits captures for distinct repositories in parallel and refuses two
+> captures for the same repository with the owning window identified.
 
 ### Right inspector
 
@@ -2169,6 +2228,58 @@ Tabs depend on selection:
 - Logs
 - Raw
 - Provenance
+
+> **As built (2026-08-26):** the shared Actions, Targets, Tests and Errors
+> inspector is one vertically scrolling pane. Field values and absence reasons
+> wrap to the pane width; horizontal scrolling is disabled. Sections
+> retain their natural height so the useful content stays grouped at the top.
+> Consistent titled borders distinguish the table or tree from its detail pane
+> in Actions, Targets, Tests and Errors; Events uses the same treatment for its
+> vertical table/detail split. Findings and Query frame their adjacent regions
+> the same way.
+>
+> **As built (2026-08-26):** a label in an Actions, Targets, Tests, Errors,
+> Events, Tree or Graph context menu, or in a shared inspector, offers **Open
+> Build File…** for the main repository. Resolution uses the session's recorded
+> workspace root (falling back to its invocation directory), prefers
+> `BUILD.bazel` to `BUILD`, rejects traversal and never guesses an external
+> repository's checkout. BUILD files open in reusable modeless windows with
+> Python highlighting and explicit editing, Save and Reload controls. Test-log
+> URIs and action primary outputs are wrapping blue hyperlinks and use the
+> same window read-only. All path resolution, reads and writes run off the EDT;
+> reads are bounded and binary files are refused. Saves use a temporary
+> replacement and refuse to overwrite bytes changed since the file was loaded.
+> Missing or stale recorded paths produce a modeless explanation.
+> These viewers are normal application windows rather than owner-bound dialog
+> windows, so activating the main window or another viewer gives it the normal
+> front-to-back stacking order.
+> The Events **Files** tab also offers **Open File** for existing local regular
+> files. It uses this shared read-only viewer with extension-based highlighting
+> for common source, data and documentation formats. Binary, oversized or stale
+> files show the viewer's explicit read failure instead of malformed text.
+> Package rows in **Top Level Targets** offer the same **Open Build File…**
+> action. Its **View** selector keeps both presentations promised here:
+> **Packages** is the lazy package tree, while **All Targets** is a flat,
+> alphabetized, keyset-paged list of the same BEP top-level labels with no
+> package expansion level. **All Targets** is also a separate navigation card
+> directly beneath it.
+> It keyset-pages distinct fully-qualified labels from the imported cquery
+> configured-target graph—not the top-level BEP target table—and expands labels
+> with more than one analysed configuration into their exact checksums. A
+> session without cquery data says so instead of repeating the top-level list.
+> Live captures plan and record `aquery` and `cquery` as explicit post-build
+> commands. Aquery uses `deps(...)` around the requested patterns. Cquery names
+> a session-local query file that is populated after the build with the exact
+> top-level labels present in BEP, quoted and streamed from SQLite, then wraps
+> that set in `deps(...)`. This preserves build/test wildcard semantics while
+> still making the cquery-backed card contain transitive configured targets.
+> If a partial build reported no target, cquery falls back to the requested
+> patterns and the session states that its scope may be wider.
+>
+> **As built (2026-08-28):** read-only text in shared inspectors, Overview,
+> Coverage, Findings, Graph explanations and Event metadata remains selectable
+> and supports the platform Copy shortcut. Read-only means it cannot be edited;
+> it no longer means the evidence cannot be copied.
 
 ### Bottom status bar
 
@@ -2221,6 +2332,15 @@ Charts:
 - Findings
 
 Every card must navigate to a filtered detailed view.
+
+> **As built (2026-08-26):** the Overview dashboard fills its viewport.
+> Summary cards share one responsive four-column grid, while detail cards use
+> stable two-column rows only when each column remains at least 600 px wide.
+> Coverage gives data coverage, critical-path descriptions and enrichment-task
+> diagnostics full-width rows; only the shorter runner and build-phase cards
+> share a responsive row. The resizable split is framed as **Build summary**
+> and **Coverage & enrichment** so the two independently scrolling regions are
+> explicit. Long values wrap instead of widening the page.
 
 ## 17.4 Actions view
 
@@ -2321,9 +2441,16 @@ Rendering:
 - Antialias selectively
 - Disable expensive detail while actively panning
 - Draw labels only above scale thresholds
+- Show an action's owning target alongside its distinct action name
+- Offer explicit dependency-detail controls; state exact hidden-link counts
 - Use spatial hit testing
 - Never perform layout on the EDT
 - Never query SQLite from `paintComponent`
+
+> **As built (2026-08-26):** source/search and drawing controls occupy two
+> compact wrapping rows. Longer source and control explanations are available
+> through **Source help** and **Control help** instead of permanently consuming
+> canvas height; active warnings and exact partial-result status remain visible.
 
 ## 17.8 Timeline
 
@@ -2355,6 +2482,11 @@ Show:
 - Owner target
 - Timeline navigation
 
+> **As built (2026-08-26):** each reported test log keeps its URI visible and
+> is itself a blue hyperlink in the shared inspector. Local `file:` URIs open
+> read-only in the modeless text viewer; unsupported, remote, stale, binary or
+> oversized files fail explicitly instead of becoming a blank or partial view.
+
 ## 17.10 Failures view
 
 > Shipped as the **Errors** view; see the note under 17.1's left navigation.
@@ -2383,6 +2515,18 @@ Modes:
 - Raw protobuf inspector
 
 Render full protobuf text only for the selected event.
+
+> **As built (2026-08-26):** the decoded pane adds line numbers and read-only
+> syntax highlighting. JSON journal records use JSON highlighting; binary BEP
+> and BES records use Protocol Buffer highlighting. The stored decoded text is
+> unchanged, and failed or empty states use plain text.
+>
+> **As built (2026-08-26):** a third, lazy **Files** tab extracts `File`
+> messages only when visited, then reads local presence, size and modification
+> metadata off the EDT. It covers named sets and the file-bearing action,
+> target, test and build-tool-log events. The selected file can copy its path
+> or reveal an existing local file in Finder. A documented 10,000-row display
+> bound states the exact event total when reached; the raw event remains whole.
 
 ## 17.12 Console
 
@@ -3101,7 +3245,7 @@ Implement phases in order. Each phase must end with tests, documentation, and an
 
 - Implement graph extraction API.
 - Implement clustering.
-- Implement layered, radial, and critical-path layouts.
+- Implement dependency-hierarchy, layered, radial, and critical-path layouts.
 - Implement spatial index.
 - Implement custom Java2D graph canvas.
 - Add semantic zoom.

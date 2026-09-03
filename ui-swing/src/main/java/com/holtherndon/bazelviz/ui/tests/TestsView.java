@@ -4,8 +4,13 @@ import com.holtherndon.bazelviz.storage.entities.TestRow;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
+import com.holtherndon.bazelviz.ui.files.FileLink;
+import com.holtherndon.bazelviz.ui.nav.EntityActions;
+import com.holtherndon.bazelviz.ui.nav.EntityRef;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
@@ -13,10 +18,15 @@ import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
 import java.util.Objects;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongConsumer;
+import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -108,7 +118,10 @@ public final class TestsView extends JPanel {
         JScrollPane scroll = new JScrollPane(table);
         scroll.setMinimumSize(new Dimension(320, 160));
         inspector.setMinimumSize(new Dimension(300, 160));
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, scroll, inspector);
+        JSplitPane split = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                new SectionPane("Tests", scroll),
+                new SectionPane("Test details", inspector));
         split.setResizeWeight(0.62);
 
         JPanel status = new JPanel(new BorderLayout());
@@ -127,6 +140,29 @@ public final class TestsView extends JPanel {
 
     public void onShowSourceEvent(LongConsumer handler) {
         this.showEventHandler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /** Adopts the shared row/inspector actions, including Open Build File. */
+    public void installEntityActions(EntityActions actions) {
+        Objects.requireNonNull(actions, "actions");
+        inspector.installEntityActions(actions, java.util.Set.of());
+        actions.installRowMenu(table, this::refsAtRow, java.util.Set.of());
+    }
+
+    public void onOpenFile(Consumer<FileLink> handler) {
+        inspector.onOpenFile(handler);
+    }
+
+    List<EntityRef> refsAtRow(int modelRow) {
+        PagedTableModel<TestRow> model = tableModel;
+        TestRow row = model == null ? null : model.rowAt(modelRow);
+        if (row == null) {
+            return List.of();
+        }
+        List<EntityRef> refs = new ArrayList<>();
+        refs.add(new EntityRef.TargetLabel(row.label()));
+        row.bepEventId().ifPresent(eventId -> refs.add(new EntityRef.EventId(eventId)));
+        return refs;
     }
 
     public void showEmpty(String message) {
@@ -167,6 +203,11 @@ public final class TestsView extends JPanel {
     }
 
     public void closeSession() {
+        closeSessionAsync();
+    }
+
+    /** Detaches immediately and completes after this session's test reads have stopped. */
+    public CompletionStage<Void> closeSessionAsync() {
         tableModel = null;
         table.setModel(new DefaultTableModel());
         inspector.show(Inspection.NONE);
@@ -179,10 +220,10 @@ public final class TestsView extends JPanel {
         detailExecutor = null;
         pageReader = null;
         detailReader = null;
-        if (pages == null && details == null) {
-            return;
+        if (pages == null && details == null && pageSide == null && detailSide == null) {
+            return CompletableFuture.completedFuture(null);
         }
-        Thread closer = new Thread(() -> {
+        return ViewClose.runAsync("bbv-tests-close", () -> {
             shutdown(pages);
             shutdown(details);
             if (pageSide != null) {
@@ -191,9 +232,7 @@ public final class TestsView extends JPanel {
             if (detailSide != null) {
                 detailSide.close();
             }
-        }, "bbv-tests-close");
-        closer.setDaemon(true);
-        closer.start();
+        });
     }
 
     /**
@@ -203,6 +242,13 @@ public final class TestsView extends JPanel {
      */
     public void attachColumnState(java.nio.file.Path settingsDirectory) {
         headerInteractions.attachPersistence(settingsDirectory, "tests");
+    }
+
+    /** Permanently closes this view, including its debounced column-state writer. */
+    public CompletionStage<Void> closeAsync() {
+        return CompletableFuture.allOf(
+                closeSessionAsync().toCompletableFuture(),
+                headerInteractions.closeAsync().toCompletableFuture());
     }
 
     /** Visible for testing: the shared header behaviour on this table. */

@@ -1,10 +1,12 @@
 package com.holtherndon.bazelviz.ui.timeline;
 
 import com.formdev.flatlaf.FlatLaf;
+import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
@@ -31,19 +33,22 @@ import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
-import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.JPopupMenu;
 import javax.swing.JScrollBar;
 import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
 import javax.swing.JTextArea;
 import javax.swing.JViewport;
 import javax.swing.Scrollable;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
 
 /**
  * The Timeline card: what ran when, at whatever zoom the user is at.
@@ -108,11 +113,11 @@ import javax.swing.SwingConstants;
  * nothing scrolls — {@link Scrollable#getScrollableTracksViewportWidth} is
  * true and the horizontal policy is NEVER, because horizontal position is the
  * pan/zoom transform's business and two mechanisms for one axis would fight.
- * For the same reason the wheel over the plot zooms and is consumed there: a
- * zoom gesture never also scrolls. The scroll pane's own wheel handling is
- * off for the same reason, pane-wide — which would leave the lane label
- * column, its row header, dead to the wheel, so that column carries its own
- * listener that scrolls the shared viewport instead of zooming.
+ * Ordinary wheel and two-finger vertical gestures scroll the lanes. A
+ * two-finger horizontal gesture (reported by Swing as Shift-wheel on macOS)
+ * pans in time. Control/Command-wheel zooms around the pointer and is consumed
+ * so it never also scrolls. The canvas, axis and lane labels all route through
+ * that same contract rather than changing meaning at a component boundary.
  */
 public final class TimelineView extends JPanel {
 
@@ -132,8 +137,22 @@ public final class TimelineView extends JPanel {
      */
     static final int SUB_ROW_HEIGHT = 18;
 
-    /** How far one wheel-free scroll step moves, in pixels. */
+    /**
+     * Width of the needle used when a real duration is narrower than this on
+     * screen. The needle is deliberately distinct from a proportional bar;
+     * it keeps short work visible without pretending its duration is longer.
+     * Documented in docs/limits.md; LimitsDocTest checks the value.
+     */
+    public static final int SHORT_SPAN_MARKER_WIDTH = 3;
+
+    /** How far one wheel or trackpad scroll step moves, in pixels. */
     private static final int VERTICAL_SCROLL_UNIT = 16;
+    /** Quiet time before a changed time range asks the worker for another window. */
+    private static final int VIEWPORT_REFRESH_DELAY_MILLIS = 60;
+    /** Vertical breathing room around each span bar. */
+    private static final int SPAN_VERTICAL_INSET = 2;
+    /** Slightly wider than a needle so short events remain easy to click. */
+    public static final int MINIMUM_SPAN_HIT_WIDTH = 7;
     /** The plot's preferred width; its real width is the viewport's. */
     private static final int PREFERRED_PLOT_WIDTH = 900;
     /** How much of the plot the window should try to show at once. */
@@ -144,9 +163,10 @@ public final class TimelineView extends JPanel {
     private static final int LIVE_TICK_MILLIS = 250;
     /** The in-flight band's wash, so its rows cannot pass for lanes. */
     private static final Color BAND_BACKGROUND = new Color(0x42, 0x85, 0xF4, 24);
-    /** The hairline between two lanes in the label column. */
-    private static final Color LANE_SEPARATOR = new Color(0, 0, 0, 28);
-
+    private static final String INTERACTION_HINT =
+            "Scroll: lanes  ·  Two-finger sideways: pan  ·  Ctrl/⌘+scroll or pinch: zoom"
+                    + "  ·  Drag: pan"
+                    + "  ·  Shift+drag: select";
     private final CardLayout cards = new CardLayout();
     private final JPanel deck = new JPanel(cards);
     private final JLabel empty =
@@ -161,14 +181,18 @@ public final class TimelineView extends JPanel {
             new JComboBox<>(LaneGrouping.SortBy.values());
     private final JComboBox<TimelineColours.Mode> colourChoice = new JComboBox<>();
     private final JCheckBox followBox = new JCheckBox("Follow live", true);
+    private final JButton zoomOut = new JButton("−");
+    private final JButton zoomIn = new JButton("+");
+    private final JButton fitBuild = new JButton("Fit build");
 
     private final Canvas canvas = new Canvas();
     private final Header header = new Header();
     private final LaneLabels laneLabels = new LaneLabels();
+    private final MacMagnificationSupport.Registration magnificationSupport;
     /** Vertical scrolling for the plot; the lane labels are its row header. */
     private final JScrollPane plotScroll = new JScrollPane(canvas);
 
-    // ------------------------------------------------------- inline inspector
+    // --------------------------------------------------------- side inspector
     private final JPanel inspector = new JPanel(new BorderLayout(8, 2));
     /**
      * The same header the shared inspector and the Events inspector wear:
@@ -177,6 +201,8 @@ public final class TimelineView extends JPanel {
      */
     private final InspectorHeader inspectorHeader = new InspectorHeader();
     private final JTextArea inspectorBody = new JTextArea();
+    private final JButton inspectorClose = new JButton("Close");
+    private final JSplitPane contentSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
 
     private TimelineModel model;
     private SpanWindow window = SpanWindow.EMPTY;
@@ -195,6 +221,14 @@ public final class TimelineView extends JPanel {
     private long unmatchedSpans;
     private TimelineViewport viewport;
     private TimelineColours.Mode colourMode = TimelineColours.Mode.OUTCOME;
+    /** Span under the pointer; paint-only and reset whenever the window changes. */
+    private int hoveredSpan = -1;
+    /** Fractional trackpad movement that has not yet reached one device pixel. */
+    private double verticalWheelRemainder;
+    /** Fractional horizontal trackpad movement retained across native events. */
+    private double horizontalWheelRemainder;
+    private boolean inspectorHasDetails;
+    private EntityActions entityActions;
     private LongConsumer selectionHandler = node -> { };
     private LongConsumer actionPickedHandler = node -> { };
     private Runnable viewportChanged = () -> { };
@@ -213,9 +247,19 @@ public final class TimelineView extends JPanel {
      */
     private final javax.swing.Timer liveTicker =
             new javax.swing.Timer(LIVE_TICK_MILLIS, event -> onLiveTick());
+    /**
+     * Repaints every gesture immediately, but waits briefly before querying.
+     * Smooth trackpad input can deliver dozens of deltas per second; issuing
+     * one SQLite read for each delta would make the data trail the pointer.
+     */
+    private final javax.swing.Timer viewportRefreshTimer =
+            new javax.swing.Timer(VIEWPORT_REFRESH_DELAY_MILLIS, event -> viewportChanged.run());
 
     public TimelineView() {
         super(new BorderLayout());
+        magnificationSupport = MacMagnificationSupport.install(canvas,
+                magnification -> zoomAround(
+                        canvas.zoomAnchorX(), MacMagnificationSupport.zoomFactor(magnification)));
         PlainText.disableHtml(empty);
         PlainText.disableHtml(status);
         PlainText.disableHtml(coverage);
@@ -229,6 +273,10 @@ public final class TimelineView extends JPanel {
         // needs an execution log most sessions do not have.
         groupChoice.setSelectedItem(LaneGrouping.By.MNEMONIC);
         sortChoice.setSelectedItem(LaneGrouping.SortBy.NAME);
+        groupChoice.setToolTipText("Choose how actions are divided into vertical lanes");
+        sortChoice.setToolTipText("Choose the order of the timeline lanes");
+        colourChoice.setToolTipText("Choose what each span colour communicates");
+        followBox.setToolTipText("Keep the time axis following the end of a live build");
 
         followBox.addActionListener(event -> {
             if (viewport != null) {
@@ -246,6 +294,16 @@ public final class TimelineView extends JPanel {
         groupChoice.addActionListener(event -> viewportChanged.run());
         sortChoice.addActionListener(event -> viewportChanged.run());
 
+        viewportRefreshTimer.setRepeats(false);
+        zoomOut.setToolTipText("Zoom out around the centre of the timeline");
+        zoomOut.getAccessibleContext().setAccessibleName("Zoom out");
+        zoomOut.addActionListener(event -> zoomAround(canvas.getWidth() / 2.0, 1.0 / 1.5));
+        zoomIn.setToolTipText("Zoom in around the centre of the timeline");
+        zoomIn.getAccessibleContext().setAccessibleName("Zoom in");
+        zoomIn.addActionListener(event -> zoomAround(canvas.getWidth() / 2.0, 1.5));
+        fitBuild.setToolTipText("Show the full invocation on the time axis");
+        fitBuild.addActionListener(event -> fitBuild());
+
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         bar.add(PlainText.disableHtml(new JLabel("Group by:")));
         bar.add(groupChoice);
@@ -254,6 +312,9 @@ public final class TimelineView extends JPanel {
         bar.add(PlainText.disableHtml(new JLabel("Colour:")));
         bar.add(colourChoice);
         bar.add(followBox);
+        bar.add(zoomOut);
+        bar.add(zoomIn);
+        bar.add(fitBuild);
 
         // The axis is fixed: it stays put while the lanes scroll under it. The
         // strut is what keeps its x = 0 over the canvas's x = 0 rather than
@@ -275,10 +336,10 @@ public final class TimelineView extends JPanel {
         plotScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         plotScroll.getVerticalScrollBar().setUnitIncrement(VERTICAL_SCROLL_UNIT);
         styleVerticalScrollbar(plotScroll.getVerticalScrollBar());
-        // The wheel over this plot means zoom. Leaving the scroll pane's own
-        // wheel handling on would make one gesture mean two things at once;
-        // laneLabels — the row header — carries its own wheel listener below
-        // so wheeling over the label column still scrolls.
+        // Wheel input is routed explicitly by the canvas, axis and row header:
+        // vertical input scrolls lanes, horizontal input pans time, and
+        // Control/Command input zooms. The scroll pane's default listener stays
+        // off so it cannot apply a second, platform-dependent delta afterward.
         plotScroll.setWheelScrollingEnabled(false);
         plotScroll.setBorder(BorderFactory.createEmptyBorder());
 
@@ -294,20 +355,41 @@ public final class TimelineView extends JPanel {
         footer.add(hover, BorderLayout.CENTER);
         footer.add(coverage, BorderLayout.SOUTH);
 
-        JPanel south = new JPanel();
-        south.setLayout(new BoxLayout(south, BoxLayout.Y_AXIS));
-        south.add(inspector);
-        south.add(footer);
+        JPanel timeline = new JPanel(new BorderLayout());
+        timeline.setMinimumSize(new Dimension(420, 220));
+        timeline.add(plot, BorderLayout.CENTER);
+        timeline.add(footer, BorderLayout.SOUTH);
+
+        inspector.setMinimumSize(new Dimension(280, 180));
+        inspector.setPreferredSize(new Dimension(340, PREFERRED_PLOT_HEIGHT));
+        contentSplit.setLeftComponent(new SectionPane("Timeline", timeline));
+        contentSplit.setRightComponent(new SectionPane("Action details", inspector));
+        contentSplit.setResizeWeight(0.72);
+        contentSplit.setContinuousLayout(true);
 
         JPanel body = new JPanel(new BorderLayout());
         body.add(bar, BorderLayout.NORTH);
-        body.add(plot, BorderLayout.CENTER);
-        body.add(south, BorderLayout.SOUTH);
+        body.add(contentSplit, BorderLayout.CENTER);
 
         deck.add(empty, "empty");
         deck.add(body, "timeline");
         add(deck, BorderLayout.CENTER);
         cards.show(deck, "empty");
+    }
+
+    @Override
+    public void updateUI() {
+        super.updateUI();
+        // JPanel's constructor invokes updateUI before this class's fields are
+        // initialized, hence the null guards. Runtime theme changes arrive
+        // after construction and refresh the custom FlatLaf styling here.
+        if (plotScroll != null) {
+            styleVerticalScrollbar(plotScroll.getVerticalScrollBar());
+        }
+        if (inspector != null) {
+            styleInspectorBorder();
+        }
+        repaint();
     }
 
     /**
@@ -330,20 +412,58 @@ public final class TimelineView extends JPanel {
                 "hoverThumbColor", hoverThumb));
     }
 
+    private static Color themeForeground() {
+        Color foreground = UIManager.getColor("Label.foreground");
+        return foreground == null ? Color.DARK_GRAY : foreground;
+    }
+
+    private static Color withAlpha(Color color, int alpha) {
+        return new Color(color.getRed(), color.getGreen(), color.getBlue(), alpha);
+    }
+
+    private static Color spanBorder() {
+        return withAlpha(FlatLaf.isLafDark() ? Color.WHITE : Color.BLACK, 82);
+    }
+
+    private static Color focusOutline() {
+        Color focus = UIManager.getColor("Component.focusColor");
+        return focus == null
+                ? (FlatLaf.isLafDark() ? new Color(0xA9, 0xCE, 0xFF) : new Color(0x0B, 0x57, 0xD0))
+                : focus;
+    }
+
+    private static Color gridLine() {
+        return withAlpha(themeForeground(), FlatLaf.isLafDark() ? 38 : 28);
+    }
+
+    private static Color laneWash() {
+        return withAlpha(themeForeground(), FlatLaf.isLafDark() ? 12 : 8);
+    }
+
+    private static Color rangeFill() {
+        Color focus = focusOutline();
+        return withAlpha(focus, FlatLaf.isLafDark() ? 42 : 30);
+    }
+
     private void buildInspector() {
-        inspector.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(1, 0, 0, 0, Color.GRAY),
-                BorderFactory.createEmptyBorder(4, 8, 4, 8)));
+        styleInspectorBorder();
         inspectorBody.setEditable(false);
         inspectorBody.setOpaque(false);
-        inspectorBody.setLineWrap(false);
+        inspectorBody.setLineWrap(true);
+        inspectorBody.setWrapStyleWord(true);
         inspectorBody.setFont(status.getFont());
-        JButton close = new JButton("Close");
-        close.addActionListener(event -> hideInspector());
-        inspectorHeader.addTrailing(close);
+        inspectorClose.addActionListener(event -> hideInspector());
+        inspectorHeader.addTrailing(inspectorClose);
         inspector.add(inspectorHeader, BorderLayout.NORTH);
-        inspector.add(inspectorBody, BorderLayout.CENTER);
-        inspector.setVisible(false);
+        JScrollPane detailsScroll = new JScrollPane(inspectorBody);
+        detailsScroll.setBorder(BorderFactory.createEmptyBorder());
+        detailsScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        inspector.add(detailsScroll, BorderLayout.CENTER);
+        hideInspector();
+    }
+
+    private void styleInspectorBorder() {
+        inspector.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
     }
 
     /** Called with a node id when the user selects a span. */
@@ -352,7 +472,7 @@ public final class TimelineView extends JPanel {
     }
 
     /**
-     * Called with an action id when a span is clicked and the inline inspector
+     * Called with an action id when a span is clicked and the side inspector
      * needs that action's details — the controller's hook, distinct from
      * {@link #onSelection} which is the application's selection sync.
      */
@@ -365,17 +485,29 @@ public final class TimelineView extends JPanel {
         this.rangeChanged = listener;
     }
 
+    /** Clears a drag-selected range and tells subscribers the filter is gone. */
+    public void clearRange() {
+        if (viewport == null || !viewport.hasRange()) {
+            return;
+        }
+        viewport = viewport.withoutRange();
+        repaintAll();
+        rangeChanged.rangeChanged(
+                java.util.OptionalLong.empty(), java.util.OptionalLong.empty());
+    }
+
     /** Called when the visible range or grouping changed and data must be refetched. */
     public void onViewportChanged(Runnable handler) {
         this.viewportChanged = handler;
     }
 
     /**
-     * Gives the inline inspector the shared navigation vocabulary. Until this
+     * Gives the side inspector the shared navigation vocabulary. Until this
      * is called, a clicked segment still shows its details but offers no
      * jumps — honest absence, never dead buttons.
      */
     public void installEntityActions(EntityActions actions) {
+        entityActions = actions;
         // Not "show on timeline": the segment it would show is the one
         // already under the pointer.
         inspectorHeader.installEntityActions(
@@ -396,6 +528,7 @@ public final class TimelineView extends JPanel {
         // returned to the top every two seconds.
         int scrolledTo = scrollPosition();
         this.model = next;
+        hoveredSpan = -1;
         Map<String, Integer> rows = new HashMap<>();
         List<TimelineModel.Lane> lanes = next.lanes();
         for (int i = 0; i < lanes.size(); i++) {
@@ -424,6 +557,7 @@ public final class TimelineView extends JPanel {
 
         coverage.setText(next.coverageNote().orElse(" "));
         coverage.setToolTipText(PlainText.tooltip(coverage.getText()));
+        showInteractionHint();
         cards.show(deck, "timeline");
         if (next.liveBand().live()) {
             liveTicker.start();
@@ -471,6 +605,7 @@ public final class TimelineView extends JPanel {
         int scrolledTo = scrollPosition();
         this.window = next;
         this.stacking = SpanStacking.of(next);
+        hoveredSpan = -1;
         recountUnmatched();
         // A refetch can change a lane's depth, and so the plot's total height.
         // The position is kept where the user put it, clamped to what is now
@@ -498,6 +633,7 @@ public final class TimelineView extends JPanel {
         viewport = null;
         window = SpanWindow.EMPTY;
         stacking = SpanStacking.EMPTY;
+        hoveredSpan = -1;
         laneRowByKey = Map.of();
         unmatchedSpans = 0;
         relayoutLanes();
@@ -505,6 +641,7 @@ public final class TimelineView extends JPanel {
         // starts at its own top rather than at the last one's offset.
         scrollTo(0);
         liveTicker.stop();
+        viewportRefreshTimer.stop();
         hideInspector();
         cards.show(deck, "empty");
     }
@@ -528,6 +665,101 @@ public final class TimelineView extends JPanel {
         canvas.revalidate();
         laneLabels.revalidate();
         port.setViewPosition(new Point(0, Math.clamp(y, 0, limit)));
+    }
+
+    /**
+     * Applies one ordinary wheel/two-finger gesture to the shared vertical
+     * viewport. Fractional deltas are retained instead of rounded away, which
+     * is what makes small inertial trackpad movements accumulate smoothly.
+     */
+    private void scrollVertically(MouseWheelEvent event) {
+        double increment = event.getScrollType() == MouseWheelEvent.WHEEL_BLOCK_SCROLL
+                ? Math.max(VERTICAL_SCROLL_UNIT,
+                        plotScroll.getViewport().getExtentSize().height - VERTICAL_SCROLL_UNIT)
+                : Math.max(1, event.getScrollAmount()) * (double) VERTICAL_SCROLL_UNIT;
+        double pixels = verticalWheelRemainder + event.getPreciseWheelRotation() * increment;
+        int wholePixels = pixels < 0 ? (int) Math.ceil(pixels) : (int) Math.floor(pixels);
+        verticalWheelRemainder = pixels - wholePixels;
+        if (wholePixels != 0) {
+            scrollTo(scrollPosition() + wholePixels);
+        }
+    }
+
+    /**
+     * Pans time for a native horizontal trackpad event. On macOS the JDK
+     * exposes delta-X as a wheel event with Shift set; treating it as vertical
+     * input was the reason a sideways gesture moved through lanes instead.
+     */
+    private void scrollHorizontally(MouseWheelEvent event) {
+        if (viewport == null) {
+            return;
+        }
+        double increment = event.getScrollType() == MouseWheelEvent.WHEEL_BLOCK_SCROLL
+                ? Math.max(VERTICAL_SCROLL_UNIT, canvas.getWidth() - VERTICAL_SCROLL_UNIT)
+                : Math.max(1, event.getScrollAmount()) * (double) VERTICAL_SCROLL_UNIT;
+        double pixels = horizontalWheelRemainder
+                + event.getPreciseWheelRotation() * increment;
+        int wholePixels = pixels < 0 ? (int) Math.ceil(pixels) : (int) Math.floor(pixels);
+        horizontalWheelRemainder = pixels - wholePixels;
+        if (wholePixels == 0) {
+            return;
+        }
+        TimelineTransform before = viewport.transform();
+        TimelineTransform after = clamp(before.pannedByPixels(-wholePixels));
+        if (after.equals(before)) {
+            return;
+        }
+        viewport = viewport.navigatedTo(after);
+        followBox.setSelected(false);
+        repaintAll();
+        viewportRefreshTimer.restart();
+    }
+
+    /** True for explicit zoom and for the modified wheel form used by trackpads. */
+    private static boolean isZoomGesture(MouseWheelEvent event) {
+        return event.isControlDown() || event.isMetaDown();
+    }
+
+    /** Routes wheel input consistently over the plot, its axis, and its labels. */
+    private void handleWheel(MouseWheelEvent event, double anchorX) {
+        event.consume();
+        if (isZoomGesture(event)) {
+            double factor = Math.pow(1.1, -event.getPreciseWheelRotation());
+            zoomAround(anchorX, factor);
+        } else if (event.isShiftDown()) {
+            scrollHorizontally(event);
+        } else {
+            scrollVertically(event);
+        }
+    }
+
+    /** Zooms immediately, then coalesces the exact-window refresh. */
+    private void zoomAround(double anchorX, double factor) {
+        if (viewport == null || !Double.isFinite(factor) || factor <= 0) {
+            return;
+        }
+        TimelineTransform before = viewport.transform();
+        TimelineTransform after = clamp(before.zoomedAround(anchorX, factor));
+        if (after.equals(before)) {
+            return;
+        }
+        viewport = viewport.navigatedTo(after);
+        followBox.setSelected(false);
+        repaintAll();
+        viewportRefreshTimer.restart();
+    }
+
+    /** Fits the invocation while preserving the selected action and range. */
+    private void fitBuild() {
+        if (model == null || viewport == null) {
+            return;
+        }
+        TimelineTransform fit = TimelineTransform.fit(
+                model.wallStartMicros(), liveWallEnd(model), Math.max(1, canvas.getWidth()));
+        viewport = viewport.navigatedTo(fit);
+        followBox.setSelected(false);
+        repaintAll();
+        viewportRefreshTimer.restart();
     }
 
     /**
@@ -560,8 +792,8 @@ public final class TimelineView extends JPanel {
             return Optional.empty();
         }
         return Optional.of(new long[] {
-                (long) viewport.transform().microsAtX(0),
-                (long) viewport.transform().microsAtX(canvas.getWidth())});
+                (long) Math.floor(viewport.transform().microsAtX(0)),
+                (long) Math.ceil(viewport.transform().microsAtX(canvas.getWidth()))});
     }
 
     /** The grouping and sort the user has chosen. */
@@ -595,7 +827,7 @@ public final class TimelineView extends JPanel {
     // ------------------------------------------------------------- inspector
 
     /**
-     * Shows the inline inspector for one clicked segment. Called by the
+     * Shows the side inspector for one clicked segment. Called by the
      * controller once details arrive, and by the view itself with what it
      * already knows the moment of the click.
      */
@@ -610,20 +842,40 @@ public final class TimelineView extends JPanel {
                 details.refs());
         inspectorBody.setText(lines.isEmpty()
                 ? "" : String.join("\n", lines.subList(1, lines.size())));
-        inspector.setVisible(true);
+        inspectorBody.setCaretPosition(0);
+        inspectorHasDetails = true;
+        inspectorClose.setVisible(true);
         inspector.revalidate();
         inspector.repaint();
     }
 
-    /** Hides the inline inspector. */
+    /** Clears the side inspector without resizing the timeline. */
     public void hideInspector() {
-        inspector.setVisible(false);
+        inspectorHasDetails = false;
         inspectorHeader.clear();
+        inspectorBody.setText("Select a segment to see details.");
+        inspectorBody.setCaretPosition(0);
+        inspectorClose.setVisible(false);
     }
 
-    /** Whether the inline inspector is showing, for tests. */
+    /** Whether the side inspector currently contains selected-segment details. */
     boolean inspectorVisibleForTest() {
-        return inspector.isVisible();
+        return inspectorHasDetails;
+    }
+
+    /** The horizontal content split, for layout tests. */
+    JSplitPane contentSplitForTest() {
+        return contentSplit;
+    }
+
+    /** The details component installed on the split's right side. */
+    JComponent inspectorForTest() {
+        return inspector;
+    }
+
+    /** Builds a menu without showing it, so headless tests can inspect it. */
+    JPopupMenu contextMenuAtForTest(int x, int y) {
+        return contextMenuAt(x, y);
     }
 
     /** The inspector's shared header, for tests that read it or open its menu. */
@@ -713,10 +965,14 @@ public final class TimelineView extends JPanel {
         }
         StringBuilder text = new StringBuilder();
         if (drawingSpans()) {
-            text.append("Showing ").append(window.size()).append(" individual spans");
-            if (window.droppedSpans() > 0) {
-                text.append(" of ").append(window.size() + window.droppedSpans())
-                        .append(" in view — zoom in to see the rest");
+            if (!windowCoversViewport()) {
+                text.append("Updating visible spans; showing ")
+                        .append(window.size())
+                        .append(" known individual spans in the loaded part of this range.");
+            } else if (window.size() == 0) {
+                text.append("No individual spans in this time range.");
+            } else {
+                text.append("Showing ").append(window.size()).append(" individual spans");
             }
             if (stacking.overflowCount() > 0) {
                 text.append("  ·  ").append(stacking.overflowCount())
@@ -728,6 +984,22 @@ public final class TimelineView extends JPanel {
                 text.append("  ·  ").append(unmatchedSpans)
                         .append(" spans are in no current lane while the grouping updates");
             }
+            long shortMarkers = shortSpanMarkerCount();
+            if (shortMarkers > 0) {
+                text.append("  ·  ").append(shortMarkers)
+                        .append(shortMarkers == 1 ? " short span uses" : " short spans use")
+                        .append(" a ").append(SHORT_SPAN_MARKER_WIDTH)
+                        .append(" px needle — zoom in for proportional width");
+            }
+        } else if (!windowCoversViewport()) {
+            text.append("Updating individual spans for this time range; showing exact aggregate"
+                    + " density in the meantime.");
+        } else if (window.droppedSpans() > 0) {
+            text.append("Showing exact aggregate density: ")
+                    .append(window.size() + window.droppedSpans())
+                    .append(" spans are in view, above the ")
+                    .append(SpanWindow.MAX_SPANS)
+                    .append(" individual-span budget. Zoom in for segments.");
         } else {
             text.append("Showing aggregate density over ").append(model.spanCount())
                     .append(" spans. Zoom in for individual actions.");
@@ -736,9 +1008,45 @@ public final class TimelineView extends JPanel {
         return text.toString();
     }
 
-    /** True when the visible range is sparse enough to draw span by span. */
+    /**
+     * True when exact marks are safe to draw. A fully covered empty window is
+     * still exact. During a small pan, a non-truncated overlapping window stays
+     * visible and only its uncovered edge is marked as loading; replacing the
+     * whole plot with density for a few milliseconds caused the former flash.
+     */
     private boolean drawingSpans() {
-        return window.size() > 0 && window.droppedSpans() == 0;
+        return window.droppedSpans() == 0
+                && (windowCoversViewport()
+                        || (window.size() > 0 && windowOverlapsViewport()));
+    }
+
+    /**
+     * Whether the prepared exact window covers every time currently visible.
+     * An old window remains safe to reuse after zooming into its range, but it
+     * must never be presented as exact after panning or zooming beyond it.
+     */
+    private boolean windowCoversViewport() {
+        Optional<long[]> visible = visibleRange();
+        return visible.isPresent() && window.covers(visible.get()[0], visible.get()[1]);
+    }
+
+    /** Whether any part of the prepared exact window is still on screen. */
+    private boolean windowOverlapsViewport() {
+        Optional<long[]> visible = visibleRange();
+        return visible.isPresent()
+                && window.toMicros() > visible.get()[0]
+                && window.fromMicros() < visible.get()[1];
+    }
+
+    /** Number of exact spans currently represented by short-duration needles. */
+    private long shortSpanMarkerCount() {
+        long count = 0;
+        for (int i = 0; i < window.size(); i++) {
+            if (naturalSpanWidth(i) < SHORT_SPAN_MARKER_WIDTH) {
+                count++;
+            }
+        }
+        return count;
     }
 
     // -------------------------------------------------------------- geometry
@@ -820,6 +1128,23 @@ public final class TimelineView extends JPanel {
     }
 
     /**
+     * The stable visible canvas slice. Swing's graphics clip is only the dirty
+     * repaint region and can change from frame to frame; using it to place the
+     * density chart or its label made their geometry jump while data loaded.
+     */
+    private Rectangle visibleCanvasSlice() {
+        Rectangle view = plotScroll.getViewport().getViewRect();
+        if (view.width <= 0 || view.height <= 0) {
+            return new Rectangle(0, 0, Math.max(0, canvas.getWidth()),
+                    Math.max(0, canvas.getHeight()));
+        }
+        int top = Math.clamp(view.y, 0, Math.max(0, canvas.getHeight()));
+        int bottom = (int) Math.clamp((long) view.y + view.height,
+                (long) top, (long) Math.max(top, canvas.getHeight()));
+        return new Rectangle(0, top, Math.max(0, canvas.getWidth()), bottom - top);
+    }
+
+    /**
      * The lane row a span paints in: its key's position in the model's lane
      * list, or the extra row below every lane for a span whose key is in no
      * current lane (transient while a regroup's model catches up with its
@@ -833,24 +1158,81 @@ public final class TimelineView extends JPanel {
                 : row;
     }
 
-    /**
-     * The painted bounds of span {@code i}, for painting and hit-testing
-     * alike. Its sub-row is {@link #SUB_ROW_HEIGHT} tall whatever else is on
-     * screen, less one pixel so two stacked sub-rows read as two.
-     */
-    private Rectangle boundsOfSpan(int i) {
+    /** Exact duration width at the current scale, before applying a marker. */
+    private double naturalSpanWidth(int i) {
         TimelineTransform transform = viewport.transform();
-        int x0 = (int) transform.xForMicros(window.startMicros(i));
-        int x1 = (int) transform.xForMicros(window.endMicros(i));
-        int width = Math.max(1, x1 - x0);
+        return Math.max(0.0,
+                transform.xForMicros(window.endMicros(i))
+                        - transform.xForMicros(window.startMicros(i)));
+    }
+
+    /**
+     * Writes the painted bounds of span {@code i} into {@code out}. Duration
+     * bars use their true covered pixels. Anything narrower uses a centred,
+     * fixed-width needle, which reads as "shorter than this scale" rather than
+     * as a malformed one-pixel box.
+     */
+    private void spanPaintBounds(int i, Rectangle out) {
+        TimelineTransform transform = viewport.transform();
+        double exactStart = transform.xForMicros(window.startMicros(i));
+        double exactEnd = transform.xForMicros(window.endMicros(i));
+        double naturalWidth = Math.max(0.0, exactEnd - exactStart);
+        int x;
+        int width;
+        if (naturalWidth < SHORT_SPAN_MARKER_WIDTH) {
+            width = SHORT_SPAN_MARKER_WIDTH;
+            // Adding half the duration avoids overflowing two very large
+            // screen coordinates merely to compute their midpoint.
+            x = roundedScreenCoordinate(exactStart + naturalWidth / 2.0) - width / 2;
+        } else {
+            // A long action can begin far outside the current viewport. Clip
+            // before converting to int so its rectangle cannot overflow and
+            // wrap back across the canvas.
+            double clippedStart = Math.max(-2.0, exactStart);
+            double clippedEnd = Math.min(canvas.getWidth() + 2.0, exactEnd);
+            x = flooredScreenCoordinate(clippedStart);
+            int right = ceiledScreenCoordinate(clippedEnd);
+            width = (int) Math.clamp((long) right - x, 1L, Integer.MAX_VALUE);
+        }
         int row = rowOfSpan(i);
         // The row's own height says how many sub-rows it has, so a span can
         // never be placed below the lane it belongs to — including a span in
         // no current lane, whose extra row is one sub-row tall.
         int depth = laneHeight(row) / SUB_ROW_HEIGHT;
         int subRow = Math.clamp(stacking.subRow(i), 0, depth - 1);
-        int y = bandHeight() + laneTop(row) + subRow * SUB_ROW_HEIGHT;
-        return new Rectangle(x0, y, width, SUB_ROW_HEIGHT - 1);
+        int y = bandHeight() + laneTop(row) + subRow * SUB_ROW_HEIGHT
+                + SPAN_VERTICAL_INSET;
+        out.setBounds(x, y, width, SUB_ROW_HEIGHT - 2 * SPAN_VERTICAL_INSET);
+    }
+
+    /** A larger click target that never changes the painted duration cue. */
+    private void spanHitBounds(int i, Rectangle out) {
+        spanPaintBounds(i, out);
+        int extra = Math.max(0, MINIMUM_SPAN_HIT_WIDTH - out.width);
+        out.setBounds(out.x - extra / 2,
+                out.y - SPAN_VERTICAL_INSET,
+                out.width + extra,
+                SUB_ROW_HEIGHT);
+    }
+
+    /** True if the real interval, not its marker, touches the canvas. */
+    private boolean spanTouchesCanvas(int i) {
+        TimelineTransform transform = viewport.transform();
+        double start = transform.xForMicros(window.startMicros(i));
+        double end = transform.xForMicros(window.endMicros(i));
+        return (end > 0 || (start == end && end == 0)) && start < canvas.getWidth();
+    }
+
+    private static int flooredScreenCoordinate(double value) {
+        return (int) Math.clamp(Math.floor(value), Integer.MIN_VALUE, Integer.MAX_VALUE);
+    }
+
+    private static int ceiledScreenCoordinate(double value) {
+        return (int) Math.clamp(Math.ceil(value), Integer.MIN_VALUE, Integer.MAX_VALUE);
+    }
+
+    private static int roundedScreenCoordinate(double value) {
+        return (int) Math.clamp(Math.rint(value), Integer.MIN_VALUE, Integer.MAX_VALUE);
     }
 
     /** The span under a point, or -1. Only meaningful while drawing spans. */
@@ -858,12 +1240,25 @@ public final class TimelineView extends JPanel {
         if (viewport == null || !drawingSpans()) {
             return -1;
         }
-        for (int i = 0; i < window.size(); i++) {
-            if (boundsOfSpan(i).contains(x, y)) {
+        Rectangle hit = new Rectangle();
+        // Last painted is visually on top, so it must also win hit testing.
+        for (int i = window.size() - 1; i >= 0; i--) {
+            if (!spanTouchesCanvas(i)) {
+                continue;
+            }
+            spanHitBounds(i, hit);
+            if (hit.contains(x, y)) {
                 return i;
             }
         }
         return -1;
+    }
+
+    /** Painted bounds for focused geometry tests. */
+    Rectangle spanPaintBoundsForTest(int i) {
+        Rectangle bounds = new Rectangle();
+        spanPaintBounds(i, bounds);
+        return bounds;
     }
 
     /** The in-flight target under a point, or -1. */
@@ -924,9 +1319,11 @@ public final class TimelineView extends JPanel {
      * The ticks the axis header draws for one frame -- pure computation, no
      * {@link Graphics2D}, so what gets drawn can be checked without painting.
      *
-     * <p>Every hundred pixels, labelled in seconds from the build's start
-     * rather than in epoch time: a reader cares how far into the build
-     * something happened. {@link #clamp} lets a pan or a zoom show a little
+     * <p>A stable 1-2-5 time ladder keeps ticks around ninety pixels apart and
+     * labels them from the build's start rather than in epoch time: a reader
+     * cares how far into the build something happened. Precision follows the
+     * step, so a microsecond view never repeats a row of labels saying 0.00s.
+     * {@link #clamp} lets a pan or a zoom show a little
      * space before the wall as a margin, on purpose -- but there is no build
      * time before the build started, so an x whose computed time falls before
      * {@code model.wallStartMicros()} is left out of the result entirely, tick
@@ -937,13 +1334,19 @@ public final class TimelineView extends JPanel {
      */
     static List<Tick> ticksFor(TimelineViewport viewport, TimelineModel model, int width) {
         List<Tick> ticks = new ArrayList<>();
-        for (int x = 0; x < width; x += 100) {
-            double micros = viewport.transform().microsAtX(x) - model.wallStartMicros();
-            if (micros < 0) {
-                continue;
+        TimelineTransform transform = viewport.transform();
+        long step = TimelineCanvas.niceStep(90.0 / transform.pixelsPerMicro());
+        long visibleFrom = (long) Math.floor(
+                transform.microsAtX(0) - model.wallStartMicros());
+        long visibleTo = (long) Math.ceil(
+                transform.microsAtX(width) - model.wallStartMicros());
+        long tick = Math.max(0, Math.ceilDiv(visibleFrom, step) * step);
+        for (; tick <= visibleTo; tick += step) {
+            int x = (int) Math.round(transform.xForMicros(model.wallStartMicros() + tick));
+            ticks.add(new Tick(x, TimelineCanvas.formatMicros(tick, step)));
+            if (tick > Long.MAX_VALUE - step) {
+                break;
             }
-            ticks.add(new Tick(x, String.format(
-                    java.util.Locale.ROOT, "%.2fs", micros / 1_000_000.0)));
         }
         return ticks;
     }
@@ -955,6 +1358,7 @@ public final class TimelineView extends JPanel {
 
         Header() {
             setPreferredSize(new Dimension(0, HEADER_HEIGHT));
+            addMouseWheelListener(event -> handleWheel(event, event.getX()));
         }
 
         @Override
@@ -966,8 +1370,9 @@ public final class TimelineView extends JPanel {
             try {
                 g2.setColor(getBackground());
                 g2.fillRect(0, 0, getWidth(), getHeight());
-                g2.setColor(Color.GRAY);
+                g2.setColor(gridLine());
                 g2.drawLine(0, getHeight() - 1, getWidth(), getHeight() - 1);
+                g2.setColor(themeForeground());
                 for (Tick tick : ticksFor(viewport, model, getWidth())) {
                     g2.drawLine(tick.x(), getHeight() - 6, tick.x(), getHeight() - 1);
                     g2.drawString(tick.label(), tick.x() + 3, 14);
@@ -990,19 +1395,10 @@ public final class TimelineView extends JPanel {
         private static final long serialVersionUID = 1L;
 
         LaneLabels() {
-            // plotScroll's own wheel handling is off pane-wide so the canvas's
-            // listener can own "wheel means zoom" without a second listener
-            // fighting it — but that same switch left this column dead to the
-            // wheel, since nothing else scrolled it. This is that scrolling,
-            // by the same unit increment Scrollable reports above and reading
-            // precise rotation the way the canvas's zoom handler does, so a
-            // trackpad's fractional notches feel as smooth here as they do
-            // over the plot.
-            addMouseWheelListener(event -> {
-                event.consume();
-                int delta = (int) Math.round(event.getPreciseWheelRotation() * VERTICAL_SCROLL_UNIT);
-                scrollTo(scrollPosition() + delta);
-            });
+            // The row header shares the plot's interaction contract. It has no
+            // meaningful time coordinate, so modified-wheel zoom anchors at
+            // the plot centre; ordinary input scrolls the shared viewport.
+            addMouseWheelListener(event -> handleWheel(event, canvas.getWidth() / 2.0));
         }
 
         @Override
@@ -1050,10 +1446,23 @@ public final class TimelineView extends JPanel {
                 if (band > 0) {
                     g2.setColor(BAND_BACKGROUND);
                     g2.fillRect(0, 0, getWidth(), band);
-                    g2.setColor(new Color(0x1A, 0x56, 0xB0));
+                    g2.setColor(themeForeground());
                     g2.drawString("In-flight targets", 4, Math.min(band - 5, 13));
                 }
                 Rectangle clip = g2.getClipBounds();
+                if (!drawingSpans()) {
+                    // Density is global; showing the grouping's lane names
+                    // beside it would imply a per-lane aggregate we do not
+                    // compute. Keep the label pinned in the viewport, not the
+                    // transient dirty-paint clip.
+                    int visibleTop = Math.max(band, visibleCanvasSlice().y);
+                    g2.setColor(themeForeground());
+                    g2.drawString(windowCoversViewport()
+                                    ? "Whole build · aggregate density"
+                                    : "Updating visible spans…",
+                            4, visibleTop + SUB_ROW_HEIGHT - 5);
+                    return;
+                }
                 List<TimelineModel.Lane> lanes = model.lanes();
                 for (int i = 0; i < lanes.size(); i++) {
                     int top = band + laneTop(i);
@@ -1064,11 +1473,11 @@ public final class TimelineView extends JPanel {
                     }
                     // The name sits in the lane's first sub-row, so a lane that
                     // stacks six deep is still labelled where it begins.
-                    g2.setColor(Color.DARK_GRAY);
+                    g2.setColor(themeForeground());
                     g2.drawString(lanes.get(i).name(), 4, top + SUB_ROW_HEIGHT - 5);
                     // Lanes are no longer all the same height, so where one
                     // ends has to be visible rather than inferred.
-                    g2.setColor(LANE_SEPARATOR);
+                    g2.setColor(withAlpha(themeForeground(), 36));
                     g2.drawLine(0, top + height - 1, getWidth(), top + height - 1);
                 }
             } finally {
@@ -1084,14 +1493,29 @@ public final class TimelineView extends JPanel {
 
         private int dragStartX = -1;
         private int dragCurrentX = -1;
+        private int lastPointerX = -1;
 
         Canvas() {
             MouseAdapter mouse = new MouseAdapter() {
                 private int lastX;
+                private int pressX = -1;
+                private boolean panning;
 
                 @Override
                 public void mousePressed(MouseEvent event) {
+                    lastPointerX = event.getX();
+                    if (maybeShowContextMenu(event)) {
+                        pressX = -1;
+                        panning = false;
+                        return;
+                    }
+                    if (!SwingUtilities.isLeftMouseButton(event)) {
+                        pressX = -1;
+                        return;
+                    }
                     lastX = event.getX();
+                    pressX = event.getX();
+                    panning = false;
                     if (event.isShiftDown()) {
                         dragStartX = event.getX();
                         dragCurrentX = event.getX();
@@ -1100,7 +1524,8 @@ public final class TimelineView extends JPanel {
 
                 @Override
                 public void mouseDragged(MouseEvent event) {
-                    if (viewport == null) {
+                    if (viewport == null || pressX < 0
+                            || (event.getModifiersEx() & MouseEvent.BUTTON1_DOWN_MASK) == 0) {
                         return;
                     }
                     if (dragStartX >= 0) {
@@ -1108,17 +1533,31 @@ public final class TimelineView extends JPanel {
                         repaint();
                         return;
                     }
+                    // A click commonly jitters by a pixel or two. It should
+                    // still click, not stop Follow live and query another
+                    // time range. Three pixels establishes an intentional pan.
+                    if (!panning && Math.abs(event.getX() - pressX) < 3) {
+                        return;
+                    }
+                    panning = true;
                     int dx = event.getX() - lastX;
                     lastX = event.getX();
                     viewport = viewport.navigatedTo(
                             clamp(viewport.transform().pannedByPixels(dx)));
                     followBox.setSelected(false);
                     repaintAll();
-                    viewportChanged.run();
+                    viewportRefreshTimer.restart();
                 }
 
                 @Override
                 public void mouseReleased(MouseEvent event) {
+                    if (maybeShowContextMenu(event)) {
+                        pressX = -1;
+                        panning = false;
+                        return;
+                    }
+                    pressX = -1;
+                    panning = false;
                     if (dragStartX < 0 || viewport == null) {
                         return;
                     }
@@ -1135,14 +1574,25 @@ public final class TimelineView extends JPanel {
 
                 @Override
                 public void mouseClicked(MouseEvent event) {
-                    clickAt(event.getX(), event.getY());
+                    if (SwingUtilities.isLeftMouseButton(event)
+                            && !event.isControlDown() && !event.isPopupTrigger()) {
+                        clickAt(event.getX(), event.getY());
+                    }
                 }
 
                 @Override
                 public void mouseMoved(MouseEvent event) {
+                    lastPointerX = event.getX();
                     if (model != null && event.getY() < bandHeight()) {
+                        setHoveredSpan(-1);
                         hover.setText(bandLabel(model.liveBand()));
                         hover.setToolTipText(PlainText.tooltip(hover.getText()));
+                        return;
+                    }
+                    int exact = spanIndexAt(event.getX(), event.getY());
+                    setHoveredSpan(exact);
+                    if (exact >= 0) {
+                        describeSpan(exact);
                         return;
                     }
                     describeAt(event.getX());
@@ -1150,31 +1600,36 @@ public final class TimelineView extends JPanel {
 
                 @Override
                 public void mouseExited(MouseEvent event) {
-                    hover.setText(" ");
+                    setHoveredSpan(-1);
+                    showInteractionHint();
                 }
 
                 @Override
                 public void mouseWheelMoved(MouseWheelEvent event) {
-                    // The wheel over the plot means zoom, and only zoom. The
-                    // scroll pane's own wheel handling is off as well; both,
-                    // because a gesture that zoomed and scrolled at once would
-                    // be unusable and neither half is obviously the one to
-                    // rely on.
-                    event.consume();
-                    if (viewport == null) {
-                        return;
+                    lastPointerX = event.getX();
+                    handleWheel(event, event.getX());
+                }
+
+                /** Checks both press and release because platforms disagree. */
+                private boolean maybeShowContextMenu(MouseEvent event) {
+                    if (!event.isPopupTrigger()) {
+                        return false;
                     }
-                    double factor = Math.pow(1.1, -event.getPreciseWheelRotation());
-                    viewport = viewport.navigatedTo(
-                            clamp(viewport.transform().zoomedAround(event.getX(), factor)));
-                    followBox.setSelected(false);
-                    repaintAll();
-                    viewportChanged.run();
+                    JPopupMenu menu = contextMenuAt(event.getX(), event.getY());
+                    if (menu.getComponentCount() > 0) {
+                        menu.show(Canvas.this, event.getX(), event.getY());
+                    }
+                    event.consume();
+                    return true;
                 }
             };
             addMouseListener(mouse);
             addMouseMotionListener(mouse);
             addMouseWheelListener(mouse);
+        }
+
+        double zoomAnchorX() {
+            return lastPointerX >= 0 ? lastPointerX : getWidth() / 2.0;
         }
 
         /**
@@ -1238,15 +1693,43 @@ public final class TimelineView extends JPanel {
                         RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
                 g2.setColor(getBackground());
                 g2.fillRect(0, 0, getWidth(), getHeight());
+                paintGuides(g2);
                 paintBand(g2);
                 if (drawingSpans()) {
                     paintSpans(g2);
+                    paintLoadingEdges(g2);
                 } else {
                     paintDensity(g2);
                 }
                 paintRange(g2);
             } finally {
                 g2.dispose();
+            }
+        }
+
+        /** Stable time guides and lane boundaries behind the data. */
+        private void paintGuides(Graphics2D g2) {
+            g2.setColor(gridLine());
+            for (Tick tick : ticksFor(viewport, model, getWidth())) {
+                g2.drawLine(tick.x(), 0, tick.x(), getHeight());
+            }
+            if (!drawingSpans()) {
+                return;
+            }
+            int band = bandHeight();
+            int realLanes = model.lanes().size();
+            for (int row = 0; row <= realLanes; row++) {
+                int top = band + laneTop(row);
+                int height = laneHeight(row);
+                if ((row & 1) != 0) {
+                    g2.setColor(laneWash());
+                    g2.fillRect(0, top, getWidth(), height);
+                }
+                g2.setColor(gridLine());
+                for (int y = top + SUB_ROW_HEIGHT; y < top + height; y += SUB_ROW_HEIGHT) {
+                    g2.drawLine(0, y - 1, getWidth(), y - 1);
+                }
+                g2.drawLine(0, top + height - 1, getWidth(), top + height - 1);
             }
         }
 
@@ -1277,9 +1760,9 @@ public final class TimelineView extends JPanel {
                 g2.fillRect(x0, row * SUB_ROW_HEIGHT + 1,
                         Math.max(1, x1 - x0), SUB_ROW_HEIGHT - 3);
             }
-            g2.setColor(new Color(0x1A, 0x56, 0xB0));
+            g2.setColor(themeForeground());
             g2.drawString(bandLabel(model.liveBand()), 4, Math.min(band - 5, 13));
-            g2.setColor(Color.GRAY);
+            g2.setColor(gridLine());
             g2.drawLine(0, band - 1, getWidth(), band - 1);
         }
 
@@ -1288,8 +1771,14 @@ public final class TimelineView extends JPanel {
             TimelineTransform transform = viewport.transform();
             int level = index.levelForScale(transform.pixelsPerMicro());
             int maxActive = Math.max(1, index.maxActiveCount(level));
-            int top = bandHeight();
-            int height = getHeight() - top;
+            // Density is one whole-build summary, not one chart per lane. Pin
+            // it to the stable viewport slice. A Graphics clip is only the
+            // current dirty rectangle and must never determine geometry.
+            Rectangle visible = visibleCanvasSlice();
+            int visibleTop = visible.y;
+            int visibleBottom = visible.y + visible.height;
+            int top = Math.max(bandHeight(), visibleTop);
+            int height = visibleBottom - top;
             if (height <= 0) {
                 return;
             }
@@ -1310,20 +1799,93 @@ public final class TimelineView extends JPanel {
         }
 
         /**
+         * Marks only the time not covered by the last exact window while its
+         * replacement loads. Known spans remain in their lanes, so a small pan
+         * no longer flashes into an unrelated whole-build histogram.
+         */
+        private void paintLoadingEdges(Graphics2D g2) {
+            if (windowCoversViewport() || window.droppedSpans() > 0 || viewport == null) {
+                return;
+            }
+            TimelineTransform transform = viewport.transform();
+            Optional<long[]> visible = visibleRange();
+            if (visible.isEmpty()) {
+                return;
+            }
+            Color wash = withAlpha(focusOutline(), FlatLaf.isLafDark() ? 30 : 20);
+            Color edge = withAlpha(focusOutline(), 92);
+            if (visible.get()[0] < window.fromMicros()) {
+                int right = Math.clamp(
+                        ceiledScreenCoordinate(transform.xForMicros(window.fromMicros())),
+                        0, getWidth());
+                g2.setColor(wash);
+                g2.fillRect(0, 0, right, getHeight());
+                if (right > 0 && right < getWidth()) {
+                    g2.setColor(edge);
+                    g2.drawLine(right, 0, right, getHeight());
+                }
+            }
+            if (visible.get()[1] > window.toMicros()) {
+                int left = Math.clamp(
+                        flooredScreenCoordinate(transform.xForMicros(window.toMicros())),
+                        0, getWidth());
+                g2.setColor(wash);
+                g2.fillRect(left, 0, getWidth() - left, getHeight());
+                if (left > 0 && left < getWidth()) {
+                    g2.setColor(edge);
+                    g2.drawLine(left, 0, left, getHeight());
+                }
+            }
+        }
+
+        /**
          * Places every span by its lane key and its stacked sub-row — facts
          * about the span — never by its index in the window, which is what
          * used to shuffle rows on every pan and zoom.
          */
         private void paintSpans(Graphics2D g2) {
+            Rectangle bounds = new Rectangle();
+            int selected = -1;
             for (int i = 0; i < window.size(); i++) {
-                Rectangle bounds = boundsOfSpan(i);
-                g2.setColor(TimelineColours.forSpan(colourMode, window.flags(i)));
+                if (!spanTouchesCanvas(i)) {
+                    continue;
+                }
+                spanPaintBounds(i, bounds);
+                Color fill = TimelineColours.forSpan(colourMode, window.flags(i));
+                g2.setColor(fill);
                 g2.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+                g2.setColor(spanBorder());
+                g2.drawRect(bounds.x, bounds.y,
+                        Math.max(0, bounds.width - 1), Math.max(0, bounds.height - 1));
+                if ((window.flags(i) & SpanSource.FLAG_FAILED) != 0) {
+                    // A second top rule distinguishes failure without relying
+                    // on red versus green alone.
+                    g2.drawLine(bounds.x, bounds.y + 2,
+                            bounds.x + Math.max(0, bounds.width - 1), bounds.y + 2);
+                }
                 if (viewport.selectedNode().isPresent()
                         && viewport.selectedNode().getAsLong() == window.nodeId(i)) {
-                    g2.setColor(Color.BLACK);
-                    g2.drawRect(bounds.x, bounds.y, bounds.width, bounds.height);
+                    selected = i;
                 }
+            }
+            if (hoveredSpan >= 0 && hoveredSpan < window.size() && hoveredSpan != selected
+                    && spanTouchesCanvas(hoveredSpan)) {
+                spanPaintBounds(hoveredSpan, bounds);
+                paintOutsideOutline(g2, bounds, focusOutline(), false);
+            }
+            if (selected >= 0 && spanTouchesCanvas(selected)) {
+                spanPaintBounds(selected, bounds);
+                paintOutsideOutline(g2, bounds, focusOutline(), true);
+            }
+        }
+
+        /** Draws around a span, never over its semantic fill. */
+        private void paintOutsideOutline(
+                Graphics2D g2, Rectangle bounds, Color colour, boolean strong) {
+            g2.setColor(colour);
+            g2.drawRect(bounds.x - 1, bounds.y - 1, bounds.width + 1, bounds.height + 1);
+            if (strong) {
+                g2.drawRect(bounds.x - 2, bounds.y - 2, bounds.width + 3, bounds.height + 3);
             }
         }
 
@@ -1332,8 +1894,11 @@ public final class TimelineView extends JPanel {
             if (dragStartX >= 0) {
                 int x0 = Math.min(dragStartX, dragCurrentX);
                 int width = Math.abs(dragCurrentX - dragStartX);
-                g2.setColor(new Color(0, 0, 0, 40));
+                g2.setColor(rangeFill());
                 g2.fillRect(x0, 0, width, getHeight());
+                g2.setColor(focusOutline());
+                g2.drawLine(x0, 0, x0, getHeight());
+                g2.drawLine(x0 + width, 0, x0 + width, getHeight());
                 return;
             }
             if (!viewport.hasRange()) {
@@ -1342,8 +1907,13 @@ public final class TimelineView extends JPanel {
             TimelineTransform transform = viewport.transform();
             int x0 = (int) transform.xForMicros(viewport.rangeFromMicros().getAsLong());
             int x1 = (int) transform.xForMicros(viewport.rangeToMicros().getAsLong());
-            g2.setColor(new Color(0, 0, 0, 30));
-            g2.fillRect(Math.min(x0, x1), 0, Math.abs(x1 - x0), getHeight());
+            int left = Math.min(x0, x1);
+            int right = Math.max(x0, x1);
+            g2.setColor(rangeFill());
+            g2.fillRect(left, 0, right - left, getHeight());
+            g2.setColor(focusOutline());
+            g2.drawLine(left, 0, left, getHeight());
+            g2.drawLine(right, 0, right, getHeight());
         }
     }
 
@@ -1358,40 +1928,109 @@ public final class TimelineView extends JPanel {
         }
         int bandIndex = bandIndexAt(x, y);
         if (bandIndex >= 0) {
-            TimelineModel.LiveBand.InFlight target =
-                    model.liveBand().inFlight().get(bandIndex);
-            double intoBuild =
-                    (target.startMicros() - model.wallStartMicros()) / 1_000_000.0;
-            showInspector(new SpanDetails(
-                    target.label(),
-                    List.of(
-                            "Target, in flight: configured and not yet completed.",
-                            String.format(java.util.Locale.ROOT,
-                                    "Configured %.2fs into the build (BEP receive time).",
-                                    intoBuild)),
-                    List.of(new EntityRef.TargetLabel(target.label()))));
+            selectBand(bandIndex);
             return;
         }
         int i = spanIndexAt(x, y);
         if (i < 0) {
             return;
         }
+        selectSpan(i);
+    }
+
+    /** Shows the immediately available facts for one live-band target. */
+    private void selectBand(int bandIndex) {
+        TimelineModel.LiveBand.InFlight target = model.liveBand().inFlight().get(bandIndex);
+        double intoBuild = (target.startMicros() - model.wallStartMicros()) / 1_000_000.0;
+        showInspector(new SpanDetails(
+                target.label(),
+                List.of(
+                        "Target, in flight: configured and not yet completed.",
+                        String.format(java.util.Locale.ROOT,
+                                "Configured %.2fs into the build (BEP receive time).",
+                                intoBuild)),
+                List.of(new EntityRef.TargetLabel(target.label()))));
+    }
+
+    /** Selects one exact action span and starts its asynchronous detail read. */
+    private void selectSpan(int i) {
         long nodeId = window.nodeId(i);
         viewport = viewport.selecting(OptionalLong.of(nodeId));
-        double start = (window.startMicros(i) - model.wallStartMicros()) / 1_000_000.0;
-        double duration = (window.endMicros(i) - window.startMicros(i)) / 1_000_000.0;
+        long start = Math.max(0, window.startMicros(i) - model.wallStartMicros());
+        long duration = Math.max(0, window.endMicros(i) - window.startMicros(i));
         showInspector(new SpanDetails(
                 "Action " + nodeId,
-                List.of(String.format(java.util.Locale.ROOT,
-                        "Ran %.2fs into the build for %.3fs. Fetching details…",
-                        start, duration)),
+                List.of("Ran " + EntityFormat.duration(start)
+                        + " into the build for " + EntityFormat.duration(duration)
+                        + ". Fetching details…"),
                 List.of(new EntityRef.ActionId(nodeId))));
         // A lane the click only caught the edge of comes fully into view, so
-        // the inspector below is describing something the user can see.
+        // the inspector beside it is describing something the user can see.
         scrollSelectionIntoView();
         selectionHandler.accept(nodeId);
         actionPickedHandler.accept(nodeId);
         repaintAll();
+    }
+
+    /**
+     * Builds the selection-first context menu for the segment under a point.
+     * All refs come from the bounded model/window already in memory; no popup
+     * path performs I/O on the EDT.
+     */
+    private JPopupMenu contextMenuAt(int x, int y) {
+        JPopupMenu emptyMenu = new JPopupMenu();
+        if (model == null || viewport == null) {
+            return emptyMenu;
+        }
+        List<EntityRef> refs;
+        int bandIndex = bandIndexAt(x, y);
+        if (bandIndex >= 0) {
+            selectBand(bandIndex);
+            refs = List.of(new EntityRef.TargetLabel(
+                    model.liveBand().inFlight().get(bandIndex).label()));
+        } else {
+            int spanIndex = spanIndexAt(x, y);
+            if (spanIndex < 0) {
+                return emptyMenu;
+            }
+            selectSpan(spanIndex);
+            refs = List.of(new EntityRef.ActionId(window.nodeId(spanIndex)));
+        }
+        return entityActions == null
+                ? emptyMenu
+                : entityActions.popupFor(
+                        refs, Set.of(EntityActions.Command.SHOW_ON_TIMELINE));
+    }
+
+    /** Changes the hover halo without disturbing selection or the viewport. */
+    private void setHoveredSpan(int index) {
+        if (hoveredSpan == index) {
+            return;
+        }
+        hoveredSpan = index;
+        canvas.repaint();
+    }
+
+    private void showInteractionHint() {
+        hover.setText(INTERACTION_HINT);
+        hover.setToolTipText(PlainText.tooltip(INTERACTION_HINT));
+    }
+
+    /** Exact local hover text for an individual span; no query is needed. */
+    private String describeSpan(int index) {
+        long startMicros = window.startMicros(index);
+        long durationMicros = Math.max(0, window.endMicros(index) - startMicros);
+        String lane = window.laneKey(index).isBlank()
+                ? "Ungrouped" : window.laneKey(index);
+        String text = "Action " + window.nodeId(index)
+                + " · " + lane
+                + " · starts " + EntityFormat.duration(
+                        Math.max(0, startMicros - model.wallStartMicros()))
+                + " into the build"
+                + " · duration " + EntityFormat.duration(durationMicros);
+        hover.setText(text);
+        hover.setToolTipText(PlainText.tooltip(text));
+        return text;
     }
 
     /**
@@ -1454,6 +2093,11 @@ public final class TimelineView extends JPanel {
         return hover.getText();
     }
 
+    /** Exact hover text for focused tests. */
+    String describeSpanForTest(int index) {
+        return describeSpan(index);
+    }
+
     /** The status line, for tests. */
     String statusText() {
         return status.getText();
@@ -1487,8 +2131,28 @@ public final class TimelineView extends JPanel {
         return plotScroll;
     }
 
+    /** Whether this JVM exposed the optional native macOS pinch bridge. */
+    boolean nativePinchAvailableForTest() {
+        return magnificationSupport.available();
+    }
+
+    /** Drives the same path as a native pinch without needing native test input. */
+    void magnifyForTest(double magnification) {
+        zoomAround(canvas.zoomAnchorX(), MacMagnificationSupport.zoomFactor(magnification));
+    }
+
     /** The lane label column, for tests that check it reports the canvas's height. */
     JComponent laneLabelsForTest() {
         return laneLabels;
+    }
+
+    /** Whether exact marks, including a covered empty range, are the active mode. */
+    boolean drawingSpansForTest() {
+        return drawingSpans();
+    }
+
+    /** The viewport-derived vertical slice used by density and its label. */
+    Rectangle visibleCanvasSliceForTest() {
+        return new Rectangle(visibleCanvasSlice());
     }
 }
