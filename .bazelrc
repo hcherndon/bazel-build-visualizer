@@ -17,6 +17,9 @@ startup --max_idle_secs=300
 # features stay forbidden: no --enable-preview anywhere.
 build --java_language_version=25
 build --java_runtime_version=remotejdk_25
+# Repository Java tools such as Google Java Format also use the hermetic JDK;
+# Bazel's embedded Java 11 runtime is too old for the formatter.
+build --tool_java_runtime_version=remotejdk_25
 
 # Carried over from bbv.java-common.gradle.kts: -parameters on every compile,
 # and the source encoding stated explicitly rather than inherited from the
@@ -26,11 +29,23 @@ build --javacopt=-parameters
 build --javacopt=-encoding
 build --javacopt=UTF-8
 
-# Bazel's default Java toolchain runs Error Prone; the Gradle build ran plain
-# javac, and the plan (§10) keeps linters out of the migration's scope.
-# Disabled wholesale rather than curated, so the parity gate diffs builds,
-# not linters. Turning it on is a later, deliberate decision.
-build --javacopt=-XepDisableAllChecks
+# Bazel's Java toolchain supplies Error Prone. Keep its standard checks on and
+# make the repository's import policy explicit: imports are preferred over
+# fully qualified names, while wildcard imports are never allowed. See ADR-013.
+build --javacopt=-Xep:UnnecessarilyFullyQualified:ERROR
+build --javacopt=-Xep:WildcardImport:ERROR
+# Bazel 9.2's bundled checker mistakes compact record-constructor parameter
+# normalization for assignment to the same variable. Keep the other standard
+# checks enabled and turn off only that incompatible check.
+build --javacopt=-Xep:SelfAssignment:OFF
+# Repository policy must not rewrite downloaded or generated sources.
+build --javacopt=-XepExcludedPaths:(^|.*/)(external|bazel-out)/.*
+
+# Check each Java target with the pinned Google Java Format tool. The output
+# group keeps checks granular and cacheable beside package-local compile
+# actions. Use `bazel run //tools:format_java` to apply fixes repository-wide.
+build --aspects=//tools:java_format.bzl%java_format_aspect
+build --output_groups=+java_format_checks
 
 # --- Tests -----------------------------------------------------------------
 test --test_output=errors

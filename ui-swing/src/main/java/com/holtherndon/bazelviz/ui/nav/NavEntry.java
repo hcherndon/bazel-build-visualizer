@@ -3,103 +3,93 @@ package com.holtherndon.bazelviz.ui.nav;
 import java.util.Locale;
 
 /**
- * The navigation sidebar entries in display order (plan section 17.1), each
- * mapped to the CardLayout card it selects and the phase whose UI deliverable
- * replaces its placeholder. Arrival phases come from the per-phase "UI
- * deliverable" lists in docs/product-plan.md section 24 — change them there
- * first, then here.
+ * The navigation sidebar entries in display order (plan section 17.1), each mapped to the
+ * CardLayout card it selects and the phase whose UI deliverable replaces its placeholder. Arrival
+ * phases come from the per-phase "UI deliverable" lists in docs/product-plan.md section 24 — change
+ * them there first, then here.
  *
  * <h2>Eighteen entries, and not the plan's eleven</h2>
  *
- * <p>The departures from plan 17.1's list came from use rather than from
- * design:
+ * <p>The departures from plan 17.1's list came from use rather than from design:
  *
  * <ul>
- *   <li><b>Console and Capture are one {@code BUILD} entry, shown as
- *       Console.</b> They were
- *       always read together — the capture's phase and counters answer "is it
- *       still going" and the console answers "what is it saying" — and
- *       splitting them made the user switch cards mid-build to follow one
- *       build. The launcher and capture status now sit above the console in
- *       that card, and Console comes first because it is where a build starts.
- *   <li><b>{@code FAILURES} is {@code ERRORS}.</b> The view lists Bazel's
- *       console diagnostics alongside failed actions and targets, and a
- *       compiler warning printed on stderr is not a failure. "Errors" covers
- *       what is actually on the card; "Failures" promised something narrower
- *       than what it showed.
- *   <li><b>{@code QUERY} is not in plan 17.1 at all.</b> Perfetto's query page
- *       is the one thing it does that nothing here replaced: SQL over the
- *       captured data, for the question nobody built a view for. Its arrival
- *       phase is recorded as 10 because that is the last plan phase and the
- *       field means "the phase by which this card is real"; it in fact shipped
- *       after Phase 10 closed, and is the first entry here that no phase of the
- *       plan asked for.
- *   <li><b>The old Graph card is two entries.</b> {@code TREE} is the
- *       dependency and reverse-dependency trees, the search and the
- *       path-between-nodes — Phase 5's UI deliverable, which works at any
- *       graph size. {@code GRAPH} is the rendered canvas — Phase 7's — with
- *       layouts, semantic zoom and selectable node weights. They shared one
- *       card behind an embedded sub-tab, which hid the canvas behind a control
- *       nothing pointed at and made "open in graph" ambiguous between two
- *       different answers.
- *   <li><b>Targets is two entries.</b> {@code TARGETS} keeps the build's
- *       package-oriented top-level targets. {@code ALL_TARGETS} is the lazy,
- *       fully-qualified label explorer, with configurations beneath a label.
- *   <li><b>Configurations has its own entry.</b> Once cquery supplied effective
- *       option sets, putting their detail and two-way comparison beneath one
- *       target made the build-wide question impossible to ask.
- *   <li><b>Critical Path has its own entry.</b> The Overview totals and Graph
- *       overlay could show that a chain was long, but not put Bazel's reported
- *       components beside the dependency-only lower bound or expose every
- *       chain step for inspection.
- *   <li><b>Starlark Profile has its own entry.</b> Sampled Starlark CPU call
- *       stacks answer a source-level performance question that neither the
- *       build timeline nor the action dependency graph represents.
- *   <li><b>Repository and Terminal are workspace tools.</b> Both use the
- *       explicitly selected local or SSH workspace, never an imported
- *       session's recorded path. Terminal opens its shell when selected.
+ *   <li><b>Console and Capture are one {@code BUILD} entry, shown as Console.</b> They were always
+ *       read together — the capture's phase and counters answer "is it still going" and the console
+ *       answers "what is it saying" — and splitting them made the user switch cards mid-build to
+ *       follow one build. The launcher and capture status now sit above the console in that card,
+ *       and Console comes first because it is where a build starts.
+ *   <li><b>{@code FAILURES} is {@code ERRORS}.</b> The view lists Bazel's console diagnostics
+ *       alongside failed actions and targets, and a compiler warning printed on stderr is not a
+ *       failure. "Errors" covers what is actually on the card; "Failures" promised something
+ *       narrower than what it showed.
+ *   <li><b>{@code QUERY} is not in plan 17.1 at all.</b> Perfetto's query page is the one thing it
+ *       does that nothing here replaced: SQL over the captured data, for the question nobody built
+ *       a view for. Its arrival phase is recorded as 10 because that is the last plan phase and the
+ *       field means "the phase by which this card is real"; it in fact shipped after Phase 10
+ *       closed, and is the first entry here that no phase of the plan asked for.
+ *   <li><b>The old Graph card is two entries.</b> {@code TREE} is the dependency and
+ *       reverse-dependency trees, the search and the path-between-nodes — Phase 5's UI deliverable,
+ *       which works at any graph size. {@code GRAPH} is the rendered canvas — Phase 7's — with
+ *       layouts, semantic zoom and selectable node weights. They shared one card behind an embedded
+ *       sub-tab, which hid the canvas behind a control nothing pointed at and made "open in graph"
+ *       ambiguous between two different answers.
+ *   <li><b>Targets is two entries.</b> {@code TARGETS} keeps the build's package-oriented top-level
+ *       targets. {@code ALL_TARGETS} is the lazy, fully-qualified label explorer, with
+ *       configurations beneath a label.
+ *   <li><b>Configurations has its own entry.</b> Once cquery supplied effective option sets,
+ *       putting their detail and two-way comparison beneath one target made the build-wide question
+ *       impossible to ask.
+ *   <li><b>Critical Path has its own entry.</b> The Overview totals and Graph overlay could show
+ *       that a chain was long, but not put Bazel's reported components beside the dependency-only
+ *       lower bound or expose every chain step for inspection.
+ *   <li><b>Starlark Profile has its own entry.</b> Sampled Starlark CPU call stacks answer a
+ *       source-level performance question that neither the build timeline nor the action dependency
+ *       graph represents.
+ *   <li><b>Repository and Terminal are workspace tools.</b> Both use the explicitly selected local
+ *       or SSH workspace, never an imported session's recorded path. Terminal opens its shell when
+ *       selected.
  * </ul>
  */
 public enum NavEntry {
-    BUILD("Console", 2),
-    TERMINAL("Terminal", 10),
-    REPOSITORY("Browse Repository", 10),
-    OVERVIEW("Overview", 3),
-    TIMELINE("Timeline", 6),
-    CRITICAL_PATH("Critical Path", 8),
-    STARLARK_PROFILE("Starlark Profile", 10),
-    ACTIONS("Actions", 3),
-    TARGETS("Top Level Targets", 3),
-    ALL_TARGETS("All Targets", 3),
-    CONFIGURATIONS("Configurations", 5),
-    GRAPH("Graph", 7),
-    TREE("Tree", 5),
-    TESTS("Tests", 3),
-    ERRORS("Errors", 3),
-    EVENTS("Events", 1),
-    FINDINGS("Findings", 8),
-    QUERY("Query", 10);
+  BUILD("Console", 2),
+  TERMINAL("Terminal", 10),
+  REPOSITORY("Browse Repository", 10),
+  OVERVIEW("Overview", 3),
+  TIMELINE("Timeline", 6),
+  CRITICAL_PATH("Critical Path", 8),
+  STARLARK_PROFILE("Starlark Profile", 10),
+  ACTIONS("Actions", 3),
+  TARGETS("Top Level Targets", 3),
+  ALL_TARGETS("All Targets", 3),
+  CONFIGURATIONS("Configurations", 5),
+  GRAPH("Graph", 7),
+  TREE("Tree", 5),
+  TESTS("Tests", 3),
+  ERRORS("Errors", 3),
+  EVENTS("Events", 1),
+  FINDINGS("Findings", 8),
+  QUERY("Query", 10);
 
-    private final String title;
-    private final int arrivalPhase;
+  private final String title;
+  private final int arrivalPhase;
 
-    NavEntry(String title, int arrivalPhase) {
-        this.title = title;
-        this.arrivalPhase = arrivalPhase;
-    }
+  NavEntry(String title, int arrivalPhase) {
+    this.title = title;
+    this.arrivalPhase = arrivalPhase;
+  }
 
-    /** Human-readable sidebar label. */
-    public String title() {
-        return title;
-    }
+  /** Human-readable sidebar label. */
+  public String title() {
+    return title;
+  }
 
-    /** Plan phase in which the real view replaces the placeholder card. */
-    public int arrivalPhase() {
-        return arrivalPhase;
-    }
+  /** Plan phase in which the real view replaces the placeholder card. */
+  public int arrivalPhase() {
+    return arrivalPhase;
+  }
 
-    /** Stable CardLayout identifier for this entry's center card. */
-    public String cardName() {
-        return name().toLowerCase(Locale.ROOT).replace("_", "");
-    }
+  /** Stable CardLayout identifier for this entry's center card. */
+  public String cardName() {
+    return name().toLowerCase(Locale.ROOT).replace("_", "");
+  }
 }

@@ -129,6 +129,17 @@ use_repo(maven, "maven")
 # platform appears.
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 
+# Build-time Java formatter (ADR-013): Apache-2.0, maintained by Google and
+# current as of 2026-07-30. The standalone jar runs only over repository Java
+# sources during builds or an explicit `bazel run //tools:format_java`; it is
+# not linked into the application. A sha256 pin keeps the tool reproducible.
+http_file(
+    name = "google_java_format",
+    downloaded_file_path = "google-java-format.jar",
+    sha256 = "25b400f003089d23cc5320cdaf1a16cabee19b8aa3434d0ff021b3d9f42154b4",
+    url = "https://github.com/google/google-java-format/releases/download/v1.36.1/google-java-format-1.36.1-all-deps.jar",
+)
+
 http_file(
     name = "protoc_bin_osx_aarch64",
     executable = True,

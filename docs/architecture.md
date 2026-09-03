@@ -15,6 +15,12 @@ Bazel's strict dependency checking enforces the arrows at compile time.
 test JVM flags and the real-Bazel safety tags; it wraps no rule and generates
 no target.
 
+Java quality is part of the Bazel graph (ADR-013). Every selected Java target
+has a package-local, cacheable Google Java Format check. Bazel's Java toolchain
+runs its standard Error Prone checks, with wildcard imports and unnecessary
+fully qualified symbols promoted to errors. `//tools:format_java` is the one
+repository-wide formatting entry point; it skips nested repositories.
+
 | Module | Responsibility |
 |---|---|
 | `core-model` | Pure domain types shared by everything: identifiers (`SessionId`), the session lifecycle state machine (`SessionState`), the normalized event/action/target value types, the provenance wrapper (`Measured`), and the redaction engine (`core.redact`) plus the CSV and JSON escaping every export shares (`core.text`). No I/O, no framework dependencies beyond slf4j. |

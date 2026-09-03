@@ -99,9 +99,18 @@ stack-by-inline cross product from becoming an unbounded heap graph. Derived
 stacks retain numeric ids and symbol-presence flags rather than repeated source
 strings. The UI initially reads
 one metadata row, pages functions/files/call edges 200 rows at a time, caches
-eight pages per table, and asks SQLite for at most 5,000 call contexts per
-flame slice. The slice reports the exact total and omitted count, while all raw
-and derived rows remain queryable. Function-context and per-file function
+eight pages per table, and builds its directed view from at most 250 function
+rows and 5,000 aggregated arrows. The SQL read and deterministic O(V+E)
+layering run off the EDT; Java2D paints only that immutable projection. Its
+default is 80 functions and 600 arrows, with exact visible and omitted counts.
+Ranks wrap into rows of eight and node dimensions follow a square-root-scaled
+self or cumulative CPU weight, so outliers remain prominent without making
+the remaining labels unusably small. Uniform sizing is also available. Node
+dragging is a view-only offset map bounded by the projected node count; it does
+not rebuild or copy profile data.
+The UI also asks SQLite for at most 5,000 call contexts per flame slice. The
+slice reports the exact total and omitted count, while all raw and derived rows
+remain queryable. Function-context and per-file function
 counts are materialized once during import. Empty-search pages and root flame
 slices use ordering/depth indexes, avoiding a full context regroup, correlated
 per-file scans, and temporary sorting on every page.
@@ -945,3 +954,9 @@ child servers outranks build throughput here. No Gradle-vs-Bazel timing
 comparison has been measured and published yet; when one is, it goes in this
 section with dates and a method, not as a promise. If a change regresses
 analysis time noticeably, treat it as a defect.
+
+ADR-013 adds Google Java Format as package-local Bazel actions rather than one
+repository-wide build action. Their markers are cached with the Java targets,
+and independent packages can check in parallel. The explicit formatter command
+is repository-wide because it is a developer rewrite operation, not a build
+action. No build-speed claim is made without a controlled measurement.

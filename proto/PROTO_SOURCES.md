@@ -1,10 +1,11 @@
 # Vendored protobuf sources
 
 All files under `src/main/proto/` are vendored verbatim from upstream at the
-pinned revisions below. The directory layout mirrors each upstream repository
-root so the repo-relative `import` statements inside the files resolve without
-rewriting. Do not edit these files by hand; bump the pins in
-`update-protos.sh` and re-run it to update.
+pinned revisions below. Bazel and googleapis paths mirror their upstream
+repository roots so repo-relative imports resolve without rewriting. The pprof
+schema is stored under its declared protobuf package, as noted below. Do not
+edit these files by hand; bump the pins in `update-protos.sh` and re-run it to
+update.
 
 Retrieval date: 2026-09-02
 
@@ -57,7 +58,8 @@ Files (paths relative to `src/main/proto/`, identical to googleapis repo root):
 - Pinned commit: `ca85771921e4d23ebb56030bf1e488f215f26d36`
 - License: Apache-2.0 (copy: `third_party-licenses/PPROF_LICENSE`)
 
-Files (paths relative to `src/main/proto/`, using the declared proto package):
+Files (paths relative to `src/main/proto/`; the upstream `proto/profile.proto`
+is stored under its declared protobuf package so generated Java names remain stable):
 
 | File | Notes |
 | --- | --- |

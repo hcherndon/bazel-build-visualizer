@@ -12,8 +12,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROTO_ROOT="${SCRIPT_DIR}/src/main/proto"
 LICENSE_DIR="${SCRIPT_DIR}/third_party-licenses"
 
-# Paths are repo-relative in the upstream repository and must stay that way
-# locally, because the .proto files import each other by these exact paths.
+# Bazel and googleapis paths are repo-relative upstream and must stay that way
+# locally because those .proto files import each other by these exact paths.
+# pprof is relocated below to its declared protobuf package path.
 BAZEL_FILES=(
     src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto
     src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto
@@ -49,6 +50,14 @@ fetch() {
     curl -sSfL -o "${dest}" "${base_url}/${rel}"
 }
 
+fetch_as() {
+    local url="$1" rel="$2"
+    local dest="${PROTO_ROOT}/${rel}"
+    mkdir -p "$(dirname "${dest}")"
+    echo "fetching ${rel}"
+    curl -sSfL -o "${dest}" "${url}"
+}
+
 for f in "${BAZEL_FILES[@]}"; do
     fetch "https://raw.githubusercontent.com/bazelbuild/bazel/${BAZEL_TAG}" "$f"
 done
@@ -57,7 +66,8 @@ for f in "${GOOGLEAPIS_FILES[@]}"; do
     fetch "https://raw.githubusercontent.com/googleapis/googleapis/${GOOGLEAPIS_COMMIT}" "$f"
 done
 
-fetch "https://raw.githubusercontent.com/google/pprof/${PPROF_COMMIT}" \
+fetch_as \
+    "https://raw.githubusercontent.com/google/pprof/${PPROF_COMMIT}/proto/profile.proto" \
     "perftools/profiles/profile.proto"
 
 mkdir -p "${LICENSE_DIR}"

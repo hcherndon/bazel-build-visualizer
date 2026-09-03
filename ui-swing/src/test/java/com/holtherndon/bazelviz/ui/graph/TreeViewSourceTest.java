@@ -10,6 +10,7 @@ import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
+import com.holtherndon.bazelviz.ui.session.QueryReader;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
@@ -19,6 +20,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import javax.swing.JTree;
 import javax.swing.SwingUtilities;
 import javax.swing.tree.DefaultMutableTreeNode;
 import org.junit.jupiter.api.AfterEach;
@@ -28,285 +30,305 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The Tree card's source selector as a control: one card, two graphs, and
- * every question asked of the one the selector names.
+ * The Tree card's source selector as a control: one card, two graphs, and every question asked of
+ * the one the selector names.
  *
- * <p>The selector used to be a caption — it described a graph and changed
- * nothing, and the trees traversed the action graph whatever it said. These
- * tests open a session holding <em>both</em> graphs and check that searching
- * and tree expansion follow the selection, and that the trees' direction
- * matches their titles. The canvas that once shared this card has its own —
- * {@code GraphExplorerViewTest} covers its half of the selector contract.
+ * <p>The selector used to be a caption — it described a graph and changed nothing, and the trees
+ * traversed the action graph whatever it said. These tests open a session holding <em>both</em>
+ * graphs and check that searching and tree expansion follow the selection, and that the trees'
+ * direction matches their titles. The canvas that once shared this card has its own — {@code
+ * GraphExplorerViewTest} covers its half of the selector contract.
  *
  * <h2>The fixture</h2>
  *
- * <p>An action chain {@code //pkg:t0 → //pkg:t1 → //pkg:t2}
- * (producer-to-consumer) and a configured-target graph with the same three
- * labels plus {@code //pkg:libextra}, a target only the cquery knows — which
- * is what proves a label-graph search is not an action-graph search wearing a
+ * <p>An action chain {@code //pkg:t0 → //pkg:t1 → //pkg:t2} (producer-to-consumer) and a
+ * configured-target graph with the same three labels plus {@code //pkg:libextra}, a target only the
+ * cquery knows — which is what proves a label-graph search is not an action-graph search wearing a
  * different name.
  */
 final class TreeViewSourceTest {
 
-    @TempDir
-    Path tempDir;
+  @TempDir Path tempDir;
 
-    private SessionDatabase database;
-    private TreeView view;
+  private SessionDatabase database;
+  private TreeView view;
 
-    @BeforeEach
-    void buildSession() throws Exception {
-        database = SessionDatabase.open(tempDir.resolve("session.db"));
-        MigrationRunner.standard().migrate(database);
-        Connection connection = database.writerConnection();
-        exec(connection, "INSERT INTO graph_sources (id, kind, state, configuration_match,"
-                + " target_scope,"
-                + " declared_actions, correlated_actions, unresolved_artifacts,"
-                + " unresolved_depset_references)"
-                + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT',"
-                + " 'EXACT_BEP_TARGETS', 3, 0, 0, 0)");
-        exec(connection, "INSERT INTO graph_sources (id, kind, state, configuration_match,"
-                + " target_scope, declared_actions)"
-                + " VALUES (2, 'CONFIGURED_TARGETS', 'SUCCEEDED', 'EXACT',"
-                + " 'EXACT_BEP_TARGETS', 4)");
-        exec(connection, "INSERT INTO mnemonics (id, value) VALUES (1, 'Genrule')");
-        for (int i = 0; i < 3; i++) {
-            exec(connection, "INSERT INTO labels (id, value) VALUES ("
-                    + (i + 1) + ", '//pkg:t" + i + "')");
-            exec(connection, "INSERT INTO declared_actions"
-                    + " (id, source_id, graph_id, label_id, mnemonic_id, node_index)"
-                    + " VALUES (" + (i + 1) + ", 1, " + i + ", " + (i + 1) + ", 1, " + i + ")");
-        }
-        exec(connection, "INSERT INTO labels (id, value) VALUES (4, '//pkg:libextra')");
-        exec(connection, "INSERT INTO action_edges (producer_id, consumer_id, derivation)"
-                + " VALUES (1, 2, 'DECLARED'), (2, 3, 'DECLARED')");
-        exec(connection, "INSERT INTO configured_target_nodes (id, source_id, label_id,"
-                + " rule_class) VALUES (1, 2, 1, 'genrule'), (2, 2, 2, 'genrule'),"
-                + " (3, 2, 3, 'genrule'), (4, 2, 4, 'cc_library')");
-        exec(connection, "INSERT INTO configured_target_edges (from_node_id, to_label_id,"
-                + " attribute) VALUES (2, 1, 'srcs'), (3, 2, 'srcs')");
-        GraphIndexBuilder builder =
-                new GraphIndexBuilder(connection, tempDir.resolve("indexes"));
-        builder.build(EdgeDerivation.DECLARED);
-        builder.buildConfiguredTargets();
-
-        view = new TreeView();
-        view.setSize(1000, 700);
-        view.openSession(new GraphOnlySource());
-        awaitCondition(() -> view.sourceSelector().getItemCount() == 2,
-                "the sources to install");
+  @BeforeEach
+  void buildSession() throws Exception {
+    database = SessionDatabase.open(tempDir.resolve("session.db"));
+    MigrationRunner.standard().migrate(database);
+    Connection connection = database.writerConnection();
+    exec(
+        connection,
+        "INSERT INTO graph_sources (id, kind, state, configuration_match,"
+            + " target_scope,"
+            + " declared_actions, correlated_actions, unresolved_artifacts,"
+            + " unresolved_depset_references)"
+            + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT',"
+            + " 'EXACT_BEP_TARGETS', 3, 0, 0, 0)");
+    exec(
+        connection,
+        "INSERT INTO graph_sources (id, kind, state, configuration_match,"
+            + " target_scope, declared_actions)"
+            + " VALUES (2, 'CONFIGURED_TARGETS', 'SUCCEEDED', 'EXACT',"
+            + " 'EXACT_BEP_TARGETS', 4)");
+    exec(connection, "INSERT INTO mnemonics (id, value) VALUES (1, 'Genrule')");
+    for (int i = 0; i < 3; i++) {
+      exec(
+          connection,
+          "INSERT INTO labels (id, value) VALUES (" + (i + 1) + ", '//pkg:t" + i + "')");
+      exec(
+          connection,
+          "INSERT INTO declared_actions"
+              + " (id, source_id, graph_id, label_id, mnemonic_id, node_index)"
+              + " VALUES ("
+              + (i + 1)
+              + ", 1, "
+              + i
+              + ", "
+              + (i + 1)
+              + ", 1, "
+              + i
+              + ")");
     }
+    exec(connection, "INSERT INTO labels (id, value) VALUES (4, '//pkg:libextra')");
+    exec(
+        connection,
+        "INSERT INTO action_edges (producer_id, consumer_id, derivation)"
+            + " VALUES (1, 2, 'DECLARED'), (2, 3, 'DECLARED')");
+    exec(
+        connection,
+        "INSERT INTO configured_target_nodes (id, source_id, label_id,"
+            + " rule_class) VALUES (1, 2, 1, 'genrule'), (2, 2, 2, 'genrule'),"
+            + " (3, 2, 3, 'genrule'), (4, 2, 4, 'cc_library')");
+    exec(
+        connection,
+        "INSERT INTO configured_target_edges (from_node_id, to_label_id,"
+            + " attribute) VALUES (2, 1, 'srcs'), (3, 2, 'srcs')");
+    GraphIndexBuilder builder = new GraphIndexBuilder(connection, tempDir.resolve("indexes"));
+    builder.build(EdgeDerivation.DECLARED);
+    builder.buildConfiguredTargets();
 
-    @AfterEach
-    void closeSession() throws Exception {
-        view.closeSession();
-        database.close();
-    }
+    view = new TreeView();
+    view.setSize(1000, 700);
+    view.openSession(new GraphOnlySource());
+    awaitCondition(() -> view.sourceSelector().getItemCount() == 2, "the sources to install");
+  }
 
-    @Test
-    @DisplayName("the trustworthy action graph is what a user who chooses nothing reads")
-    void actionGraphIsPreferred() {
-        assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.DECLARED_ACTIONS);
-        assertThat(view.detailLabel().getText()).contains("A node is one declared action");
-    }
+  @AfterEach
+  void closeSession() throws Exception {
+    view.closeSession();
+    database.close();
+  }
 
-    @Test
-    @DisplayName("the Depends on tree lists what the root needs, not what needs it")
-    void dependsOnMeansDependsOn() throws Exception {
-        searchOnEdt("t1");
-        awaitCondition(() -> rootLabel(view.dependenciesTree()).contains("//pkg:t1"),
-                "the trees to root at t1");
+  @Test
+  @DisplayName("the trustworthy action graph is what a user who chooses nothing reads")
+  void actionGraphIsPreferred() {
+    assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.DECLARED_ACTIONS);
+    assertThat(view.detailLabel().getText()).contains("A node is one declared action");
+  }
 
-        // t0 feeds t1 feeds t2. Before the direction fix this tree showed t2
-        // here — the thing that depends on t1 — under the title "Depends on".
-        awaitCondition(() -> childLabels(view.dependenciesTree()).contains("//pkg:t0"),
-                "the dependency children to load");
-        assertThat(childLabels(view.dependenciesTree()))
-                .contains("//pkg:t0")
-                .doesNotContain("//pkg:t2");
-        awaitCondition(() -> childLabels(view.dependentsTree()).contains("//pkg:t2"),
-                "the dependent children to load");
-        assertThat(childLabels(view.dependentsTree()))
-                .contains("//pkg:t2")
-                .doesNotContain("//pkg:t0");
-    }
+  @Test
+  @DisplayName("the Depends on tree lists what the root needs, not what needs it")
+  void dependsOnMeansDependsOn() throws Exception {
+    searchOnEdt("t1");
+    awaitCondition(
+        () -> rootLabel(view.dependenciesTree()).contains("//pkg:t1"), "the trees to root at t1");
 
-    @Test
-    @DisplayName("switching the source switches what every control talks to")
-    void selectorSwitchesTheGraph() throws Exception {
-        selectConfiguredTargets();
+    // t0 feeds t1 feeds t2. Before the direction fix this tree showed t2
+    // here — the thing that depends on t1 — under the title "Depends on".
+    awaitCondition(
+        () -> childLabels(view.dependenciesTree()).contains("//pkg:t0"),
+        "the dependency children to load");
+    assertThat(childLabels(view.dependenciesTree()))
+        .contains("//pkg:t0")
+        .doesNotContain("//pkg:t2");
+    awaitCondition(
+        () -> childLabels(view.dependentsTree()).contains("//pkg:t2"),
+        "the dependent children to load");
+    assertThat(childLabels(view.dependentsTree())).contains("//pkg:t2").doesNotContain("//pkg:t0");
+  }
 
-        assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.CONFIGURED_TARGETS);
-        // The sentence under the selector says what a node now means, because
-        // the two graphs share label text and nothing else (rule 13).
-        assertThat(view.detailLabel().getText())
-                .contains("4 configured targets were analysed")
-                .contains("A node is one target label");
-    }
+  @Test
+  @DisplayName("switching the source switches what every control talks to")
+  void selectorSwitchesTheGraph() throws Exception {
+    selectConfiguredTargets();
 
-    @Test
-    @DisplayName("a label search over the target graph finds what no aquery declared")
-    void labelSearchIsRealLabelSearch() throws Exception {
-        selectConfiguredTargets();
+    assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.CONFIGURED_TARGETS);
+    // The sentence under the selector says what a node now means, because
+    // the two graphs share label text and nothing else (rule 13).
+    assertThat(view.detailLabel().getText())
+        .contains("4 configured targets were analysed")
+        .contains("A node is one target label");
+  }
 
-        searchOnEdt("libextra");
-        awaitCondition(() -> rootLabel(view.dependenciesTree()).contains("libextra"),
-                "the trees to root at the label");
+  @Test
+  @DisplayName("a label search over the target graph finds what no aquery declared")
+  void labelSearchIsRealLabelSearch() throws Exception {
+    selectConfiguredTargets();
 
-        // A target with no actions exists only in the label graph, and its
-        // row does not carry the action-graph "not executed" marker: a label
-        // is never executed, so the claim has no meaning here.
-        assertThat(rootLabel(view.dependenciesTree()))
-                .contains("//pkg:libextra")
-                .doesNotContain("not executed");
-    }
+    searchOnEdt("libextra");
+    awaitCondition(
+        () -> rootLabel(view.dependenciesTree()).contains("libextra"),
+        "the trees to root at the label");
 
-    @Test
-    @DisplayName("deps and rdeps of a target expand over labels")
-    void labelTreesTraverseLabels() throws Exception {
-        selectConfiguredTargets();
+    // A target with no actions exists only in the label graph, and its
+    // row does not carry the action-graph "not executed" marker: a label
+    // is never executed, so the claim has no meaning here.
+    assertThat(rootLabel(view.dependenciesTree()))
+        .contains("//pkg:libextra")
+        .doesNotContain("not executed");
+  }
 
-        searchOnEdt("t1");
-        awaitCondition(() -> rootLabel(view.dependenciesTree()).contains("//pkg:t1"),
-                "the trees to root at t1");
-        awaitCondition(() -> childLabels(view.dependenciesTree()).contains("//pkg:t0"),
-                "the label-graph dependency children");
+  @Test
+  @DisplayName("deps and rdeps of a target expand over labels")
+  void labelTreesTraverseLabels() throws Exception {
+    selectConfiguredTargets();
 
-        assertThat(childLabels(view.dependenciesTree())).contains("//pkg:t0");
-        awaitCondition(() -> childLabels(view.dependentsTree()).contains("//pkg:t2"),
-                "the label-graph dependent children");
-        assertThat(childLabels(view.dependentsTree())).contains("//pkg:t2");
-    }
+    searchOnEdt("t1");
+    awaitCondition(
+        () -> rootLabel(view.dependenciesTree()).contains("//pkg:t1"), "the trees to root at t1");
+    awaitCondition(
+        () -> childLabels(view.dependenciesTree()).contains("//pkg:t0"),
+        "the label-graph dependency children");
 
-    @Test
-    @DisplayName("a selection from the last session cannot leak into the next")
-    void selectionDoesNotLeakAcrossSessions() throws Exception {
-        selectConfiguredTargets();
-        assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.CONFIGURED_TARGETS);
+    assertThat(childLabels(view.dependenciesTree())).contains("//pkg:t0");
+    awaitCondition(
+        () -> childLabels(view.dependentsTree()).contains("//pkg:t2"),
+        "the label-graph dependent children");
+    assertThat(childLabels(view.dependentsTree())).contains("//pkg:t2");
+  }
 
-        // Session B prefers the configured-target source too: with a stale
-        // selection surviving closeSession, the change detection would see
-        // "no change" and skip the switch entirely — which is why
-        // closeSession resets the shown graph to the default.
-        exec(database.writerConnection(),
-                "UPDATE graph_sources SET state = 'FAILED' WHERE kind = 'DECLARED_ACTIONS'");
-        SwingUtilities.invokeAndWait(() -> {
-            view.closeSession();
-            view.openSession(new GraphOnlySource());
+  @Test
+  @DisplayName("a selection from the last session cannot leak into the next")
+  void selectionDoesNotLeakAcrossSessions() throws Exception {
+    selectConfiguredTargets();
+    assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.CONFIGURED_TARGETS);
+
+    // Session B prefers the configured-target source too: with a stale
+    // selection surviving closeSession, the change detection would see
+    // "no change" and skip the switch entirely — which is why
+    // closeSession resets the shown graph to the default.
+    exec(
+        database.writerConnection(),
+        "UPDATE graph_sources SET state = 'FAILED' WHERE kind = 'DECLARED_ACTIONS'");
+    SwingUtilities.invokeAndWait(
+        () -> {
+          view.closeSession();
+          view.openSession(new GraphOnlySource());
         });
-        awaitCondition(() -> view.sourceSelector().getItemCount() == 2,
-                "the second session's sources to install");
+    awaitCondition(
+        () -> view.sourceSelector().getItemCount() == 2, "the second session's sources to install");
 
-        assertThat(view.shownGraphForTesting())
-                .as("the preferred source of the new session is what is shown")
-                .isEqualTo(GraphKind.CONFIGURED_TARGETS);
-        // And the path pane's title follows, which is the visible face of the
-        // same selection.
-        assertThat(view.detailLabel().getText()).contains("A node is one target label");
-    }
+    assertThat(view.shownGraphForTesting())
+        .as("the preferred source of the new session is what is shown")
+        .isEqualTo(GraphKind.CONFIGURED_TARGETS);
+    // And the path pane's title follows, which is the visible face of the
+    // same selection.
+    assertThat(view.detailLabel().getText()).contains("A node is one target label");
+  }
 
-    // ------------------------------------------------------------- plumbing
+  // ------------------------------------------------------------- plumbing
 
-    private void searchOnEdt(String pattern) throws Exception {
-        SwingUtilities.invokeAndWait(() -> view.searchForTesting(pattern));
-    }
+  private void searchOnEdt(String pattern) throws Exception {
+    SwingUtilities.invokeAndWait(() -> view.searchForTesting(pattern));
+  }
 
-    private void selectConfiguredTargets() throws Exception {
-        SwingUtilities.invokeAndWait(() -> {
-            for (int i = 0; i < view.sourceSelector().getItemCount(); i++) {
-                GraphQueries.GraphSource source = view.sourceSelector().getItemAt(i);
-                if (source.graphKind()
-                        .filter(GraphKind.CONFIGURED_TARGETS::equals).isPresent()) {
-                    view.sourceSelector().setSelectedIndex(i);
-                    return;
-                }
+  private void selectConfiguredTargets() throws Exception {
+    SwingUtilities.invokeAndWait(
+        () -> {
+          for (int i = 0; i < view.sourceSelector().getItemCount(); i++) {
+            GraphQueries.GraphSource source = view.sourceSelector().getItemAt(i);
+            if (source.graphKind().filter(GraphKind.CONFIGURED_TARGETS::equals).isPresent()) {
+              view.sourceSelector().setSelectedIndex(i);
+              return;
             }
-            throw new AssertionError("no configured-target source installed");
+          }
+          throw new AssertionError("no configured-target source installed");
         });
+  }
+
+  private static String rootLabel(JTree tree) {
+    Object root = tree.getModel().getRoot();
+    return String.valueOf(root);
+  }
+
+  /** Every child row of the root, joined, so containment means substring. */
+  private static String childLabels(JTree tree) {
+    Object root = tree.getModel().getRoot();
+    if (!(root instanceof DefaultMutableTreeNode node)) {
+      return "";
+    }
+    StringBuilder out = new StringBuilder();
+    for (int i = 0; i < node.getChildCount(); i++) {
+      out.append(String.valueOf(node.getChildAt(i))).append('\n');
+    }
+    return out.toString();
+  }
+
+  private void awaitCondition(BooleanSupplier done, String what) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (System.nanoTime() < deadline) {
+      SwingUtilities.invokeAndWait(() -> {});
+      if (done.getAsBoolean()) {
+        return;
+      }
+      Thread.sleep(10);
+    }
+    throw new AssertionError("timed out waiting for " + what);
+  }
+
+  private static void exec(Connection connection, String sql) throws Exception {
+    try (Statement statement = connection.createStatement()) {
+      statement.execute(sql);
+    }
+  }
+
+  /** A session source that answers only the graph question. */
+  private final class GraphOnlySource implements SessionSource {
+
+    @Override
+    public GraphQueries openGraphQueries() {
+      try {
+        return new GraphQueries(database.newReadConnection(), tempDir.resolve("indexes"));
+      } catch (SQLException failure) {
+        throw new IllegalStateException(failure);
+      }
     }
 
-    private static String rootLabel(javax.swing.JTree tree) {
-        Object root = tree.getModel().getRoot();
-        return String.valueOf(root);
+    @Override
+    public SessionInfo info() {
+      throw new UnsupportedOperationException("the graph view never asks");
     }
 
-    /** Every child row of the root, joined, so containment means substring. */
-    private static String childLabels(javax.swing.JTree tree) {
-        Object root = tree.getModel().getRoot();
-        if (!(root instanceof DefaultMutableTreeNode node)) {
-            return "";
-        }
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < node.getChildCount(); i++) {
-            out.append(String.valueOf(node.getChildAt(i))).append('\n');
-        }
-        return out.toString();
+    @Override
+    public SessionReader openReader() {
+      throw new UnsupportedOperationException("the graph view never asks");
     }
 
-    private void awaitCondition(BooleanSupplier done, String what) throws Exception {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (System.nanoTime() < deadline) {
-            SwingUtilities.invokeAndWait(() -> { });
-            if (done.getAsBoolean()) {
-                return;
-            }
-            Thread.sleep(10);
-        }
-        throw new AssertionError("timed out waiting for " + what);
+    @Override
+    public EntityReader openEntityReader() {
+      throw new UnsupportedOperationException("the graph view never asks");
     }
 
-    private static void exec(Connection connection, String sql) throws Exception {
-        try (Statement statement = connection.createStatement()) {
-            statement.execute(sql);
-        }
+    @Override
+    public MetricQueries openMetricQueries() {
+      throw new UnsupportedOperationException("the graph view never asks");
     }
 
-    /** A session source that answers only the graph question. */
-    private final class GraphOnlySource implements SessionSource {
-
-        @Override
-        public GraphQueries openGraphQueries() {
-            try {
-                return new GraphQueries(
-                        database.newReadConnection(), tempDir.resolve("indexes"));
-            } catch (SQLException failure) {
-                throw new IllegalStateException(failure);
-            }
-        }
-
-        @Override
-        public SessionInfo info() {
-            throw new UnsupportedOperationException("the graph view never asks");
-        }
-
-        @Override
-        public SessionReader openReader() {
-            throw new UnsupportedOperationException("the graph view never asks");
-        }
-
-        @Override
-        public EntityReader openEntityReader() {
-            throw new UnsupportedOperationException("the graph view never asks");
-        }
-
-        @Override
-        public MetricQueries openMetricQueries() {
-            throw new UnsupportedOperationException("the graph view never asks");
-        }
-
-        @Override
-        public com.holtherndon.bazelviz.ui.session.QueryReader openQueryReader() {
-            throw new UnsupportedOperationException("the graph view never asks");
-        }
-
-        @Override
-        public Connection openTimelineConnection() {
-            throw new UnsupportedOperationException("the graph view never asks");
-        }
-
-        @Override
-        public void close() {
-            // The view closes the readers it opened; nothing else to release.
-        }
+    @Override
+    public QueryReader openQueryReader() {
+      throw new UnsupportedOperationException("the graph view never asks");
     }
+
+    @Override
+    public Connection openTimelineConnection() {
+      throw new UnsupportedOperationException("the graph view never asks");
+    }
+
+    @Override
+    public void close() {
+      // The view closes the readers it opened; nothing else to release.
+    }
+  }
 }

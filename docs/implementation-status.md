@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-01. This file states what exists in the tree, not what
+Last updated: 2026-09-03. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## Phases
@@ -2863,12 +2863,32 @@ it is a different tab and was not reported.
   not execute. No dependency or fixed architectural decision changed; the two
   new paging bounds are recorded in `docs/limits.md`.
 
+- **Java formatting, Error Prone and explicit imports are enforced by Bazel**
+  (2026-09-03). Google Java Format 1.36.1 is a SHA-256-pinned, build-only tool.
+  `bazel run //tools:format_java` formats every Java source in the current
+  repository while skipping nested repositories; `-- --check` is read-only.
+  A package-local aspect adds cacheable format checks to normal Java builds.
+  CI now builds before it tests so production-only sources receive the same
+  gate.
+
+  Bazel's standard Error Prone checks are enabled. `WildcardImport` and
+  `UnnecessarilyFullyQualified` are errors, and the repository-wide cleanup
+  replaced 1,372 compiler-proven fully qualified symbol uses with explicit
+  imports. Five ignored-return test assertions and one intentional protobuf
+  ordinal comparison were made explicit. Only `SelfAssignment` is disabled:
+  the checker bundled with Bazel 9.2 falsely diagnoses valid normalization in
+  compact record constructors. External and generated sources are excluded
+  from repository policy. ADR-013 records the decision and dependency review.
+
 - **Starlark CPU profiling is captured, queryable, and explorable**
-  (2026-09-02). Performance and Full capture presets now probe and disclose
+  (updated 2026-09-03). Performance and Full capture presets now probe and disclose
   Bazel's `--starlark_cpu_profile`, retain an explicit user value, permit a
   launch-review veto, and write `raw/starlark-cpu.pprof.gz`. SSH builds stage
   and copy the same artifact through the bounded remote-output path before
-  local import. The flag is removed from post-build aquery/cquery commands.
+  local import. Finalization retries that copy after interruption and retains
+  private remote staging, with its exact recovery path, when an existing raw
+  artifact cannot be downloaded. The flag is removed from post-build
+  aquery/cquery commands.
   Failed or absent profile capture remains an independent enrichment outcome
   and never invalidates the BEP, execution log, or JSON trace profile.
 
@@ -2891,19 +2911,32 @@ it is a different tab and was not reported.
   string table and validation detail as sensitive.
 
   **Starlark Profile** sits after Critical Path. Its Summary, searchable/paged
-  Hot Functions and Files, selected-function caller/callee tables, and custom
-  Java2D Flame view load from a dedicated reader off the Swing event thread.
+  Hot Functions and Files, pprof-style directed function graph,
+  selected-function caller/callee tables, and custom Java2D Flame view load
+  from a dedicated reader off the Swing event thread. The directed graph reuses
+  the target graph's deterministic layered placement and camera, draws callers
+  above callees, encodes cumulative CPU in boxes and relationship CPU in
+  labelled weighted arrows, and keeps exact relationship tables beside the
+  selected node. Box size defaults to self CPU, with cumulative and uniform
+  options; unknown measurements use a stated neutral size. Compact wrapped
+  ranks keep default-fit labels legible, while node dragging and an explicit
+  reset let users untangle individual relationships without recomputing data.
+  Its adjustable bounded projection reports complete function
+  totals, exact visible-endpoint arrow totals, and both kinds of omission.
   Heavy tabs are lazy, tables page 200 rows and cache eight pages, and Flame
   draws at most 5,000 root-to-leaf contexts while stating exact total and
-  omitted counts. Source-bearing rows open through the current local/SSH
-  Workspace resolver. The page explicitly says sampled CPU is not wall/wait
+  omitted counts. Source-bearing rows and graph nodes open through the current local/SSH
+  Workspace resolver and place the caret on the recorded definition-line hint.
+  The page explicitly says sampled CPU is not wall/wait
   time, can exceed wall duration across threads, has no sample timestamps, and
   does not support reliable line heat maps. A failed replacement task prevents
   retained older rows from being presented as current.
 
   Parser/importer, schema migration/view/constraint, redaction, planner/veto,
-  auxiliary filtering, SSH transfer, SQLite reader, paging, flame geometry,
-  lifecycle, navigation, and source-action tests cover the new seams. A real
+  auxiliary filtering, SSH transfer, SQLite reader, paging, weighted/wrapped
+  directed layout including shared/cyclic calls, node dragging, default label
+  visibility, graph interaction, flame geometry, lifecycle,
+  navigation, and source-action tests cover the new seams. A real
   Bazel enrichment test checks the managed gzip pprof and validated units; a
   manual smoke imported real profiles from Bazel 6.5.0, 7.6.1, 8.4.1, and
   9.2.0. The four produced the same 10,000 µs `CPU` / `microseconds` shape.

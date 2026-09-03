@@ -25,13 +25,15 @@ jobs:
           key: bazel-repo-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock', 'maven_install.json') }}
           restore-keys: |
             bazel-repo-${{ runner.os }}-
-      - name: Build and test
+      - name: Build
         # --config=ci excludes the real-bazel and bazel-sweep tags VISIBLY
         # (.bazelrc test:ci): the real-bazel suites depend on host state
         # Bazel cannot fingerprint, and the four-version sweep is never run
         # by automation. This exclusion being a named config is the point —
         # a silent environment-shaped skip is the failure mode BazelBinary
         # exists to prevent.
+        run: bazelisk build //... --config=ci
+      - name: Test
         run: bazelisk test //... --config=ci
       - name: Upload test logs
         if: failure()

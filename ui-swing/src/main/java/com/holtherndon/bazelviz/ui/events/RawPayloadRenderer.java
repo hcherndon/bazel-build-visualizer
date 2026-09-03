@@ -2,10 +2,10 @@ package com.holtherndon.bazelviz.ui.events;
 
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.holtherndon.bazelviz.bepcodec.BepEventDecoder;
-import com.holtherndon.bazelviz.bepcodec.EventIdDisplay;
 import com.holtherndon.bazelviz.bepcodec.BesEnvelope;
 import com.holtherndon.bazelviz.bepcodec.BesEnvelopeDecoder;
 import com.holtherndon.bazelviz.bepcodec.DecodeResult;
+import com.holtherndon.bazelviz.bepcodec.EventIdDisplay;
 import com.holtherndon.bazelviz.capture.file.json.JsonBuildEventDecoder;
 import com.holtherndon.bazelviz.capture.file.json.JsonDecodeResult;
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
@@ -18,433 +18,460 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Turns one record's verbatim bytes into the two things the inspector shows:
- * a readable rendering of the record, and a hex/ASCII dump of the bytes
- * themselves.
+ * Turns one record's verbatim bytes into the two things the inspector shows: a readable rendering
+ * of the record, and a hex/ASCII dump of the bytes themselves.
  *
  * <h2>Bytes are shown whatever happens</h2>
  *
- * <p>A record that will not decode still has its bytes dumped and the failure
- * printed above them. That is the point of storing raw payloads at all
- * (ADR-004, plan 21.5): a later build with newer protos can read what this one
- * cannot, and in the meantime the user can see exactly what arrived rather than
- * an empty pane.
+ * <p>A record that will not decode still has its bytes dumped and the failure printed above them.
+ * That is the point of storing raw payloads at all (ADR-004, plan 21.5): a later build with newer
+ * protos can read what this one cannot, and in the meantime the user can see exactly what arrived
+ * rather than an empty pane.
  *
  * <h2>Display limits are stated, never silent</h2>
  *
- * <p>A single BEP event can be megabytes. Both renderings are capped, and every
- * cap that actually fired appends a notice saying what was withheld and how
- * much of it there was — plan section 3's "show every imposed display limit"
- * and project rule 12. Nothing is ever trimmed quietly.
+ * <p>A single BEP event can be megabytes. Both renderings are capped, and every cap that actually
+ * fired appends a notice saying what was withheld and how much of it there was — plan section 3's
+ * "show every imposed display limit" and project rule 12. Nothing is ever trimmed quietly.
  *
- * <p>Pure and blocking-free apart from protobuf parsing; called from the
- * inspector's background executor, never the EDT.
+ * <p>Pure and blocking-free apart from protobuf parsing; called from the inspector's background
+ * executor, never the EDT.
  */
 public final class RawPayloadRenderer {
 
-    /** Characters of decoded text rendered before the display gives up. */
-    public static final int MAX_TEXT_CHARS = 200_000;
+  /** Characters of decoded text rendered before the display gives up. */
+  public static final int MAX_TEXT_CHARS = 200_000;
 
-    /** Bytes dumped in hex before the display gives up. */
-    public static final int MAX_HEX_BYTES = 64 * 1024;
+  /** Bytes dumped in hex before the display gives up. */
+  public static final int MAX_HEX_BYTES = 64 * 1024;
 
-    private static final int HEX_BYTES_PER_LINE = 16;
+  private static final int HEX_BYTES_PER_LINE = 16;
 
-    private RawPayloadRenderer() {}
+  private RawPayloadRenderer() {}
 
-    /** A selected record decoded for structured, lazy inspector extensions. */
-    record DecodedEvent(Optional<BuildEvent> event, Optional<String> absence) {
-        DecodedEvent {
-            Objects.requireNonNull(event, "event");
-            Objects.requireNonNull(absence, "absence");
-            if (event.isPresent() == absence.isPresent()) {
-                throw new IllegalArgumentException("a decoded record has either an event or a reason");
-            }
+  /** A selected record decoded for structured, lazy inspector extensions. */
+  record DecodedEvent(Optional<BuildEvent> event, Optional<String> absence) {
+    DecodedEvent {
+      Objects.requireNonNull(event, "event");
+      Objects.requireNonNull(absence, "absence");
+      if (event.isPresent() == absence.isPresent()) {
+        throw new IllegalArgumentException("a decoded record has either an event or a reason");
+      }
+    }
+  }
+
+  /** Decodes the BuildEvent inside one raw record. Call only off the EDT. */
+  static DecodedEvent decodeEvent(RawPayload payload) {
+    Objects.requireNonNull(payload, "payload");
+    try {
+      byte[] bytes = payload.bytes();
+      return switch (payload.sourceKind()) {
+        case BEP_BINARY -> decoded(BepEventDecoder.withDefaults().decode(bytes));
+        case BEP_JSON_RECORD -> {
+          JsonDecodeResult result = new JsonBuildEventDecoder().decode(bytes);
+          yield result
+              .decodedEvent()
+              .map(event -> new DecodedEvent(Optional.of(event), Optional.empty()))
+              .orElseGet(
+                  () ->
+                      absent(
+                          "This JSON record could not be decoded: "
+                              + result.detail().orElse("no detail was recorded")));
         }
+        case BES_LIFECYCLE -> absent("This lifecycle record carries no build-event files.");
+        case BES_ENVELOPE -> decodedEnvelope(bytes);
+      };
+    } catch (RuntimeException failure) {
+      return absent(
+          "This record could not be decoded for file metadata: "
+              + (failure.getMessage() == null ? failure : failure.getMessage()));
+    }
+  }
+
+  private static DecodedEvent decodedEnvelope(byte[] bytes) {
+    BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
+    BesEnvelopeDecoder.Result result = decoder.decodeToolEvent(bytes, 0, bytes.length);
+    if (result.isFailed()) {
+      return absent(
+          "This BES record could not be decoded: "
+              + result.failureDetail().orElse("no detail was recorded"));
+    }
+    BesEnvelope envelope = result.envelope().orElseThrow();
+    if (!envelope.kind().carriesBuildEvent()) {
+      return absent("This BES stream-control record carries no build-event files.");
+    }
+    return decoded(
+        BepEventDecoder.withDefaults()
+            .decode(envelope.bazelEventBytes().orElseThrow().toByteArray()));
+  }
+
+  private static DecodedEvent decoded(DecodeResult result) {
+    if (result.isFailed()) {
+      return absent(
+          "This record could not be decoded as a BuildEvent: "
+              + result.failureDetail().orElse("no detail was recorded"));
+    }
+    return new DecodedEvent(Optional.of(result.requireEvent()), Optional.empty());
+  }
+
+  private static DecodedEvent absent(String reason) {
+    return new DecodedEvent(Optional.empty(), Optional.of(reason));
+  }
+
+  /**
+   * A rendered payload.
+   *
+   * @param text the readable form: protobuf text for a binary BEP record, the record itself for a
+   *     JSON one, or an explanation when neither applies
+   * @param decodeFailure why the bytes could not be read, when they could not
+   * @param notices display limits and discrepancies the user must be told about; empty when there
+   *     is nothing to disclose
+   * @param targetLabel the target label the decoded event's id carries, read structurally from the
+   *     proto ({@code EventIdDisplay.label}) — the accessor the navigation actions prefer over
+   *     parsing any rendered sentence. Empty when the record did not decode here, carries no label,
+   *     or (JSON records) is never re-decoded by this renderer.
+   */
+  public record Rendered(
+      String text,
+      Optional<String> decodeFailure,
+      List<String> notices,
+      Optional<String> targetLabel) {
+
+    public Rendered {
+      Objects.requireNonNull(text, "text");
+      Objects.requireNonNull(decodeFailure, "decodeFailure");
+      notices = List.copyOf(notices);
+      Objects.requireNonNull(targetLabel, "targetLabel");
     }
 
-    /** Decodes the BuildEvent inside one raw record. Call only off the EDT. */
-    static DecodedEvent decodeEvent(RawPayload payload) {
-        Objects.requireNonNull(payload, "payload");
-        try {
-            byte[] bytes = payload.bytes();
-            return switch (payload.sourceKind()) {
-                case BEP_BINARY -> decoded(BepEventDecoder.withDefaults().decode(bytes));
-                case BEP_JSON_RECORD -> {
-                    JsonDecodeResult result = new JsonBuildEventDecoder().decode(bytes);
-                    yield result.decodedEvent()
-                            .map(event -> new DecodedEvent(Optional.of(event), Optional.empty()))
-                            .orElseGet(() -> absent("This JSON record could not be decoded: "
-                                    + result.detail().orElse("no detail was recorded")));
-                }
-                case BES_LIFECYCLE -> absent(
-                        "This lifecycle record carries no build-event files.");
-                case BES_ENVELOPE -> decodedEnvelope(bytes);
-            };
-        } catch (RuntimeException failure) {
-            return absent("This record could not be decoded for file metadata: "
-                    + (failure.getMessage() == null ? failure : failure.getMessage()));
-        }
+    /** A rendering with no structurally known label. */
+    public Rendered(String text, Optional<String> decodeFailure, List<String> notices) {
+      this(text, decodeFailure, notices, Optional.empty());
+    }
+  }
+
+  /**
+   * The console text one record carries, or why it carries none.
+   *
+   * <p>A structured accessor beside {@link Rendered#targetLabel}, and for the same reason: the
+   * Errors card needs the stderr string itself, not a sentence containing it, and reading it back
+   * out of the rendered protobuf text would be parsing a display format. It exists because {@code
+   * progress.stderr} is the only copy of a compiler or parser diagnostic there is — a syntax-error
+   * build produces thirteen events and zero structured messages (docs/bep-content.md, finding X2
+   * and rule 48).
+   *
+   * @param stdout what the event says was written to stdout, empty string when it carried none.
+   *     Never null and never a stand-in for "unknown": when the answer is not known, {@code
+   *     absence} says so and both strings are empty
+   * @param stderr what the event says was written to stderr
+   * @param absence why this record has nothing to say about the console — it did not decode, it is
+   *     transport rather than an event, or it decoded and is not a progress event. Empty exactly
+   *     when the two strings above are this record's own answer
+   */
+  public record Console(String stdout, String stderr, Optional<String> absence) {
+
+    public Console {
+      Objects.requireNonNull(stdout, "stdout");
+      Objects.requireNonNull(stderr, "stderr");
+      Objects.requireNonNull(absence, "absence");
+      if (absence.isPresent() && !(stdout.isEmpty() && stderr.isEmpty())) {
+        throw new IllegalArgumentException(
+            "a record that explains its silence must not also carry text");
+      }
     }
 
-    private static DecodedEvent decodedEnvelope(byte[] bytes) {
-        BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
-        BesEnvelopeDecoder.Result result = decoder.decodeToolEvent(bytes, 0, bytes.length);
-        if (result.isFailed()) {
-            return absent("This BES record could not be decoded: "
-                    + result.failureDetail().orElse("no detail was recorded"));
-        }
-        BesEnvelope envelope = result.envelope().orElseThrow();
-        if (!envelope.kind().carriesBuildEvent()) {
-            return absent("This BES stream-control record carries no build-event files.");
-        }
-        return decoded(BepEventDecoder.withDefaults()
-                .decode(envelope.bazelEventBytes().orElseThrow().toByteArray()));
+    /** Whether either stream carried anything at all. */
+    public boolean hasText() {
+      return !stdout.isEmpty() || !stderr.isEmpty();
     }
+  }
 
-    private static DecodedEvent decoded(DecodeResult result) {
-        if (result.isFailed()) {
-            return absent("This record could not be decoded as a BuildEvent: "
-                    + result.failureDetail().orElse("no detail was recorded"));
-        }
-        return new DecodedEvent(Optional.of(result.requireEvent()), Optional.empty());
+  /**
+   * Reads {@code payload} as a progress event and returns what Bazel wrote to the console.
+   *
+   * <p>Decodes the record the same way {@link #render} does, wrappers included, so a
+   * BES-transported progress event answers exactly as a file-imported one does. Never throws: a
+   * record that will not decode is a {@link Console} whose {@code absence} says so, because "the
+   * bytes are unreadable" is something the user has to be shown rather than an error the selection
+   * should fail on.
+   *
+   * <p>Parses protobuf; call it from a background executor, never the EDT.
+   */
+  public static Console console(RawPayload payload) {
+    Objects.requireNonNull(payload, "payload");
+    byte[] bytes = payload.bytes();
+    return switch (payload.sourceKind()) {
+      case BEP_BINARY -> consoleOf(BepEventDecoder.withDefaults().decode(bytes));
+      case BEP_JSON_RECORD -> consoleOfJson(bytes);
+      case BES_LIFECYCLE ->
+          silent("this record is BES lifecycle traffic, which carries no build event");
+      case BES_ENVELOPE -> consoleOfEnvelope(bytes);
+    };
+  }
+
+  private static Console consoleOfEnvelope(byte[] bytes) {
+    BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
+    BesEnvelopeDecoder.Result result = decoder.decodeToolEvent(bytes, 0, bytes.length);
+    if (result.isFailed()) {
+      return silent(
+          "this record is a BES request that could not be read as one: "
+              + result.failureDetail().orElse("no detail was recorded"));
     }
-
-    private static DecodedEvent absent(String reason) {
-        return new DecodedEvent(Optional.empty(), Optional.of(reason));
+    BesEnvelope envelope = result.envelope().orElseThrow();
+    if (!envelope.kind().carriesBuildEvent()) {
+      return silent("this envelope is stream control traffic and carries no build event");
     }
+    return consoleOf(
+        BepEventDecoder.withDefaults()
+            .decode(envelope.bazelEventBytes().orElseThrow().toByteArray()));
+  }
 
-    /**
-     * A rendered payload.
-     *
-     * @param text the readable form: protobuf text for a binary BEP record, the
-     *     record itself for a JSON one, or an explanation when neither applies
-     * @param decodeFailure why the bytes could not be read, when they could not
-     * @param notices display limits and discrepancies the user must be told
-     *     about; empty when there is nothing to disclose
-     * @param targetLabel the target label the decoded event's id carries, read
-     *     structurally from the proto ({@code EventIdDisplay.label}) — the
-     *     accessor the navigation actions prefer over parsing any rendered
-     *     sentence. Empty when the record did not decode here, carries no
-     *     label, or (JSON records) is never re-decoded by this renderer.
-     */
-    public record Rendered(
-            String text,
-            Optional<String> decodeFailure,
-            List<String> notices,
-            Optional<String> targetLabel) {
-
-        public Rendered {
-            Objects.requireNonNull(text, "text");
-            Objects.requireNonNull(decodeFailure, "decodeFailure");
-            notices = List.copyOf(notices);
-            Objects.requireNonNull(targetLabel, "targetLabel");
-        }
-
-        /** A rendering with no structurally known label. */
-        public Rendered(String text, Optional<String> decodeFailure, List<String> notices) {
-            this(text, decodeFailure, notices, Optional.empty());
-        }
-    }
-
-    /**
-     * The console text one record carries, or why it carries none.
-     *
-     * <p>A structured accessor beside {@link Rendered#targetLabel}, and for the
-     * same reason: the Errors card needs the stderr string itself, not a
-     * sentence containing it, and reading it back out of the rendered protobuf
-     * text would be parsing a display format. It exists because
-     * {@code progress.stderr} is the only copy of a compiler or parser
-     * diagnostic there is — a syntax-error build produces thirteen events and
-     * zero structured messages (docs/bep-content.md, finding X2 and rule 48).
-     *
-     * @param stdout what the event says was written to stdout, empty string
-     *     when it carried none. Never null and never a stand-in for "unknown":
-     *     when the answer is not known, {@code absence} says so and both
-     *     strings are empty
-     * @param stderr what the event says was written to stderr
-     * @param absence why this record has nothing to say about the console —
-     *     it did not decode, it is transport rather than an event, or it
-     *     decoded and is not a progress event. Empty exactly when the two
-     *     strings above are this record's own answer
-     */
-    public record Console(String stdout, String stderr, Optional<String> absence) {
-
-        public Console {
-            Objects.requireNonNull(stdout, "stdout");
-            Objects.requireNonNull(stderr, "stderr");
-            Objects.requireNonNull(absence, "absence");
-            if (absence.isPresent() && !(stdout.isEmpty() && stderr.isEmpty())) {
-                throw new IllegalArgumentException(
-                        "a record that explains its silence must not also carry text");
-            }
-        }
-
-        /** Whether either stream carried anything at all. */
-        public boolean hasText() {
-            return !stdout.isEmpty() || !stderr.isEmpty();
-        }
-    }
-
-    /**
-     * Reads {@code payload} as a progress event and returns what Bazel wrote to
-     * the console.
-     *
-     * <p>Decodes the record the same way {@link #render} does, wrappers
-     * included, so a BES-transported progress event answers exactly as a
-     * file-imported one does. Never throws: a record that will not decode is a
-     * {@link Console} whose {@code absence} says so, because "the bytes are
-     * unreadable" is something the user has to be shown rather than an error
-     * the selection should fail on.
-     *
-     * <p>Parses protobuf; call it from a background executor, never the EDT.
-     */
-    public static Console console(RawPayload payload) {
-        Objects.requireNonNull(payload, "payload");
-        byte[] bytes = payload.bytes();
-        return switch (payload.sourceKind()) {
-            case BEP_BINARY -> consoleOf(BepEventDecoder.withDefaults().decode(bytes));
-            case BEP_JSON_RECORD -> consoleOfJson(bytes);
-            case BES_LIFECYCLE -> silent(
-                    "this record is BES lifecycle traffic, which carries no build event");
-            case BES_ENVELOPE -> consoleOfEnvelope(bytes);
-        };
-    }
-
-    private static Console consoleOfEnvelope(byte[] bytes) {
-        BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
-        BesEnvelopeDecoder.Result result = decoder.decodeToolEvent(bytes, 0, bytes.length);
-        if (result.isFailed()) {
-            return silent("this record is a BES request that could not be read as one: "
-                    + result.failureDetail().orElse("no detail was recorded"));
-        }
-        BesEnvelope envelope = result.envelope().orElseThrow();
-        if (!envelope.kind().carriesBuildEvent()) {
-            return silent("this envelope is stream control traffic and carries no build event");
-        }
-        return consoleOf(BepEventDecoder.withDefaults()
-                .decode(envelope.bazelEventBytes().orElseThrow().toByteArray()));
-    }
-
-    private static Console consoleOfJson(byte[] bytes) {
-        JsonDecodeResult result = new JsonBuildEventDecoder().decode(bytes);
-        return result.decodedEvent()
-                .map(RawPayloadRenderer::consoleOf)
-                .orElseGet(() -> silent("this JSON record could not be read as a BuildEvent: "
+  private static Console consoleOfJson(byte[] bytes) {
+    JsonDecodeResult result = new JsonBuildEventDecoder().decode(bytes);
+    return result
+        .decodedEvent()
+        .map(RawPayloadRenderer::consoleOf)
+        .orElseGet(
+            () ->
+                silent(
+                    "this JSON record could not be read as a BuildEvent: "
                         + result.detail().orElse("no detail was recorded")));
+  }
+
+  private static Console consoleOf(DecodeResult result) {
+    if (result.isFailed()) {
+      return silent(
+          "this record could not be decoded as a BuildEvent: "
+              + result.failureDetail().orElse("no detail was recorded"));
+    }
+    return consoleOf(result.requireEvent());
+  }
+
+  private static Console consoleOf(BuildEvent event) {
+    if (!event.hasProgress()) {
+      // Not a shortfall of the display: console text is carried by
+      // progress events and by nothing else, so saying "unknown" here
+      // would invent a gap where the protocol has none.
+      return silent(
+          "this event is not a progress event, and console text is carried"
+              + " only by progress events");
+    }
+    return new Console(
+        event.getProgress().getStdout(), event.getProgress().getStderr(), Optional.empty());
+  }
+
+  private static Console silent(String why) {
+    return new Console("", "", Optional.of(why));
+  }
+
+  /**
+   * Renders {@code payload}, cross-checking against the status the import recorded for it.
+   *
+   * @param storedStatus {@code bep_events.decode_status} for this row
+   */
+  public static Rendered render(RawPayload payload, DecodeStatus storedStatus) {
+    Objects.requireNonNull(payload, "payload");
+    Objects.requireNonNull(storedStatus, "storedStatus");
+    List<String> notices = new ArrayList<>();
+    return switch (payload.sourceKind()) {
+      case BEP_BINARY -> renderBinary(payload, storedStatus, notices);
+      case BEP_JSON_RECORD -> renderJson(payload, storedStatus, notices);
+      case BES_ENVELOPE, BES_LIFECYCLE -> renderEnvelope(payload, storedStatus, notices);
+    };
+  }
+
+  /**
+   * Renders a BES request by unwrapping it and showing the build event inside.
+   *
+   * <p>The envelope is transport. Showing its protobuf text would put a {@code StreamId} and an
+   * opaque {@code Any} in front of the user instead of the event they selected, so the inner event
+   * is rendered and the envelope's own facts — stream, sequence, kind — are stated in one line
+   * above it. The hex dump beside this still shows the complete request, so nothing is hidden, only
+   * reordered by usefulness.
+   */
+  private static Rendered renderEnvelope(
+      RawPayload payload, DecodeStatus storedStatus, List<String> notices) {
+    byte[] bytes = payload.bytes();
+    BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
+    BesEnvelopeDecoder.Result result =
+        payload.sourceKind() == SourceKind.BES_LIFECYCLE
+            ? decoder.decodeLifecycle(bytes, 0, bytes.length)
+            : decoder.decodeToolEvent(bytes, 0, bytes.length);
+    if (result.isFailed()) {
+      return new Rendered(
+          "This record is a BES request that could not be read as one. Its bytes are"
+              + " preserved exactly as they arrived and are shown below.",
+          result.failureDetail(),
+          notices);
     }
 
-    private static Console consoleOf(DecodeResult result) {
-        if (result.isFailed()) {
-            return silent("this record could not be decoded as a BuildEvent: "
-                    + result.failureDetail().orElse("no detail was recorded"));
-        }
-        return consoleOf(result.requireEvent());
-    }
-
-    private static Console consoleOf(BuildEvent event) {
-        if (!event.hasProgress()) {
-            // Not a shortfall of the display: console text is carried by
-            // progress events and by nothing else, so saying "unknown" here
-            // would invent a gap where the protocol has none.
-            return silent("this event is not a progress event, and console text is carried"
-                    + " only by progress events");
-        }
-        return new Console(
-                event.getProgress().getStdout(),
-                event.getProgress().getStderr(),
-                Optional.empty());
-    }
-
-    private static Console silent(String why) {
-        return new Console("", "", Optional.of(why));
-    }
-
-    /**
-     * Renders {@code payload}, cross-checking against the status the import
-     * recorded for it.
-     *
-     * @param storedStatus {@code bep_events.decode_status} for this row
-     */
-    public static Rendered render(RawPayload payload, DecodeStatus storedStatus) {
-        Objects.requireNonNull(payload, "payload");
-        Objects.requireNonNull(storedStatus, "storedStatus");
-        List<String> notices = new ArrayList<>();
-        return switch (payload.sourceKind()) {
-            case BEP_BINARY -> renderBinary(payload, storedStatus, notices);
-            case BEP_JSON_RECORD -> renderJson(payload, storedStatus, notices);
-            case BES_ENVELOPE, BES_LIFECYCLE -> renderEnvelope(payload, storedStatus, notices);
-        };
-    }
-
-    /**
-     * Renders a BES request by unwrapping it and showing the build event inside.
-     *
-     * <p>The envelope is transport. Showing its protobuf text would put a
-     * {@code StreamId} and an opaque {@code Any} in front of the user instead of
-     * the event they selected, so the inner event is rendered and the envelope's
-     * own facts — stream, sequence, kind — are stated in one line above it. The
-     * hex dump beside this still shows the complete request, so nothing is
-     * hidden, only reordered by usefulness.
-     */
-    private static Rendered renderEnvelope(
-            RawPayload payload, DecodeStatus storedStatus, List<String> notices) {
-        byte[] bytes = payload.bytes();
-        BesEnvelopeDecoder decoder = new BesEnvelopeDecoder(Math.max(bytes.length, 1));
-        BesEnvelopeDecoder.Result result =
-                payload.sourceKind() == SourceKind.BES_LIFECYCLE
-                        ? decoder.decodeLifecycle(bytes, 0, bytes.length)
-                        : decoder.decodeToolEvent(bytes, 0, bytes.length);
-        if (result.isFailed()) {
-            return new Rendered(
-                    "This record is a BES request that could not be read as one. Its bytes are"
-                            + " preserved exactly as they arrived and are shown below.",
-                    result.failureDetail(),
-                    notices);
-        }
-
-        BesEnvelope envelope = result.envelope().orElseThrow();
-        String header = "BES %s  stream %s/%s  sequence %d%n%n".formatted(
+    BesEnvelope envelope = result.envelope().orElseThrow();
+    String header =
+        "BES %s  stream %s/%s  sequence %d%n%n"
+            .formatted(
                 envelope.kind(),
                 envelope.buildId().orElse("(no build id)"),
                 envelope.invocationId().orElse("(no invocation id)"),
                 envelope.sequence());
 
-        if (!envelope.kind().carriesBuildEvent()) {
-            // Deliberately not a notice: this is the record, not a limitation of
-            // the display. Lifecycle and stream-control envelopes have no build
-            // event by definition, and calling that a shortfall would suggest
-            // something is missing.
-            return new Rendered(
-                    header + "This envelope carries no build event. It is stream control traffic:"
-                            + " it is journaled in full and it moves the stream's state, but there"
-                            + " is nothing inside it to decode.",
-                    Optional.empty(),
-                    notices);
-        }
-
-        byte[] inner = envelope.bazelEventBytes().orElseThrow().toByteArray();
-        DecodeResult decoded = BepEventDecoder.withDefaults().decode(inner);
-        if (decoded.status() != storedStatus) {
-            notices.add("The capture recorded this record as " + storedStatus
-                    + ", but decoding it again now says " + decoded.status() + ".");
-        }
-        if (decoded.isFailed()) {
-            return new Rendered(
-                    header + "The build event inside this envelope could not be decoded. Its bytes"
-                            + " are preserved exactly as they arrived and are shown below.",
-                    decoded.failureDetail(),
-                    notices);
-        }
-        if (decoded.hasUnknownFields()) {
-            notices.add("This record carried fields this build does not know. They are absent"
-                    + " from the text below and present in the raw bytes.");
-        }
-        return new Rendered(
-                cap(header + decoded.requireEvent(), notices, "decoded text"),
-                Optional.empty(),
-                notices,
-                EventIdDisplay.label(decoded.requireEvent().getId()));
+    if (!envelope.kind().carriesBuildEvent()) {
+      // Deliberately not a notice: this is the record, not a limitation of
+      // the display. Lifecycle and stream-control envelopes have no build
+      // event by definition, and calling that a shortfall would suggest
+      // something is missing.
+      return new Rendered(
+          header
+              + "This envelope carries no build event. It is stream control traffic:"
+              + " it is journaled in full and it moves the stream's state, but there"
+              + " is nothing inside it to decode.",
+          Optional.empty(),
+          notices);
     }
 
-    private static Rendered renderBinary(
-            RawPayload payload, DecodeStatus storedStatus, List<String> notices) {
-        // One copy out of the record, reused: RawPayload.bytes() defensively
-        // clones, and a multi-megabyte payload should be cloned once, not once
-        // per question asked about it.
-        byte[] bytes = payload.bytes();
-        DecodeResult result = BepEventDecoder.withDefaults().decode(bytes);
-        if (result.status() != storedStatus) {
-            // Re-reading the same bytes should reach the same verdict the
-            // import did. When it does not, something changed between the two
-            // — a proto update, or a row and a journal that disagree — and the
-            // user is told rather than shown whichever answer came last.
-            notices.add("The import recorded this record as " + storedStatus
-                    + ", but decoding it again now says " + result.status() + ".");
-        }
-        if (result.isFailed()) {
-            return new Rendered(
-                    "This record could not be decoded as a BuildEvent. Its bytes are preserved"
-                            + " exactly as they arrived and are shown below; a later build with"
-                            + " newer protocol definitions may be able to read them.",
-                    result.failureDetail(),
-                    notices);
-        }
-        BuildEvent event = result.requireEvent();
-        if (result.hasUnknownFields()) {
-            notices.add("This record carried fields this build does not know. They are absent"
-                    + " from the text below and present in the raw bytes.");
-        }
-        return new Rendered(cap(event.toString(), notices, "decoded text"), Optional.empty(),
-                notices, EventIdDisplay.label(event.getId()));
+    byte[] inner = envelope.bazelEventBytes().orElseThrow().toByteArray();
+    DecodeResult decoded = BepEventDecoder.withDefaults().decode(inner);
+    if (decoded.status() != storedStatus) {
+      notices.add(
+          "The capture recorded this record as "
+              + storedStatus
+              + ", but decoding it again now says "
+              + decoded.status()
+              + ".");
     }
+    if (decoded.isFailed()) {
+      return new Rendered(
+          header
+              + "The build event inside this envelope could not be decoded. Its bytes"
+              + " are preserved exactly as they arrived and are shown below.",
+          decoded.failureDetail(),
+          notices);
+    }
+    if (decoded.hasUnknownFields()) {
+      notices.add(
+          "This record carried fields this build does not know. They are absent"
+              + " from the text below and present in the raw bytes.");
+    }
+    return new Rendered(
+        cap(header + decoded.requireEvent(), notices, "decoded text"),
+        Optional.empty(),
+        notices,
+        EventIdDisplay.label(decoded.requireEvent().getId()));
+  }
 
-    private static Rendered renderJson(
-            RawPayload payload, DecodeStatus storedStatus, List<String> notices) {
-        if (storedStatus == DecodeStatus.FAILED) {
-            notices.add("The import could not decode this JSON record into a BuildEvent."
-                    + " The record itself is shown as it was written.");
-        } else if (storedStatus == DecodeStatus.UNKNOWN_FIELDS) {
-            notices.add("This record carried fields this build does not know; they are present"
-                    + " in the text below and were not normalized.");
-        }
-        String text = new String(payload.bytes(), StandardCharsets.UTF_8);
-        return new Rendered(cap(text, notices, "JSON record"), Optional.empty(), notices);
+  private static Rendered renderBinary(
+      RawPayload payload, DecodeStatus storedStatus, List<String> notices) {
+    // One copy out of the record, reused: RawPayload.bytes() defensively
+    // clones, and a multi-megabyte payload should be cloned once, not once
+    // per question asked about it.
+    byte[] bytes = payload.bytes();
+    DecodeResult result = BepEventDecoder.withDefaults().decode(bytes);
+    if (result.status() != storedStatus) {
+      // Re-reading the same bytes should reach the same verdict the
+      // import did. When it does not, something changed between the two
+      // — a proto update, or a row and a journal that disagree — and the
+      // user is told rather than shown whichever answer came last.
+      notices.add(
+          "The import recorded this record as "
+              + storedStatus
+              + ", but decoding it again now says "
+              + result.status()
+              + ".");
     }
+    if (result.isFailed()) {
+      return new Rendered(
+          "This record could not be decoded as a BuildEvent. Its bytes are preserved"
+              + " exactly as they arrived and are shown below; a later build with"
+              + " newer protocol definitions may be able to read them.",
+          result.failureDetail(),
+          notices);
+    }
+    BuildEvent event = result.requireEvent();
+    if (result.hasUnknownFields()) {
+      notices.add(
+          "This record carried fields this build does not know. They are absent"
+              + " from the text below and present in the raw bytes.");
+    }
+    return new Rendered(
+        cap(event.toString(), notices, "decoded text"),
+        Optional.empty(),
+        notices,
+        EventIdDisplay.label(event.getId()));
+  }
 
-    /**
-     * A hex/ASCII dump of at most {@link #MAX_HEX_BYTES} bytes, with a trailing
-     * line naming everything it did not show.
-     */
-    public static String hexDump(byte[] bytes) {
-        return hexDump(bytes, MAX_HEX_BYTES);
+  private static Rendered renderJson(
+      RawPayload payload, DecodeStatus storedStatus, List<String> notices) {
+    if (storedStatus == DecodeStatus.FAILED) {
+      notices.add(
+          "The import could not decode this JSON record into a BuildEvent."
+              + " The record itself is shown as it was written.");
+    } else if (storedStatus == DecodeStatus.UNKNOWN_FIELDS) {
+      notices.add(
+          "This record carried fields this build does not know; they are present"
+              + " in the text below and were not normalized.");
     }
+    String text = new String(payload.bytes(), StandardCharsets.UTF_8);
+    return new Rendered(cap(text, notices, "JSON record"), Optional.empty(), notices);
+  }
 
-    /** As {@link #hexDump(byte[])}, with an explicit limit. For tests. */
-    public static String hexDump(byte[] bytes, int limit) {
-        Objects.requireNonNull(bytes, "bytes");
-        if (limit <= 0) {
-            throw new IllegalArgumentException("limit must be positive: " + limit);
-        }
-        if (bytes.length == 0) {
-            return "(0 bytes)";
-        }
-        int shown = Math.min(bytes.length, limit);
-        StringBuilder out = new StringBuilder(shown * 4 + 64);
-        for (int offset = 0; offset < shown; offset += HEX_BYTES_PER_LINE) {
-            int lineEnd = Math.min(offset + HEX_BYTES_PER_LINE, shown);
-            out.append("%08x  ".formatted(offset));
-            for (int i = offset; i < offset + HEX_BYTES_PER_LINE; i++) {
-                out.append(i < lineEnd ? "%02x ".formatted(bytes[i]) : "   ");
-                if (i - offset == 7) {
-                    out.append(' ');
-                }
-            }
-            out.append(" |");
-            for (int i = offset; i < lineEnd; i++) {
-                int value = bytes[i] & 0xFF;
-                out.append(value >= 0x20 && value < 0x7F ? (char) value : '.');
-            }
-            out.append("|\n");
-        }
-        if (shown < bytes.length) {
-            out.append("\n… ")
-                    .append(bytes.length - shown)
-                    .append(" of ")
-                    .append(bytes.length)
-                    .append(" bytes are not shown: the hex view is limited to ")
-                    .append(limit)
-                    .append(" bytes. The record is stored complete in the journal.\n");
-        }
-        return out.toString();
-    }
+  /**
+   * A hex/ASCII dump of at most {@link #MAX_HEX_BYTES} bytes, with a trailing line naming
+   * everything it did not show.
+   */
+  public static String hexDump(byte[] bytes) {
+    return hexDump(bytes, MAX_HEX_BYTES);
+  }
 
-    private static String cap(String text, List<String> notices, String what) {
-        if (text.length() <= MAX_TEXT_CHARS) {
-            return text;
-        }
-        notices.add("The " + what + " is " + text.length() + " characters; only the first "
-                + MAX_TEXT_CHARS + " are shown.");
-        return text.substring(0, MAX_TEXT_CHARS);
+  /** As {@link #hexDump(byte[])}, with an explicit limit. For tests. */
+  public static String hexDump(byte[] bytes, int limit) {
+    Objects.requireNonNull(bytes, "bytes");
+    if (limit <= 0) {
+      throw new IllegalArgumentException("limit must be positive: " + limit);
     }
+    if (bytes.length == 0) {
+      return "(0 bytes)";
+    }
+    int shown = Math.min(bytes.length, limit);
+    StringBuilder out = new StringBuilder(shown * 4 + 64);
+    for (int offset = 0; offset < shown; offset += HEX_BYTES_PER_LINE) {
+      int lineEnd = Math.min(offset + HEX_BYTES_PER_LINE, shown);
+      out.append("%08x  ".formatted(offset));
+      for (int i = offset; i < offset + HEX_BYTES_PER_LINE; i++) {
+        out.append(i < lineEnd ? "%02x ".formatted(bytes[i]) : "   ");
+        if (i - offset == 7) {
+          out.append(' ');
+        }
+      }
+      out.append(" |");
+      for (int i = offset; i < lineEnd; i++) {
+        int value = bytes[i] & 0xFF;
+        out.append(value >= 0x20 && value < 0x7F ? (char) value : '.');
+      }
+      out.append("|\n");
+    }
+    if (shown < bytes.length) {
+      out.append("\n… ")
+          .append(bytes.length - shown)
+          .append(" of ")
+          .append(bytes.length)
+          .append(" bytes are not shown: the hex view is limited to ")
+          .append(limit)
+          .append(" bytes. The record is stored complete in the journal.\n");
+    }
+    return out.toString();
+  }
+
+  private static String cap(String text, List<String> notices, String what) {
+    if (text.length() <= MAX_TEXT_CHARS) {
+      return text;
+    }
+    notices.add(
+        "The "
+            + what
+            + " is "
+            + text.length()
+            + " characters; only the first "
+            + MAX_TEXT_CHARS
+            + " are shown.");
+    return text.substring(0, MAX_TEXT_CHARS);
+  }
 }

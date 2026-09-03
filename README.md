@@ -25,7 +25,7 @@
 > **Starlark CPU profiling identifies expensive rule and macro code.** The
 > Performance and Full presets retain Bazel's gzip pprof output, normalize its
 > samples without materializing the whole profile, and expose summary, hot
-> function/file, caller/callee, and bounded flame views. The same tables and
+> function/file, bounded directed call-graph, caller/callee, and flame views. The same tables and
 > resolved views are available to the Query page. Sampled CPU remains distinct
 > from elapsed time and from what Bazel waited for. See
 > [docs/starlark-profiling.md](docs/starlark-profiling.md).
@@ -99,6 +99,18 @@ toolchain ([ADR-008](docs/adr/008-java-25.md) via
 ```
 bazel test //...
 ```
+
+Java builds run the standard Error Prone checks and verify Google Java Format.
+Apply formatting, or check it without changing files, with:
+
+```
+bazel run //tools:format_java
+bazel run //tools:format_java -- --check
+```
+
+Java code uses explicit imports: wildcard imports and unnecessary fully
+qualified symbols are build errors. See
+[ADR-013](docs/adr/013-java-code-quality.md).
 
 UI tests also have package suites for quick iteration, while
 `//ui-swing:tests` remains the complete UI gate. For example:

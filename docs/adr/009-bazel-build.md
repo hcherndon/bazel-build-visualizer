@@ -1,7 +1,7 @@
 # ADR-009: Bazel as the build system
 
-Status: **accepted** (2026-08-24; amended 2026-08-25 and 2026-08-28; drafted
-2026-08-22 as proposed).
+Status: **accepted** (2026-08-24; amended 2026-08-25, 2026-08-28 and
+2026-09-03; drafted 2026-08-22 as proposed).
 Supersedes [ADR-003](003-gradle.md), which is marked accordingly. Accepted
 with the migration itself: the version pins were re-verified against the
 Bazel Central Registry on the acceptance date and all resolved unchanged,
@@ -11,6 +11,10 @@ artifacts, a new module edge, jpackage/notarize tasks now in scope, the
 revision notes). Scope, mechanics, sequencing, and the parity gate live in
 [docs/bazel-migration-plan.md](../bazel-migration-plan.md); this ADR is the
 decision and its costs.
+
+[ADR-013](013-java-code-quality.md) supersedes the migration-only decision to
+disable Error Prone and adds formatting and import policy after build parity
+was established.
 
 ## Context
 
