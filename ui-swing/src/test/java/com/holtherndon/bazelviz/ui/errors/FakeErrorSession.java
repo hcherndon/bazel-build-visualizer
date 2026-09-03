@@ -344,7 +344,17 @@ final class FakeErrorSession implements SessionSource {
     }
 
     @Override
+    public List<TargetQueries.PackageSummary> packages(String labelText) {
+      return List.of();
+    }
+
+    @Override
     public List<TargetRow> targetsInPackage(String packagePath) {
+      return List.of();
+    }
+
+    @Override
+    public List<TargetRow> targetsInPackage(String packagePath, String labelText) {
       return List.of();
     }
 
@@ -359,7 +369,17 @@ final class FakeErrorSession implements SessionSource {
     }
 
     @Override
+    public long topLevelTargetLabelCount(String labelText) {
+      return 0;
+    }
+
+    @Override
     public List<String> firstTopLevelTargetLabels(int limit) {
+      return List.of();
+    }
+
+    @Override
+    public List<String> firstTopLevelTargetLabels(String labelText, int limit) {
       return List.of();
     }
 
@@ -369,7 +389,17 @@ final class FakeErrorSession implements SessionSource {
     }
 
     @Override
+    public List<String> topLevelTargetLabelsAfter(String labelText, String label, int limit) {
+      return List.of();
+    }
+
+    @Override
     public long targetLabelCount() {
+      return 0;
+    }
+
+    @Override
+    public long targetLabelCount(String labelText) {
       return 0;
     }
 
@@ -379,7 +409,18 @@ final class FakeErrorSession implements SessionSource {
     }
 
     @Override
+    public List<TargetQueries.LabelSummary> firstTargetLabels(String labelText, int limit) {
+      return List.of();
+    }
+
+    @Override
     public List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit) {
+      return List.of();
+    }
+
+    @Override
+    public List<TargetQueries.LabelSummary> targetLabelsAfter(
+        String labelText, String label, int limit) {
       return List.of();
     }
 

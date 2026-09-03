@@ -2138,13 +2138,13 @@ Avoid:
 > **As built (2026-08-25):** the launcher moved from a frame-wide bar into the
 > top of that merged card, followed by capture status and console output. The
 > stable `NavEntry.BUILD`/`build` identifiers remain, but the visible entry is
-> **Console** and comes first. Its labelled four-row form persists workspace,
+> **Console** and comes first. Its labelled compact form persists workspace,
 > Bazel executable, capture detail, the editable command and 50-entry unique
-> command history under `settings/`, with disk I/O off the EDT. The four input
-> rows no longer grow three extra explanation rows: each capture choice has a
-> concise inline summary that still says graph queries run after the build,
-> while its complete scope and cost explanation live on the choice and summary
-> tooltips. Command history and completion help likewise live on the command
+> command history under `settings/`, with disk I/O off the EDT. Capture choices
+> do not add explanation rows or a selected-preset summary: hovering each
+> dropdown option immediately shows its complete scope and cost explanation,
+> and the selected combo retains that explanation as its accessible
+> description. Command history and completion help likewise live on the command
 > field. Live omits the execution log/profile, Performance adds them, and Full
 > currently adds no source beyond Performance. The capture state is one framed
 > inline strip; progress and stop controls appear only while a build is active,
@@ -2209,6 +2209,25 @@ Avoid:
 > Terminal or reruns a command. A process-global canonical-repository lease
 > permits captures for distinct repositories in parallel and refuses two
 > captures for the same repository with the owning window identified.
+>
+> **As built (2026-09-03; ADR-012 amendment):** discovered Workspace profiles
+> remain ephemeral, but their Bazel executable override and bounded command
+> history are stored separately under a hash of the deterministic discovery ID.
+> The sidecar contains no connection, repository, profile, label, draft,
+> preset, or presentation data; it is reachable only if a later discovery
+> invocation emits the same Workspace.
+>
+> **As built (2026-09-03):** Console exposes the selected Workspace's editable
+> **Bazel Executable**, defaulting to `bazel` and accepting a command name or
+> path. It is left-aligned before **Capture detail** on one inline row; the
+> executable file-selector button and separate capture-summary text are absent.
+> Each capture option supplies its complete capture/cost explanation in an
+> immediate hover tooltip, and the selected combo preserves that explanation as
+> its accessible description. A saved Workspace writes the executable to its
+> profile; a discovered Workspace writes only the override and bounded history
+> to the sidecar above. Ctrl+Tab advances through the current window's visible
+> left-navigation pages and Ctrl+Shift+Tab moves back. Both wrap and remain
+> window-scoped even when a field or Terminal owns focus.
 
 ### Right inspector
 
@@ -2532,6 +2551,16 @@ Render full protobuf text only for the selected event.
 
 > Shipped as the body of the **Build** pane, under the capture-status header;
 > see the note under 17.1's left navigation.
+>
+> **As built (2026-09-03):** the transcript interprets ANSI SGR attributes
+> across capture chunks: standard, bright, 256-colour and true-colour
+> foreground/background values, emphasis, inverse video and resets. Terminal
+> title/control strings and unsupported cursor commands never appear as text;
+> cursor-up/previous-line plus erase-line rewrites Bazel's existing progress
+> block instead of appending another copy.
+> Long lines wrap to the viewport, while selection, copy, bounded retention,
+> incremental updates and explicit follow mode remain available. The separate
+> Terminal page continues to own interactive cursor-addressed emulation.
 
 - Separate stdout and stderr channels
 - Combined timestamped view

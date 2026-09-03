@@ -1,0 +1,89 @@
+load("@rules_java//java:defs.bzl", "java_binary", "java_library")
+load("//tools:java_test_settings.bzl", "NATIVE_ACCESS_FLAG")
+
+java_library(
+    name = "spike",
+    srcs = [
+        "BesThroughputSpike.java",
+        "EntityScaleSpike.java",
+        "GraphSpike.java",
+        "SqlPagingSpike.java",
+        "TableSpike.java",
+        "TimelineSpike.java",
+    ],
+    deps = [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/normalize:normalize",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/entity:entity",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph:graph",
+        "//proto:proto",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal:journal",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities:entities",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/synthetic:synthetic",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table:table",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/timeline:timeline",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:io_grpc_grpc_api",
+        "@maven//:io_grpc_grpc_netty_shaded",
+        "@maven//:io_grpc_grpc_stub",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+java_binary(
+    name = "table_spike",
+    jvm_flags = [NATIVE_ACCESS_FLAG, "-Xmx4g"],
+    main_class = "com.holtherndon.bazelviz.benchmarks.spike.TableSpike",
+    resources = ["//benchmarks/src/main/resources:resources"],
+    runtime_deps = [":spike", "@maven//:ch_qos_logback_logback_classic"],
+    visibility = ["//visibility:public"],
+)
+
+java_binary(
+    name = "timeline_spike",
+    jvm_flags = [NATIVE_ACCESS_FLAG, "-Xmx4g"],
+    main_class = "com.holtherndon.bazelviz.benchmarks.spike.TimelineSpike",
+    resources = ["//benchmarks/src/main/resources:resources"],
+    runtime_deps = [":spike", "@maven//:ch_qos_logback_logback_classic"],
+    visibility = ["//visibility:public"],
+)
+
+java_binary(
+    name = "graph_spike",
+    jvm_flags = [NATIVE_ACCESS_FLAG, "-Xmx4g"],
+    main_class = "com.holtherndon.bazelviz.benchmarks.spike.GraphSpike",
+    resources = ["//benchmarks/src/main/resources:resources"],
+    runtime_deps = [":spike", "@maven//:ch_qos_logback_logback_classic"],
+    visibility = ["//visibility:public"],
+)
+
+java_binary(
+    name = "sql_paging_spike",
+    jvm_flags = [NATIVE_ACCESS_FLAG, "-Xmx4g"],
+    main_class = "com.holtherndon.bazelviz.benchmarks.spike.SqlPagingSpike",
+    resources = ["//benchmarks/src/main/resources:resources"],
+    runtime_deps = [":spike", "@maven//:ch_qos_logback_logback_classic"],
+    visibility = ["//visibility:public"],
+)
+
+java_binary(
+    name = "bes_throughput_spike",
+    jvm_flags = [NATIVE_ACCESS_FLAG, "-Xmx4g"],
+    main_class = "com.holtherndon.bazelviz.benchmarks.spike.BesThroughputSpike",
+    resources = ["//benchmarks/src/main/resources:resources"],
+    runtime_deps = [":spike", "@maven//:ch_qos_logback_logback_classic"],
+    visibility = ["//visibility:public"],
+)
+
+java_binary(
+    name = "entity_scale_spike",
+    jvm_flags = [NATIVE_ACCESS_FLAG, "-Xmx4g"],
+    main_class = "com.holtherndon.bazelviz.benchmarks.spike.EntityScaleSpike",
+    resources = ["//benchmarks/src/main/resources:resources"],
+    runtime_deps = [":spike", "@maven//:ch_qos_logback_logback_classic"],
+    visibility = ["//visibility:public"],
+)

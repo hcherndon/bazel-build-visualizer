@@ -1,0 +1,12 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "analysis",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph",
+    ],
+    visibility = ["//visibility:public"],
+)

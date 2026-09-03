@@ -1,0 +1,11 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "portable",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json",
+    ],
+    visibility = ["//visibility:public"],
+)

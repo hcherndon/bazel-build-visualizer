@@ -1,0 +1,55 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/graph",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/starlark",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "StarlarkRowSourceTest",
+    test_class = "com.holtherndon.bazelviz.ui.starlark.StarlarkRowSourceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "StarlarkCallGraphTest",
+    test_class = "com.holtherndon.bazelviz.ui.starlark.StarlarkCallGraphTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "StarlarkFlameGraphTest",
+    test_class = "com.holtherndon.bazelviz.ui.starlark.StarlarkFlameGraphTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "StarlarkProfileViewTest",
+    test_class = "com.holtherndon.bazelviz.ui.starlark.StarlarkProfileViewTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":StarlarkCallGraphTest",
+        ":StarlarkFlameGraphTest",
+        ":StarlarkProfileViewTest",
+        ":StarlarkRowSourceTest",
+    ],
+)

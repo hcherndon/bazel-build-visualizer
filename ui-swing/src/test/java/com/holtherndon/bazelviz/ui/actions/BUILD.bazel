@@ -1,0 +1,64 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/domain",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/entity",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/actions",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "ActionInspectionTest",
+    test_class = "com.holtherndon.bazelviz.ui.actions.ActionInspectionTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ActionsViewEntityActionsTest",
+    test_class = "com.holtherndon.bazelviz.ui.actions.ActionsViewEntityActionsTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ActionsViewHeaderSortTest",
+    test_class = "com.holtherndon.bazelviz.ui.actions.ActionsViewHeaderSortTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ActionsViewWiringTest",
+    test_class = "com.holtherndon.bazelviz.ui.actions.ActionsViewWiringTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ActionInspectionTest",
+        ":ActionsViewEntityActionsTest",
+        ":ActionsViewHeaderSortTest",
+        ":ActionsViewWiringTest",
+    ],
+)

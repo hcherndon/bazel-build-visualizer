@@ -1,0 +1,56 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/metrics",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "FindingsViewTest",
+    test_class = "com.holtherndon.bazelviz.ui.metrics.FindingsViewTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "MetricsServiceTest",
+    test_class = "com.holtherndon.bazelviz.ui.metrics.MetricsServiceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "Phase8ExitCriteriaTest",
+    test_class = "com.holtherndon.bazelviz.ui.metrics.Phase8ExitCriteriaTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":FindingsViewTest",
+        ":MetricsServiceTest",
+        ":Phase8ExitCriteriaTest",
+    ],
+)

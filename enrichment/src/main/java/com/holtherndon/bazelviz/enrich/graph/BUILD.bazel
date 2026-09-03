@@ -1,0 +1,24 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "graph",
+    srcs = [
+        "ActionGraphImporter.java",
+        "ActionGraphReader.java",
+        "ActionGraphVisitor.java",
+        "AuxiliaryQueryRunner.java",
+        "BepTargetQueryFile.java",
+        "ConfiguredTargetImporter.java",
+        "StagingVisitor.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph:graph",
+        "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/execlog:execlog",
+        "//proto:proto",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime:runtime",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph:graph",
+        "@maven//:com_google_protobuf_protobuf_java",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,50 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "EntityFormatTest",
+    test_class = "com.holtherndon.bazelviz.ui.inspect.EntityFormatTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "InspectorHeaderTest",
+    test_class = "com.holtherndon.bazelviz.ui.inspect.InspectorHeaderTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "InspectorPanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.inspect.InspectorPanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":EntityFormatTest",
+        ":InspectorHeaderTest",
+        ":InspectorPanelTest",
+    ],
+)

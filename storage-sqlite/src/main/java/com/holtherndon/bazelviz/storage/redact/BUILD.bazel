@@ -1,0 +1,12 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "redact",
+    srcs = [
+        "SessionRedaction.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/redact:redact",
+    ],
+    visibility = ["//visibility:public"],
+)

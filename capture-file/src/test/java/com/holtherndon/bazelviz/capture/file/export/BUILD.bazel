@@ -1,0 +1,39 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "BepStreamExportTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/export:export",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//proto:proto",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal:journal",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep:bep",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:com_google_protobuf_protobuf_java_util",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BepStreamExportTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.export.BepStreamExportTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":BepStreamExportTest",
+    ],
+    visibility = ["//visibility:public"],
+)

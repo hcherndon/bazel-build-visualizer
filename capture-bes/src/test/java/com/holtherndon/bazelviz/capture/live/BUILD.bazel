@@ -1,0 +1,214 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "REAL_BAZEL_ENV", "REAL_BAZEL_TAGS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "CaptureSummaryTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CaptureSummaryTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.live.CaptureSummaryTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CaptureRequestTest",
+    srcs = ["CaptureRequestTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/ssh:ssh",
+    ],
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.live.CaptureRequestTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "PreflightTest",
+    srcs = ["PreflightTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps:caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command:command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec:exec",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/workspace:workspace",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json:json",
+    ],
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.live.PreflightTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CaptureCoordinatorRemoteTransferTest",
+    srcs = ["CaptureCoordinatorRemoteTransferTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/graph:graph",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps:caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command:command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files:files",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.live.CaptureCoordinatorRemoteTransferTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BazelVersionMatrixTest",
+    srcs = ["BazelVersionMatrixTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session:session",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps:caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
+        ":tests_lib",
+    ],
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "large",
+    tags = [
+        "bazel-sweep",
+        "no-sandbox",
+        "external",
+        "manual",
+    ],
+    test_class = "com.holtherndon.bazelviz.capture.live.BazelVersionMatrixTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "RealBazelCaptureTest",
+    srcs = ["RealBazelCaptureTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session:session",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps:caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc:proc",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
+        ":tests_lib",
+    ],
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "large",
+    tags = REAL_BAZEL_TAGS,
+    test_class = "com.holtherndon.bazelviz.capture.live.RealBazelCaptureTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "RealBazelEnrichmentTest",
+    srcs = ["RealBazelEnrichmentTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps:caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
+        ":tests_lib",
+    ],
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "large",
+    tags = REAL_BAZEL_TAGS,
+    test_class = "com.holtherndon.bazelviz.capture.live.RealBazelEnrichmentTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "RealBazelGraphTest",
+    srcs = ["RealBazelGraphTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph:graph",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps:caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph:graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
+        ":tests_lib",
+    ],
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "large",
+    tags = REAL_BAZEL_TAGS,
+    test_class = "com.holtherndon.bazelviz.capture.live.RealBazelGraphTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "RealBazelNormalizationTest",
+    srcs = ["RealBazelNormalizationTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps:caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
+        ":tests_lib",
+    ],
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "large",
+    # Its live-reader case deliberately races SQLite initialization against
+    # the capture writer. Competing child-Bazel tests caused a reproducible
+    # SQLITE_BUSY failure; keep this one isolated while retaining parallelism
+    # for the other real-Bazel targets.
+    tags = REAL_BAZEL_TAGS + ["exclusive"],
+    test_class = "com.holtherndon.bazelviz.capture.live.RealBazelNormalizationTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":CaptureCoordinatorRemoteTransferTest",
+        ":CaptureRequestTest",
+        ":CaptureSummaryTest",
+        ":PreflightTest",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,33 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+CAPTURE_LEASE_SRCS = [
+    "CaptureLeaseKey.java",
+    "CaptureLeaseOwner.java",
+    "CaptureLeaseRegistry.java",
+]
+
+java_library(
+    name = "capture_leases",
+    srcs = CAPTURE_LEASE_SRCS,
+)
+
+java_library(
+    name = "capture",
+    srcs = glob(
+        ["*.java"],
+        exclude = CAPTURE_LEASE_SRCS,
+    ),
+    deps = [
+        ":capture_leases",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/ssh",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_fifesoft_autocomplete",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

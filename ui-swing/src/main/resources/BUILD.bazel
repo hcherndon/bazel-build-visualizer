@@ -1,0 +1,5 @@
+filegroup(
+    name = "resources",
+    srcs = glob(["com/holtherndon/bazelviz/ui/repository/icons/*.svg"]),
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,25 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "json",
+    srcs = [
+        "JsonBepListener.java",
+        "JsonBepParseResult.java",
+        "JsonBepParser.java",
+        "JsonBepParserOptions.java",
+        "JsonBepRecord.java",
+        "JsonBuildEventDecoder.java",
+        "JsonDecodeResult.java",
+        "JsonParseDiagnostic.java",
+        "JsonRecordScanner.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
+        "//proto:proto",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:com_google_protobuf_protobuf_java_util",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,33 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "SessionCatalogTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/catalog:catalog",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SessionCatalogTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.catalog.SessionCatalogTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":SessionCatalogTest",
+    ],
+    visibility = ["//visibility:public"],
+)

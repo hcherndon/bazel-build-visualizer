@@ -26,7 +26,7 @@ import org.slf4j.LoggerFactory;
  * unreadable, or malformed preference file is only a lost convenience: loading returns defaults and
  * never prevents a build from being launched.
  */
-public final class LauncherStateStore {
+public final class LauncherStateStore implements LauncherSettingsStore {
 
   private static final Logger log = LoggerFactory.getLogger(LauncherStateStore.class);
   private static final String FORMAT = "3";

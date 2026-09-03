@@ -1,0 +1,41 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + ["//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/synthetic"],
+)
+
+java_junit5_test(
+    name = "SyntheticActionGeneratorTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.synthetic.SyntheticActionGeneratorTest",
+)
+
+java_junit5_test(
+    name = "SyntheticEdgesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.synthetic.SyntheticEdgesTest",
+)
+
+java_junit5_test(
+    name = "SyntheticRawEventsTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.synthetic.SyntheticRawEventsTest",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":SyntheticActionGeneratorTest",
+        ":SyntheticEdgesTest",
+        ":SyntheticRawEventsTest",
+    ],
+    visibility = ["//visibility:public"],
+)

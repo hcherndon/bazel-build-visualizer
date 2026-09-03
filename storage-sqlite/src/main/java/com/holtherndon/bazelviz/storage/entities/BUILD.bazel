@@ -1,0 +1,32 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "entities",
+    srcs = [
+        "ActionFilter.java",
+        "ActionQueries.java",
+        "ActionRow.java",
+        "ActionSort.java",
+        "ConfigurationQueries.java",
+        "EntityWriter.java",
+        "ErrorQueries.java",
+        "ErrorRow.java",
+        "Keyset.java",
+        "OverviewQueries.java",
+        "OverviewSnapshot.java",
+        "TargetQueries.java",
+        "TargetRow.java",
+        "TestAttemptRow.java",
+        "TestQueries.java",
+        "TestRow.java",
+        "package-info.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/domain:domain",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/entity:entity",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure:measure",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+    ],
+    visibility = ["//visibility:public"],
+)

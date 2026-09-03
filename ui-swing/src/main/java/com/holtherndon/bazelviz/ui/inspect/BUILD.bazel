@@ -1,0 +1,14 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "inspect",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+    ],
+)

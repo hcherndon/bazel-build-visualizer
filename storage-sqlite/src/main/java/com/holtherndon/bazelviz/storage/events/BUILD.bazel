@@ -1,0 +1,31 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "events",
+    srcs = [
+        "AnnouncedChild.java",
+        "AnnouncedMissingEntry.java",
+        "DiagnosticCodes.java",
+        "DiagnosticEntry.java",
+        "DiagnosticSeverity.java",
+        "DiagnosticWriter.java",
+        "EventDetail.java",
+        "EventIdentity.java",
+        "EventPage.java",
+        "EventQueries.java",
+        "EventRecord.java",
+        "EventSummary.java",
+        "EventWriter.java",
+        "ImportDiagnostic.java",
+        "NormalizedEvent.java",
+        "RawLocation.java",
+        "StreamRegistry.java",
+        "StringDictionary.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    visibility = ["//visibility:public"],
+)

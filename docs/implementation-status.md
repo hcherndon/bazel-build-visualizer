@@ -2177,13 +2177,17 @@ it is a different tab and was not reported.
   longer consumes `MainWindow`'s frame-wide `BorderLayout.NORTH`; the Console
   card reads top-to-bottom as `LauncherPanel`, live `CapturePanel`, then the
   growing `ConsoleView`. The compact launcher has explicit accessible labels
-  for Workspace, Bazel executable, Capture detail and Bazel command (without
-  bazel), plus named **Choose workspace…** and **Choose Bazel…** buttons. Its
+  for Workspace, **Bazel Executable**, Capture detail and Bazel command, plus a
+  named **Choose workspace…** action. The form labels share a left edge while
+  the selected Workspace, Bazel Executable, and Bazel command use the same
+  aligned input column. Capture detail follows Bazel Executable on that
+  left-aligned inline row. Its
   combo offers exactly Live Essentials, Performance Diagnostics (recommended
-  and selected by default), and Full Graph Diagnostics. Its concise inline
-  summary states the selected scope and still says graph queries run after the
-  build. The full scope and cost explanation now live in tooltips on the choice
-  and summary, removing three explanation-only rows without hiding that
+  and selected by default), and Full Graph Diagnostics. There is no separate
+  selected-preset summary. Each option's full scope and cost explanation appears
+  immediately when that option is hovered, and the selected combo exposes the
+  same text as its accessible description, removing explanation-only rows
+  without hiding that
   `CaptureCoordinator` runs `aquery`, `cquery`, and graph indexing after every
   live capture, with the same disk/CPU/indexing cost regardless of preset.
   `CapturePreset.CUSTOM` stays compatible with
@@ -2219,10 +2223,17 @@ it is a different tab and was not reported.
   suppresses callbacks that were queued before disposal, prevents new ones,
   and releases a pending preflight/plan on the capture worker; a running build
   is cancelled there and still finalizes its journal. History is
-  exactly 50 unique commands, newest first; a duplicate is promoted, Up/Down
-  recalls while leaving the field editable, and the bound plus shortcuts are
-  on the field's tooltip. Ctrl+Space completion reuses the existing autocomplete library
-  over a fixed, test-pinned set of common Bazel subcommands. Focused headless
+  exactly 50 unique commands per Workspace, newest first; a duplicate is
+  promoted. Focusing or clicking the command field opens that history directly
+  beneath it with five visible rows and scrolling for the remainder. The field
+  retains focus and remains editable. Up/Down select without replacing the
+  draft, Tab fills the selected command, Enter fills and immediately runs it,
+  and ordinary typing clears the selection. The command field owns physical
+  Up/Down handling before normal text actions, while it yields all navigation
+  to the completion popup whenever that popup is visible. Long commands are
+  visually shortened but remain intact and available in row tooltips.
+  Ctrl+Space completion reuses the existing autocomplete library over a fixed,
+  test-pinned set of common Bazel subcommands. Focused headless
   coverage is in `LauncherPanelTest`, `LauncherHistoryTest`,
   `LauncherStateStoreTest`, `LaunchControllerTest`, and the updated
   `NavEntryTest`; no dependency or build-file change was needed.
@@ -2230,7 +2241,19 @@ it is a different tab and was not reported.
   Capture status is now one titled inline strip: phase, all three pressure
   counters and current context remain visible, full clipped context stays in a
   tooltip, and activity plus stop controls appear only during an active build.
-  The growing console is framed separately as **Build output**.
+  The growing console is framed separately as **Build output**. Its selectable
+  transcript now wraps long lines and renders ANSI standard, bright,
+  256-colour and true-colour foreground/background values plus bold, faint,
+  italic, underline, inverse, conceal, strike-through and their resets. Parser
+  state crosses process-pump chunks, OSC/DCS-style control strings stay out of
+  visible text, and unsupported controls leave the preserved raw logs
+  untouched. ANSI cursor-up/previous-line and erase-line commands replace
+  Bazel's bounded multi-line progress tail. The styled document records line
+  offsets, truncates only that changed suffix and leaves the retained prefix
+  and any selection in it intact. Ordinary committed lines keep the existing
+  append-only path; carriage return still replaces only the active line. The
+  Console remains a non-interactive transcript with explicit follow mode,
+  rather than opening another PTY-backed terminal session.
 
 - **The Graph card now opens as an explained dependency hierarchy**
   (2026-08-25). Its source/search strip and two wrapped control groups replace
@@ -2349,7 +2372,15 @@ it is a different tab and was not reported.
   **Open Build File…** action. A separate **All Targets** card sits directly
   beneath it and is dormant until visited. It reads the imported cquery
   `configured_target_nodes`, not the top-level BEP `targets` table, so
-  transitive analysed labels actually appear. It keyset-pages distinct,
+  transitive analysed labels actually appear. Both cards now provide a 250 ms
+  live full-label contains filter backed by SQLite, including both package and
+  flat modes on Top Level Targets. Exact filtered counts and keyset pages cover
+  unloaded rows; literal `%` and `_` do not become SQL wildcards. Filter changes
+  cancel older queued scans and invalidate any running stale read without giving
+  up lazy package or configuration expansion. Only the newest generation may
+  update the UI, and target navigation clears a filter that would hide its
+  result.
+  All Targets keyset-pages distinct,
   fully-qualified `//package:target` labels in windows of 200 while stating the
   exact loaded and total label counts plus cquery state and configuration-match
   status. A label with multiple analysed configurations expands to full
@@ -2538,8 +2569,8 @@ it is a different tab and was not reported.
   recent selection, reconnect and close. Choosing a local profile validates and
   installs direct command/filesystem services. Choosing an SSH profile is the
   explicit action that opens one private control connection before the shell is
-  shown. The Console launcher then displays the selected workspace instead of
-  asking for the machine, directory and executable again.
+  shown. The Console launcher displays the selected machine and directory
+  while keeping that Workspace's **Bazel Executable** editable.
 
   `WorkspaceStore` persists at most 100 entries in
   `settings/workspaces.properties`, through a bounded sibling temporary file
@@ -2670,13 +2701,20 @@ it is a different tab and was not reported.
   forgotten.
 
   Saved-profile launcher history and table/query-result state are isolated
-  below a SHA-256-ID directory in `settings/workspace-windows`; discovered
-  windows create no private settings. Startup moves the bounded history from
+  below a SHA-256-ID directory in `settings/workspace-windows`; their selected
+  Bazel executable remains in `WorkspaceStore`. Discovered profiles persist
+  only their Bazel executable override and bounded command history below the
+  separate `settings/discovered-workspace-history` tree, keyed by the
+  deterministic profile ID. The sidecar stores no working directory, host,
+  profile label, connection details, command draft, preset, or presentation
+  state, and cannot make an absent discovered profile available. Startup moves
+  the bounded history from
   the pre-Workspace `launcher.properties` file into saved profile settings that
   safely match its old execution context; a durable marker makes that merge
   one-time, so commands which later age out are not reintroduced. Profile
-  removal deletes private state only after the profile-store replacement
-  succeeds, while startup orphan cleanup is skipped for an unusable store.
+  removal deletes private saved-profile state only after the profile-store
+  replacement succeeds, while startup orphan cleanup is skipped for an unusable
+  store.
   Query-library and catalog access is
   serialized across windows, and the manager performs the one startup catalog
   reconciliation. `SessionMutationCoordinator` adds process-level active
@@ -2797,10 +2835,10 @@ it is a different tab and was not reported.
   filtered-out rows plus every action sort in both directions. No dependency,
   schema, I/O contract, or named limit changed.
 
-- **Critical Path is now a first-class analysis page** (2026-09-02). It sits
+- **Critical Path is now a first-class analysis page** (updated 2026-09-03). It sits
   directly after Timeline and keeps Bazel's trace-profile path separate from
   the visualizer-computed dependency lower bound in both its summary and its
-  two ordered tables. The comparison cards show both totals, their signed
+  ordered tables. The comparison cards show both totals, their signed
   difference only when every graph node was timed, and observed idle time.
   A partial dependency path withholds the difference because missing duration
   cannot be separated from scheduler delay. Overview's two critical-path cards
@@ -2822,6 +2860,14 @@ it is a different tab and was not reported.
   distinction.
   Identified rows use the common context menu, double-click reveals the exact
   executed action, and a fixed command opens the chain in Graph.
+
+  The summary now reflows inside a vertical viewport and keeps detailed timing,
+  trust, coverage, and multiline enrichment output behind **Show details**.
+  Concise cards therefore remain useful at the minimum window size. When no
+  dependency path can be computed, a separate conditional **Observed timing
+  fallback** tab shows the longest positive BEP action span gathered during the
+  existing streaming action scan. It states its exact timing coverage and never
+  supplies a predecessor, dependency-path total, slack, or path comparison.
 
   Both path tables page 200 rows at a time and retain eight recent pages;
   Bazel rows remain in SQLite while dependency graph identities are resolved
@@ -2860,8 +2906,16 @@ it is a different tab and was not reported.
   labels are trusted, while requested-pattern fallback, truncated-BEP labels,
   preparation failures, and migrated rows remain explicitly unverified.
   Action-graph correlation remains a separate ratio because cached actions do
-  not execute. No dependency or fixed architectural decision changed; the two
-  new paging bounds are recorded in `docs/limits.md`.
+  not execute. Auxiliary query files now include only top-level labels with a
+  BUILT or FAILED configured-target completion. A merely configured label can
+  be an incompatible target that a wildcard build correctly skipped; replaying
+  it explicitly made aquery fail. A complete successful invocation can trust
+  this completed-label subset as exact. A failed or unknown invocation that
+  omitted configured or aborted labels remains `UNKNOWN`, rather than claiming
+  the surviving subset is complete. Focused fixtures cover both outcomes while
+  preserving the completed label and excluding its configured-only sibling. No
+  dependency or fixed architectural decision changed; the two new paging bounds
+  are recorded in `docs/limits.md`.
 
 - **Java formatting, Error Prone and explicit imports are enforced by Bazel**
   (2026-09-03). Google Java Format 1.36.1 is a SHA-256-pinned, build-only tool.
@@ -2921,6 +2975,12 @@ it is a different tab and was not reported.
   options; unknown measurements use a stated neutral size. Compact wrapped
   ranks keep default-fit labels legible, while node dragging and an explicit
   reset let users untangle individual relationships without recomputing data.
+  Node hover details appear immediately in both graph views and contain only
+  the function, self CPU, and cumulative CPU; source path and line remain in
+  selection and source actions. Summary cards track the viewport width, reflow,
+  and scroll
+  vertically on small screens. Successful profiles omit the redundant import
+  status, while unavailable profiles show one explicit status card.
   Its adjustable bounded projection reports complete function
   totals, exact visible-endpoint arrow totals, and both kinds of omission.
   Heavy tabs are lazy, tables page 200 rows and cache eight pages, and Flame
@@ -2945,3 +3005,30 @@ it is a different tab and was not reported.
   are not silently enabled. This extends ADR-004/005/007 and the existing
   UI-reader boundary; no fixed architectural decision changed, so no ADR was
   added.
+
+- **Bazel selection and page cycling are Workspace-native controls**
+  (updated 2026-09-03). Console exposes an editable **Bazel Executable** for
+  its selected Workspace, defaulting to `bazel` and accepting a command name or
+  path. It is left-aligned immediately before **Capture detail** on one compact
+  row, without an executable file-selector button. The capture combo has no
+  separate selected-preset summary: each option shows its complete capture and
+  cost explanation in an immediate hover tooltip, while the selected option
+  keeps that explanation as the combo's accessible description.
+
+  A typed value updates the active Workspace without reconnecting
+  its execution. Saved profiles persist it through `WorkspaceStore`.
+  Discovered profiles remain ephemeral and persist only this override plus the
+  bounded, unique command history in their deterministic sidecar. The sidecar
+  format migrates history-only version 1 files by retaining their commands and
+  defaulting the executable to `bazel`; it still contains no connection,
+  working directory, profile label, command draft, preset, or presentation
+  state.
+
+  Ctrl+Tab now selects the next visible left-navigation page and
+  Ctrl+Shift+Tab selects the previous one, wrapping in both directions. A
+  window-owned dispatcher handles the exact chord before focused fields or
+  JediTerm, scopes it to the originating root pane, and unregisters at window
+  close. Focused launcher, history-store, Workspace-store, and navigation-key
+  tests cover persistence, migration, layout, capture explanations, wrap,
+  modifier rejection, Terminal-like focus, and multi-window isolation. No
+  dependency, schema, or new named limit was added.

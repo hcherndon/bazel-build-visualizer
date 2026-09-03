@@ -1,0 +1,59 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + ["//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table"],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "ColumnStateStoreTest",
+    test_class = "com.holtherndon.bazelviz.ui.table.ColumnStateStoreTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "PageCacheTest",
+    test_class = "com.holtherndon.bazelviz.ui.table.PageCacheTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "PagedTableModelFailureTest",
+    test_class = "com.holtherndon.bazelviz.ui.table.PagedTableModelFailureTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "PagedTableModelTest",
+    test_class = "com.holtherndon.bazelviz.ui.table.PagedTableModelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TableHeaderInteractionsTest",
+    test_class = "com.holtherndon.bazelviz.ui.table.TableHeaderInteractionsTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ColumnStateStoreTest",
+        ":PageCacheTest",
+        ":PagedTableModelFailureTest",
+        ":PagedTableModelTest",
+        ":TableHeaderInteractionsTest",
+    ],
+)

@@ -1,0 +1,43 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "REAL_BAZEL_ENV", "REAL_BAZEL_TAGS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel",
+    ],
+)
+
+java_junit5_test(
+    name = "BazelCapabilityDetectorExecutorTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.runner.caps.BazelCapabilityDetectorExecutorTest",
+)
+
+java_junit5_test(
+    name = "RealBazelCapabilityTest",
+    size = "large",
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    tags = REAL_BAZEL_TAGS,
+    test_class = "com.holtherndon.bazelviz.runner.caps.RealBazelCapabilityTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":BazelCapabilityDetectorExecutorTest",
+        ":RealBazelCapabilityTest",
+    ],
+    visibility = ["//visibility:public"],
+)

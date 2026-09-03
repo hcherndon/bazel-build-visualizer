@@ -1,0 +1,20 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "normalize",
+    srcs = [
+        "EventNormalizer.java",
+        "package-info.java",
+    ],
+    deps = [
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec:bepcodec",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/json:json",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//proto:proto",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal:journal",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "@maven//:com_google_protobuf_protobuf_java",
+    ],
+    visibility = ["//visibility:public"],
+)

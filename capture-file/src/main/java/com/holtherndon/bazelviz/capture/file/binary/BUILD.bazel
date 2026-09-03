@@ -1,0 +1,19 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "binary",
+    srcs = [
+        "BinaryBepEventSink.java",
+        "BinaryBepFrame.java",
+        "BinaryBepParseOutcome.java",
+        "BinaryBepParseResult.java",
+        "BinaryBepParser.java",
+        "BinaryBepTailReader.java",
+        "SourceReplacedException.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
+    ],
+    visibility = ["//visibility:public"],
+)

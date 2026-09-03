@@ -1,0 +1,98 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "ActionQueriesTest.java",
+        "ConfigurationQueriesTest.java",
+        "EntityWriterTest.java",
+        "ErrorQueriesTest.java",
+        "TargetQueriesTest.java",
+        "TestQueriesTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/domain:domain",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/entity:entity",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities:entities",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ActionQueriesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.entities.ActionQueriesTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ConfigurationQueriesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.entities.ConfigurationQueriesTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "EntityWriterTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.entities.EntityWriterTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ErrorQueriesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.entities.ErrorQueriesTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "TargetQueriesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.entities.TargetQueriesTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "TestQueriesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.entities.TestQueriesTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ActionQueriesTest",
+        ":ConfigurationQueriesTest",
+        ":EntityWriterTest",
+        ":ErrorQueriesTest",
+        ":TargetQueriesTest",
+        ":TestQueriesTest",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,20 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "query",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/query",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/lifecycle",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_fifesoft_autocomplete",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+        "@maven//:com_github_vertical_blank_sql_formatter",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

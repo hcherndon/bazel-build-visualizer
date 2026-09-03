@@ -1,0 +1,64 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "CollectingListener.java",
+        "JsonBepParserTest.java",
+        "JsonBuildEventDecoderTest.java",
+        "JsonFixtures.java",
+        "JsonRecordScannerTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/json:json",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
+        "//proto:proto",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:com_google_protobuf_protobuf_java_util",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "JsonBepParserTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.json.JsonBepParserTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "JsonBuildEventDecoderTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.json.JsonBuildEventDecoderTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "JsonRecordScannerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.json.JsonRecordScannerTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":JsonBepParserTest",
+        ":JsonBuildEventDecoderTest",
+        ":JsonRecordScannerTest",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,13 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "fs",
+    srcs = [
+        "FilesystemStatEnricher.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich:enrich",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich:enrich",
+    ],
+    visibility = ["//visibility:public"],
+)

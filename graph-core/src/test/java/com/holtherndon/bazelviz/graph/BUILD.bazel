@@ -1,0 +1,57 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + ["//graph-core/src/main/java/com/holtherndon/bazelviz/graph"],
+)
+
+java_junit5_test(
+    name = "BfsTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.graph.BfsTest",
+)
+
+java_junit5_test(
+    name = "CsrBuilderTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.graph.CsrBuilderTest",
+)
+
+java_junit5_test(
+    name = "CsrFileTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.graph.CsrFileTest",
+)
+
+java_junit5_test(
+    name = "CsrGraphTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.graph.CsrGraphTest",
+)
+
+java_junit5_test(
+    name = "ShortestPathTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.graph.ShortestPathTest",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":BfsTest",
+        ":CsrBuilderTest",
+        ":CsrFileTest",
+        ":CsrGraphTest",
+        ":ShortestPathTest",
+    ],
+    visibility = ["//visibility:public"],
+)

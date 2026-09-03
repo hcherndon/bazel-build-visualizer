@@ -1,0 +1,93 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal",
+    ],
+)
+
+java_junit5_test(
+    name = "ImportCheckpointStoreTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.ImportCheckpointStoreTest",
+)
+
+java_junit5_test(
+    name = "ImportCheckpointTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.ImportCheckpointTest",
+)
+
+java_junit5_test(
+    name = "JournalBoundedMemoryTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.JournalBoundedMemoryTest",
+)
+
+java_junit5_test(
+    name = "JournalReaderFailureTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.JournalReaderFailureTest",
+)
+
+java_junit5_test(
+    name = "JournalRecoveryGapTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.JournalRecoveryGapTest",
+)
+
+java_junit5_test(
+    name = "JournalRecoveryTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.JournalRecoveryTest",
+)
+
+java_junit5_test(
+    name = "JournalRotationTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.JournalRotationTest",
+)
+
+java_junit5_test(
+    name = "JournalSegmentsTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.JournalSegmentsTest",
+)
+
+java_junit5_test(
+    name = "JournalWriterTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.journal.JournalWriterTest",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ImportCheckpointStoreTest",
+        ":ImportCheckpointTest",
+        ":JournalBoundedMemoryTest",
+        ":JournalReaderFailureTest",
+        ":JournalRecoveryGapTest",
+        ":JournalRecoveryTest",
+        ":JournalRotationTest",
+        ":JournalSegmentsTest",
+        ":JournalWriterTest",
+    ],
+    visibility = ["//visibility:public"],
+)

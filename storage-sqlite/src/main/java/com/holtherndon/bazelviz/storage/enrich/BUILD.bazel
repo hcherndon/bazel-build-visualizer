@@ -1,0 +1,19 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "enrich",
+    srcs = [
+        "AttemptRow.java",
+        "AttemptWriter.java",
+        "EnrichmentQueries.java",
+        "EnrichmentTaskStore.java",
+        "LogIdMap.java",
+        "ProfileWriter.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich:enrich",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure:measure",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
+    ],
+    visibility = ["//visibility:public"],
+)

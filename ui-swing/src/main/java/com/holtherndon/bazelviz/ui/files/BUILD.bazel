@@ -1,0 +1,16 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "files",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/lifecycle",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+    ],
+)

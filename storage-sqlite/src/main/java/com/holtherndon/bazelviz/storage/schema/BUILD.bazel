@@ -1,0 +1,34 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "schema",
+    srcs = [
+        "Migration.java",
+        "MigrationRunner.java",
+        "SchemaIndexes.java",
+        "SchemaV1.java",
+        "SchemaV2.java",
+        "SchemaV3.java",
+        "SchemaV4.java",
+        "SchemaV5.java",
+        "SchemaV6.java",
+        "SchemaV7.java",
+        "SchemaV8.java",
+        "SchemaV9.java",
+        "SchemaVersionException.java",
+        "V1Migration.java",
+        "V2Migration.java",
+        "V3Migration.java",
+        "V4Migration.java",
+        "V5Migration.java",
+        "V6Migration.java",
+        "V7Migration.java",
+        "V8Migration.java",
+        "V9Migration.java",
+    ],
+    deps = [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,49 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "MetricQueriesTest.java",
+        "MetricScaleTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis:analysis",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics:metrics",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "MetricQueriesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.metrics.MetricQueriesTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "MetricScaleTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.metrics.MetricScaleTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":MetricQueriesTest",
+        ":MetricScaleTest",
+    ],
+    visibility = ["//visibility:public"],
+)

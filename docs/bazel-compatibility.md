@@ -318,7 +318,7 @@ was measured; the full records are in `docs/bazel-ground-truth.md`,
 | Limitation | Versions | Effect |
 |---|---|---|
 | `--experimental_announce_profile_path` removed | 8.4.1, 9.2.0 | The profile path is derived from the flag the tool itself injected rather than read from the stream. |
-| Query wildcard expansion can include a broken `manual` target that `build //...` skips | 9.2.0 measured | Capture writes the exact completed-BEP top-level labels to `aquery.query` and `cquery.query`; both commands read that set instead of re-expanding the wildcard. Missing final-marker and requested-pattern fallbacks remain untrusted. |
+| Query wildcard expansion can include a broken `manual` target, or replaying a configured-only incompatible wildcard match can make it explicit | 9.2.0 measured | Capture writes only top-level labels with a BUILT or FAILED completion to `aquery.query` and `cquery.query`; both commands read that set instead of re-expanding the wildcard or explicitly requesting a skipped incompatible target. A complete successful invocation makes that subset exact. Missing final markers, requested-pattern fallbacks, and failed or unknown invocations with omitted configured or aborted labels remain untrusted. |
 
 ### Action timing, which differs on every version
 

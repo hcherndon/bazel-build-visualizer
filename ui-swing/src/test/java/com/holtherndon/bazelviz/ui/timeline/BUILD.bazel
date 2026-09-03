@@ -1,0 +1,163 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/domain",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/timeline",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "LaneGroupingTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.LaneGroupingTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "MacMagnificationSupportTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.MacMagnificationSupportTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS + select({
+        "@platforms//os:macos": [
+            "--add-exports=java.desktop/com.apple.eawt.event=ALL-UNNAMED",
+        ],
+        "//conditions:default": [],
+    }),
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "SpanStackingTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.SpanStackingTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineAggregateTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineAggregateTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineColoursTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineColoursTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineControllerTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineControllerTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineDefaultsTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineDefaultsTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineInspectorTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineInspectorTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineLiveBandTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineLiveBandTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineLodIndexTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineLodIndexTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelinePaintIsolationTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelinePaintIsolationTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineSpanPlacementTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineSpanPlacementTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineTransformTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineTransformTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineVerticalSpaceTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineVerticalSpaceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineViewTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineViewTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TimelineViewportTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineViewportTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":LaneGroupingTest",
+        ":MacMagnificationSupportTest",
+        ":SpanStackingTest",
+        ":TimelineAggregateTest",
+        ":TimelineColoursTest",
+        ":TimelineControllerTest",
+        ":TimelineDefaultsTest",
+        ":TimelineInspectorTest",
+        ":TimelineLiveBandTest",
+        ":TimelineLodIndexTest",
+        ":TimelinePaintIsolationTest",
+        ":TimelineSpanPlacementTest",
+        ":TimelineTransformTest",
+        ":TimelineVerticalSpaceTest",
+        ":TimelineViewTest",
+        ":TimelineViewportTest",
+    ],
+)

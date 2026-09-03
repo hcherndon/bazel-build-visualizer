@@ -1,0 +1,49 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/launch",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
+        "@maven//:ch_qos_logback_logback_classic",
+        "@maven//:ch_qos_logback_logback_core",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)
+
+java_junit5_test(
+    name = "ExecutorLaunchTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.runner.launch.ExecutorLaunchTest",
+)
+
+java_junit5_test(
+    name = "CancellationLadderTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.runner.launch.CancellationLadderTest",
+)
+
+java_junit5_test(
+    name = "RealSubprocessLadderTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.runner.launch.RealSubprocessLadderTest",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":CancellationLadderTest",
+        ":ExecutorLaunchTest",
+        ":RealSubprocessLadderTest",
+    ],
+    visibility = ["//visibility:public"],
+)

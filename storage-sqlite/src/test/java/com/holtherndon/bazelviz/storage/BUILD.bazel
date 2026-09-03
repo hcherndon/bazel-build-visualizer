@@ -1,0 +1,57 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "BatchedInsertFailureTest.java",
+        "BatchedInsertTest.java",
+        "SessionDatabaseTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BatchedInsertFailureTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.BatchedInsertFailureTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BatchedInsertTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.BatchedInsertTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SessionDatabaseTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.SessionDatabaseTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":BatchedInsertFailureTest",
+        ":BatchedInsertTest",
+        ":SessionDatabaseTest",
+    ],
+    visibility = ["//visibility:public"],
+)

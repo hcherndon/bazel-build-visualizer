@@ -1,0 +1,63 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json",
+    ],
+)
+
+java_junit5_test(
+    name = "ManagedSessionLayoutTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.session.ManagedSessionLayoutTest",
+)
+
+java_junit5_test(
+    name = "SessionLockTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.session.SessionLockTest",
+)
+
+java_junit5_test(
+    name = "SessionManagerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.session.SessionManagerTest",
+)
+
+java_junit5_test(
+    name = "SessionManifestCodecTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.session.SessionManifestCodecTest",
+)
+
+java_junit5_test(
+    name = "SessionStateTransitionTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.session.SessionStateTransitionTest",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ManagedSessionLayoutTest",
+        ":SessionLockTest",
+        ":SessionManagerTest",
+        ":SessionManifestCodecTest",
+        ":SessionStateTransitionTest",
+    ],
+    visibility = ["//visibility:public"],
+)

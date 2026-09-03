@@ -16,7 +16,7 @@ import java.util.RandomAccess;
  *
  * <p>Bazel computes its own and writes it into the trace profile, and Phase 5 stores it untouched
  * in {@code bazel_critical_path}. This is a different number computed from a different thing — the
- * dependency graph, weighted by measured durations — and plan 13.4 requires it to be labelled
+ * dependency graph, weighted by measured durations — and plan 13.4 requires it to be labeled
  * "Visualizer-computed dependency critical path" and never presented as Bazel's. {@link
  * Result#displayName()} is the only name it has, for that reason.
  *

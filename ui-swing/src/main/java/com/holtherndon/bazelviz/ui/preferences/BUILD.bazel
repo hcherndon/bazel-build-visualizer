@@ -1,0 +1,12 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "preferences",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+    ],
+)

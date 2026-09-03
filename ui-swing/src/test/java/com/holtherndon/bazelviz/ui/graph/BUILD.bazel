@@ -1,0 +1,142 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/graph",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "GraphCanvasPanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphCanvasPanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphCanvasScaleTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphCanvasScaleTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphCanvasTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphCanvasTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphExplorerViewTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphExplorerViewTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphExportTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphExportTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphLayoutServiceTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphLayoutServiceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphPaintIsolationTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphPaintIsolationTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphSourceSummaryTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphSourceSummaryTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphSpatialIndexTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphSpatialIndexTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphTransformTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphTransformTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "GraphWeightEncodingTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.GraphWeightEncodingTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "LimitEstimateTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.LimitEstimateTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "Phase7ExitCriteriaTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.Phase7ExitCriteriaTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TreeViewSourceTest",
+    test_class = "com.holtherndon.bazelviz.ui.graph.TreeViewSourceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":GraphCanvasPanelTest",
+        ":GraphCanvasScaleTest",
+        ":GraphCanvasTest",
+        ":GraphExplorerViewTest",
+        ":GraphExportTest",
+        ":GraphLayoutServiceTest",
+        ":GraphPaintIsolationTest",
+        ":GraphSourceSummaryTest",
+        ":GraphSpatialIndexTest",
+        ":GraphTransformTest",
+        ":GraphWeightEncodingTest",
+        ":LimitEstimateTest",
+        ":Phase7ExitCriteriaTest",
+        ":TreeViewSourceTest",
+    ],
+)

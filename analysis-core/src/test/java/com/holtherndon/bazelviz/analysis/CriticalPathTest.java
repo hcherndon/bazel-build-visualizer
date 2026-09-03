@@ -278,6 +278,34 @@ final class CriticalPathTest {
   }
 
   @Test
+  @DisplayName("the observed action lower bound cannot masquerade as a dependency path")
+  void observedActionLowerBoundCarriesItsLimitedEvidence() {
+    CriticalPaths.ObservedActionLowerBound fallback =
+        new CriticalPaths.ObservedActionLowerBound(
+            7,
+            "bazel-out/bin/pkg/app.jar",
+            Optional.of("//pkg:app"),
+            Optional.of("Javac"),
+            4_000,
+            3,
+            9);
+
+    assertThat(fallback.displayName()).contains("not a dependency path");
+    assertThatThrownBy(
+            () ->
+                new CriticalPaths.ObservedActionLowerBound(
+                    7, "out", Optional.empty(), Optional.empty(), 0, 1, 1))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("positive");
+    assertThatThrownBy(
+            () ->
+                new CriticalPaths.ObservedActionLowerBound(
+                    7, "out", Optional.empty(), Optional.empty(), 4_000, 10, 9))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("coverage");
+  }
+
+  @Test
   @DisplayName("a Bazel total without profile rows does not claim zero components")
   void bazelTotalCanExistWithoutComponentBreakdown() {
     CriticalPaths paths =

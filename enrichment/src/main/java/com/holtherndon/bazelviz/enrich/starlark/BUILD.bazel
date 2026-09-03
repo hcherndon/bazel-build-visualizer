@@ -1,0 +1,16 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "starlark",
+    srcs = [
+        "StarlarkCpuProfileImporter.java",
+        "StarlarkCpuProfileParser.java",
+        "StarlarkProfileWriter.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich:enrich",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich:enrich",
+        "@maven//:com_google_protobuf_protobuf_java",
+    ],
+    visibility = ["//visibility:public"],
+)

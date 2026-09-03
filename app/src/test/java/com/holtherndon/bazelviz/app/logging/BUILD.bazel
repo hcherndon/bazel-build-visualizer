@@ -1,0 +1,32 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+java_library(
+    name = "tests_lib",
+    srcs = ["ApplicationLoggingTest.java"],
+    deps = JUNIT_DEPS + [
+        "//app/src/main/java/com/holtherndon/bazelviz/app/logging",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/logging",
+        "@maven//:ch_qos_logback_logback_classic",
+        "@maven//:ch_qos_logback_logback_core",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ApplicationLoggingTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.logging.ApplicationLoggingTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [":ApplicationLoggingTest"],
+    visibility = ["//visibility:public"],
+)

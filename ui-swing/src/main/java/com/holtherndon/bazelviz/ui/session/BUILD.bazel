@@ -1,0 +1,30 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "session",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/portable",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/catalog",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/query",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/format",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

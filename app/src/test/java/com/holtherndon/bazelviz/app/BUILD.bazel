@@ -1,0 +1,110 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "ApplicationWindowRegistryTest.java",
+        "BoundedMemoryTest.java",
+        "LimitsDocTest.java",
+        "MainWorkspaceLoadingTest.java",
+        "ThirdPartyNoticesTest.java",
+        "WorkspaceWindowPolicyTest.java",
+        "WorkspaceWindowSnapshotsTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//app/src/main/java/com/holtherndon/bazelviz/app:app",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture:capture",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/workspace:workspace",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ApplicationWindowRegistryTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.ApplicationWindowRegistryTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BoundedMemoryTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.BoundedMemoryTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "LimitsDocTest",
+    data = ["//docs:limits.md"],
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.LimitsDocTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "MainWorkspaceLoadingTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.MainWorkspaceLoadingTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ThirdPartyNoticesTest",
+    data = ["//app:app_deploy.jar"],
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.ThirdPartyNoticesTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "WorkspaceWindowPolicyTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.WorkspaceWindowPolicyTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "WorkspaceWindowSnapshotsTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.WorkspaceWindowSnapshotsTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ApplicationWindowRegistryTest",
+        ":BoundedMemoryTest",
+        ":LimitsDocTest",
+        ":MainWorkspaceLoadingTest",
+        ":ThirdPartyNoticesTest",
+        ":WorkspaceWindowPolicyTest",
+        ":WorkspaceWindowSnapshotsTest",
+    ],
+    visibility = ["//visibility:public"],
+)

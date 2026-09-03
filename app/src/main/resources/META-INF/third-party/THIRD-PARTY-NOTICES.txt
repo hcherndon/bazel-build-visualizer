@@ -1,0 +1,112 @@
+THIRD-PARTY SOFTWARE DISTRIBUTED WITH BAZEL BUILD VISUALIZER
+
+Bazel Build Visualizer redistributes the components below in its deploy jar.
+The adjoining files preserve each upstream license and required notice under a
+component-specific name so fat-jar resource collisions cannot discard them.
+
+Material Icon Theme 5.38.1 (selected SVG assets)
+  Copyright (c) 2025 Material Extensions.
+  Project: https://github.com/material-extensions/vscode-material-icon-theme
+  Source reviewed at: 448ab3977ef83b817c2c722ce7cd5034d195b39f
+  License: MIT.
+  License text: MATERIAL-ICON-THEME-MIT.txt
+  The fixed 32-file repository-browser subset, including settings.svg, is
+  redistributed unchanged.
+  Project and language names and symbols may be trademarks of their owners.
+  They identify file types only and do not imply endorsement or affiliation.
+
+The separately packaged bazel.svg and bazel-folder.svg are original project artwork.
+They are not part of Material Icon Theme.
+They do not contain the official Bazel logo. Their labels identify Bazel and
+Starlark files or Bazel-generated directory links and do not imply endorsement
+or affiliation with Google or the Bazel project.
+
+FlatLaf and FlatLaf Extras 3.7.2
+  Copyright FormDev Software GmbH and contributors.
+  Project: https://github.com/JFormDesigner/FlatLaf
+  Source reviewed at: 7c54d898478a3af1133120d423f72f83cf3da028
+  License: Apache License 2.0.
+  License text: FLATLAF-APACHE-2.0.txt
+
+JSVG 2.1.0
+  Copyright (c) 2021-2024 Jannis Weis.
+  Project: https://github.com/weisJ/jsvg
+  Source reviewed at: a9effc5fd93811ac49a298a6516809efdb03687d
+  License: MIT.
+  License text: JSVG-MIT.txt
+
+google/pprof profile schema
+  Copyright Google LLC and contributors.
+  Project: https://github.com/google/pprof
+  Source reviewed at: ca85771921e4d23ebb56030bf1e488f215f26d36
+  License: Apache License 2.0.
+  License text: FLATLAF-APACHE-2.0.txt (the standard Apache-2.0 text).
+  The vendored profile.proto defines the normalized wire format read from
+  Bazel's --starlark_cpu_profile output.
+
+JediTerm core and UI 3.74
+  Copyright JetBrains s.r.o. and contributors.
+  Project: https://github.com/JetBrains/jediterm
+  Source reviewed at: 377b76e682a5f86bcbb18a318386f530dbebf5c1
+  License: Apache License 2.0, selected from the project's dual
+  Apache-2.0/LGPL-3.0 grant.
+  License text: JEDITERM-APACHE-2.0.txt
+
+Pty4J 0.13.8
+  Copyright JetBrains s.r.o. and contributors.
+  Project: https://github.com/JetBrains/pty4j
+  Source reviewed at: 35c94e734ed5fd54dc46b37432c71c6ac8ec82d9
+  License: Eclipse Public License 1.0.
+  License text: PTY4J-EPL-1.0.txt
+  Required attribution: PTY4J-NOTICE.txt
+
+JNA and JNA Platform 5.14.0
+  Copyright Timothy Wall and the JNA community.
+  Project: https://github.com/java-native-access/jna
+  License: Apache License 2.0, selected from JNA's dual
+  Apache-2.0/LGPL-2.1-or-later grant.
+  License choice and text: JNA-LICENSE.txt and JNA-APACHE-2.0.txt
+
+Kotlin standard library 2.4.0
+  Copyright 2010-2024 JetBrains s.r.o. and Kotlin contributors.
+  Project: https://github.com/JetBrains/kotlin
+  License: Apache License 2.0.
+  License and notice: KOTLIN-LICENSE.txt and KOTLIN-NOTICE.txt
+
+JetBrains Java Annotations 24.0.1
+  Copyright JetBrains s.r.o. and contributors.
+  Project: https://github.com/JetBrains/java-annotations
+  License: Apache License 2.0.
+  License text: JETBRAINS-ANNOTATIONS-LICENSE.txt
+
+SLF4J API 2.0.18
+  Copyright 2004-2022 QOS.ch Sarl.
+  Project: https://www.slf4j.org/
+  License: MIT.
+  License text: SLF4J-LICENSE.txt
+  This dependency was already present in the application; both terminal
+  libraries resolve to the application's existing version.
+
+Native software bundled inside Pty4J 0.13.8
+
+Pty4J's own upstream notice records its elt, JPty, and JNA ancestry. Its jar
+also carries signed WinPTY binaries and Windows Terminal 1.22.11141.0 ConPTY
+binaries even when the deploy jar is built on another host. Their notices are
+therefore retained in every deploy jar:
+
+  WinPTY
+    Copyright 2011-2016 Ryan Prichard.
+    Project: https://github.com/JetBrains/winpty
+    License: MIT.
+    License text: WINPTY-LICENSE.txt
+
+  Windows Terminal 1.22.11141.0 (OpenConsole and ConPTY)
+    Copyright Microsoft Corporation.
+    Project: https://github.com/microsoft/terminal
+    License: MIT.
+    License and upstream third-party notice:
+      WINDOWS-TERMINAL-LICENSE.txt
+      WINDOWS-TERMINAL-NOTICE.md
+
+These notices apply only to their named components. They do not change the
+license of Bazel Build Visualizer.

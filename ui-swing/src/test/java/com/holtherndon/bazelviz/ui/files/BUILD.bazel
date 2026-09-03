@@ -1,0 +1,66 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "FileEditorManagerTest",
+    test_class = "com.holtherndon.bazelviz.ui.files.FileEditorManagerTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "FileNameTypeTest",
+    test_class = "com.holtherndon.bazelviz.ui.files.FileNameTypeTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "FileEditorPanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.files.FileEditorPanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "TextFileDocumentTest",
+    test_class = "com.holtherndon.bazelviz.ui.files.TextFileDocumentTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WorkspaceFileResolverTest",
+    test_class = "com.holtherndon.bazelviz.ui.files.WorkspaceFileResolverTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":FileEditorManagerTest",
+        ":FileNameTypeTest",
+        ":FileEditorPanelTest",
+        ":TextFileDocumentTest",
+        ":WorkspaceFileResolverTest",
+    ],
+)

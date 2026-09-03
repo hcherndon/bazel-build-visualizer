@@ -1,0 +1,21 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "query",
+    srcs = [
+        "AdHocQueries.java",
+        "BlobValue.java",
+        "QueryFailedException.java",
+        "QueryOutline.java",
+        "QueryRow.java",
+        "ReadOnlySql.java",
+        "SchemaColumn.java",
+        "SchemaTable.java",
+        "SqlNotAllowedException.java",
+        "TempViewDefinition.java",
+    ],
+    deps = [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    visibility = ["//visibility:public"],
+)

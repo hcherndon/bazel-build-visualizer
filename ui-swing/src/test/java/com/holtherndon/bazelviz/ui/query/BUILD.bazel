@@ -1,0 +1,77 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/query",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/query",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "QueryLibraryTest",
+    test_class = "com.holtherndon.bazelviz.ui.query.QueryLibraryTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "QueryRowSourceTest",
+    test_class = "com.holtherndon.bazelviz.ui.query.QueryRowSourceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "QueryTabColumnStateTest",
+    test_class = "com.holtherndon.bazelviz.ui.query.QueryTabColumnStateTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "QueryViewWiringTest",
+    test_class = "com.holtherndon.bazelviz.ui.query.QueryViewWiringTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "QueryViewLifecycleTest",
+    test_class = "com.holtherndon.bazelviz.ui.query.QueryViewLifecycleTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "SqlValueRendererTest",
+    test_class = "com.holtherndon.bazelviz.ui.query.SqlValueRendererTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":QueryLibraryTest",
+        ":QueryRowSourceTest",
+        ":QueryTabColumnStateTest",
+        ":QueryViewLifecycleTest",
+        ":QueryViewWiringTest",
+        ":SqlValueRendererTest",
+    ],
+)

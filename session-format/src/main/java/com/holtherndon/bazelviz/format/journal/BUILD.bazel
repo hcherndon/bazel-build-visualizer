@@ -1,0 +1,12 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "journal",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+    visibility = ["//visibility:public"],
+)

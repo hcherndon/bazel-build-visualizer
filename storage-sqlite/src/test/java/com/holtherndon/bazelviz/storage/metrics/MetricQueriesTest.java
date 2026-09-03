@@ -299,6 +299,17 @@ final class MetricQueriesTest {
     assertThat(paths.derived()).isEmpty();
     assertThat(paths.bothAvailable()).isFalse();
     assertThat(paths.schedulingGapMicros()).isEmpty();
+    assertThat(paths.observedActionLowerBound())
+        .hasValueSatisfying(
+            fallback -> {
+              assertThat(fallback.actionId()).isEqualTo(1);
+              assertThat(fallback.primaryOutput()).isEqualTo("out/a.o");
+              assertThat(fallback.targetLabel()).hasValue("//pkg/a:lib");
+              assertThat(fallback.mnemonic()).hasValue("CppCompile");
+              assertThat(fallback.durationMicros()).isEqualTo(2_000);
+              assertThat(fallback.timedActions()).isEqualTo(1);
+              assertThat(fallback.totalActions()).isEqualTo(5);
+            });
     assertThat(paths.describe())
         .contains("Bazel-reported critical path")
         .contains("Visualizer-computed dependency critical path")

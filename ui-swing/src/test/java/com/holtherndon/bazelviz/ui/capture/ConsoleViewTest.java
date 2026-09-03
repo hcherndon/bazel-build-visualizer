@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.capture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.awt.Color;
 import java.nio.charset.StandardCharsets;
 import java.util.function.Supplier;
 import javax.swing.SwingUtilities;
@@ -72,6 +73,73 @@ class ConsoleViewTest {
   }
 
   @Test
+  @DisplayName("ANSI colours reach the styled document and reset for following text")
+  void rendersAnsiColoursAndReset() throws Exception {
+    ConsoleView view = onEdt(ConsoleView::new);
+
+    onEdt(
+        () -> {
+          append(view, "\u001b[31mred\u001b[0m default\n");
+          return null;
+        });
+    flushEdt();
+
+    assertThat(onEdt(() -> view.foregroundAtForTest(0))).isEqualTo(new Color(0xAA0000));
+    assertThat(onEdt(() -> view.foregroundAtForTest(4)))
+        .isEqualTo(onEdt(view::defaultForegroundForTest));
+  }
+
+  @Test
+  @DisplayName("long output lines wrap to the console viewport")
+  void longLinesWrap() throws Exception {
+    ConsoleView view = onEdt(ConsoleView::new);
+
+    assertThat(onEdt(view::wrapsLinesForTest)).isTrue();
+  }
+
+  @Test
+  @DisplayName("cursor-up redraw truncates only the replaced document tail")
+  void cursorUpRedrawReplacesRenderedTail() throws Exception {
+    ConsoleView view = onEdt(ConsoleView::new);
+
+    onEdt(
+        () -> {
+          append(view, "stable output\nold heading\nold detail\n");
+          return null;
+        });
+    flushEdt();
+    onEdt(
+        () -> {
+          append(view, "\r\u001b[1A\u001b[K\r\u001b[1A\u001b[Knew heading\nnew detail\n");
+          return null;
+        });
+    flushEdt();
+
+    assertThat(text(view)).isEqualTo("stable output\nnew heading\nnew detail\n");
+  }
+
+  @Test
+  @DisplayName("lines evicted from the bounded model are removed from the document prefix")
+  void retainedLineCapTrimsRenderedPrefix() throws Exception {
+    ConsoleView view = onEdt(() -> new ConsoleView(3));
+
+    onEdt(
+        () -> {
+          append(view, "one\ntwo\nthree\n");
+          return null;
+        });
+    flushEdt();
+    onEdt(
+        () -> {
+          append(view, "four\n");
+          return null;
+        });
+    flushEdt();
+
+    assertThat(text(view)).isEqualTo("two\nthree\nfour\n");
+  }
+
+  @Test
   @DisplayName("the model's delta reports what a renderer has not seen")
   void deltaTracksWhatWasRendered() {
     ConsoleModel model = new ConsoleModel();
@@ -111,14 +179,7 @@ class ConsoleViewTest {
   }
 
   private static String text(ConsoleView view) throws Exception {
-    return onEdt(
-        () -> {
-          try {
-            return view.model().text();
-          } catch (RuntimeException failure) {
-            throw new IllegalStateException(failure);
-          }
-        });
+    return onEdt(view::renderedTextForTest);
   }
 
   private static <T> T onEdt(Supplier<T> work) throws Exception {

@@ -54,14 +54,18 @@ public final class TargetQueries implements AutoCloseable {
           + " LEFT JOIN configured_targets ct ON ct.target_id = t.id"
           + " LEFT JOIN configurations c ON c.id = ct.configuration_id";
 
-  private static final String PACKAGES =
+  private static final String PACKAGES_SELECT =
       "SELECT "
           + PACKAGE_EXPR
           + " AS pkg, COUNT(*),"
           + " SUM(CASE WHEN ct.outcome = 'FAILED' THEN 1 ELSE 0 END),"
           + " SUM(CASE WHEN ct.id IS NULL THEN 1 ELSE 0 END)"
-          + FROM
-          + " GROUP BY pkg ORDER BY pkg ASC";
+          + FROM;
+
+  private static final String PACKAGES = PACKAGES_SELECT + " GROUP BY pkg ORDER BY pkg ASC";
+
+  private static final String PACKAGES_FILTERED =
+      PACKAGES_SELECT + " WHERE l.value LIKE ? ESCAPE '\\' GROUP BY pkg ORDER BY pkg ASC";
 
   private static final String IN_PACKAGE =
       "SELECT "
@@ -70,6 +74,15 @@ public final class TargetQueries implements AutoCloseable {
           + " WHERE "
           + PACKAGE_EXPR
           + " = ?"
+          + " ORDER BY l.value ASC, t.aspect ASC, c.bep_id ASC";
+
+  private static final String IN_PACKAGE_FILTERED =
+      "SELECT "
+          + COLUMNS
+          + FROM
+          + " WHERE "
+          + PACKAGE_EXPR
+          + " = ? AND l.value LIKE ? ESCAPE '\\'"
           + " ORDER BY l.value ASC, t.aspect ASC, c.bep_id ASC";
 
   private static final String BY_LABEL =
@@ -81,13 +94,28 @@ public final class TargetQueries implements AutoCloseable {
   private static final String TOP_LEVEL_LABEL_COUNT =
       "SELECT COUNT(DISTINCT t.label_id)" + TOP_LEVEL_LABEL_FROM;
 
+  private static final String TOP_LEVEL_LABEL_COUNT_FILTERED =
+      TOP_LEVEL_LABEL_COUNT + " WHERE l.value LIKE ? ESCAPE '\\'";
+
   private static final String TOP_LEVEL_LABELS_FIRST =
       "SELECT l.value" + TOP_LEVEL_LABEL_FROM + " GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
+
+  private static final String TOP_LEVEL_LABELS_FIRST_FILTERED =
+      "SELECT l.value"
+          + TOP_LEVEL_LABEL_FROM
+          + " WHERE l.value LIKE ? ESCAPE '\\'"
+          + " GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
 
   private static final String TOP_LEVEL_LABELS_AFTER =
       "SELECT l.value"
           + TOP_LEVEL_LABEL_FROM
           + " WHERE l.value > ? GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
+
+  private static final String TOP_LEVEL_LABELS_AFTER_FILTERED =
+      "SELECT l.value"
+          + TOP_LEVEL_LABEL_FROM
+          + " WHERE l.value > ? AND l.value LIKE ? ESCAPE '\\'"
+          + " GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
 
   private static final String CONFIGURED_FROM =
       " FROM configured_target_nodes n JOIN labels l ON l.id = n.label_id";
@@ -101,13 +129,30 @@ public final class TargetQueries implements AutoCloseable {
           + CONFIGURED_FROM
           + " GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
 
+  private static final String LABELS_FIRST_FILTERED =
+      "SELECT "
+          + LABEL_SUMMARY_COLUMNS
+          + CONFIGURED_FROM
+          + " WHERE l.value LIKE ? ESCAPE '\\'"
+          + " GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
+
   private static final String LABELS_AFTER =
       "SELECT "
           + LABEL_SUMMARY_COLUMNS
           + CONFIGURED_FROM
           + " WHERE l.value > ? GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
 
+  private static final String LABELS_AFTER_FILTERED =
+      "SELECT "
+          + LABEL_SUMMARY_COLUMNS
+          + CONFIGURED_FROM
+          + " WHERE l.value > ? AND l.value LIKE ? ESCAPE '\\'"
+          + " GROUP BY l.value ORDER BY l.value ASC LIMIT ?";
+
   private static final String LABEL_COUNT = "SELECT COUNT(DISTINCT n.label_id)" + CONFIGURED_FROM;
+
+  private static final String LABEL_COUNT_FILTERED =
+      LABEL_COUNT + " WHERE l.value LIKE ? ESCAPE '\\'";
 
   private static final String CONFIGURED_BY_LABEL =
       "SELECT n.id, l.value, n.configuration_checksum, n.rule_class"
@@ -150,9 +195,43 @@ public final class TargetQueries implements AutoCloseable {
     return packages;
   }
 
+  /** Packages containing a top-level target whose full label contains {@code labelText}. */
+  public List<PackageSummary> packages(String labelText) throws SQLException {
+    Objects.requireNonNull(labelText, "labelText");
+    if (labelText.isEmpty()) {
+      return packages();
+    }
+    List<PackageSummary> packages = new ArrayList<>();
+    try (PreparedStatement statement = connection.prepareStatement(PACKAGES_FILTERED)) {
+      statement.setString(1, contains(labelText));
+      try (ResultSet rows = statement.executeQuery()) {
+        while (rows.next()) {
+          packages.add(
+              new PackageSummary(
+                  rows.getString(1), rows.getLong(2), rows.getLong(3), rows.getLong(4)));
+        }
+      }
+    }
+    return packages;
+  }
+
   public List<TargetRow> inPackage(String packagePath) throws SQLException {
     try (PreparedStatement statement = connection.prepareStatement(IN_PACKAGE)) {
       statement.setString(1, packagePath);
+      return readRows(statement);
+    }
+  }
+
+  /** Matching target rows in one package, using the same literal label filter as its summary. */
+  public List<TargetRow> inPackage(String packagePath, String labelText) throws SQLException {
+    Objects.requireNonNull(packagePath, "packagePath");
+    Objects.requireNonNull(labelText, "labelText");
+    if (labelText.isEmpty()) {
+      return inPackage(packagePath);
+    }
+    try (PreparedStatement statement = connection.prepareStatement(IN_PACKAGE_FILTERED)) {
+      statement.setString(1, packagePath);
+      statement.setString(2, contains(labelText));
       return readRows(statement);
     }
   }
@@ -172,6 +251,21 @@ public final class TargetQueries implements AutoCloseable {
     }
   }
 
+  /** Exact distinct top-level label count after a literal contains filter. */
+  public long topLevelLabelCount(String labelText) throws SQLException {
+    Objects.requireNonNull(labelText, "labelText");
+    if (labelText.isEmpty()) {
+      return topLevelLabelCount();
+    }
+    try (PreparedStatement statement =
+        connection.prepareStatement(TOP_LEVEL_LABEL_COUNT_FILTERED)) {
+      statement.setString(1, contains(labelText));
+      try (ResultSet rows = statement.executeQuery()) {
+        return rows.next() ? rows.getLong(1) : 0;
+      }
+    }
+  }
+
   /** First alphabetical page of top-level labels. */
   public List<String> firstTopLevelLabelPage(int limit) throws SQLException {
     if (limit < 1) {
@@ -179,6 +273,21 @@ public final class TargetQueries implements AutoCloseable {
     }
     try (PreparedStatement statement = connection.prepareStatement(TOP_LEVEL_LABELS_FIRST)) {
       statement.setInt(1, limit);
+      return readLabels(statement);
+    }
+  }
+
+  /** First alphabetical page of top-level labels matching a literal contains filter. */
+  public List<String> firstTopLevelLabelPage(String labelText, int limit) throws SQLException {
+    Objects.requireNonNull(labelText, "labelText");
+    if (labelText.isEmpty()) {
+      return firstTopLevelLabelPage(limit);
+    }
+    requirePositiveLimit(limit);
+    try (PreparedStatement statement =
+        connection.prepareStatement(TOP_LEVEL_LABELS_FIRST_FILTERED)) {
+      statement.setString(1, contains(labelText));
+      statement.setInt(2, limit);
       return readLabels(statement);
     }
   }
@@ -196,11 +305,43 @@ public final class TargetQueries implements AutoCloseable {
     }
   }
 
+  /** Alphabetical filtered page after an exact top-level label boundary. */
+  public List<String> topLevelLabelPageAfter(String labelText, String label, int limit)
+      throws SQLException {
+    Objects.requireNonNull(labelText, "labelText");
+    Objects.requireNonNull(label, "label");
+    if (labelText.isEmpty()) {
+      return topLevelLabelPageAfter(label, limit);
+    }
+    requirePositiveLimit(limit);
+    try (PreparedStatement statement =
+        connection.prepareStatement(TOP_LEVEL_LABELS_AFTER_FILTERED)) {
+      statement.setString(1, label);
+      statement.setString(2, contains(labelText));
+      statement.setInt(3, limit);
+      return readLabels(statement);
+    }
+  }
+
   /** Exact number of distinct fully-qualified target labels. */
   public long labelCount() throws SQLException {
     try (PreparedStatement statement = connection.prepareStatement(LABEL_COUNT);
         ResultSet rows = statement.executeQuery()) {
       return rows.next() ? rows.getLong(1) : 0;
+    }
+  }
+
+  /** Exact distinct configured-target label count after a literal contains filter. */
+  public long labelCount(String labelText) throws SQLException {
+    Objects.requireNonNull(labelText, "labelText");
+    if (labelText.isEmpty()) {
+      return labelCount();
+    }
+    try (PreparedStatement statement = connection.prepareStatement(LABEL_COUNT_FILTERED)) {
+      statement.setString(1, contains(labelText));
+      try (ResultSet rows = statement.executeQuery()) {
+        return rows.next() ? rows.getLong(1) : 0;
+      }
     }
   }
 
@@ -215,6 +356,20 @@ public final class TargetQueries implements AutoCloseable {
     }
   }
 
+  /** First configured-target label page matching a literal contains filter. */
+  public List<LabelSummary> firstLabelPage(String labelText, int limit) throws SQLException {
+    Objects.requireNonNull(labelText, "labelText");
+    if (labelText.isEmpty()) {
+      return firstLabelPage(limit);
+    }
+    requirePositiveLimit(limit);
+    try (PreparedStatement statement = connection.prepareStatement(LABELS_FIRST_FILTERED)) {
+      statement.setString(1, contains(labelText));
+      statement.setInt(2, limit);
+      return readLabelSummaries(statement);
+    }
+  }
+
   /** Distinct label page after the previous page's exact label boundary. */
   public List<LabelSummary> labelPageAfter(String label, int limit) throws SQLException {
     Objects.requireNonNull(label, "label");
@@ -224,6 +379,23 @@ public final class TargetQueries implements AutoCloseable {
     try (PreparedStatement statement = connection.prepareStatement(LABELS_AFTER)) {
       statement.setString(1, label);
       statement.setInt(2, limit);
+      return readLabelSummaries(statement);
+    }
+  }
+
+  /** Filtered configured-target label page after the previous page's exact boundary. */
+  public List<LabelSummary> labelPageAfter(String labelText, String label, int limit)
+      throws SQLException {
+    Objects.requireNonNull(labelText, "labelText");
+    Objects.requireNonNull(label, "label");
+    if (labelText.isEmpty()) {
+      return labelPageAfter(label, limit);
+    }
+    requirePositiveLimit(limit);
+    try (PreparedStatement statement = connection.prepareStatement(LABELS_AFTER_FILTERED)) {
+      statement.setString(1, label);
+      statement.setString(2, contains(labelText));
+      statement.setInt(3, limit);
       return readLabelSummaries(statement);
     }
   }
@@ -356,6 +528,18 @@ public final class TargetQueries implements AutoCloseable {
 
   /** An output group and the file set at its root. */
   public record OutputGroup(String name, boolean incomplete, Optional<String> rootDepsetId) {}
+
+  private static void requirePositiveLimit(int limit) {
+    if (limit < 1) {
+      throw new IllegalArgumentException("limit must be positive, got " + limit);
+    }
+  }
+
+  /** Makes SQL wildcards literal so the filter means exactly what its label says. */
+  private static String contains(String text) {
+    String escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    return "%" + escaped + "%";
+  }
 
   private static List<TargetRow> readRows(PreparedStatement statement) throws SQLException {
     List<TargetRow> rows = new ArrayList<>();

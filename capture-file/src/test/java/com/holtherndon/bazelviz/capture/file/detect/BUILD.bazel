@@ -1,0 +1,36 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "FormatDetectorTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/binary:binary",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/detect:detect",
+        "//capture-file/src/test/java/com/holtherndon/bazelviz/capture/file/binary:tests_lib",
+        "//proto:proto",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "FormatDetectorTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.detect.FormatDetectorTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":FormatDetectorTest",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -12,8 +12,10 @@ import com.holtherndon.bazelviz.testsupport.bep.SyntheticBepStream;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
+import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
 import java.awt.GraphicsEnvironment;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -21,6 +23,8 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -280,6 +284,7 @@ class TargetsViewWiringTest {
   @DisplayName("Top Level Targets switches between packages and a flat label list")
   void packageAndFlatViews(@TempDir Path temporary) throws Exception {
     SqliteSessionSource opened = openImportedSession(temporary);
+    TargetRow chosen = firstTargetWithASourceEvent(opened);
     TargetsView view =
         onEdt(
             () -> {
@@ -294,8 +299,98 @@ class TargetsViewWiringTest {
     await(() -> onEdt(() -> view.flatLabelCountForTest() > 0));
     assertThat(onEdt(() -> view.flatLabelForTest(0))).startsWith("//");
 
+    SwingUtilities.invokeAndWait(() -> view.setFilterTextForTest(chosen.label()));
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.flatLabelCountForTest() == 1
+                        && view.flatLabelForTest(0).equals(chosen.label())
+                        && view.statusForTest().contains("matching top-level target labels")));
+    assertThat(onEdt(view::statusForTest)).contains("1 of 1 matching top-level target labels");
+
+    SwingUtilities.invokeAndWait(view::showPackagesForTest);
+    await(() -> onEdt(() -> view.statusForTest().contains("matching target rows")));
+    assertThat(onEdt(view::packageCountForTest)).isEqualTo(1);
+
     SwingUtilities.invokeAndWait(view::closeSession);
     opened.close();
+  }
+
+  @Test
+  @Timeout(30)
+  @DisplayName("rapid package filters skip pending reads and install only the latest result")
+  void rapidPackageFiltersAreCoalesced() throws Exception {
+    List<String> executedFilters = new CopyOnWriteArrayList<>();
+    CountDownLatch slowStarted = new CountDownLatch(1);
+    CountDownLatch releaseSlow = new CountDownLatch(1);
+    TargetsView view =
+        onEdt(
+            () -> {
+              TargetsView created = new TargetsView();
+              created.openSession(
+                  session(coalescingReader(executedFilters, slowStarted, releaseSlow)));
+              return created;
+            });
+    await(() -> onEdt(() -> view.packageCountForTest() == 1));
+    executedFilters.clear();
+
+    SwingUtilities.invokeAndWait(() -> view.applyFilterTextForTest("slow"));
+    assertThat(slowStarted.await(10, TimeUnit.SECONDS)).isTrue();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          view.applyFilterTextForTest("middle");
+          view.applyFilterTextForTest("latest");
+        });
+    releaseSlow.countDown();
+
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.packageCountForTest() == 1
+                        && view.packageTextForTest(0).startsWith("//latest")));
+    assertThat(executedFilters).containsExactly("slow", "latest");
+    SwingUtilities.invokeAndWait(view::closeSession);
+  }
+
+  @Test
+  @Timeout(30)
+  @DisplayName("rapid flat-label filters skip pending reads and install only the latest result")
+  void rapidFlatFiltersAreCoalesced() throws Exception {
+    List<String> executedFilters = new CopyOnWriteArrayList<>();
+    CountDownLatch slowStarted = new CountDownLatch(1);
+    CountDownLatch releaseSlow = new CountDownLatch(1);
+    TargetsView view =
+        onEdt(
+            () -> {
+              TargetsView created = new TargetsView();
+              created.openSession(
+                  session(flatCoalescingReader(executedFilters, slowStarted, releaseSlow)));
+              return created;
+            });
+    await(() -> onEdt(() -> view.packageCountForTest() == 1));
+    SwingUtilities.invokeAndWait(view::showAllTargetsForTest);
+    await(() -> onEdt(() -> view.flatLabelCountForTest() == 1));
+    executedFilters.clear();
+
+    SwingUtilities.invokeAndWait(() -> view.applyFilterTextForTest("slow"));
+    assertThat(slowStarted.await(10, TimeUnit.SECONDS)).isTrue();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          view.applyFilterTextForTest("middle");
+          view.applyFilterTextForTest("latest");
+        });
+    releaseSlow.countDown();
+
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.flatLabelCountForTest() == 1
+                        && view.flatLabelForTest(0).equals("//latest:target")));
+    assertThat(executedFilters).containsExactly("slow", "latest");
+    SwingUtilities.invokeAndWait(view::closeSession);
   }
 
   /** A target row the session recorded a source event for. */
@@ -319,6 +414,86 @@ class TargetsViewWiringTest {
     SessionManager sessions = new SessionManager(temporary.resolve("sessions"), "0.1.0-test");
     ImportResult imported = new BepImporter(sessions).importFile(source);
     return SqliteSessionSource.open(sessions, imported.sessionRoot());
+  }
+
+  private static EntityReader coalescingReader(
+      List<String> executedFilters, CountDownLatch slowStarted, CountDownLatch releaseSlow) {
+    return (EntityReader)
+        Proxy.newProxyInstance(
+            EntityReader.class.getClassLoader(),
+            new Class<?>[] {EntityReader.class},
+            (proxy, method, args) ->
+                switch (method.getName()) {
+                  case "packages" -> {
+                    String filter = (String) args[0];
+                    executedFilters.add(filter);
+                    if (filter.equals("slow")) {
+                      slowStarted.countDown();
+                      awaitRelease(releaseSlow);
+                    }
+                    String name = filter.isEmpty() ? "initial" : filter;
+                    yield List.of(new TargetQueries.PackageSummary("//" + name, 1, 0, 0));
+                  }
+                  case "close" -> null;
+                  case "toString" -> "CoalescingTopLevelTargetsReader";
+                  default -> throw new UnsupportedOperationException(method.getName());
+                });
+  }
+
+  private static EntityReader flatCoalescingReader(
+      List<String> executedFilters, CountDownLatch slowStarted, CountDownLatch releaseSlow) {
+    return (EntityReader)
+        Proxy.newProxyInstance(
+            EntityReader.class.getClassLoader(),
+            new Class<?>[] {EntityReader.class},
+            (proxy, method, args) ->
+                switch (method.getName()) {
+                  case "packages" ->
+                      List.of(new TargetQueries.PackageSummary("//initial", 1, 0, 0));
+                  case "topLevelTargetLabelCount" -> {
+                    String filter = (String) args[0];
+                    executedFilters.add(filter);
+                    if (filter.equals("slow")) {
+                      slowStarted.countDown();
+                      awaitRelease(releaseSlow);
+                    }
+                    yield 1L;
+                  }
+                  case "firstTopLevelTargetLabels" -> {
+                    String filter = (String) args[0];
+                    String name = filter.isEmpty() ? "initial" : filter;
+                    yield List.of("//" + name + ":target");
+                  }
+                  case "topLevelTargetLabelsAfter" -> List.of();
+                  case "close" -> null;
+                  case "toString" -> "CoalescingFlatTopLevelTargetsReader";
+                  default -> throw new UnsupportedOperationException(method.getName());
+                });
+  }
+
+  private static SessionSource session(EntityReader reader) {
+    return (SessionSource)
+        Proxy.newProxyInstance(
+            SessionSource.class.getClassLoader(),
+            new Class<?>[] {SessionSource.class},
+            (proxy, method, args) ->
+                switch (method.getName()) {
+                  case "openEntityReader" -> reader;
+                  case "close" -> null;
+                  case "toString" -> "CoalescingTopLevelTargetsSession";
+                  default -> throw new UnsupportedOperationException(method.getName());
+                });
+  }
+
+  private static void awaitRelease(CountDownLatch release) {
+    try {
+      if (!release.await(10, TimeUnit.SECONDS)) {
+        throw new AssertionError("slow package read was never released");
+      }
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw new AssertionError("slow package read was interrupted", interrupted);
+    }
   }
 
   private static void await(BooleanSupplier condition) throws Exception {

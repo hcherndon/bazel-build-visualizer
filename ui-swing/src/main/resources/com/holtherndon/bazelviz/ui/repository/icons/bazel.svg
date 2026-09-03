@@ -1,0 +1,217 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  role="img"
+  aria-labelledby="title desc"
+>
+  <title id="title">BZL source file icon with green winged star</title>
+  <desc id="desc">
+    A green outlined document with a folded corner, a compact green
+    winged-star emblem, and a BZL file-extension badge.
+  </desc>
+
+  <defs>
+    <linearGradient id="foldGradient" x1="306" y1="40" x2="408" y2="142">
+      <stop offset="0" stop-color="#A5D6A7"/>
+      <stop offset="1" stop-color="#66BB6A"/>
+    </linearGradient>
+
+    <linearGradient id="starLeft" x1="190" y1="170" x2="258" y2="292">
+      <stop offset="0" stop-color="#81C784"/>
+      <stop offset="1" stop-color="#1B5E20"/>
+    </linearGradient>
+
+    <linearGradient id="starRight" x1="322" y1="170" x2="254" y2="292">
+      <stop offset="0" stop-color="#43A047"/>
+      <stop offset="1" stop-color="#0B3D17"/>
+    </linearGradient>
+
+    <linearGradient id="wingLight" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#81C784"/>
+      <stop offset="1" stop-color="#43A047"/>
+    </linearGradient>
+
+    <linearGradient id="wingDark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#388E3C"/>
+      <stop offset="1" stop-color="#145A25"/>
+    </linearGradient>
+
+    <filter id="emblemShadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow
+        dx="0"
+        dy="4"
+        stdDeviation="3"
+        flood-color="#0B3D17"
+        flood-opacity="0.18"
+      />
+    </filter>
+  </defs>
+
+  <!-- Document body -->
+  <path
+    d="M112 32H306L416 142V464
+       C416 472.8 408.8 480 400 480H112
+       C103.2 480 96 472.8 96 464V48
+       C96 39.2 103.2 32 112 32Z"
+    fill="#FFFFFF"
+    stroke="#43A047"
+    stroke-width="16"
+    stroke-linejoin="round"
+  />
+
+  <!-- Folded corner -->
+  <path
+    d="M306 40V142H408Z"
+    fill="url(#foldGradient)"
+    stroke="#43A047"
+    stroke-width="16"
+    stroke-linejoin="round"
+  />
+
+  <!--
+    Winged-star emblem:
+    scaled to 88% around its original visual center,
+    then repositioned lower in the document.
+  -->
+  <g transform="translate(256 225) scale(0.88) translate(-256 -206)">
+    <g filter="url(#emblemShadow)">
+      <!-- Left upper wing -->
+      <path
+        d="M225 190
+           C194 166 159 150 118 142
+           C135 165 160 181 203 201Z"
+        fill="url(#wingLight)"
+      />
+
+      <path
+        d="M210 202
+           C176 188 145 183 112 184
+           C132 205 163 216 205 214Z"
+        fill="url(#wingDark)"
+      />
+
+      <!-- Left lower feathers -->
+      <path
+        d="M207 218
+           C170 211 143 215 122 224
+           C145 239 173 241 211 229Z"
+        fill="#2E7D32"
+      />
+
+      <path
+        d="M215 234
+           C183 235 162 244 148 255
+           C170 263 193 256 221 244Z"
+        fill="#1B5E20"
+      />
+
+      <!-- Right upper wing -->
+      <path
+        d="M287 190
+           C318 166 353 150 394 142
+           C377 165 352 181 309 201Z"
+        fill="url(#wingLight)"
+      />
+
+      <path
+        d="M302 202
+           C336 188 367 183 400 184
+           C380 205 349 216 307 214Z"
+        fill="url(#wingDark)"
+      />
+
+      <!-- Right lower feathers -->
+      <path
+        d="M305 218
+           C342 211 369 215 390 224
+           C367 239 339 241 301 229Z"
+        fill="#2E7D32"
+      />
+
+      <path
+        d="M297 234
+           C329 235 350 244 364 255
+           C342 263 319 256 291 244Z"
+        fill="#1B5E20"
+      />
+
+      <!-- Central five-point star -->
+      <path
+        d="M256 128
+           L274 187
+           L337 186
+           L286 223
+           L306 284
+           L256 247
+           L206 284
+           L226 223
+           L175 186
+           L238 187Z"
+        fill="#43A047"
+        stroke="#1B5E20"
+        stroke-width="4"
+        stroke-linejoin="round"
+      />
+
+      <!-- Faceted star shading -->
+      <path
+        d="M256 128L256 217L238 187Z"
+        fill="#A5D6A7"
+      />
+
+      <path
+        d="M256 128L274 187L256 217Z"
+        fill="#66BB6A"
+      />
+
+      <path
+        d="M175 186L226 223L256 217L238 187Z"
+        fill="#4CAF50"
+      />
+
+      <path
+        d="M337 186L286 223L256 217L274 187Z"
+        fill="#2E7D32"
+      />
+
+      <path
+        d="M206 284L256 247L256 217L226 223Z"
+        fill="url(#starLeft)"
+      />
+
+      <path
+        d="M306 284L256 247L256 217L286 223Z"
+        fill="url(#starRight)"
+      />
+    </g>
+  </g>
+
+  <!-- Extension badge -->
+  <rect
+    x="56"
+    y="320"
+    width="400"
+    height="104"
+    rx="20"
+    fill="#087F23"
+  />
+
+  <!-- Badge highlight -->
+  <path
+    d="M76 320H436
+       C447 320 456 329 456 340V344H56V340
+       C56 329 65 320 76 320Z"
+    fill="#2E9B43"
+  />
+
+  <text
+    x="256"
+    y="393"
+    fill="#FFFFFF"
+    font-family="Inter, Arial, Helvetica, sans-serif"
+    font-size="68"
+    font-weight="700"
+    letter-spacing="5"
+    text-anchor="middle"
+  >BZL</text>
+</svg>

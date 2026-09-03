@@ -1,0 +1,17 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "metrics",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/lifecycle",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

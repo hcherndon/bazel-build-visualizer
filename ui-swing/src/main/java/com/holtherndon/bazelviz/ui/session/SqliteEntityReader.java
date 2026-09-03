@@ -122,8 +122,20 @@ final class SqliteEntityReader implements EntityReader {
   }
 
   @Override
+  public List<TargetQueries.PackageSummary> packages(String labelText) {
+    return call("listing packages matching " + labelText, () -> targets.packages(labelText));
+  }
+
+  @Override
   public List<TargetRow> targetsInPackage(String packagePath) {
     return call("listing targets in " + packagePath, () -> targets.inPackage(packagePath));
+  }
+
+  @Override
+  public List<TargetRow> targetsInPackage(String packagePath, String labelText) {
+    return call(
+        "listing targets in " + packagePath + " matching " + labelText,
+        () -> targets.inPackage(packagePath, labelText));
   }
 
   @Override
@@ -137,10 +149,24 @@ final class SqliteEntityReader implements EntityReader {
   }
 
   @Override
+  public long topLevelTargetLabelCount(String labelText) {
+    return call(
+        "counting top-level target labels matching " + labelText,
+        () -> targets.topLevelLabelCount(labelText));
+  }
+
+  @Override
   public List<String> firstTopLevelTargetLabels(int limit) {
     return call(
         "reading the first top-level target-label page",
         () -> targets.firstTopLevelLabelPage(limit));
+  }
+
+  @Override
+  public List<String> firstTopLevelTargetLabels(String labelText, int limit) {
+    return call(
+        "reading the first filtered top-level target-label page",
+        () -> targets.firstTopLevelLabelPage(labelText, limit));
   }
 
   @Override
@@ -151,8 +177,22 @@ final class SqliteEntityReader implements EntityReader {
   }
 
   @Override
+  public List<String> topLevelTargetLabelsAfter(String labelText, String label, int limit) {
+    return call(
+        "reading filtered top-level target labels after " + label,
+        () -> targets.topLevelLabelPageAfter(labelText, label, limit));
+  }
+
+  @Override
   public long targetLabelCount() {
     return call("counting distinct target labels", targets::labelCount);
+  }
+
+  @Override
+  public long targetLabelCount(String labelText) {
+    return call(
+        "counting distinct target labels matching " + labelText,
+        () -> targets.labelCount(labelText));
   }
 
   @Override
@@ -161,8 +201,23 @@ final class SqliteEntityReader implements EntityReader {
   }
 
   @Override
+  public List<TargetQueries.LabelSummary> firstTargetLabels(String labelText, int limit) {
+    return call(
+        "reading the first filtered target-label page",
+        () -> targets.firstLabelPage(labelText, limit));
+  }
+
+  @Override
   public List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit) {
     return call("reading target labels after " + label, () -> targets.labelPageAfter(label, limit));
+  }
+
+  @Override
+  public List<TargetQueries.LabelSummary> targetLabelsAfter(
+      String labelText, String label, int limit) {
+    return call(
+        "reading filtered target labels after " + label,
+        () -> targets.labelPageAfter(labelText, label, limit));
   }
 
   @Override

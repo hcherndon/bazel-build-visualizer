@@ -1,0 +1,102 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph",
+    ],
+)
+
+java_junit5_test(
+    name = "ConcurrencySweepTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.ConcurrencySweepTest",
+)
+
+java_junit5_test(
+    name = "CriticalPathTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.CriticalPathTest",
+)
+
+java_junit5_test(
+    name = "FindingRulesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.FindingRulesTest",
+)
+
+java_junit5_test(
+    name = "FindingTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.FindingTest",
+)
+
+java_junit5_test(
+    name = "GraphClusteringTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.GraphClusteringTest",
+)
+
+java_junit5_test(
+    name = "GraphExtractTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.GraphExtractTest",
+)
+
+java_junit5_test(
+    name = "GraphLayoutTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.GraphLayoutTest",
+)
+
+java_junit5_test(
+    name = "GraphWeightsTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.GraphWeightsTest",
+)
+
+java_junit5_test(
+    name = "MetricFormulaScaleTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.MetricFormulaScaleTest",
+)
+
+java_junit5_test(
+    name = "QuantileSketchTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.analysis.QuantileSketchTest",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ConcurrencySweepTest",
+        ":CriticalPathTest",
+        ":FindingRulesTest",
+        ":FindingTest",
+        ":GraphClusteringTest",
+        ":GraphExtractTest",
+        ":GraphLayoutTest",
+        ":GraphWeightsTest",
+        ":MetricFormulaScaleTest",
+        ":QuantileSketchTest",
+    ],
+    visibility = ["//visibility:public"],
+)

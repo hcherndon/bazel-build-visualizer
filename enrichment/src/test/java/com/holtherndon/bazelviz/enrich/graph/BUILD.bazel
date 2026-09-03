@@ -1,0 +1,92 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "ActionEdgeAndIndexTest.java",
+        "ActionGraphImporterTest.java",
+        "AuxiliaryQueryRunnerTest.java",
+        "ConfiguredTargetImporterTest.java",
+        "ConfiguredTargetQueryFileTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph:graph",
+        "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/graph:graph",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph:graph",
+        "//proto:proto",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command:command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc:proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime:runtime",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph:graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    resources = ["//enrichment/src/test/resources:resources"],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "AuxiliaryQueryRunnerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.enrich.graph.AuxiliaryQueryRunnerTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ActionEdgeAndIndexTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.enrich.graph.ActionEdgeAndIndexTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ActionGraphImporterTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.enrich.graph.ActionGraphImporterTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ConfiguredTargetImporterTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.enrich.graph.ConfiguredTargetImporterTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ConfiguredTargetQueryFileTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.enrich.graph.ConfiguredTargetQueryFileTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ActionEdgeAndIndexTest",
+        ":ActionGraphImporterTest",
+        ":AuxiliaryQueryRunnerTest",
+        ":ConfiguredTargetImporterTest",
+        ":ConfiguredTargetQueryFileTest",
+    ],
+    visibility = ["//visibility:public"],
+)

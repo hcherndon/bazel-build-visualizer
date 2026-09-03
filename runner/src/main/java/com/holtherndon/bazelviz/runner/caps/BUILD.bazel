@@ -1,0 +1,14 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "caps",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//proto",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+    visibility = ["//visibility:public"],
+)

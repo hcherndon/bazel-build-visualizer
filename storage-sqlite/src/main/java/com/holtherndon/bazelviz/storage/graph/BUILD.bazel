@@ -1,0 +1,16 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "graph",
+    srcs = [
+        "ActionEdgeDeriver.java",
+        "GraphIndexBuilder.java",
+        "GraphQueries.java",
+        "GraphStaging.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph:graph",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph:graph",
+    ],
+    visibility = ["//visibility:public"],
+)

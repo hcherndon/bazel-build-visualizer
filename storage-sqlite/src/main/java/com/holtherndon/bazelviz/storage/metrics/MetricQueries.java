@@ -118,6 +118,7 @@ public final class MetricQueries implements AutoCloseable {
           // runner name.
           + " MAX(CASE WHEN att.cacheable = 0 THEN 1 ELSE 0 END),"
           + " MAX(CASE WHEN att.remotable = 0 THEN 1 ELSE 0 END)"
+          + ", act.primary_output, act.start_micros, act.end_micros"
           + " FROM actions act"
           + " LEFT JOIN mnemonics m ON m.id = act.mnemonic_id"
           + " LEFT JOIN labels l ON l.id = act.label_id"
@@ -387,6 +388,13 @@ public final class MetricQueries implements AutoCloseable {
     OptionalLong inputFiles = number(rows, 23);
     boolean notCacheable = rows.getInt(24) == 1;
     boolean notRemotable = rows.getInt(25) == 1;
+    String primaryOutput = rows.getString(26);
+    OptionalLong bepStart = number(rows, 27);
+    OptionalLong bepEnd = number(rows, 28);
+    OptionalLong bepDuration =
+        bepStart.isPresent() && bepEnd.isPresent() && bepEnd.getAsLong() > bepStart.getAsLong()
+            ? OptionalLong.of(bepEnd.getAsLong() - bepStart.getAsLong())
+            : OptionalLong.empty();
 
     // The detailed components are subprocess measurements. Pairing them
     // with a BEP action-wall denominator would manufacture fractions and
@@ -444,7 +452,9 @@ public final class MetricQueries implements AutoCloseable {
         inputFiles,
         notCacheable,
         notRemotable,
-        source);
+        source,
+        primaryOutput,
+        bepDuration);
   }
 
   /** Receives one action at a time, in whatever order the database returns them. */
@@ -507,7 +517,9 @@ public final class MetricQueries implements AutoCloseable {
       OptionalLong inputFiles,
       boolean declaredNotCacheable,
       boolean declaredNotRemotable,
-      CriticalPath.DurationSource durationSource) {
+      CriticalPath.DurationSource durationSource,
+      String primaryOutput,
+      OptionalLong bepDurationMicros) {
 
     /** The key this action falls under for one aggregate dimension. */
     public String keyFor(GroupAggregate.Dimension dimension) {
@@ -596,6 +608,8 @@ public final class MetricQueries implements AutoCloseable {
     private long inputBytesKnown;
     private long knownInputBytes;
     private boolean inputBytesExact = true;
+    private long bepTimed;
+    private ActionRow longestBepAction;
     private final Map<String, Long> runners = new LinkedHashMap<>();
 
     void add(ActionRow row) {
@@ -613,6 +627,17 @@ public final class MetricQueries implements AutoCloseable {
       }
       if (row.durationMicros().isPresent()) {
         timed++;
+      }
+      if (row.bepDurationMicros().isPresent()) {
+        bepTimed++;
+        if (longestBepAction == null
+            || row.bepDurationMicros().getAsLong()
+                > longestBepAction.bepDurationMicros().orElseThrow()
+            || (row.bepDurationMicros().getAsLong()
+                    == longestBepAction.bepDurationMicros().orElseThrow()
+                && row.id() < longestBepAction.id())) {
+          longestBepAction = row;
+        }
       }
       if (row.runner() != null) {
         runnerKnown++;
@@ -639,6 +664,22 @@ public final class MetricQueries implements AutoCloseable {
                   .thenComparing(InvocationMetrics.Work.RunnerCount::runner))
           .toList();
     }
+
+    Optional<CriticalPaths.ObservedActionLowerBound> observedActionLowerBound() {
+      if (longestBepAction == null) {
+        return Optional.empty();
+      }
+      ActionRow action = longestBepAction;
+      return Optional.of(
+          new CriticalPaths.ObservedActionLowerBound(
+              action.id(),
+              action.primaryOutput(),
+              Optional.ofNullable(action.label()),
+              Optional.ofNullable(action.mnemonic()),
+              action.bepDurationMicros().orElseThrow(),
+              bepTimed,
+              actions));
+    }
   }
 
   private InvocationMetrics invocation(
@@ -648,7 +689,7 @@ public final class MetricQueries implements AutoCloseable {
     InvocationMetrics.Tests tests = readTests();
     InvocationMetrics.Ingest ingest = readIngest();
     Outputs outputs = readOutputs();
-    CriticalPaths criticalPaths = readCriticalPaths(source);
+    CriticalPaths criticalPaths = readCriticalPaths(source, tally.observedActionLowerBound());
 
     InvocationMetrics.Work work =
         new InvocationMetrics.Work(
@@ -884,7 +925,10 @@ public final class MetricQueries implements AutoCloseable {
    * imported. That absence is the honest answer and not a reason to promote Bazel's number into the
    * empty slot.
    */
-  private CriticalPaths readCriticalPaths(CriticalPath.DurationSource source) throws SQLException {
+  private CriticalPaths readCriticalPaths(
+      CriticalPath.DurationSource source,
+      Optional<CriticalPaths.ObservedActionLowerBound> observedActionLowerBound)
+      throws SQLException {
     OptionalLong bazelMicros = OptionalLong.empty();
     DataSource bazelSource = DataSource.BEP;
     String bepUnavailableReason = null;
@@ -953,8 +997,17 @@ public final class MetricQueries implements AutoCloseable {
     }
 
     DerivedPath derived = derivedCriticalPath(source);
+    Optional<CriticalPaths.ObservedActionLowerBound> observedFallback =
+        derived.result().filter(path -> path.outcome() == CriticalPath.Outcome.COMPUTED).isPresent()
+            ? Optional.empty()
+            : observedActionLowerBound;
     return new CriticalPaths(
-        bazel, List.of(), componentSummary.count(), derived.result(), derived.unavailableReason());
+        bazel,
+        List.of(),
+        componentSummary.count(),
+        derived.result(),
+        derived.unavailableReason(),
+        observedFallback);
   }
 
   /**

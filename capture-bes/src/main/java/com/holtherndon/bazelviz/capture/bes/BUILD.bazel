@@ -1,0 +1,29 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "bes",
+    srcs = [
+        "BesEndpoint.java",
+        "BesRequestHeader.java",
+        "BesServer.java",
+        "BesServerConfig.java",
+        "BesStreamKey.java",
+        "BesStreamState.java",
+        "BesStreamTracker.java",
+        "PublishBuildEventService.java",
+        "RawBesEvent.java",
+        "RawBytesMarshaller.java",
+        "RawEventSink.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//proto:proto",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:io_grpc_grpc_api",
+        "@maven//:io_grpc_grpc_netty_shaded",
+        "@maven//:io_grpc_grpc_protobuf",
+        "@maven//:io_grpc_grpc_stub",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+    visibility = ["//visibility:public"],
+)

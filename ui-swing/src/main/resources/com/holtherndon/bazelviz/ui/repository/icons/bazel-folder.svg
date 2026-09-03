@@ -1,0 +1,183 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  role="img"
+  aria-labelledby="title desc"
+>
+  <title id="title">Bazel-specific directory folder icon</title>
+  <desc id="desc">
+    A green folder with a fully connected tab and a full-width lower
+    panel containing the centered word Bazel.
+  </desc>
+
+  <defs>
+    <linearGradient id="tabGradient" x1="64" y1="72" x2="276" y2="152">
+      <stop offset="0" stop-color="#B7DFB9"/>
+      <stop offset="1" stop-color="#91C994"/>
+    </linearGradient>
+
+    <linearGradient id="folderInterior" x1="256" y1="152" x2="256" y2="440">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F3FAF4"/>
+    </linearGradient>
+
+    <linearGradient id="labelPanel" x1="256" y1="288" x2="256" y2="448">
+      <stop offset="0" stop-color="#2E9F48"/>
+      <stop offset="0.24" stop-color="#169139"/>
+      <stop offset="1" stop-color="#087F23"/>
+    </linearGradient>
+
+    <filter id="folderShadow" x="-15%" y="-15%" width="130%" height="145%">
+      <feDropShadow
+        dx="0"
+        dy="7"
+        stdDeviation="7"
+        flood-color="#174B24"
+        flood-opacity="0.15"
+      />
+    </filter>
+
+    <clipPath id="folderClip">
+      <path
+        d="M56 152
+           V128
+           C56 92.7 84.7 64 120 64
+           H198
+           C220.8 64 242.1 75.5 254.6 94.6
+           L292 152
+           H416
+           C442.5 152 464 173.5 464 200
+           V416
+           C464 433.7 449.7 448 432 448
+           H80
+           C62.3 448 48 433.7 48 416
+           V168
+           C48 159.2 51.6 152 56 152Z"
+      />
+    </clipPath>
+  </defs>
+
+  <!-- Folder shadow -->
+  <path
+    d="M56 152
+       V128
+       C56 92.7 84.7 64 120 64
+       H198
+       C220.8 64 242.1 75.5 254.6 94.6
+       L292 152
+       H416
+       C442.5 152 464 173.5 464 200
+       V416
+       C464 433.7 449.7 448 432 448
+       H80
+       C62.3 448 48 433.7 48 416
+       V168
+       C48 159.2 51.6 152 56 152Z"
+    fill="#FFFFFF"
+    filter="url(#folderShadow)"
+  />
+
+  <!-- Unified folder interior -->
+  <path
+    d="M56 152
+       V128
+       C56 92.7 84.7 64 120 64
+       H198
+       C220.8 64 242.1 75.5 254.6 94.6
+       L292 152
+       H416
+       C442.5 152 464 173.5 464 200
+       V416
+       C464 433.7 449.7 448 432 448
+       H80
+       C62.3 448 48 433.7 48 416
+       V168
+       C48 159.2 51.6 152 56 152Z"
+    fill="url(#folderInterior)"
+  />
+
+  <!-- Tab fill, contained within the unified silhouette -->
+  <path
+    d="M56 152
+       V128
+       C56 92.7 84.7 64 120 64
+       H198
+       C220.8 64 242.1 75.5 254.6 94.6
+       L292 152Z"
+    fill="url(#tabGradient)"
+  />
+
+  <!-- Full-width lower label panel -->
+  <path
+    d="M48 296
+       H464
+       V416
+       C464 433.7 449.7 448 432 448
+       H80
+       C62.3 448 48 433.7 48 416Z"
+    fill="url(#labelPanel)"
+    clip-path="url(#folderClip)"
+  />
+
+  <!-- Panel top highlight -->
+  <path
+    d="M48 296H464V326H48Z"
+    fill="#2E9F48"
+    clip-path="url(#folderClip)"
+  />
+
+  <!-- Full-width panel dividing line -->
+  <path
+    d="M48 296H464"
+    fill="none"
+    stroke="#43A047"
+    stroke-width="16"
+    stroke-linecap="butt"
+    clip-path="url(#folderClip)"
+  />
+
+  <!-- Connected tab divider -->
+  <path
+    d="M56 152H292"
+    fill="none"
+    stroke="#43A047"
+    stroke-width="16"
+    stroke-linecap="butt"
+    stroke-linejoin="round"
+  />
+
+  <!-- Centered directory label -->
+  <text
+    x="256"
+    y="403"
+    fill="#FFFFFF"
+    font-family="Inter, Arial, Helvetica, sans-serif"
+    font-size="66"
+    font-weight="700"
+    letter-spacing="3"
+    text-anchor="middle"
+  >BAZEL</text>
+
+  <!-- Continuous outer folder outline, rendered last for clean joins -->
+  <path
+    d="M56 152
+       V128
+       C56 92.7 84.7 64 120 64
+       H198
+       C220.8 64 242.1 75.5 254.6 94.6
+       L292 152
+       H416
+       C442.5 152 464 173.5 464 200
+       V416
+       C464 433.7 449.7 448 432 448
+       H80
+       C62.3 448 48 433.7 48 416
+       V168
+       C48 159.2 51.6 152 56 152Z"
+    fill="none"
+    stroke="#43A047"
+    stroke-width="16"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

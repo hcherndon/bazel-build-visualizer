@@ -47,9 +47,12 @@ Window restoration reconnects saved SSH Workspaces because leaving the window
 open is persisted application state. It restores the Workspace, position and
 size and starts on Console. It does not reopen a historical session, start the
 Terminal, repopulate the command draft, or rerun a command. A saved Workspace's
-command history and table layout remain available; discovered Workspaces do not
-persist those per-window settings. A discovered Workspace restores only when
-startup discovery emits the same deterministic profile again.
+command history and table layout remain available. A discovered Workspace
+persists only its Bazel executable override and bounded command history, keyed
+by its deterministic identity; its profile, connection details, label, draft,
+table layout, and other window settings remain ephemeral. Those two launch
+preferences become reachable only when discovery emits that same profile again,
+and never restore a connection or run a command by themselves.
 When upgrading from the former single-window app, its command history is moved
 once into the saved Workspace whose repository and execution host match; it is
 never copied to an ambiguous SSH profile.
@@ -81,9 +84,10 @@ local|name|working-directory
 ssh|name|OpenSSH-destination-or-Host-alias|working-directory
 ```
 
-Discovered profiles use `bazel` as their executable. For SSH, put a custom
-port, jump host, identity file, and other connection options in
-`~/.ssh/config`; they are not extra output fields.
+New discovered profiles use `bazel` as their executable. If discovery later
+emits the same identity, the Console restores any Bazel override saved for it.
+For SSH, put a custom port, jump host, identity file, and other connection
+options in `~/.ssh/config`; they are not extra output fields.
 
 Every invocation replaces all results from the previous invocation. Accepted
 rows appear on the Workspaces screen and in **Workspaces › Available
@@ -103,8 +107,24 @@ directory holding everything captured, indexed for querying.
 ### Run a build through the tool
 
 Choose a Workspace, open **Console**, enter the Bazel command you would have
-typed, and press **Run**. The launcher shows the selected Workspace instead of
-asking for its machine, directory and executable again.
+typed, and press **Run**. The launcher shows the selected machine and directory.
+The left-aligned launch row places editable **Bazel Executable** immediately
+before **Capture detail**. Bazel Executable defaults to `bazel`; type another
+command available on that machine's PATH or an executable path when the
+Workspace needs one. There is no file-selector button. The typed value is saved
+to a saved Workspace profile or to the limited launch-preference sidecar for a
+discovered Workspace.
+
+Capture detail has no separate summary text. Hover an option in its dropdown to
+see the complete capture scope and cost explanation immediately. The selected
+option keeps that explanation as the control's accessible description.
+
+Clicking or focusing the command field opens its Workspace's recent commands
+below it, newest first.
+Five commands are visible before the list scrolls, and long entries keep their
+full text in a tooltip. Up and Down select without replacing what you typed;
+Tab fills the selection and Enter runs it immediately. Typing normally clears
+the selection, while Ctrl+Space opens Bazel subcommand completion.
 
 Before anything starts you are shown the **instrumentation plan**: your original
 command, the effective command the tool will actually run, every flag it added,
@@ -194,6 +214,11 @@ Warn, and leave stdout available for command output and JSON.
 The views on the left all describe the same session. Selecting an action in one
 usually reveals it in the others.
 
+Press Ctrl+Tab to move down one visible page in the current window's left
+navigation, or Ctrl+Shift+Tab to move up. The selection wraps at the bottom or
+top. These shortcuts stay with the current Workspace window and work while a
+text field or Terminal has focus; the Terminal does not receive those chords.
+
 ### Overview
 
 What the build did, as counts and cards. Every card navigates to the detailed
@@ -260,18 +285,18 @@ observed; the dependency chain is only a lower bound on what dependencies
 required. Their difference is a useful lead, not proof that a particular
 scheduler or machine caused the wait.
 
-The four cards show both totals, their signed difference when the dependency
-graph is fully timed, and observed idle time inside the timed-action window.
-The difference is withheld when node durations are missing because that gap
-would mix unknown work with scheduler delay. Unknown values remain unknown. The
-coverage text says which timing source weighted the graph, how many graph nodes
-were timed, and whether the imported graph was confirmed to use this build's
-configuration.
+The compact summary scrolls on small screens. Its cards show both totals, their
+signed difference when the dependency graph is fully timed, and observed idle
+time inside the timed-action window. The difference is withheld when node
+durations are missing because that gap would mix unknown work with scheduler
+delay. Unknown values remain unknown. **Show details** expands the timing
+source, graph trust, coverage, and full enrichment failure output without
+letting a multiline Bazel diagnostic stretch the page.
 
-The two tabs preserve each path's complete reported order. Both tables load
-200 rows at a time and retain eight recently visited pages, so a long path does
-not become an in-memory object list. Select a Bazel component to inspect its
-description and duration. Select a dependency step to
+The first two tabs preserve each path's complete reported order. Both path
+tables load 200 rows at a time and retain eight recently visited pages, so a
+long path does not become an in-memory object list. Select a Bazel component to
+inspect its description and duration. Select a dependency step to
 see its target, mnemonic, output, path weight, earliest start and finish, slack,
 and any matched execution-log signals such as queue, execution, network, and
 cache state. The path weight and execution detail stay explicitly separate:
@@ -283,10 +308,20 @@ chain in Graph** opens the same derived chain in the graph view; if Graph is
 still loading, the request waits for that reader instead of drawing against the
 wrong source.
 
+When the action graph is unavailable but the BEP has usable action timestamps,
+an enabled **Observed timing fallback** tab shows the single longest observed
+action span and its timing coverage. This is concrete lower-bound evidence, not
+an estimated dependency chain: no predecessor, path total, slack, or comparison
+with Bazel's path is inferred. Future captures avoid a common aquery failure by
+replaying only top-level labels that reached a BUILT or FAILED completion;
+configured-only incompatible wildcard matches are not made explicit targets.
+A complete successful invocation makes that completed-label scope exact. A
+failed or unknown invocation that omitted configured or aborted labels remains
+unverified and cannot support a complete dependency-path claim.
+
 The page always shows each path's exact length and never drops unmatched
-declared actions. A failed page
-replaces the loading inspector with its error instead of leaving details from a
-previous selection on screen. It preloads the richer execution breakdown only
+declared actions. A failed page replaces the loading inspector with its error
+instead of leaving details from a previous selection on screen. It preloads the richer execution breakdown only
 for the largest matched contributors; use **Reveal action** for full details on
 another executed step. Both limits and the exact reason for an unavailable path
 are stated on screen.
@@ -299,13 +334,16 @@ the Performance or Full capture preset and Bazel produced a valid
 `--starlark_cpu_profile` file.
 
 Summary explains the sampled CPU total, profile duration, sampling period, and
-coverage. Hot Functions and Files are searchable, sortable, and fully paged.
-Selecting a function lets Call Graph load its aggregate callers and callees.
-Flame draws root-to-leaf call contexts; double-click a context to focus it and
-use **Reset to all roots** to return. If the drawing limit is reached, the page
-states the exact omitted count while the complete data remains on the Query
-page. Double-click or right-click a source-bearing row to open it through the
-current local or SSH Workspace.
+coverage in a responsive, vertically scrolling view. Hot Functions and Files
+are searchable, sortable, and fully paged. Selecting a function lets Call Graph
+load its aggregate callers and callees. Hovering a graph node immediately shows
+its function and CPU totals; click or right-click it for source details. Flame
+draws root-to-leaf call contexts and uses the same immediate, compact hover
+details without repeating the source path and line. Double-click a context to
+focus it and use **Reset to all roots** to return. If the drawing limit is
+reached, the page states the exact omitted count while the complete data remains
+on the Query page. Double-click or right-click a source-bearing row to open it
+through the current local or SSH Workspace.
 
 Read these as statistical CPU samples, not elapsed build time. Several
 Starlark threads can make CPU exceed wall duration, blocked time is absent,
@@ -321,6 +359,20 @@ capture the row came from.
 
 The command line is shown one argument per numbered line, and secrets in it are
 masked.
+
+### Top Level Targets and All Targets
+
+**Top Level Targets** shows the labels named by the build event stream, either
+grouped under packages or as one flat list. **All Targets** uses the captured
+cquery result to include the transitive configured-target closure and expands
+configuration hashes only when requested.
+
+Both pages have a live full-label filter. It searches the complete stored
+population, not only loaded rows, while retaining bounded paging and exact
+matching counts. Rapid edits replace an older waiting search, while a search
+already reading SQLite may finish in the background and is prevented from
+replacing newer results. Clearing the filter restores the ordinary view;
+revealing a target from another page clears a filter that would hide it.
 
 ### Graph and Tree
 

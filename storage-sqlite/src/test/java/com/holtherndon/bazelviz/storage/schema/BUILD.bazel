@@ -1,0 +1,118 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "MigrationRunnerTest.java",
+        "SchemaV2Test.java",
+        "SchemaV4Test.java",
+        "SchemaV5Test.java",
+        "SchemaV6Test.java",
+        "SchemaV7Test.java",
+        "SchemaV8Test.java",
+        "SchemaV9Test.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "MigrationRunnerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.MigrationRunnerTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SchemaV2Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.SchemaV2Test",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SchemaV4Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.SchemaV4Test",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SchemaV5Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.SchemaV5Test",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SchemaV6Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.SchemaV6Test",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SchemaV7Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.SchemaV7Test",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SchemaV8Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.SchemaV8Test",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SchemaV9Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.SchemaV9Test",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":MigrationRunnerTest",
+        ":SchemaV2Test",
+        ":SchemaV4Test",
+        ":SchemaV5Test",
+        ":SchemaV6Test",
+        ":SchemaV7Test",
+        ":SchemaV8Test",
+        ":SchemaV9Test",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -102,6 +102,15 @@ the old local selection and up to 20 SSH connection records. Command history
 and other launcher preferences remain in that legacy file; it is not the
 source of truth for Workspaces after migration.
 
+Discovered Workspace definitions are never saved, but their Bazel executable
+override and bounded command history live separately under
+`settings/discovered-workspace-history/`. Those launch preferences are
+reachable only when discovery emits the same execution kind, SSH destination,
+and working directory again. Changing only the displayed name keeps the same
+preferences; changing the machine or directory creates a new identity. These
+files contain no connection, repository, profile, or label metadata that could
+recreate a missing discovered Workspace.
+
 ### Workspace Discovery is missing, fails, or shows stale rows
 
 Open **Settings › Preferences…** and choose the **Discovery** tab. The saved
@@ -161,6 +170,19 @@ Linux tools used for safe metadata, staging and process control. Its error names
 the missing tool or subsystem. The first implementation supports headless Linux
 hosts with the standard `/bin` and `/usr/bin` utilities; another Unix layout
 does not silently fall back to running the command locally.
+
+### The selected Bazel executable cannot be found
+
+The Console's **Bazel Executable** belongs to that Workspace and defaults to
+`bazel`. Type a command available on the selected machine's PATH, or an
+executable path on that machine. The field has no file-selector button, so type
+remote paths as they appear on the SSH host rather than as desktop paths.
+
+A saved Workspace stores the corrected value in `workspaces.properties`. A
+discovered Workspace stores only this override and its bounded command history
+in its deterministic sidecar. If preflight still fails, verify the path and
+execute permission on the selected machine. For a bare command, verify PATH in
+the non-interactive environment shown by the launch review.
 
 ### The reverse SSH tunnel is refused
 
@@ -252,15 +274,22 @@ do not remove a broad `/tmp` path.
   does not replace the saved choice.
 - Saved local/SSH Workspaces: `settings/workspaces.properties` beside the
   managed `sessions/` directory. Deleting it forgets names and execution
-  locations, not a repository, captured session or OpenSSH credential.
+  locations, including their Bazel executable, not a repository, captured
+  session or OpenSSH credential.
+- Per-saved-Workspace history and presentation state:
+  `settings/workspace-windows/<sha256-profile-id>/`. The Bazel executable
+  itself remains in `workspaces.properties`.
+- Per-discovered-Workspace Bazel override and bounded command history:
+  `settings/discovered-workspace-history/<sha256-profile-id>/`. These files do
+  not persist the discovered profile or make it available without discovery.
 - Workspace Discovery script: `settings/workspace-discovery`. The saved script
   persists and runs locally at graphical startup; its **Discovered** profiles
   do not persist. Deleting the script disables that saved configuration but
   does not delete a repository or captured session.
-- Launcher command history and compatibility values:
-  `settings/launcher.properties`. Older local and SSH location values may be
-  read once for Workspace migration, but this file is no longer the Workspace
-  source of truth.
+- Legacy launcher compatibility values: `settings/launcher.properties`.
+  Older local and SSH locations and command history may be read once for
+  Workspace migration, but this file is no longer the source of truth for
+  current Workspace settings or history.
 - Headless app smoke run: `bazel run //app:app -- --jvm_flag=-Dbbv.smoke=true`
   opens the window and exits after two seconds.
 - CI failures: the workflow uploads `bazel-testlogs/**` as an artifact on

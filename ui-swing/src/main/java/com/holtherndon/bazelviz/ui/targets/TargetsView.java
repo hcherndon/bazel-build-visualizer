@@ -28,6 +28,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.LongConsumer;
@@ -38,9 +39,13 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
+import javax.swing.JTextField;
 import javax.swing.JTree;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.event.TreeExpansionEvent;
 import javax.swing.event.TreeWillExpandListener;
 import javax.swing.tree.DefaultMutableTreeNode;
@@ -106,6 +111,8 @@ public final class TargetsView extends JPanel {
   private final CardLayout browseCards = new CardLayout();
   private final JPanel browseDeck = new JPanel(browseCards);
   private final JComboBox<BrowseMode> browseMode = new JComboBox<>(BrowseMode.values());
+  private final JTextField labelFilter = new JTextField(20);
+  private final Timer filterDebounce = new Timer(250, event -> applyFilter());
   private final JButton loadMoreLabels = new JButton("Load more targets");
   private final InspectorPanel inspector = new InspectorPanel();
   private final JLabel statusLabel = new JLabel(" ");
@@ -116,14 +123,20 @@ public final class TargetsView extends JPanel {
   private ExecutorService executor;
   private EntityReader reader;
   private SessionSource source;
+  private Future<?> packageTask;
+  private Future<?> flatPageTask;
   private LongConsumer showEventHandler = eventId -> {};
   private long selectionGeneration;
+  private long filterGeneration;
+  private boolean packageLoading;
+  private boolean packageLoaded;
   private boolean flatPageLoading;
   private long flatLabelCount = -1;
   private String flatAfterLabel;
   private SelectedTarget selectedFlatTarget;
   private String packageStatus = " ";
   private String flatStatus = " ";
+  private String filterText = "";
 
   /**
    * The shared cross-view navigation actions, once {@link #installEntityActions} has run. Null
@@ -154,6 +167,7 @@ public final class TargetsView extends JPanel {
     PlainText.install(flatTree);
     PlainText.disableHtml(statusLabel);
     PlainText.disableHtml(emptyLabel);
+    PlainText.disableHtml(labelFilter);
     tree.setRootVisible(false);
     tree.setShowsRootHandles(true);
     tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
@@ -232,6 +246,14 @@ public final class TargetsView extends JPanel {
     browseMode.addActionListener(event -> switchBrowseMode());
     bar.add(viewLabel);
     bar.add(browseMode);
+    filterDebounce.setRepeats(false);
+    labelFilter.setToolTipText(
+        PlainText.tooltip("Show top-level targets whose full Bazel label contains this text."));
+    labelFilter.getDocument().addDocumentListener(filterListener());
+    JLabel filterLabel = new JLabel("Filter labels:");
+    filterLabel.setLabelFor(labelFilter);
+    bar.add(filterLabel);
+    bar.add(labelFilter);
     toolbarActions.add(
         new ToolbarAction(
             EntityActions.Command.OPEN_IN_TREE,
@@ -384,7 +406,6 @@ public final class TargetsView extends JPanel {
         () -> {
           try {
             EntityReader opened = newSource.openEntityReader();
-            List<TargetQueries.PackageSummary> packages = opened.packages();
             SwingUtilities.invokeLater(
                 () -> {
                   if (source != newSource) {
@@ -392,14 +413,17 @@ public final class TargetsView extends JPanel {
                     return;
                   }
                   reader = opened;
-                  install(packages);
-                  if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
-                    ensureFlatPage();
-                  }
+                  cards.show(deck, CARD_TREE);
+                  switchBrowseMode();
                 });
           } catch (RuntimeException failure) {
             log.error("could not read targets", failure);
-            SwingUtilities.invokeLater(() -> showEmpty(failure.getMessage()));
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (source == newSource) {
+                    showEmpty("Could not read targets: " + failure.getMessage());
+                  }
+                });
           }
         });
   }
@@ -410,11 +434,19 @@ public final class TargetsView extends JPanel {
 
   /** Detaches immediately and completes after this session's target reads have stopped. */
   public CompletionStage<Void> closeSessionAsync() {
+    filterDebounce.stop();
+    filterGeneration++;
+    selectionGeneration++;
+    filterText = "";
+    labelFilter.setText("");
+    filterDebounce.stop();
     pendingRevealTargetId = null;
     pendingRevealPackagePath = null;
     revealGeneration++;
     root.removeAllChildren();
     treeModel.reload();
+    packageLoading = false;
+    packageLoaded = false;
     flatRoot.removeAllChildren();
     flatTreeModel.reload();
     flatPageLoading = false;
@@ -428,6 +460,10 @@ public final class TargetsView extends JPanel {
     // Whatever was selected is gone with the tree, and the toolbar must
     // not keep offering jumps for a target that is no longer on screen.
     updateToolbar();
+    cancelTask(packageTask, true);
+    cancelTask(flatPageTask, true);
+    packageTask = null;
+    flatPageTask = null;
     ExecutorService stopping = executor;
     EntityReader closing = reader;
     source = null;
@@ -468,6 +504,11 @@ public final class TargetsView extends JPanel {
   public void revealLabel(String label) {
     Objects.requireNonNull(label, "label");
     browseMode.setSelectedItem(BrowseMode.PACKAGES);
+    if (!filterText.isEmpty() || !labelFilter.getText().isEmpty()) {
+      labelFilter.setText("");
+      filterDebounce.stop();
+      applyFilter();
+    }
     ExecutorService running = executor;
     EntityReader current = reader;
     if (running == null || current == null) {
@@ -577,6 +618,10 @@ public final class TargetsView extends JPanel {
     return root.getChildCount();
   }
 
+  String packageTextForTest(int index) {
+    return root.getChildAt(index).toString();
+  }
+
   /** Visible for testing: the selected target row's label, or null. */
   String selectedLabelForTest() {
     TargetRow row = selectedRow();
@@ -588,7 +633,60 @@ public final class TargetsView extends JPanel {
     return statusLabel.getText();
   }
 
-  private void install(List<TargetQueries.PackageSummary> packages) {
+  private void ensurePackageResults() {
+    if (reader != null && !packageLoaded && !packageLoading) {
+      loadPackages();
+    }
+  }
+
+  /** Reads filtered package summaries off the EDT. Children remain lazy. */
+  private void loadPackages() {
+    EntityReader current = reader;
+    ExecutorService running = executor;
+    SessionSource opened = source;
+    if (packageLoading || current == null || running == null || opened == null) {
+      return;
+    }
+    packageLoading = true;
+    String requestedFilter = filterText;
+    long generation = filterGeneration;
+    packageStatus = requestedFilter.isEmpty() ? "Reading targets…" : "Filtering target labels…";
+    if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
+      statusLabel.setText(packageStatus);
+    }
+    packageTask =
+        running.submit(
+            () -> {
+              try {
+                List<TargetQueries.PackageSummary> packages = current.packages(requestedFilter);
+                SwingUtilities.invokeLater(
+                    () -> installPackages(opened, generation, requestedFilter, packages));
+              } catch (RuntimeException failure) {
+                log.error("could not read targets", failure);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (source == opened && generation == filterGeneration) {
+                        packageLoading = false;
+                        packageStatus = "Could not read targets: " + failure.getMessage();
+                        if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
+                          statusLabel.setText(packageStatus);
+                        }
+                      }
+                    });
+              }
+            });
+  }
+
+  private void installPackages(
+      SessionSource opened,
+      long generation,
+      String requestedFilter,
+      List<TargetQueries.PackageSummary> packages) {
+    if (source != opened || generation != filterGeneration) {
+      return;
+    }
+    packageLoading = false;
+    packageLoaded = true;
     root.removeAllChildren();
     long targets = 0;
     long failed = 0;
@@ -603,13 +701,20 @@ public final class TargetsView extends JPanel {
     }
     treeModel.reload();
     if (packages.isEmpty()) {
-      showEmpty("This session recorded no targets.");
+      packageStatus =
+          requestedFilter.isEmpty()
+              ? "This session recorded no targets."
+              : "No top-level target labels match \"" + requestedFilter + "\".";
+      if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
+        statusLabel.setText(packageStatus);
+        inspector.show(Inspection.NONE);
+      }
       return;
     }
     StringBuilder status =
         new StringBuilder()
             .append(EntityFormat.count(targets))
-            .append(" target rows in ")
+            .append(requestedFilter.isEmpty() ? " target rows in " : " matching target rows in ")
             .append(EntityFormat.count(packages.size()))
             .append(packages.size() == 1 ? " package" : " packages");
     if (failed > 0) {
@@ -623,7 +728,10 @@ public final class TargetsView extends JPanel {
     }
     packageStatus = status.toString();
     cards.show(deck, CARD_TREE);
-    switchBrowseMode();
+    if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
+      statusLabel.setText(packageStatus);
+      selectionChanged();
+    }
   }
 
   /** EDT: swaps the two presentations without changing what counts as top level. */
@@ -637,9 +745,75 @@ public final class TargetsView extends JPanel {
     } else {
       browseCards.show(browseDeck, BROWSE_PACKAGES);
       statusLabel.setText(packageStatus);
+      ensurePackageResults();
       selectionChanged();
     }
     updateToolbar();
+  }
+
+  /** Restarts the current presentation against a literal label filter after typing settles. */
+  private void applyFilter() {
+    String next = labelFilter.getText().strip();
+    if (next.equals(filterText)) {
+      return;
+    }
+    filterText = next;
+    filterGeneration++;
+    cancelTask(packageTask, false);
+    cancelTask(flatPageTask, false);
+    packageTask = null;
+    flatPageTask = null;
+    selectionGeneration++;
+    revealGeneration++;
+    pendingRevealTargetId = null;
+    pendingRevealPackagePath = null;
+
+    packageLoading = false;
+    packageLoaded = false;
+    root.removeAllChildren();
+    treeModel.reload();
+    packageStatus = next.isEmpty() ? "Reading targets…" : "Filtering target labels…";
+
+    flatPageLoading = false;
+    flatLabelCount = -1;
+    flatAfterLabel = null;
+    selectedFlatTarget = null;
+    flatRoot.removeAllChildren();
+    flatTreeModel.reload();
+    flatStatus = next.isEmpty() ? "Reading top-level target labels…" : "Filtering target labels…";
+
+    inspector.show(Inspection.NONE);
+    loadMoreLabels.setEnabled(false);
+    updateToolbar();
+    if (reader != null) {
+      cards.show(deck, CARD_TREE);
+      switchBrowseMode();
+    }
+  }
+
+  private DocumentListener filterListener() {
+    return new DocumentListener() {
+      @Override
+      public void insertUpdate(DocumentEvent event) {
+        filterDebounce.restart();
+      }
+
+      @Override
+      public void removeUpdate(DocumentEvent event) {
+        filterDebounce.restart();
+      }
+
+      @Override
+      public void changedUpdate(DocumentEvent event) {
+        filterDebounce.restart();
+      }
+    };
+  }
+
+  private static void cancelTask(Future<?> task, boolean mayInterrupt) {
+    if (task != null) {
+      task.cancel(mayInterrupt);
+    }
   }
 
   private void ensureFlatPage() {
@@ -669,33 +843,46 @@ public final class TargetsView extends JPanel {
       statusLabel.setText(flatStatus);
     }
     String boundary = flatAfterLabel;
-    running.execute(
-        () -> {
-          try {
-            long total = flatLabelCount < 0 ? current.topLevelTargetLabelCount() : flatLabelCount;
-            List<String> labels =
-                boundary == null
-                    ? current.firstTopLevelTargetLabels(FLAT_LABEL_PAGE_SIZE)
-                    : current.topLevelTargetLabelsAfter(boundary, FLAT_LABEL_PAGE_SIZE);
-            SwingUtilities.invokeLater(() -> installFlatPage(opened, total, labels));
-          } catch (RuntimeException failure) {
-            log.warn("could not read the flat top-level target list", failure);
-            SwingUtilities.invokeLater(
-                () -> {
-                  if (source == opened) {
-                    flatPageLoading = false;
-                    flatStatus = "Could not read target labels: " + failure.getMessage();
-                    if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
-                      statusLabel.setText(flatStatus);
-                    }
-                  }
-                });
-          }
-        });
+    String requestedFilter = filterText;
+    long generation = filterGeneration;
+    flatPageTask =
+        running.submit(
+            () -> {
+              try {
+                long total =
+                    flatLabelCount < 0
+                        ? current.topLevelTargetLabelCount(requestedFilter)
+                        : flatLabelCount;
+                List<String> labels =
+                    boundary == null
+                        ? current.firstTopLevelTargetLabels(requestedFilter, FLAT_LABEL_PAGE_SIZE)
+                        : current.topLevelTargetLabelsAfter(
+                            requestedFilter, boundary, FLAT_LABEL_PAGE_SIZE);
+                SwingUtilities.invokeLater(
+                    () -> installFlatPage(opened, generation, requestedFilter, total, labels));
+              } catch (RuntimeException failure) {
+                log.warn("could not read the flat top-level target list", failure);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (source == opened && generation == filterGeneration) {
+                        flatPageLoading = false;
+                        flatStatus = "Could not read target labels: " + failure.getMessage();
+                        if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
+                          statusLabel.setText(flatStatus);
+                        }
+                      }
+                    });
+              }
+            });
   }
 
-  private void installFlatPage(SessionSource opened, long total, List<String> labels) {
-    if (source != opened) {
+  private void installFlatPage(
+      SessionSource opened,
+      long generation,
+      String requestedFilter,
+      long total,
+      List<String> labels) {
+    if (source != opened || generation != filterGeneration) {
       return;
     }
     for (String label : labels) {
@@ -709,10 +896,14 @@ public final class TargetsView extends JPanel {
     flatTreeModel.reload();
     long loaded = flatRoot.getChildCount();
     flatStatus =
-        EntityFormat.count(loaded)
-            + " of "
-            + EntityFormat.count(total)
-            + " distinct top-level target labels loaded";
+        total == 0 && !requestedFilter.isEmpty()
+            ? "No top-level target labels match \"" + requestedFilter + "\"."
+            : EntityFormat.count(loaded)
+                + " of "
+                + EntityFormat.count(total)
+                + (requestedFilter.isEmpty()
+                    ? " distinct top-level target labels loaded"
+                    : " matching top-level target labels loaded");
     boolean hasMore = loaded < total;
     loadMoreLabels.setEnabled(hasMore);
     loadMoreLabels.setToolTipText(
@@ -814,12 +1005,19 @@ public final class TargetsView extends JPanel {
     if (running == null || current == null) {
       return;
     }
+    SessionSource opened = source;
+    String requestedFilter = filterText;
+    long generation = filterGeneration;
     running.execute(
         () -> {
           try {
-            List<TargetRow> rows = current.targetsInPackage(packageNode.summary.path());
+            List<TargetRow> rows =
+                current.targetsInPackage(packageNode.summary.path(), requestedFilter);
             SwingUtilities.invokeLater(
                 () -> {
+                  if (source != opened || generation != filterGeneration) {
+                    return;
+                  }
                   node.removeAllChildren();
                   for (TargetRow row : rows) {
                     node.add(new DefaultMutableTreeNode(new TargetNode(row)));
@@ -833,6 +1031,9 @@ public final class TargetsView extends JPanel {
             log.warn("could not read targets in {}", packageNode.summary.path(), failure);
             SwingUtilities.invokeLater(
                 () -> {
+                  if (source != opened || generation != filterGeneration) {
+                    return;
+                  }
                   node.removeAllChildren();
                   node.add(
                       new DefaultMutableTreeNode("could not be read: " + failure.getMessage()));
@@ -861,6 +1062,7 @@ public final class TargetsView extends JPanel {
     if (running == null || current == null) {
       return;
     }
+    SessionSource opened = source;
     running.execute(
         () -> {
           try {
@@ -873,7 +1075,9 @@ public final class TargetsView extends JPanel {
                         : List.of());
             SwingUtilities.invokeLater(
                 () -> {
-                  if (generation == selectionGeneration) {
+                  if (source == opened
+                      && generation == selectionGeneration
+                      && browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
                     inspector.show(inspection);
                   }
                 });
@@ -996,6 +1200,20 @@ public final class TargetsView extends JPanel {
 
   void showAllTargetsForTest() {
     browseMode.setSelectedItem(BrowseMode.ALL_TARGETS);
+  }
+
+  void showPackagesForTest() {
+    browseMode.setSelectedItem(BrowseMode.PACKAGES);
+  }
+
+  void setFilterTextForTest(String text) {
+    labelFilter.setText(text);
+  }
+
+  void applyFilterTextForTest(String text) {
+    labelFilter.setText(text);
+    filterDebounce.stop();
+    applyFilter();
   }
 
   int flatLabelCountForTest() {

@@ -1,0 +1,33 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "AppDirectoriesTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//app/src/main/java/com/holtherndon/bazelviz/app/dirs:dirs",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "AppDirectoriesTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.dirs.AppDirectoriesTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":AppDirectoriesTest",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,12 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "bepcodec",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
+        "//proto",
+    ],
+    visibility = ["//visibility:public"],
+)

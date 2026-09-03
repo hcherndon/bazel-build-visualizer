@@ -1,0 +1,12 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "bep",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//proto",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/synthetic",
+        "@maven//:com_google_protobuf_protobuf_java_util",
+    ],
+    visibility = ["//visibility:public"],
+)

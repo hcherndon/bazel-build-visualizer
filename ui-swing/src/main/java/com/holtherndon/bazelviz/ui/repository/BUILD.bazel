@@ -1,0 +1,17 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "repository",
+    srcs = glob(["*.java"]),
+    resources = ["//ui-swing/src/main/resources:resources"],
+    deps = [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/lifecycle",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_formdev_flatlaf_extras",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

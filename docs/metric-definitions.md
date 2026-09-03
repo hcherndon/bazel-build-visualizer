@@ -470,6 +470,20 @@ with the counts above.
   includes both cycle members and actions downstream of a cycle; it is not
   presented as exact cycle membership.
 
+### Observed action timing lower bound
+
+- *Definition:* the longest positive `end_micros - start_micros` span among
+  action events in the BEP.
+- *Source:* action start and end timestamps from the build event stream.
+- *Coverage:* the page states how many actions had a usable positive span and
+  the total action count.
+- *Shown when:* the visualizer-computed dependency path is unavailable or not
+  computable and at least one usable BEP action span exists.
+- **Not a dependency path or an estimate of one.** A single action proves only
+  that the observed build spent at least that long in that action. It supplies
+  no dependency edge, predecessor, path total, slack, scheduling gap, or valid
+  comparison with Bazel's critical path.
+
 ### Slack
 - *Definition:* how much later an action could have started without delaying
   the build, from the backward pass.

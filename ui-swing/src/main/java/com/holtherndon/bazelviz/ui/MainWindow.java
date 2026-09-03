@@ -424,9 +424,11 @@ public final class MainWindow extends JFrame {
   private final JMenuItem closeSessionItem = new JMenuItem("Close Session");
   private final DefaultListModel<NavEntry> navModel = new DefaultListModel<>();
   private final JList<NavEntry> nav = new JList<>(navModel);
+  private final WindowNavigationKeys navigationKeys;
 
   private final LauncherPanel launcherPanel =
-      new LauncherPanel(this::startLaunch, this::showWorkspaceHome, this::chooseBazelExecutable);
+      new LauncherPanel(
+          this::startLaunch, this::showWorkspaceHome, this::updateManagedBazelExecutable);
   private final CapturePanel capturePanel = new CapturePanel();
   private final ConsoleView consoleView = new ConsoleView();
 
@@ -584,17 +586,23 @@ public final class MainWindow extends JFrame {
     this.catalogDirectory = Objects.requireNonNull(catalogDirectory, "catalogDirectory");
     settingsDirectory = Objects.requireNonNull(settingsDirectory, "settingsDirectory");
     Path windowSettingsDirectory;
+    Path discoveredLaunchSettingsDirectory;
     if (applicationHost == null) {
       windowSettingsDirectory = settingsDirectory;
+      discoveredLaunchSettingsDirectory = null;
     } else if (workspaceManagerWindow) {
       windowSettingsDirectory = WorkspaceUiSettings.manager(settingsDirectory);
+      discoveredLaunchSettingsDirectory = null;
     } else {
+      String workspaceId = Objects.requireNonNull(initialWorkspace, "initialWorkspace").id();
       windowSettingsDirectory =
           WorkspaceUiSettings.forWorkspaceWindow(
-                  settingsDirectory,
-                  Objects.requireNonNull(initialWorkspace, "initialWorkspace").id(),
-                  initialWorkspaceDiscovered)
+                  settingsDirectory, workspaceId, initialWorkspaceDiscovered)
               .orElse(null);
+      discoveredLaunchSettingsDirectory =
+          initialWorkspaceDiscovered
+              ? WorkspaceUiSettings.discoveredHistory(settingsDirectory, workspaceId)
+              : null;
     }
     this.loggingRuntime = Objects.requireNonNull(loggingRuntime, "loggingRuntime");
     this.applicationHost = applicationHost;
@@ -677,6 +685,8 @@ public final class MainWindow extends JFrame {
     // files lazily on their own I/O threads.
     if (windowSettingsDirectory != null) {
       launcherPanel.attachPersistence(windowSettingsDirectory);
+    } else if (discoveredLaunchSettingsDirectory != null) {
+      launcherPanel.attachHistoryPersistence(discoveredLaunchSettingsDirectory);
     }
     queryView.attachLibrary(settingsDirectory);
     // The entity tables' per-view column state (widths, visibility,
@@ -821,6 +831,9 @@ public final class MainWindow extends JFrame {
       openWorkspace(initialWorkspace, false, initialWorkspaceDiscovered);
       setTitle("Bazel Build Visualizer — " + initialWorkspace.label());
     }
+    // Install the process-global dispatcher only after construction succeeds, so a constructor
+    // failure cannot leave this window retained by KeyboardFocusManager.
+    navigationKeys = WindowNavigationKeys.install(getRootPane(), nav);
   }
 
   /** The directory imported sessions are written into. */
@@ -849,6 +862,38 @@ public final class MainWindow extends JFrame {
       return Optional.of(profile);
     }
     return upsertWorkspace(profile) ? Optional.of(profile) : Optional.empty();
+  }
+
+  /** Applies one edited profile to the manager's in-memory list and persistence path. */
+  public boolean recordWorkspaceUpdated(WorkspaceProfile profile, boolean discovered) {
+    if (!SwingUtilities.isEventDispatchThread()) {
+      throw new IllegalStateException("workspace records must change on the EDT");
+    }
+    if (!workspaceManagerWindow || workspaceStore == null) {
+      throw new IllegalStateException("this window does not own workspace settings");
+    }
+    WorkspaceProfile replacement = Objects.requireNonNull(profile, "profile");
+    if (!discovered) {
+      return upsertWorkspace(replacement);
+    }
+    ArrayList<WorkspaceProfile> updated = new ArrayList<>(discoveredWorkspaceProfiles.size());
+    boolean found = false;
+    for (WorkspaceProfile candidate : discoveredWorkspaceProfiles) {
+      if (candidate.id().equals(replacement.id())) {
+        updated.add(replacement);
+        found = true;
+      } else {
+        updated.add(candidate);
+      }
+    }
+    if (!found) {
+      // A discovery rerun may remove an entry while its already-open window remains valid. Keep
+      // that window ephemeral and let its per-ID launch sidecar persist the safe conveniences.
+      return true;
+    }
+    discoveredWorkspaceProfiles = List.copyOf(updated);
+    refreshWorkspaceChoices();
+    return true;
   }
 
   /** Immutable current saved/discovered workspace menu, newest first. */
@@ -905,12 +950,17 @@ public final class MainWindow extends JFrame {
     return selectLogVerbosity(verbosity);
   }
 
-  /** Refreshes the terminal renderer after a process-global look-and-feel change. */
+  /** Refreshes terminal-style renderers after a process-global look-and-feel change. */
   public void refreshTerminalTheme() {
     try {
       terminalView.refreshTheme();
     } catch (RuntimeException failure) {
       log.warn("terminal theme refresh failed", failure);
+    }
+    try {
+      consoleView.refreshTheme();
+    } catch (RuntimeException failure) {
+      log.warn("console theme refresh failed", failure);
     }
   }
 
@@ -1038,6 +1088,7 @@ public final class MainWindow extends JFrame {
       return;
     }
     disposalStarted = true;
+    navigationKeys.close();
     ++workspaceConnectionGeneration;
     if (applicationHost != null && !workspaceManagerWindow && activeWorkspace != null) {
       applicationHost.workspaceWindowClosing(activeWorkspace.id());
@@ -1715,11 +1766,7 @@ public final class MainWindow extends JFrame {
     // ordinary Swing components it needs an explicit palette refresh.
     // A renderer fault must not undo a look and feel that is already live
     // or prevent that successful selection from being persisted.
-    try {
-      terminalView.refreshTheme();
-    } catch (RuntimeException refreshFailure) {
-      log.warn("the active terminal did not refresh for theme {}", theme.id(), refreshFailure);
-    }
+    refreshTerminalTheme();
     themePreferences.save(theme);
     if (applicationHost != null) {
       applicationHost.themeChanged();
@@ -2790,8 +2837,7 @@ public final class MainWindow extends JFrame {
             return updateManagedWorkspace(profile, activeWorkspaceDiscovered);
           }
           if (applicationHost != null) {
-            return applyWorkspaceUpdateBeforePersistence(
-                profile, applicationHost::workspaceUpdated, this::upsertWorkspace);
+            return applicationHost.workspaceUpdated(profile);
           }
           return upsertWorkspace(profile);
         });
@@ -3817,7 +3863,7 @@ public final class MainWindow extends JFrame {
       return;
     }
     String workingDirectoryText = workspace.workingDirectory();
-    String executable = workspace.bazelExecutable();
+    String executable = launcherPanel.bazelExecutable().strip();
     List<String> arguments = CommandLineParser.tokenize(typed);
     CaptureRequest request;
     if (workspace.kind() == WorkspaceProfile.Kind.SSH) {
@@ -3935,20 +3981,41 @@ public final class MainWindow extends JFrame {
     }
   }
 
-  private void chooseBazelExecutable() {
-    JFileChooser chooser = new JFileChooser();
-    chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-    chooser.setDialogTitle("Bazel executable");
-    String current = launcherPanel.bazelExecutable().strip();
-    if (current.contains(File.separator)) {
-      File asFile = new File(current);
-      if (asFile.getParentFile() != null && asFile.getParentFile().isDirectory()) {
-        chooser.setCurrentDirectory(asFile.getParentFile());
-      }
+  /** Validates and persists a Console edit without reconnecting the Workspace. */
+  private boolean updateManagedBazelExecutable(String executable) {
+    WorkspaceProfile current = activeWorkspace;
+    if (disposalStarted || current == null) {
+      return false;
     }
-    if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-      launcherPanel.setBazelExecutable(chooser.getSelectedFile().getAbsolutePath());
+    if (launchController.isBusy()) {
+      JOptionPane.showMessageDialog(
+          this,
+          "Finish or cancel the running Bazel command before changing its executable.",
+          "Build in progress",
+          JOptionPane.INFORMATION_MESSAGE);
+      return false;
     }
+    WorkspaceProfile replacement;
+    try {
+      replacement = current.withBazelExecutable(executable);
+    } catch (IllegalArgumentException invalid) {
+      JOptionPane.showMessageDialog(
+          this, invalid.getMessage(), "Invalid Bazel command", JOptionPane.ERROR_MESSAGE);
+      return false;
+    }
+    if (applicationHost != null) {
+      return applicationHost.workspaceUpdated(replacement);
+    }
+    activeWorkspace = replacement;
+    if (activeWorkspaceDiscovered) {
+      discoveredWorkspaceProfiles =
+          discoveredWorkspaceProfiles.stream()
+              .map(candidate -> candidate.id().equals(replacement.id()) ? replacement : candidate)
+              .toList();
+      refreshWorkspaceChoices();
+      return true;
+    }
+    return upsertWorkspace(replacement);
   }
 
   private void chooseWorkingDirectory() {
@@ -4186,6 +4253,12 @@ public final class MainWindow extends JFrame {
   private JComponent buildNavigation() {
     rebuildNavigation(false);
     nav.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+    nav.setToolTipText(
+        "Ctrl+Tab moves to the next page; Ctrl+Shift+Tab moves to the previous page.");
+    nav.getAccessibleContext()
+        .setAccessibleDescription(
+            "Application pages. Ctrl+Tab moves down and Ctrl+Shift+Tab moves up, wrapping at"
+                + " either end.");
     nav.setCellRenderer(
         new DefaultListCellRenderer() {
           private static final long serialVersionUID = 1L;

@@ -1,0 +1,13 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "export",
+    srcs = [
+        "TableExport.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/redact:redact",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/text:text",
+    ],
+    visibility = ["//visibility:public"],
+)

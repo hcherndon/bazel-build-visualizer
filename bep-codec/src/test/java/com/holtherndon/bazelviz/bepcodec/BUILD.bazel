@@ -1,0 +1,69 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",
+        "//proto",
+    ],
+)
+
+java_junit5_test(
+    name = "BepEventDecoderTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.bepcodec.BepEventDecoderTest",
+)
+
+java_junit5_test(
+    name = "BepPayloadTypeTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.bepcodec.BepPayloadTypeTest",
+)
+
+java_junit5_test(
+    name = "BepProtoSmokeTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.bepcodec.BepProtoSmokeTest",
+)
+
+java_junit5_test(
+    name = "EventIdDisplayTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.bepcodec.EventIdDisplayTest",
+)
+
+java_junit5_test(
+    name = "EventIdKeyTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.bepcodec.EventIdKeyTest",
+)
+
+java_junit5_test(
+    name = "Murmur3Hash128Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.bepcodec.Murmur3Hash128Test",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":BepEventDecoderTest",
+        ":BepPayloadTypeTest",
+        ":BepProtoSmokeTest",
+        ":EventIdDisplayTest",
+        ":EventIdKeyTest",
+        ":Murmur3Hash128Test",
+    ],
+    visibility = ["//visibility:public"],
+)

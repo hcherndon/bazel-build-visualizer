@@ -4,12 +4,22 @@ import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.ui.capture.LauncherStateStore.ExecutionHost;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.Component;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.FontMetrics;
+import java.awt.GraphicsConfiguration;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
+import java.awt.Rectangle;
+import java.awt.Toolkit;
 import java.awt.event.ActionEvent;
+import java.awt.event.FocusAdapter;
+import java.awt.event.FocusEvent;
 import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseMotionAdapter;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -24,37 +34,49 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Predicate;
 import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
+import javax.swing.DefaultListModel;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JPanel;
+import javax.swing.JPopupMenu;
+import javax.swing.JScrollPane;
 import javax.swing.JTextField;
 import javax.swing.KeyStroke;
+import javax.swing.ListSelectionModel;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
+import javax.swing.ToolTipManager;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.event.PopupMenuEvent;
+import javax.swing.event.PopupMenuListener;
+import javax.swing.plaf.basic.ComboPopup;
 import org.fife.ui.autocomplete.AutoCompletion;
+import org.fife.ui.autocomplete.AutoCompletionEvent;
 import org.fife.ui.autocomplete.BasicCompletion;
 import org.fife.ui.autocomplete.DefaultCompletionProvider;
 
 /**
  * The compact launcher at the top of the Console card.
  *
- * <p>Its four rows are deliberately labelled rather than inferred from field order. Pressing Run
- * only calls the window's preflight action; ADR-007's separate effective-command review remains the
- * only path to process launch. Preference I/O is delegated to a background executor and only
+ * <p>Its compact controls are deliberately labelled rather than inferred from field order. Pressing
+ * Run only calls the window's preflight action; ADR-007's separate effective-command review remains
+ * the only path to process launch. Preference I/O is delegated to a background executor and only
  * immutable snapshots cross back onto the EDT.
  */
 public final class LauncherPanel extends JPanel {
 
   private static final long serialVersionUID = 1L;
   private static final String NEW_SSH_CONNECTION = "New connection…";
+  private static int immediatePresetTooltipUsers;
+  private static int savedTooltipInitialDelay;
 
   private static final List<String> COMMON_SUBCOMMANDS =
       List.of(
@@ -77,9 +99,9 @@ public final class LauncherPanel extends JPanel {
   };
 
   private final JTextField workspace = new JTextField(34);
-  private final JTextField bazelExecutable = new JTextField(34);
+  private final JTextField bazelExecutable = new JTextField(24);
   private final JComboBox<CapturePreset> captureDetail = new JComboBox<>(VISIBLE_PRESETS);
-  private final JTextField command = new JTextField(34);
+  private final JTextField command = new HistoryCommandField(34);
   private final JComboBox<ExecutionHost> executionHost = new JComboBox<>(ExecutionHost.values());
   private final JTextField sshDestination = new JTextField(22);
   private final JTextField sshPort = new JTextField(5);
@@ -87,13 +109,29 @@ public final class LauncherPanel extends JPanel {
   private final JComboBox<String> savedSshConnections = new JComboBox<>();
   private final JButton forgetSshConnection = new JButton("Forget");
   private final JButton chooseWorkspace = new JButton("Choose workspace…");
-  private final JButton chooseBazel = new JButton("Choose Bazel…");
   private final JTextField selectedWorkspace = new JTextField();
   private final JButton changeWorkspace = new JButton("Change workspace…");
-  private final JPanel selectedWorkspaceRow = new JPanel(new GridBagLayout());
   private final JButton run = new JButton("Run");
-  private final JLabel presetSummary = new JLabel();
+  private final JPopupMenu recentCommandsMenu = new JPopupMenu();
+  private final DefaultListModel<String> recentCommandsModel = new DefaultListModel<>();
+  private final JList<String> recentCommandsList =
+      new JList<>(recentCommandsModel) {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String getToolTipText(MouseEvent event) {
+          int index = locationToIndex(event.getPoint());
+          Rectangle bounds = index < 0 ? null : getCellBounds(index, index);
+          return bounds == null || !bounds.contains(event.getPoint())
+              ? null
+              : PlainText.tooltip(getModel().getElementAt(index));
+        }
+      };
+  private final JScrollPane recentCommandsScroll = new JScrollPane(recentCommandsList);
   private final LauncherHistory history = new LauncherHistory();
+  private final Runnable runAction;
+  private final Predicate<String> managedBazelCommit;
+  private AutoCompletion commandCompletion;
   private final Timer saveDebounce = new Timer(400, event -> flushPersistence());
   private final EnumSet<Setting> editedBeforeLoadCompletes = EnumSet.noneOf(Setting.class);
   private SaveQueue saveQueue;
@@ -111,19 +149,27 @@ public final class LauncherPanel extends JPanel {
   private String remoteWorkspaceDraft = "";
   private String remoteBazelDraft = "bazel";
   private boolean managedWorkspace;
+  private boolean immediatePresetTooltipsActive;
   private ManagedWorkspace managedWorkspaceSelection;
+  private String lastCommittedManagedBazel = "";
 
   private JLabel hostLabel;
   private JLabel workspaceLabel;
   private JLabel bazelLabel;
+  private JLabel selectedWorkspaceLabel;
   private JPanel hostRow;
 
+  public LauncherPanel(Runnable runAction, Runnable chooseWorkspaceAction) {
+    this(runAction, chooseWorkspaceAction, ignored -> true);
+  }
+
   public LauncherPanel(
-      Runnable runAction, Runnable chooseWorkspaceAction, Runnable chooseBazelAction) {
+      Runnable runAction, Runnable chooseWorkspaceAction, Predicate<String> managedBazelCommit) {
     super(new GridBagLayout());
     Objects.requireNonNull(runAction, "runAction");
     Objects.requireNonNull(chooseWorkspaceAction, "chooseWorkspaceAction");
-    Objects.requireNonNull(chooseBazelAction, "chooseBazelAction");
+    this.runAction = runAction;
+    this.managedBazelCommit = Objects.requireNonNull(managedBazelCommit, "managedBazelCommit");
 
     setBorder(
         BorderFactory.createCompoundBorder(
@@ -148,25 +194,27 @@ public final class LauncherPanel extends JPanel {
     savedSshConnections.setName("launcher.savedSshConnections");
     forgetSshConnection.setName("launcher.forgetSshConnection");
     chooseWorkspace.setName("launcher.chooseWorkspace");
-    chooseBazel.setName("launcher.chooseBazel");
     selectedWorkspace.setName("launcher.selectedWorkspace");
     changeWorkspace.setName("launcher.changeWorkspace");
-    selectedWorkspaceRow.setName("launcher.selectedWorkspaceRow");
     run.setName("launcher.run");
-    presetSummary.setName("launcher.presetSummary");
+    recentCommandsMenu.setName("launcher.recentCommandsMenu");
+    recentCommandsList.setName("launcher.recentCommandsList");
+    recentCommandsScroll.setName("launcher.recentCommandsScroll");
 
     workspace.setToolTipText(
         PlainText.tooltip(
             "Where the build runs. Relative targets resolve against this directory."));
     bazelExecutable.setToolTipText(
         PlainText.tooltip(
-            "A Bazel name found on PATH, such as bazel or bazelisk, or a path to a binary."));
+            "A Bazel command found on PATH, such as bazel or bazelisk, or a path to its"
+                + " executable on the selected Workspace machine."));
     command.setToolTipText(
         PlainText.tooltip(
-            "The Bazel command without 'bazel', for example test //...."
-                + " Up/Down recalls up to "
+            "Arguments passed to the selected Bazel executable, for example test //...."
+                + " Click to show up to "
                 + LauncherHistory.MAX_ENTRIES
-                + " unique commands; Ctrl+Space completes a"
+                + " unique recent commands. Up/Down selects one, Tab fills it, and Enter"
+                + " runs it. Start typing to enter a new command; Ctrl+Space completes a"
                 + " common Bazel subcommand."));
     executionHost.setToolTipText(
         PlainText.tooltip(
@@ -188,15 +236,32 @@ public final class LauncherPanel extends JPanel {
     selectedWorkspace.setToolTipText(
         PlainText.tooltip("The selected repository and machine. Use Workspaces to change it."));
     changeWorkspace.setToolTipText("Return to the workspace chooser");
-
     captureDetail.setRenderer(new PresetRenderer());
-    presetSummary.setEnabled(false);
+    captureDetail.setAlignmentX(Component.LEFT_ALIGNMENT);
     captureDetail.addActionListener(
         event -> {
-          updatePresetSummary();
+          updatePresetTooltip();
           markDirty(Setting.PRESET);
         });
-    updatePresetSummary();
+    captureDetail.addPopupMenuListener(
+        new PopupMenuListener() {
+          @Override
+          public void popupMenuWillBecomeVisible(PopupMenuEvent event) {
+            beginImmediatePresetTooltips();
+            SwingUtilities.invokeLater(LauncherPanel.this::installPresetPopupTooltips);
+          }
+
+          @Override
+          public void popupMenuWillBecomeInvisible(PopupMenuEvent event) {
+            endImmediatePresetTooltips();
+          }
+
+          @Override
+          public void popupMenuCanceled(PopupMenuEvent event) {
+            endImmediatePresetTooltips();
+          }
+        });
+    updatePresetTooltip();
 
     executionHost.addActionListener(
         event -> {
@@ -208,16 +273,24 @@ public final class LauncherPanel extends JPanel {
     forgetSshConnection.addActionListener(event -> forgetSelectedSshConnection());
 
     chooseWorkspace.addActionListener(event -> chooseWorkspaceAction.run());
-    chooseBazel.addActionListener(event -> chooseBazelAction.run());
     changeWorkspace.addActionListener(event -> chooseWorkspaceAction.run());
-    run.addActionListener(event -> runAction.run());
-    command.addActionListener(event -> runAction.run());
-    bazelExecutable.addActionListener(event -> runAction.run());
+    run.addActionListener(event -> runCurrentCommand());
+    command.addActionListener(event -> runCurrentCommand());
+    bazelExecutable.addActionListener(event -> commitManagedBazelExecutable());
+    bazelExecutable.addFocusListener(
+        new FocusAdapter() {
+          @Override
+          public void focusLost(FocusEvent event) {
+            commitManagedBazelExecutable();
+          }
+        });
 
     installCompletion();
     installHistoryNavigation();
+    installRecentCommandsChooser();
     installPersistenceListeners();
     buildForm();
+    refreshRecentCommands();
     updateHostControls();
   }
 
@@ -249,9 +322,9 @@ public final class LauncherPanel extends JPanel {
   private void buildForm() {
     hostLabel = label("Run on", executionHost, "launcher.executionHostLabel");
     workspaceLabel = label("Workspace", workspace, "launcher.workspaceLabel");
-    bazelLabel = label("Bazel executable", bazelExecutable, "launcher.bazelLabel");
+    bazelLabel = label("Bazel Executable", bazelExecutable, "launcher.bazelLabel");
     JLabel detailLabel = label("Capture detail", captureDetail, "launcher.captureDetailLabel");
-    JLabel commandLabel = label("Bazel command (without bazel)", command, "launcher.commandLabel");
+    JLabel commandLabel = label("Bazel command", command, "launcher.commandLabel");
 
     JLabel destinationLabel =
         label("SSH destination", sshDestination, "launcher.sshDestinationLabel");
@@ -279,26 +352,26 @@ public final class LauncherPanel extends JPanel {
     add(workspace, constraints(1, 1, 1, 1));
     add(chooseWorkspace, constraints(2, 1, 0, 0));
 
+    JPanel launchOptions = new JPanel(new GridBagLayout());
+    launchOptions.setName("launcher.optionsRow");
+    launchOptions.add(bazelExecutable, inlineConstraints(0, 0, 0));
+    launchOptions.add(detailLabel, inlineConstraints(1, 8, 0));
+    launchOptions.add(captureDetail, inlineConstraints(2, 8, 1));
     add(bazelLabel, constraints(0, 2, 0, 0));
-    add(bazelExecutable, constraints(1, 2, 1, 1));
-    add(chooseBazel, constraints(2, 2, 0, 0));
+    add(launchOptions, constraints(1, 2, 1, 2));
 
-    add(detailLabel, constraints(0, 3, 0, 0));
-    JPanel presetRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-    presetRow.add(captureDetail);
-    presetRow.add(presetSummary);
-    add(presetRow, constraints(1, 3, 1, 2));
+    add(commandLabel, constraints(0, 3, 0, 0));
+    add(command, constraints(1, 3, 1, 1));
+    add(run, constraints(2, 3, 0, 0));
 
-    add(commandLabel, constraints(0, 4, 0, 0));
-    add(command, constraints(1, 4, 1, 1));
-    add(run, constraints(2, 4, 0, 0));
-
-    JLabel selectedLabel = label("Workspace", selectedWorkspace, "launcher.selectedWorkspaceLabel");
-    selectedWorkspaceRow.add(selectedLabel, sshConstraints(0, 0, 0, 1));
-    selectedWorkspaceRow.add(selectedWorkspace, sshConstraints(1, 0, 1, 1));
-    selectedWorkspaceRow.add(changeWorkspace, sshConstraints(2, 0, 0, 1));
-    selectedWorkspaceRow.setVisible(false);
-    add(selectedWorkspaceRow, constraints(0, 0, 1, 3));
+    selectedWorkspaceLabel =
+        label("Workspace", selectedWorkspace, "launcher.selectedWorkspaceLabel");
+    selectedWorkspaceLabel.setVisible(false);
+    selectedWorkspace.setVisible(false);
+    changeWorkspace.setVisible(false);
+    add(selectedWorkspaceLabel, constraints(0, 0, 0, 0));
+    add(selectedWorkspace, constraints(1, 0, 1, 1));
+    add(changeWorkspace, constraints(2, 0, 0, 0));
   }
 
   private static GridBagConstraints sshConstraints(int x, int y, double weightX, int gridWidth) {
@@ -313,6 +386,15 @@ public final class LauncherPanel extends JPanel {
     return constraints;
   }
 
+  private static GridBagConstraints inlineConstraints(int x, int leftInset, double weightX) {
+    GridBagConstraints constraints = new GridBagConstraints();
+    constraints.gridx = x;
+    constraints.weightx = weightX;
+    constraints.anchor = GridBagConstraints.WEST;
+    constraints.insets = new Insets(0, leftInset, 0, 0);
+    return constraints;
+  }
+
   private void updateHostControls() {
     boolean remote = executionHost() == ExecutionHost.SSH;
     hostLabel.setVisible(!managedWorkspace);
@@ -320,12 +402,13 @@ public final class LauncherPanel extends JPanel {
     executionHost.setVisible(!managedWorkspace);
     workspaceLabel.setVisible(!managedWorkspace);
     workspace.setVisible(!managedWorkspace);
-    bazelLabel.setVisible(!managedWorkspace);
-    bazelExecutable.setVisible(!managedWorkspace);
-    selectedWorkspaceRow.setVisible(managedWorkspace);
+    bazelLabel.setVisible(true);
+    bazelExecutable.setVisible(true);
+    selectedWorkspaceLabel.setVisible(managedWorkspace);
+    selectedWorkspace.setVisible(managedWorkspace);
+    changeWorkspace.setVisible(managedWorkspace);
     sshOptions.setVisible(!managedWorkspace && remote);
     chooseWorkspace.setVisible(!managedWorkspace && !remote);
-    chooseBazel.setVisible(!managedWorkspace && !remote);
     forgetSshConnection.setEnabled(remote && savedSshConnections.getSelectedIndex() > 0);
     workspace.setToolTipText(
         PlainText.tooltip(
@@ -335,8 +418,9 @@ public final class LauncherPanel extends JPanel {
     bazelExecutable.setToolTipText(
         PlainText.tooltip(
             remote
-                ? "Bazel executable name or absolute path on the SSH host."
-                : "A Bazel name found on PATH, such as bazel or bazelisk, or a path to a binary."));
+                ? "A Bazel command on PATH or an absolute executable path on the SSH host."
+                : "A Bazel command found on PATH, such as bazel or bazelisk, or a path to its"
+                    + " executable on this computer."));
     revalidate();
     repaint();
   }
@@ -427,17 +511,14 @@ public final class LauncherPanel extends JPanel {
     return constraints;
   }
 
-  private void updatePresetSummary() {
+  private void updatePresetTooltip() {
     CapturePreset selected = preset();
-    String summary =
-        switch (selected) {
-          case LIVE_ESSENTIALS -> "BEP + console · graph queries after build";
-          case PERFORMANCE_DIAGNOSTICS ->
-              "Adds execution log + two profiles · graph queries after build";
-          case FULL_GRAPH_DIAGNOSTICS ->
-              "Same capture as Performance today · graph queries after build";
-          case CUSTOM -> throw new IllegalStateException("Custom is not a visible launcher option");
-        };
+    String tooltip = presetTooltip(selected);
+    captureDetail.setToolTipText(PlainText.tooltip(tooltip));
+    captureDetail.getAccessibleContext().setAccessibleDescription(tooltip);
+  }
+
+  private static String presetTooltip(CapturePreset selected) {
     String explanation =
         switch (selected) {
           case LIVE_ESSENTIALS ->
@@ -450,14 +531,62 @@ public final class LauncherPanel extends JPanel {
                   + " today.";
           case CUSTOM -> throw new IllegalStateException("Custom is not a visible launcher option");
         };
-    String tooltip =
-        explanation
-            + " After every build, BBV runs aquery and cquery and indexes both graphs,"
-            + " using extra disk, CPU, and indexing time.";
-    presetSummary.setText(summary);
-    presetSummary.setToolTipText(PlainText.tooltip(tooltip));
-    captureDetail.setToolTipText(PlainText.tooltip(tooltip));
-    captureDetail.getAccessibleContext().setAccessibleDescription(tooltip);
+    return explanation
+        + " After every build, BBV runs aquery and cquery and indexes both graphs,"
+        + " using extra disk, CPU, and indexing time.";
+  }
+
+  private void beginImmediatePresetTooltips() {
+    if (immediatePresetTooltipsActive) {
+      return;
+    }
+    ToolTipManager tooltips = ToolTipManager.sharedInstance();
+    if (immediatePresetTooltipUsers == 0) {
+      savedTooltipInitialDelay = tooltips.getInitialDelay();
+      tooltips.setInitialDelay(0);
+    }
+    immediatePresetTooltipUsers++;
+    immediatePresetTooltipsActive = true;
+  }
+
+  private void endImmediatePresetTooltips() {
+    if (!immediatePresetTooltipsActive) {
+      return;
+    }
+    immediatePresetTooltipsActive = false;
+    immediatePresetTooltipUsers = Math.max(0, immediatePresetTooltipUsers - 1);
+    if (immediatePresetTooltipUsers == 0) {
+      ToolTipManager.sharedInstance().setInitialDelay(savedTooltipInitialDelay);
+    }
+  }
+
+  private void installPresetPopupTooltips() {
+    Object child = captureDetail.getAccessibleContext().getAccessibleChild(0);
+    if (!(child instanceof ComboPopup popup)) {
+      return;
+    }
+    JList<?> list = popup.getList();
+    if (Boolean.TRUE.equals(list.getClientProperty("bbv.presetTooltipsInstalled"))) {
+      return;
+    }
+    list.putClientProperty("bbv.presetTooltipsInstalled", Boolean.TRUE);
+    list.setToolTipText(captureDetail.getToolTipText());
+    list.addMouseMotionListener(
+        new MouseMotionAdapter() {
+          @Override
+          public void mouseMoved(MouseEvent event) {
+            int index = list.locationToIndex(event.getPoint());
+            Rectangle bounds = index < 0 ? null : list.getCellBounds(index, index);
+            Object value =
+                bounds != null && bounds.contains(event.getPoint())
+                    ? list.getModel().getElementAt(index)
+                    : null;
+            list.setToolTipText(
+                value instanceof CapturePreset preset
+                    ? PlainText.tooltip(presetTooltip(preset))
+                    : null);
+          }
+        });
   }
 
   private void installCompletion() {
@@ -466,42 +595,142 @@ public final class LauncherPanel extends JPanel {
       provider.addCompletion(new BasicCompletion(provider, subcommand, "Bazel subcommand"));
     }
     provider.setAutoActivationRules(false, null);
-    AutoCompletion completion = new AutoCompletion(provider);
-    completion.setAutoActivationEnabled(false);
-    completion.install(command);
+    commandCompletion = new AutoCompletion(provider);
+    commandCompletion.setAutoActivationEnabled(false);
+    commandCompletion.addAutoCompletionListener(
+        event -> {
+          if (event.getEventType() == AutoCompletionEvent.Type.POPUP_SHOWN) {
+            hideRecentCommands();
+          }
+        });
+    commandCompletion.install(command);
   }
 
   private void installHistoryNavigation() {
     command
         .getActionMap()
         .put(
-            "bbv-older-command",
+            "bbv-older-recent-command",
             new AbstractAction() {
               private static final long serialVersionUID = 1L;
 
               @Override
               public void actionPerformed(ActionEvent event) {
-                history.olderThan(command.getText()).ifPresent(LauncherPanel.this::recall);
+                moveRecentCommandSelection(-1);
               }
             });
     command
         .getActionMap()
         .put(
-            "bbv-newer-command",
+            "bbv-newer-recent-command",
             new AbstractAction() {
               private static final long serialVersionUID = 1L;
 
               @Override
               public void actionPerformed(ActionEvent event) {
-                history.newerThan(command.getText()).ifPresent(LauncherPanel.this::recall);
+                moveRecentCommandSelection(1);
+              }
+            });
+    command
+        .getActionMap()
+        .put(
+            "bbv-fill-recent-command",
+            new AbstractAction() {
+              private static final long serialVersionUID = 1L;
+
+              @Override
+              public void actionPerformed(ActionEvent event) {
+                if (!fillSelectedRecentCommand()) {
+                  command.transferFocus();
+                }
+              }
+            });
+    command
+        .getActionMap()
+        .put(
+            "bbv-run-recent-command",
+            new AbstractAction() {
+              private static final long serialVersionUID = 1L;
+
+              @Override
+              public void actionPerformed(ActionEvent event) {
+                runCurrentCommand();
+              }
+            });
+    command
+        .getActionMap()
+        .put(
+            "bbv-close-recent-commands",
+            new AbstractAction() {
+              private static final long serialVersionUID = 1L;
+
+              @Override
+              public void actionPerformed(ActionEvent event) {
+                hideRecentCommands();
+              }
+            });
+    command
+        .getActionMap()
+        .put(
+            "bbv-previous-launcher-field",
+            new AbstractAction() {
+              private static final long serialVersionUID = 1L;
+
+              @Override
+              public void actionPerformed(ActionEvent event) {
+                hideRecentCommands();
+                command.transferFocusBackward();
               }
             });
     command
         .getInputMap(JComponent.WHEN_FOCUSED)
-        .put(KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0), "bbv-older-command");
+        .put(KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0), "bbv-older-recent-command");
     command
         .getInputMap(JComponent.WHEN_FOCUSED)
-        .put(KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0), "bbv-newer-command");
+        .put(KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0), "bbv-newer-recent-command");
+    command
+        .getInputMap(JComponent.WHEN_FOCUSED)
+        .put(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, 0), "bbv-fill-recent-command");
+    command
+        .getInputMap(JComponent.WHEN_FOCUSED)
+        .put(
+            KeyStroke.getKeyStroke(KeyEvent.VK_TAB, KeyEvent.SHIFT_DOWN_MASK),
+            "bbv-previous-launcher-field");
+    command
+        .getInputMap(JComponent.WHEN_FOCUSED)
+        .put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "bbv-run-recent-command");
+    command
+        .getInputMap(JComponent.WHEN_FOCUSED)
+        .put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "bbv-close-recent-commands");
+    command.setFocusTraversalKeysEnabled(false);
+    command.addFocusListener(
+        new FocusAdapter() {
+          @Override
+          public void focusGained(FocusEvent event) {
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (command.hasFocus()) {
+                    showRecentCommands();
+                  }
+                });
+          }
+
+          @Override
+          public void focusLost(FocusEvent event) {
+            if (commandCompletion == null || !commandCompletion.isPopupVisible()) {
+              hideRecentCommands();
+            }
+          }
+        });
+    command.addMouseListener(
+        new MouseAdapter() {
+          @Override
+          public void mouseReleased(MouseEvent event) {
+            if (SwingUtilities.isLeftMouseButton(event) && command.isEnabled()) {
+              showRecentCommands();
+            }
+          }
+        });
   }
 
   private void recall(String value) {
@@ -513,6 +742,165 @@ public final class LauncherPanel extends JPanel {
       applying = false;
     }
     markDirty(Setting.COMMAND);
+  }
+
+  private void showRecentCommands() {
+    if (recentCommandsModel.isEmpty() || !command.isEnabled()) {
+      return;
+    }
+    recentCommandsList.clearSelection();
+    sizeRecentCommandsPopup(availableScreenSize());
+    recentCommandsMenu.setInvoker(command);
+    if (command.isShowing() && !recentCommandsMenu.isVisible()) {
+      recentCommandsMenu.show(command, 0, command.getHeight());
+    }
+  }
+
+  private void refreshRecentCommands() {
+    recentCommandsModel.clear();
+    List<String> commands = history.entries();
+    for (String priorCommand : commands) {
+      recentCommandsModel.addElement(priorCommand);
+    }
+    if (commands.isEmpty()) {
+      hideRecentCommands();
+    }
+  }
+
+  private void installRecentCommandsChooser() {
+    recentCommandsList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+    recentCommandsList.setVisibleRowCount(5);
+    recentCommandsList.setCellRenderer(new RecentCommandRenderer());
+    recentCommandsList.setFocusable(false);
+    recentCommandsList.setToolTipText("");
+    recentCommandsScroll.setFocusable(false);
+    recentCommandsScroll.getViewport().setFocusable(false);
+    recentCommandsScroll.getHorizontalScrollBar().setFocusable(false);
+    recentCommandsScroll.getVerticalScrollBar().setFocusable(false);
+    recentCommandsMenu.setFocusable(false);
+    recentCommandsList.getAccessibleContext().setAccessibleName("Recent Bazel commands");
+    recentCommandsList
+        .getAccessibleContext()
+        .setAccessibleDescription(
+            "Commands previously run in this Workspace, newest first. Use Up and Down in the"
+                + " command field, Tab to fill, or Enter to run.");
+    recentCommandsList.addMouseListener(
+        new MouseAdapter() {
+          @Override
+          public void mouseReleased(MouseEvent event) {
+            if (!SwingUtilities.isLeftMouseButton(event)) {
+              return;
+            }
+            int index = recentCommandsList.locationToIndex(event.getPoint());
+            Rectangle bounds = index < 0 ? null : recentCommandsList.getCellBounds(index, index);
+            if (bounds != null && bounds.contains(event.getPoint())) {
+              recentCommandsList.setSelectedIndex(index);
+              fillSelectedRecentCommand();
+            }
+          }
+        });
+    recentCommandsScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+    recentCommandsMenu.add(recentCommandsScroll);
+    recentCommandsMenu.addPopupMenuListener(
+        new PopupMenuListener() {
+          @Override
+          public void popupMenuWillBecomeVisible(PopupMenuEvent event) {}
+
+          @Override
+          public void popupMenuWillBecomeInvisible(PopupMenuEvent event) {
+            recentCommandsList.clearSelection();
+          }
+
+          @Override
+          public void popupMenuCanceled(PopupMenuEvent event) {
+            recentCommandsList.clearSelection();
+          }
+        });
+  }
+
+  private void moveRecentCommandSelection(int direction) {
+    if (recentCommandsModel.isEmpty()
+        || (commandCompletion != null && commandCompletion.isPopupVisible())) {
+      return;
+    }
+    if (!recentCommandsMenu.isVisible()) {
+      sizeRecentCommandsPopup(availableScreenSize());
+      recentCommandsMenu.setInvoker(command);
+      if (command.isShowing()) {
+        recentCommandsMenu.show(command, 0, command.getHeight());
+      }
+    }
+    int current = recentCommandsList.getSelectedIndex();
+    int selected =
+        current < 0
+            ? 0
+            : Math.max(0, Math.min(recentCommandsModel.getSize() - 1, current + direction));
+    recentCommandsList.setSelectedIndex(selected);
+    recentCommandsList.ensureIndexIsVisible(selected);
+  }
+
+  private boolean fillSelectedRecentCommand() {
+    String selected = recentCommandsList.getSelectedValue();
+    if (selected == null) {
+      return false;
+    }
+    recall(selected);
+    hideRecentCommands();
+    command.requestFocusInWindow();
+    return true;
+  }
+
+  private void runCurrentCommand() {
+    if (!commitManagedBazelExecutable()) {
+      return;
+    }
+    fillSelectedRecentCommand();
+    hideRecentCommands();
+    runAction.run();
+  }
+
+  private void hideRecentCommands() {
+    if (recentCommandsMenu.isVisible()) {
+      recentCommandsMenu.setVisible(false);
+    }
+    recentCommandsList.clearSelection();
+  }
+
+  private Dimension availableScreenSize() {
+    GraphicsConfiguration configuration = getGraphicsConfiguration();
+    if (configuration != null) {
+      return configuration.getBounds().getSize();
+    }
+    try {
+      return Toolkit.getDefaultToolkit().getScreenSize();
+    } catch (RuntimeException unavailable) {
+      return new Dimension(
+          Math.max(getWidth(), command.getPreferredSize().width),
+          Math.max(getHeight(), command.getPreferredSize().height));
+    }
+  }
+
+  private void sizeRecentCommandsPopup(Dimension available) {
+    int scrollBarWidth = recentCommandsScroll.getVerticalScrollBar().getPreferredSize().width;
+    int maximumPopupWidth = Math.max(1, available.width - 48);
+    int desiredViewportWidth =
+        command.getWidth() > 0 ? command.getWidth() : command.getPreferredSize().width;
+    int viewportWidth =
+        Math.max(
+            1,
+            Math.min(
+                desiredViewportWidth,
+                maximumPopupWidth - Math.min(scrollBarWidth + 4, maximumPopupWidth - 1)));
+    FontMetrics metrics = recentCommandsList.getFontMetrics(recentCommandsList.getFont());
+    int rowHeight = Math.max(recentCommandsList.getFixedCellHeight(), metrics.getHeight() + 8);
+    int visibleRows = Math.min(5, Math.max(1, recentCommandsModel.getSize()));
+    recentCommandsList.setVisibleRowCount(visibleRows);
+    int viewportHeight = rowHeight * visibleRows;
+    recentCommandsList.setFixedCellWidth(viewportWidth);
+    recentCommandsList.setFixedCellHeight(rowHeight);
+    recentCommandsScroll.setPreferredSize(
+        new Dimension(
+            Math.min(maximumPopupWidth, viewportWidth + scrollBarWidth + 4), viewportHeight + 4));
   }
 
   private void installPersistenceListeners() {
@@ -545,6 +933,7 @@ public final class LauncherPanel extends JPanel {
       private void changed() {
         if (resetsHistoryWalk && !applying) {
           history.resetNavigation();
+          recentCommandsList.clearSelection();
         }
         markDirty(setting);
       }
@@ -558,10 +947,24 @@ public final class LauncherPanel extends JPanel {
 
   /** Explicit store/executor seam for focused headless tests. */
   void attachPersistence(LauncherStateStore newStore, Executor executor) {
+    attachPersistenceStore(newStore, executor);
+  }
+
+  /** Attaches discovered-Workspace conveniences; no machine, repository, or draft is written. */
+  public void attachHistoryPersistence(Path settingsDirectory) {
+    attachHistoryPersistence(new LauncherHistoryStore(settingsDirectory), SharedIo.EXECUTOR);
+  }
+
+  /** Explicit history-store/executor seam for focused headless tests. */
+  void attachHistoryPersistence(LauncherHistoryStore newStore, Executor executor) {
+    attachPersistenceStore(newStore, executor);
+  }
+
+  private void attachPersistenceStore(LauncherSettingsStore newStore, Executor executor) {
     if (disposed) {
       return;
     }
-    LauncherStateStore checkedStore = Objects.requireNonNull(newStore, "newStore");
+    LauncherSettingsStore checkedStore = Objects.requireNonNull(newStore, "newStore");
     Executor checkedExecutor = Objects.requireNonNull(executor, "executor");
     SaveQueue queue = new SaveQueue(checkedStore, checkedExecutor);
     saveQueue = queue;
@@ -584,7 +987,7 @@ public final class LauncherPanel extends JPanel {
     }
     LauncherStateStore.State current = snapshot();
     Set<Setting> edited = Set.copyOf(editedBeforeLoadCompletes);
-    LauncherStateStore.State merged = mergeLoaded(loaded, current, edited);
+    LauncherStateStore.State merged = mergeStoreLoaded(queue.store(), loaded, current, edited);
     loadPending = false;
     persistenceReady = true;
     editedBeforeLoadCompletes.clear();
@@ -593,7 +996,12 @@ public final class LauncherPanel extends JPanel {
     preserveInactiveHostDraft(current, merged, edited);
     ManagedWorkspace managed = managedWorkspaceSelection;
     if (managed != null) {
-      applyManagedWorkspace(managed);
+      ManagedWorkspace restored =
+          queue.store().discoveredWorkspaceOnly()
+              ? managed.withExecutable(merged.bazelExecutable())
+              : managed;
+      managedWorkspaceSelection = restored;
+      applyManagedWorkspace(restored);
     }
     queue.request(managed == null ? merged : snapshot());
   }
@@ -626,7 +1034,8 @@ public final class LauncherPanel extends JPanel {
     queue.initialize(loaded);
     if (closed != null) {
       completePersistenceClose(
-          queue.closeWhenSettled(mergeLoaded(loaded, closed.snapshot(), closed.edited())));
+          queue.closeWhenSettled(
+              mergeStoreLoaded(queue.store(), loaded, closed.snapshot(), closed.edited())));
     } else {
       persistenceClose.complete(null);
     }
@@ -666,6 +1075,7 @@ public final class LauncherPanel extends JPanel {
       refreshSavedSshConnections(selectedProfile);
       command.setText(loaded.command());
       history.replaceNewestFirst(loaded.history());
+      refreshRecentCommands();
       displayedHost = loaded.executionHost();
       if (displayedHost == ExecutionHost.LOCAL) {
         localWorkspaceDraft = loaded.workspace();
@@ -678,7 +1088,7 @@ public final class LauncherPanel extends JPanel {
     } finally {
       applying = false;
     }
-    updatePresetSummary();
+    updatePresetTooltip();
     updateHostControls();
   }
 
@@ -720,6 +1130,7 @@ public final class LauncherPanel extends JPanel {
   /** Promotes a command into history and queues the updated state for persistence. */
   public void rememberCommand(String value) {
     history.record(value);
+    refreshRecentCommands();
     markDirty(Setting.HISTORY);
     flushPersistence();
   }
@@ -746,6 +1157,7 @@ public final class LauncherPanel extends JPanel {
     if (disposed) {
       return persistenceClose;
     }
+    endImmediatePresetTooltips();
     saveDebounce.stop();
     if (loadPending) {
       closedWhileLoading = new ClosedState(snapshot(), editedBeforeLoadCompletes);
@@ -774,6 +1186,33 @@ public final class LauncherPanel extends JPanel {
     bazelExecutable.setText(value == null ? "" : value);
   }
 
+  /** Commits a managed Workspace's edited Bazel command before it can be used. */
+  public boolean commitManagedBazelExecutable() {
+    if (!managedWorkspace) {
+      return true;
+    }
+    String candidate = bazelExecutable.getText().strip();
+    if (candidate.equals(lastCommittedManagedBazel)) {
+      return true;
+    }
+    if (!managedBazelCommit.test(candidate)) {
+      return false;
+    }
+    ManagedWorkspace current = managedWorkspaceSelection;
+    if (current != null) {
+      managedWorkspaceSelection = current.withExecutable(candidate);
+    }
+    applying = true;
+    try {
+      bazelExecutable.setText(candidate);
+    } finally {
+      applying = false;
+    }
+    lastCommittedManagedBazel = candidate;
+    flushPersistence();
+    return true;
+  }
+
   /**
    * Uses a workspace selected by the application-level workspace manager. The launcher then shows
    * one read-only summary instead of another host, connection, directory, and executable form.
@@ -793,6 +1232,13 @@ public final class LauncherPanel extends JPanel {
             Objects.requireNonNull(executable, "executable"),
             destination == null ? "" : destination,
             port == null ? "" : port);
+    SaveQueue queue = saveQueue;
+    if (persistenceReady && queue != null && queue.store().discoveredWorkspaceOnly()) {
+      // MainWindow starts persistence before it applies the managed Workspace. If the small
+      // discovered-Workspace sidecar won that race, retain its Bazel override instead of replacing
+      // it with the discovery protocol's default "bazel".
+      selected = selected.withExecutable(bazelExecutable.getText());
+    }
     managedWorkspaceSelection = selected;
     applyManagedWorkspace(selected);
   }
@@ -804,6 +1250,7 @@ public final class LauncherPanel extends JPanel {
       displayedHost = selected.host();
       workspace.setText(selected.workingDirectory());
       bazelExecutable.setText(selected.executable());
+      lastCommittedManagedBazel = selected.executable();
       sshDestination.setText(selected.destination());
       sshPort.setText(selected.port());
       managedWorkspace = true;
@@ -825,6 +1272,7 @@ public final class LauncherPanel extends JPanel {
   public void clearManagedWorkspace() {
     managedWorkspaceSelection = null;
     managedWorkspace = false;
+    lastCommittedManagedBazel = "";
     selectedWorkspace.setText("");
     updateHostControls();
   }
@@ -921,6 +1369,9 @@ public final class LauncherPanel extends JPanel {
 
   public void setRunEnabled(boolean enabled) {
     run.setEnabled(enabled);
+    if (!enabled) {
+      hideRecentCommands();
+    }
     executionHost.setEnabled(enabled);
     savedSshConnections.setEnabled(enabled);
     forgetSshConnection.setEnabled(
@@ -932,7 +1383,6 @@ public final class LauncherPanel extends JPanel {
     captureDetail.setEnabled(enabled);
     command.setEnabled(enabled);
     chooseWorkspace.setEnabled(enabled);
-    chooseBazel.setEnabled(enabled);
     changeWorkspace.setEnabled(enabled);
   }
 
@@ -974,6 +1424,34 @@ public final class LauncherPanel extends JPanel {
         edited.contains(Setting.SSH_PROFILES)
             ? mergeProfiles(current.sshProfiles(), loaded.sshProfiles())
             : loaded.sshProfiles());
+  }
+
+  private static LauncherStateStore.State mergeStoreLoaded(
+      LauncherSettingsStore store,
+      LauncherStateStore.State loaded,
+      LauncherStateStore.State current,
+      Set<Setting> edited) {
+    if (!store.discoveredWorkspaceOnly()) {
+      return mergeLoaded(loaded, current, edited);
+    }
+    List<String> mergedHistory = loaded.history();
+    if (edited.contains(Setting.HISTORY)) {
+      LinkedHashSet<String> unique = new LinkedHashSet<>(current.history());
+      unique.addAll(loaded.history());
+      mergedHistory = unique.stream().limit(LauncherHistory.MAX_ENTRIES).toList();
+    }
+    return new LauncherStateStore.State(
+        current.workspace(),
+        edited.contains(Setting.BAZEL_EXECUTABLE)
+            ? current.bazelExecutable()
+            : loaded.bazelExecutable(),
+        current.preset(),
+        current.command(),
+        mergedHistory,
+        current.executionHost(),
+        current.sshDestination(),
+        current.sshPort(),
+        current.sshProfiles());
   }
 
   private static List<SshConnectionProfile> mergeProfiles(
@@ -1035,16 +1513,8 @@ public final class LauncherPanel extends JPanel {
     return savedSshConnections;
   }
 
-  JLabel presetSummaryForTest() {
-    return presetSummary;
-  }
-
   JButton chooseWorkspaceForTest() {
     return chooseWorkspace;
-  }
-
-  JButton chooseBazelForTest() {
-    return chooseBazel;
   }
 
   JTextField selectedWorkspaceForTest() {
@@ -1053,6 +1523,70 @@ public final class LauncherPanel extends JPanel {
 
   JButton changeWorkspaceForTest() {
     return changeWorkspace;
+  }
+
+  JList<String> recentCommandsListForTest() {
+    return recentCommandsList;
+  }
+
+  JPopupMenu recentCommandsMenuForTest() {
+    return recentCommandsMenu;
+  }
+
+  JScrollPane recentCommandsScrollForTest() {
+    return recentCommandsScroll;
+  }
+
+  void showRecentCommandsForTest() {
+    showRecentCommands();
+  }
+
+  void sizeRecentCommandsPopupForTest(Dimension available) {
+    sizeRecentCommandsPopup(available);
+  }
+
+  boolean processCommandKeyForTest(int keyCode, int modifiers) {
+    KeyEvent event =
+        new KeyEvent(
+            command,
+            KeyEvent.KEY_PRESSED,
+            System.currentTimeMillis(),
+            modifiers,
+            keyCode,
+            KeyEvent.CHAR_UNDEFINED);
+    return ((HistoryCommandField) command).processForTest(event);
+  }
+
+  private final class HistoryCommandField extends JTextField {
+    private static final long serialVersionUID = 1L;
+
+    private HistoryCommandField(int columns) {
+      super(columns);
+    }
+
+    @Override
+    protected boolean processKeyBinding(
+        KeyStroke keyStroke, KeyEvent event, int condition, boolean pressed) {
+      if (pressed
+          && event.getModifiersEx() == 0
+          && (commandCompletion == null || !commandCompletion.isPopupVisible())
+          && !recentCommandsModel.isEmpty()) {
+        if (event.getKeyCode() == KeyEvent.VK_UP) {
+          moveRecentCommandSelection(-1);
+          return true;
+        }
+        if (event.getKeyCode() == KeyEvent.VK_DOWN) {
+          moveRecentCommandSelection(1);
+          return true;
+        }
+      }
+      return super.processKeyBinding(keyStroke, event, condition, pressed);
+    }
+
+    private boolean processForTest(KeyEvent event) {
+      return processKeyBinding(
+          KeyStroke.getKeyStrokeForEvent(event), event, JComponent.WHEN_FOCUSED, true);
+    }
   }
 
   private static final class PresetRenderer extends DefaultListCellRenderer {
@@ -1067,7 +1601,57 @@ public final class LauncherPanel extends JPanel {
               ? ""
               : preset.displayName()
                   + (preset == CapturePreset.PERFORMANCE_DIAGNOSTICS ? " (recommended)" : "");
-      return super.getListCellRendererComponent(list, text, index, selected, focused);
+      JLabel label =
+          (JLabel) super.getListCellRendererComponent(list, text, index, selected, focused);
+      label.setHorizontalAlignment(JLabel.LEFT);
+      label.setToolTipText(
+          preset == null ? null : PlainText.tooltip(LauncherPanel.presetTooltip(preset)));
+      if (index >= 0 && selected) {
+        list.setToolTipText(label.getToolTipText());
+      }
+      return label;
+    }
+  }
+
+  private static final class RecentCommandRenderer extends DefaultListCellRenderer {
+    private static final long serialVersionUID = 1L;
+
+    @Override
+    public Component getListCellRendererComponent(
+        JList<?> list, Object value, int index, boolean selected, boolean focused) {
+      JLabel label =
+          (JLabel) super.getListCellRendererComponent(list, value, index, selected, focused);
+      String command = value == null ? "" : value.toString();
+      int cellWidth = list.getFixedCellWidth();
+      int textWidth =
+          cellWidth > 0
+              ? Math.max(1, cellWidth - label.getInsets().left - label.getInsets().right - 8)
+              : Integer.MAX_VALUE;
+      label.setText(ellipsize(command, label.getFontMetrics(label.getFont()), textWidth));
+      label.setToolTipText(PlainText.tooltip(command));
+      return label;
+    }
+
+    private static String ellipsize(String value, FontMetrics metrics, int width) {
+      if (metrics.stringWidth(value) <= width) {
+        return value;
+      }
+      String ellipsis = "…";
+      int available = width - metrics.stringWidth(ellipsis);
+      if (available <= 0) {
+        return ellipsis;
+      }
+      int low = 0;
+      int high = value.length();
+      while (low < high) {
+        int middle = (low + high + 1) >>> 1;
+        if (metrics.stringWidth(value.substring(0, middle)) <= available) {
+          low = middle;
+        } else {
+          high = middle - 1;
+        }
+      }
+      return value.substring(0, low) + ellipsis;
     }
   }
 
@@ -1089,7 +1673,12 @@ public final class LauncherPanel extends JPanel {
       String workingDirectory,
       String executable,
       String destination,
-      String port) {}
+      String port) {
+
+    private ManagedWorkspace withExecutable(String replacement) {
+      return new ManagedWorkspace(name, host, workingDirectory, replacement, destination, port);
+    }
+  }
 
   private record ClosedState(LauncherStateStore.State snapshot, Set<Setting> edited) {
     private ClosedState {
@@ -1104,7 +1693,7 @@ public final class LauncherPanel extends JPanel {
    * become the final disk value.
    */
   private static final class SaveQueue {
-    private final LauncherStateStore store;
+    private final LauncherSettingsStore store;
     private final Executor executor;
     private LauncherStateStore.State persisted;
     private LauncherStateStore.State desired;
@@ -1113,27 +1702,31 @@ public final class LauncherPanel extends JPanel {
     private boolean closeRequested;
     private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
 
-    private SaveQueue(LauncherStateStore store, Executor executor) {
+    private SaveQueue(LauncherSettingsStore store, Executor executor) {
       this.store = store;
       this.executor = executor;
+    }
+
+    private LauncherSettingsStore store() {
+      return store;
     }
 
     private synchronized void initialize(LauncherStateStore.State loaded) {
       if (initialized) {
         return;
       }
-      persisted = loaded;
+      persisted = store.persistedState(loaded);
       initialized = true;
       startNextIfNeeded();
     }
 
     private synchronized void request(LauncherStateStore.State state) {
-      desired = state;
+      desired = store.persistedState(state);
       startNextIfNeeded();
     }
 
     private synchronized CompletionStage<Void> closeWhenSettled(LauncherStateStore.State state) {
-      desired = state;
+      desired = store.persistedState(state);
       closeRequested = true;
       startNextIfNeeded();
       completeCloseIfSettled();

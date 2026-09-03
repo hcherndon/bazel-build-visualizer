@@ -1,0 +1,85 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "ActionEdgeDeriverTest.java",
+        "ConfiguredTargetGraphTest.java",
+        "GraphIndexBuilderTest.java",
+        "GraphQueriesTest.java",
+        "GraphStagingTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph:graph",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph:graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph:graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ActionEdgeDeriverTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.graph.ActionEdgeDeriverTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ConfiguredTargetGraphTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.graph.ConfiguredTargetGraphTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "GraphIndexBuilderTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.graph.GraphIndexBuilderTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "GraphQueriesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.graph.GraphQueriesTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "GraphStagingTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.graph.GraphStagingTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":ActionEdgeDeriverTest",
+        ":ConfiguredTargetGraphTest",
+        ":GraphIndexBuilderTest",
+        ":GraphQueriesTest",
+        ":GraphStagingTest",
+    ],
+    visibility = ["//visibility:public"],
+)

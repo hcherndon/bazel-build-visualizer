@@ -82,8 +82,14 @@ public interface EntityReader extends AutoCloseable {
   /** Every package with a target in it, alphabetically. */
   List<TargetQueries.PackageSummary> packages();
 
+  /** Packages containing a top-level target whose full label contains this literal text. */
+  List<TargetQueries.PackageSummary> packages(String labelText);
+
   /** The targets in one package, with one row per configuration. */
   List<TargetRow> targetsInPackage(String packagePath);
+
+  /** Matching target rows in one package. */
+  List<TargetRow> targetsInPackage(String packagePath, String labelText);
 
   /**
    * Every row carrying exactly this label — one per (aspect, configuration), like {@link
@@ -96,18 +102,32 @@ public interface EntityReader extends AutoCloseable {
   /** Exact distinct-label count in the BEP top-level target set. */
   long topLevelTargetLabelCount();
 
+  /** Exact distinct-label count in the filtered BEP top-level target set. */
+  long topLevelTargetLabelCount(String labelText);
+
   /** Top-level labels for the flat view, keyset-paged alphabetically. */
   List<String> firstTopLevelTargetLabels(int limit);
 
+  List<String> firstTopLevelTargetLabels(String labelText, int limit);
+
   List<String> topLevelTargetLabelsAfter(String label, int limit);
+
+  List<String> topLevelTargetLabelsAfter(String labelText, String label, int limit);
 
   /** Exact distinct-label count behind the All Targets explorer. */
   long targetLabelCount();
 
+  /** Exact matching distinct-label count behind the All Targets explorer. */
+  long targetLabelCount(String labelText);
+
   /** Distinct fully-qualified labels, keyset-paged for incremental browsing. */
   List<TargetQueries.LabelSummary> firstTargetLabels(int limit);
 
+  List<TargetQueries.LabelSummary> firstTargetLabels(String labelText, int limit);
+
   List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit);
+
+  List<TargetQueries.LabelSummary> targetLabelsAfter(String labelText, String label, int limit);
 
   List<TargetQueries.ConfiguredTarget> configuredTargetsByLabel(String label);
 

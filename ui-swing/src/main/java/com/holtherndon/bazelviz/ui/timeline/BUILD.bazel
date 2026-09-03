@@ -1,0 +1,17 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "timeline",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_formdev_flatlaf",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

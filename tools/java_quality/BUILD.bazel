@@ -1,0 +1,22 @@
+load("@rules_java//java:defs.bzl", "java_binary", "java_import")
+
+java_import(
+    name = "google_java_format",
+    jars = ["@google_java_format//file"],
+)
+
+java_binary(
+    name = "format_java",
+    srcs = ["RepositoryJavaFormatter.java"],
+    main_class = "com.holtherndon.bazelviz.tools.quality.RepositoryJavaFormatter",
+    visibility = ["//visibility:public"],
+    deps = [":google_java_format"],
+    jvm_flags = [
+        "--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+    ],
+)

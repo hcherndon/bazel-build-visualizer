@@ -43,13 +43,16 @@ import java.util.OptionalLong;
  *     graph to compute it over
  * @param derivedUnavailableReason exact reason the derived path is absent, when the collector could
  *     determine one
+ * @param observedActionLowerBound the longest valid action span in the BEP, when one exists; this
+ *     is useful fallback evidence but is deliberately not a dependency path
  */
 public record CriticalPaths(
     Measured<Long> bazelReportedMicros,
     List<BazelComponent> bazelComponents,
     long bazelComponentCount,
     Optional<CriticalPath.Result> derived,
-    Optional<String> derivedUnavailableReason) {
+    Optional<String> derivedUnavailableReason,
+    Optional<ObservedActionLowerBound> observedActionLowerBound) {
 
   public CriticalPaths {
     Objects.requireNonNull(bazelReportedMicros, "bazelReportedMicros");
@@ -72,9 +75,26 @@ public record CriticalPaths(
     }
     Objects.requireNonNull(derived, "derived");
     Objects.requireNonNull(derivedUnavailableReason, "derivedUnavailableReason");
+    Objects.requireNonNull(observedActionLowerBound, "observedActionLowerBound");
     if (derived.isPresent()) {
       derivedUnavailableReason = Optional.empty();
     }
+  }
+
+  /** Compatibility constructor for callers without a separately computed timing fallback. */
+  public CriticalPaths(
+      Measured<Long> bazelReportedMicros,
+      List<BazelComponent> bazelComponents,
+      long bazelComponentCount,
+      Optional<CriticalPath.Result> derived,
+      Optional<String> derivedUnavailableReason) {
+    this(
+        bazelReportedMicros,
+        bazelComponents,
+        bazelComponentCount,
+        derived,
+        derivedUnavailableReason,
+        Optional.empty());
   }
 
   /** Compatibility constructor for callers that already loaded every Bazel component. */
@@ -88,7 +108,8 @@ public record CriticalPaths(
         bazelComponents,
         bazelComponents.size(),
         derived,
-        derivedUnavailableReason);
+        derivedUnavailableReason,
+        Optional.empty());
   }
 
   /** Compatibility constructor for callers that have no more specific absence reason. */
@@ -104,8 +125,10 @@ public record CriticalPaths(
     return new CriticalPaths(
         Measured.unknown(DataSource.PROFILE, Completeness.UNAVAILABLE, whyBazelMissing),
         List.of(),
+        0,
         Optional.empty(),
-        Optional.of("no imported action graph is available"));
+        Optional.of("no imported action graph is available"),
+        Optional.empty());
   }
 
   /** One entry of Bazel's own critical path, exactly as Bazel worded it. */
@@ -120,6 +143,45 @@ public record CriticalPaths(
       if (durationMicros.isPresent() && durationMicros.getAsLong() < 0) {
         throw new IllegalArgumentException("Bazel component duration must be nonnegative");
       }
+    }
+  }
+
+  /**
+   * A useful bound when no dependency graph exists, never a substitute for that graph.
+   *
+   * <p>One observed action cannot establish which other actions preceded it. Its duration is still
+   * a concrete lower bound on the action work Bazel observed. Keeping the action identity and
+   * timing coverage beside the value lets the UI make that limited claim without inventing an edge,
+   * path total, or slack value.
+   */
+  public record ObservedActionLowerBound(
+      long actionId,
+      String primaryOutput,
+      Optional<String> targetLabel,
+      Optional<String> mnemonic,
+      long durationMicros,
+      long timedActions,
+      long totalActions) {
+
+    public ObservedActionLowerBound {
+      if (actionId < 1) {
+        throw new IllegalArgumentException("observed action id must be positive");
+      }
+      Objects.requireNonNull(primaryOutput, "primaryOutput");
+      Objects.requireNonNull(targetLabel, "targetLabel");
+      Objects.requireNonNull(mnemonic, "mnemonic");
+      if (durationMicros <= 0) {
+        throw new IllegalArgumentException("observed action duration must be positive");
+      }
+      if (timedActions < 1 || totalActions < timedActions) {
+        throw new IllegalArgumentException(
+            "observed action timing coverage must be positive and no larger than all actions");
+      }
+    }
+
+    /** The explicit UI name; this evidence is not a dependency path. */
+    public String displayName() {
+      return "Longest observed action (not a dependency path)";
     }
   }
 

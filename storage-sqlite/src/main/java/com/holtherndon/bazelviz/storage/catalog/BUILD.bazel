@@ -1,0 +1,12 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "catalog",
+    srcs = [
+        "CatalogEntry.java",
+        "RetentionPolicy.java",
+        "SessionCatalog.java",
+    ],
+    runtime_deps = ["@maven//:org_xerial_sqlite_jdbc"],
+    visibility = ["//visibility:public"],
+)

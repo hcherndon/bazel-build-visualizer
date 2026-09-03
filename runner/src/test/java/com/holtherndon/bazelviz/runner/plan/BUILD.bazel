@@ -1,0 +1,46 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+    ],
+)
+
+java_junit5_test(
+    name = "AuxiliaryQueryPlannerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.runner.plan.AuxiliaryQueryPlannerTest",
+)
+
+java_junit5_test(
+    name = "InstrumentationPlannerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.runner.plan.InstrumentationPlannerTest",
+)
+
+java_junit5_test(
+    name = "PlanRequestTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.runner.plan.PlanRequestTest",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":AuxiliaryQueryPlannerTest",
+        ":InstrumentationPlannerTest",
+        ":PlanRequestTest",
+    ],
+    visibility = ["//visibility:public"],
+)

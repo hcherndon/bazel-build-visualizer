@@ -1,0 +1,170 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "BepImporterBoundedMemoryTest.java",
+        "BepImporterDamagedSourceTest.java",
+        "BepImporterDeterminismTest.java",
+        "BepImporterImportTest.java",
+        "BepImporterJsonSourceTest.java",
+        "BepImporterResumeTest.java",
+        "BoundedMemoryImportMain.java",
+        "ImportProgressTest.java",
+        "ImportTestSupport.java",
+        "JournalPayloadReaderTest.java",
+        "NormalizationAnomalyTest.java",
+        "NormalizationIdempotenceTest.java",
+        "SourceCheckpointTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec:bepcodec",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/detect:detect",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer:importer",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/json:json",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/normalize:normalize",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id:id",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session:session",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
+        "//proto:proto",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal:journal",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep:bep",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BepImporterBoundedMemoryTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.BepImporterBoundedMemoryTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BepImporterDamagedSourceTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.BepImporterDamagedSourceTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BepImporterDeterminismTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.BepImporterDeterminismTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BepImporterImportTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.BepImporterImportTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BepImporterJsonSourceTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.BepImporterJsonSourceTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BepImporterResumeTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.BepImporterResumeTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ImportProgressTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.ImportProgressTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "JournalPayloadReaderTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.JournalPayloadReaderTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "NormalizationAnomalyTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.NormalizationAnomalyTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "NormalizationIdempotenceTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.NormalizationIdempotenceTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SourceCheckpointTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.file.importer.SourceCheckpointTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":BepImporterBoundedMemoryTest",
+        ":BepImporterDamagedSourceTest",
+        ":BepImporterDeterminismTest",
+        ":BepImporterImportTest",
+        ":BepImporterJsonSourceTest",
+        ":BepImporterResumeTest",
+        ":ImportProgressTest",
+        ":JournalPayloadReaderTest",
+        ":NormalizationAnomalyTest",
+        ":NormalizationIdempotenceTest",
+        ":SourceCheckpointTest",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,16 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "configurations",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

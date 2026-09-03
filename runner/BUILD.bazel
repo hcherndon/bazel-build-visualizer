@@ -1,0 +1,34 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "runner",
+    exports = [
+        "//core-model",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/launch",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/ssh",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/workspace",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/caps:tests",
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/command:tests",
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/exec:tests",
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/files:tests",
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/launch:tests",
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/plan:tests",
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/runtime:tests",
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/ssh:tests",
+    ],
+    visibility = ["//visibility:public"],
+)

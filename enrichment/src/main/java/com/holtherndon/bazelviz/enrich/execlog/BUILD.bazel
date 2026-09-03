@@ -1,0 +1,22 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "execlog",
+    srcs = [
+        "BinaryExecLogParser.java",
+        "CompactExecLogParser.java",
+        "EnvironmentRedactor.java",
+        "ExecLogSource.java",
+        "ExecutionLogImporter.java",
+        "LegacySpawnFields.java",
+        "UnknownExecLogFormatException.java",
+    ],
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich:enrich",
+        "//proto:proto",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich:enrich",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:io_airlift_aircompressor",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,15 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "terminal",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:org_jetbrains_jediterm_jediterm_core",
+        "@maven//:org_jetbrains_jediterm_jediterm_ui",
+    ],
+)

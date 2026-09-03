@@ -1,0 +1,262 @@
+load("@@rules_java+//java:defs.bzl", "JavaInfo")
+load("@@rules_java+//java/common:java_plugin_info.bzl", "JavaPluginInfo")
+load("//.bazelbsp/common:artifact_location.bzl", "artifact_location")
+load("//.bazelbsp/common:common.bzl", "intellij_common")
+load("//.bazelbsp/common:copy.bzl", "copy")
+load("//.bazelbsp/common:dependencies.bzl", "intellij_deps")
+load("//.bazelbsp/common:make_variables.bzl", "expand_make_variables")
+load(":java_toolchain_info.bzl", "JAVA_TOOLCHAIN_TYPE", "intellij_java_toolchain_info_aspect")
+load(":provider.bzl", "intellij_provider")
+# Copyright 2026 JetBrains s.r.o.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+COMPILE_TIME_DEPS = [
+    "jars",
+    "_jvm",
+    "runtime_jdk",
+]
+
+EXPORTED_COMPILE_TIME_DEPS = [
+    "exports",
+]
+
+TOOLCHAIN_DEPS = [
+    "_java_toolchain",
+]
+
+RUNTIME_DEPS = [
+    "runtime_deps",
+]
+
+IMPORT_RULE_KIND = ["java_import", "jvm_import", "kt_jvm_import"]
+
+PROVIDERLESS_JAVA_RULES = ["java_binary", "java_test", "java_plugin"]
+
+def _get_javacopts_from_context(ctx):
+    javacopts_raw = getattr(ctx.rule.attr, "javacopts", [])
+    if javacopts_raw == None:  # "javacopts" might exist in ctx.rule.attr as None
+        javacopts_raw = []
+    javacopts = expand_make_variables(ctx, True, javacopts_raw)
+    add_exports = ["--add-exports=" + export + "=ALL-UNNAMED" for export in getattr(ctx.rule.attr, "add_exports", [])]
+    add_opens = ["--add-opens=" + open + "=ALL-UNNAMED" for open in getattr(ctx.rule.attr, "add_opens", [])]
+    return javacopts + add_exports + add_opens
+
+def _get_javacopts(target, ctx):
+    java_info = target[JavaInfo]
+    compilation_info = getattr(java_info, "compilation_info", None)
+    module_flags_info = getattr(java_info, "module_flags_info", None)
+    if compilation_info != None and module_flags_info != None:
+        javacopts = expand_make_variables(ctx, True, compilation_info.javac_options.to_list())
+
+        # javacopts here contain --add-export flags already (https://github.com/bazelbuild/rules_java/blob/faaab4062f81deefaeef76dd21b2a5212432f8e3/java/private/java_common_internal.bzl#L159)
+        add_opens = ["--add-opens=" + open + "=ALL-UNNAMED" for open in module_flags_info.add_opens.to_list()]
+        return javacopts + add_opens
+    return _get_javacopts_from_context(ctx)
+
+def _source_jars(output):
+    if hasattr(output, "source_jars"):
+        source_jars = output.source_jars
+        if type(source_jars) == "depset":
+            return source_jars.to_list()
+        else:
+            # assuming it returns sequence type here
+            return source_jars
+    if hasattr(output, "source_jar") and output.source_jar != None:
+        return [output.source_jar]
+    return []
+
+def _get_jvm_outputs(target):
+    return [
+        intellij_common.struct(
+            binary_jars = [artifact_location.from_file(output.class_jar)] if output.class_jar else [],
+            interface_jars = [artifact_location.from_file(output.compile_jar)] if output.compile_jar else [],
+            source_jars = [artifact_location.from_file(f) for f in _source_jars(output)],
+        )
+        for output in target[JavaInfo].java_outputs
+    ]
+
+def _has_api_generating_plugins(target):
+    if JavaPluginInfo in target:
+        return len(target[JavaPluginInfo].api_generating_plugins.processor_classes.to_list()) > 0
+    return False
+
+def _get_generated_jars(target):
+    return [
+        struct(
+            binary_jars = [artifact_location.from_file(output.generated_class_jar)],
+            source_jars = [artifact_location.from_file(output.generated_source_jar)],
+        )
+        for output in target[JavaInfo].java_outputs
+        if (output != None) and (output.generated_class_jar != None)
+    ]
+
+def _runtime_jars(target):
+    compilation_info = getattr(target[JavaInfo], "compilation_info", None)
+    if compilation_info:
+        return compilation_info.runtime_classpath
+    return getattr(target[JavaInfo], "transitive_runtime_jars", depset())
+
+def _compile_jars(target):
+    compilation_info = getattr(target[JavaInfo], "compilation_info", None)
+    return compilation_info.compilation_classpath if compilation_info else depset()
+
+def _get_outputs(target, ctx, jdeps):
+    generated_outputs = [
+        output
+        for output in target[JavaInfo].java_outputs
+        if (output != None) and (output.generated_class_jar != None)
+    ]
+    resolve_files = (
+        [output.generated_class_jar for output in generated_outputs] +
+        [output.generated_source_jar for output in generated_outputs]
+    )
+    resolve_transitives = [_runtime_jars(target), _compile_jars(target)]
+    for out in target[JavaInfo].java_outputs:
+        if getattr(out, "compile_jar", None):
+            resolve_files += [out.compile_jar]
+        elif getattr(out, "ijar", None):
+            resolve_files += [out.ijar]
+        if getattr(out, "class_jar", None):
+            resolve_files += [out.class_jar]
+        if getattr(out, "source_jars", None):
+            if type(out.source_jars) == "depset":
+                resolve_transitives += [out.source_jars]
+            else:
+                resolve_files += out.source_jars
+    if intellij_common.label_is_external(target.label) or (ctx.rule.kind in IMPORT_RULE_KIND):
+        return {intellij_provider.SYNC_OUTPUT: depset(resolve_files, transitive = resolve_transitives + [
+            target[JavaInfo].transitive_source_jars,
+        ])}
+    else:
+        return {intellij_provider.BUILD_OUTPUT: depset(
+            resolve_files + jdeps,
+            transitive = resolve_transitives,
+        )}
+
+def _get_jdeps(target, ctx):
+    jdeps = [jo.jdeps for jo in target[JavaInfo].java_outputs if jo.jdeps != None]
+
+    # See https://github.com/bazelbuild/bazel/pull/26898
+    # --experimental_inmemory_jdeps_files is true by default, which means jdeps won't be stored on disk with remote execution.
+    # So we just "materialize" the in-memory file by copying it onto disk.
+    materialized_jdeps = []
+
+    # The tags implicitly enter the action as "execution info" which is also part of the action equality. Therefore, we have to include
+    # them in the hash included in the output path to avoid non-sharable actions with the same output.
+    extra_action_key = ""
+    for tag in ctx.rule.attr.tags:
+        extra_action_key += str(abs(hash(tag))) + "_"
+    extra_action_key += "_"
+    for raw_jdeps_file in jdeps:
+        materialized_jdeps_file = ctx.actions.declare_file(
+            "materialized_" + str(abs(hash(extra_action_key + raw_jdeps_file.path))) + "_" + raw_jdeps_file.basename,
+        )
+        copy(
+            ctx,
+            raw_jdeps_file,
+            materialized_jdeps_file,
+            progress = "(IntelliJ Bazel plugin) Materializing jdeps %s" % raw_jdeps_file,
+            mnemonic = "IJBazelPluginMaterializeJdeps",
+        )
+        materialized_jdeps.append(materialized_jdeps_file)
+    return materialized_jdeps
+
+def _aspect_impl(target, ctx):
+    if not JavaInfo in target:
+        if ctx.rule.kind in PROVIDERLESS_JAVA_RULES:
+            # While we cannot obtain any information from the provider, we still have to
+            # mark this target as a java target and take dependencies into account.
+            return [
+                intellij_provider.create(
+                    ctx = ctx,
+                    provider = intellij_provider.JavaInfo,
+                    value = intellij_common.struct(
+                        has_api_generating_plugins = _has_api_generating_plugins(target),
+                    ),
+                    dependencies = {
+                        intellij_deps.COMPILE_TIME: intellij_deps.collect(
+                            ctx,
+                            attributes = COMPILE_TIME_DEPS,
+                        ),
+                        intellij_deps.EXPORTED_COMPILE_TIME: intellij_deps.collect(
+                            ctx,
+                            attributes = EXPORTED_COMPILE_TIME_DEPS,
+                        ),
+                        intellij_deps.RUNTIME: intellij_deps.collect(
+                            ctx,
+                            attributes = RUNTIME_DEPS,
+                        ),
+                        intellij_deps.TOOLCHAIN: intellij_deps.collect(
+                            ctx,
+                            attributes = TOOLCHAIN_DEPS,
+                            toolchain_types = [JAVA_TOOLCHAIN_TYPE],
+                        ),
+                    },
+                ),
+            ]
+
+        return [
+            intellij_provider.JavaInfo(present = False),
+        ]
+    jdeps = _get_jdeps(target, ctx)
+    return [
+        intellij_provider.create(
+            ctx = ctx,
+            provider = intellij_provider.JavaInfo,
+            outputs = _get_outputs(target, ctx, jdeps),
+            value = intellij_common.struct(
+                full_compile_jars = artifact_location.from_depset(target[JavaInfo].full_compile_jars),
+                has_api_generating_plugins = _has_api_generating_plugins(target),
+            ),
+            dependencies = {
+                intellij_deps.COMPILE_TIME: intellij_deps.collect(
+                    ctx,
+                    attributes = COMPILE_TIME_DEPS,
+                ),
+                intellij_deps.EXPORTED_COMPILE_TIME: intellij_deps.collect(
+                    ctx,
+                    attributes = EXPORTED_COMPILE_TIME_DEPS,
+                ),
+                intellij_deps.RUNTIME: intellij_deps.collect(
+                    ctx,
+                    attributes = RUNTIME_DEPS,
+                ),
+                intellij_deps.TOOLCHAIN: intellij_deps.collect(
+                    ctx,
+                    attributes = TOOLCHAIN_DEPS,
+                    toolchain_types = [JAVA_TOOLCHAIN_TYPE],
+                ),
+            },
+            toolchains = intellij_deps.find_toolchains(ctx, JAVA_TOOLCHAIN_TYPE),
+            internal_value = intellij_common.struct(
+                java_common = intellij_common.struct(
+                    jars = _get_jvm_outputs(target),
+                    generated_jars = _get_generated_jars(target),
+                    jdeps = [artifact_location.from_file(jdep) for jdep in jdeps],
+                    javac_opts = _get_javacopts(target, ctx),
+                    jvm_target = True,
+                ),
+                exports = intellij_common.attr_as_label_list(ctx, "exports"),
+            ),
+        ),
+    ]
+
+intellij_java_info_aspect = intellij_common.aspect(
+    implementation = _aspect_impl,
+    provides = [intellij_provider.JavaInfo],
+    requires = [intellij_java_toolchain_info_aspect],
+    toolchains_aspects = [str(JAVA_TOOLCHAIN_TYPE)],
+    required_aspect_providers = [[JavaInfo]],
+)

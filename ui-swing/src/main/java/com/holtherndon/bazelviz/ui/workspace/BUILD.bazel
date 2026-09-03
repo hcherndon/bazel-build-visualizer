@@ -1,0 +1,15 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "workspace",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/ssh",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

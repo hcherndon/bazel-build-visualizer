@@ -42,6 +42,17 @@ adds about 8 MiB of resolved jar payload, including Kotlin, JNA and Pty4J's host
 resources; that is a packaging-footprint observation, not a startup, throughput,
 frame-rate or idle-CPU measurement. No such terminal measurement is claimed yet.
 
+**Console-rendering note (2026-09-03).** ANSI styling and viewport wrapping do
+not change the raw capture path. The visible transcript still retains at most
+20,000 lines and appends committed styled runs instead of rebuilding the whole
+document on each output chunk; only the carriage-return tail is replaced. One
+CSI parser holds at most 1,024 parameter characters. Cursor-addressed Bazel
+progress redraws remove and replace only the affected document suffix using
+retained line offsets; they do not rebuild the preceding transcript. Lines
+evicted at the retention cap are removed from the document prefix by the same
+offset index instead of triggering repeated full rebuilds. No render-throughput
+or large-output latency figure has been measured, so none is claimed.
+
 ## Benchmark tiers (plan 20.1)
 
 Authoritative constants live in

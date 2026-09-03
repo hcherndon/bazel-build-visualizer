@@ -1,0 +1,77 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "test-lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//proto",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep",
+        "@maven//:com_google_protobuf_protobuf_java_util",
+    ],
+)
+
+java_junit5_test(
+    name = "BepBinaryWriterTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.bep.BepBinaryWriterTest",
+)
+
+java_junit5_test(
+    name = "BepDamageTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.bep.BepDamageTest",
+)
+
+java_junit5_test(
+    name = "BepFixtureCatalogTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.bep.BepFixtureCatalogTest",
+)
+
+java_junit5_test(
+    name = "BepFixturesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.bep.BepFixturesTest",
+)
+
+java_junit5_test(
+    name = "BepJsonWriterTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.bep.BepJsonWriterTest",
+)
+
+java_junit5_test(
+    name = "SyntheticBepStreamTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.bep.SyntheticBepStreamTest",
+)
+
+java_junit5_test(
+    name = "UnknownFieldFixtureTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.testsupport.bep.UnknownFieldFixtureTest",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":BepBinaryWriterTest",
+        ":BepDamageTest",
+        ":BepFixtureCatalogTest",
+        ":BepFixturesTest",
+        ":BepJsonWriterTest",
+        ":SyntheticBepStreamTest",
+        ":UnknownFieldFixtureTest",
+    ],
+    visibility = ["//visibility:public"],
+)

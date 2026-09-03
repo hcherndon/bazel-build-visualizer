@@ -1,0 +1,16 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "export",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/export",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/redact",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/portable",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/export",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/redact",
+    ],
+)

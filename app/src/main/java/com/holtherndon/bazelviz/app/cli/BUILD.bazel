@@ -1,0 +1,38 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "cli",
+    srcs = [
+        "Args.java",
+        "CancellationGuard.java",
+        "CliContext.java",
+        "CliMain.java",
+        "CliUsageException.java",
+        "ExitCode.java",
+        "Formatting.java",
+        "ImportCommand.java",
+        "InspectCommand.java",
+        "Json.java",
+        "ProgressReporter.java",
+        "RunCommand.java",
+        "SessionSnapshot.java",
+        "package-info.java",
+    ],
+    deps = [
+        "//app/src/main/java/com/holtherndon/bazelviz/app/dirs:dirs",
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec:bepcodec",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer:importer",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id:id",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec:exec",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc:proc",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json:json",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    visibility = ["//visibility:public"],
+)

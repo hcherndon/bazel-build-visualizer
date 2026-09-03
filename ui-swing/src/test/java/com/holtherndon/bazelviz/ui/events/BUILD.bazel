@@ -1,0 +1,148 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
+        "//proto",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/events",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/format",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "EventFileLoaderTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventFileLoaderTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventInspectorModelTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventInspectorModelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventInspectorPanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventInspectorPanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventRowIndexTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventRowIndexTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventRowSourceScaleTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventRowSourceScaleTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventRowSourceTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventRowSourceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventTableColumnsTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventTableColumnsTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventsViewColumnStateTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventsViewColumnStateTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventsViewEntityActionsTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventsViewEntityActionsTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventsViewLiveRefreshTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventsViewLiveRefreshTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EventsViewWiringTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.EventsViewWiringTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ImportedSessionEventsTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.ImportedSessionEventsTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "RawPayloadRendererTest",
+    test_class = "com.holtherndon.bazelviz.ui.events.RawPayloadRendererTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":EventFileLoaderTest",
+        ":EventInspectorModelTest",
+        ":EventInspectorPanelTest",
+        ":EventRowIndexTest",
+        ":EventRowSourceTest",
+        ":EventTableColumnsTest",
+        ":EventsViewColumnStateTest",
+        ":EventsViewEntityActionsTest",
+        ":EventsViewLiveRefreshTest",
+        ":EventsViewWiringTest",
+        ":ImportedSessionEventsTest",
+        ":RawPayloadRendererTest",
+    ],
+)
+
+test_suite(
+    name = "scale_tests",
+    tests = [":EventRowSourceScaleTest"],
+)

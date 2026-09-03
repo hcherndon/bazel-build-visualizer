@@ -23,13 +23,18 @@ class ConsoleModelTest {
   }
 
   @Test
-  @DisplayName("ANSI escape sequences are removed for display")
-  void ansiSequencesAreStripped() {
+  @DisplayName("ANSI colours are retained while escape bytes stay out of plain text")
+  void ansiColoursAreRetained() {
     ConsoleModel model = new ConsoleModel();
 
     model.append(ESC + "[32mINFO:" + ESC + "[0m Build completed successfully\n");
 
     assertThat(model.lines()).containsExactly("INFO: Build completed successfully");
+    assertThat(model.styledLines().getFirst().runs()).hasSize(2);
+    assertThat(model.styledLines().getFirst().runs().getFirst().text()).isEqualTo("INFO:");
+    assertThat(model.styledLines().getFirst().runs().getFirst().style().foregroundRgb())
+        .isEqualTo(0x00AA00);
+    assertThat(model.styledLines().getFirst().runs().getLast().style().foregroundRgb()).isNull();
   }
 
   @Test
@@ -43,6 +48,82 @@ class ConsoleModelTest {
     model.append("2mgreen" + ESC + "[0m\n");
 
     assertThat(model.lines()).containsExactly("green");
+    assertThat(model.styledLines().getFirst().runs().getFirst().style().foregroundRgb())
+        .isEqualTo(0x00AA00);
+  }
+
+  @Test
+  @DisplayName("SGR reset restores every attribute without changing earlier text")
+  void resetRestoresDefaultAttributes() {
+    ConsoleModel model = new ConsoleModel();
+
+    model.append(ESC + "[1;3;4;91mimportant" + ESC + "[0m ordinary\n");
+
+    ConsoleModel.StyledLine line = model.styledLines().getFirst();
+    assertThat(line.runs()).hasSize(2);
+    assertThat(line.runs().getFirst().style().bold()).isTrue();
+    assertThat(line.runs().getFirst().style().italic()).isTrue();
+    assertThat(line.runs().getFirst().style().underline()).isTrue();
+    assertThat(line.runs().getFirst().style().foregroundRgb()).isEqualTo(0xFF5555);
+    assertThat(line.runs().getLast().style().bold()).isFalse();
+    assertThat(line.runs().getLast().style().foregroundRgb()).isNull();
+  }
+
+  @Test
+  @DisplayName("256-colour and true-colour sequences retain their exact display colours")
+  void extendedColoursAreRetained() {
+    ConsoleModel model = new ConsoleModel();
+
+    model.append(ESC + "[38;5;202mindexed" + ESC + "[38;2;12;34;56mtrue\n");
+
+    ConsoleModel.StyledLine line = model.styledLines().getFirst();
+    assertThat(line.runs()).hasSize(2);
+    assertThat(line.runs().getFirst().style().foregroundRgb()).isEqualTo(0xFF5F00);
+    assertThat(line.runs().getLast().style().foregroundRgb()).isEqualTo(0x0C2238);
+  }
+
+  @Test
+  @DisplayName("OSC window titles are consumed even when their terminator crosses chunks")
+  void terminalControlStringsAreNotShown() {
+    ConsoleModel model = new ConsoleModel();
+
+    model.append("before" + ESC + "]0;secret title" + ESC);
+    model.append("\\after\n");
+
+    assertThat(model.lines()).containsExactly("beforeafter");
+  }
+
+  @Test
+  @DisplayName("an overlong CSI sequence is bounded and ignored through its terminator")
+  void overlongCsiIsIgnored() {
+    ConsoleModel model = new ConsoleModel();
+
+    model.append(ESC + "[" + "1;".repeat(ConsoleModel.MAX_ANSI_SEQUENCE_CHARACTERS) + "31mplain\n");
+
+    assertThat(model.lines()).containsExactly("plain");
+    assertThat(model.styledLines().getFirst().runs().getFirst().style().foregroundRgb()).isNull();
+    assertThat(model.styledLines().getFirst().runs().getFirst().style().bold()).isFalse();
+  }
+
+  @Test
+  @DisplayName("Bazel cursor-up redraw replaces its multi-line progress block")
+  void cursorUpReplacesBazelProgressBlock() {
+    ConsoleModel model = new ConsoleModel();
+    String first = progressBlock("1,124", "old action");
+    String second = progressBlock("1,129", "new action");
+
+    model.append(first);
+    ConsoleModel.Delta initial = model.since(0);
+    assertThat(initial.lines()).hasSize(9);
+
+    model.append(clearPreviousLines(9) + second);
+
+    assertThat(model.lines()).hasSize(9);
+    assertThat(model.text()).contains("[1,129 / 1,776]").contains("new action");
+    assertThat(model.text()).doesNotContain("[1,124 / 1,776]").doesNotContain("old action");
+    ConsoleModel.Delta replacement = model.since(initial.total());
+    assertThat(replacement.replaceFrom()).isZero();
+    assertThat(replacement.lines()).hasSize(9);
   }
 
   @Test
@@ -96,5 +177,21 @@ class ConsoleModelTest {
     assertThat(model.lines())
         .containsExactly(
             "INFO: Analyzed 2 targets.", "INFO: Build completed successfully, 3 total actions");
+  }
+
+  private static String progressBlock(String completed, String action) {
+    StringBuilder block =
+        new StringBuilder("[")
+            .append(completed)
+            .append(" / 1,776] 1 / 35 tests; 8 actions, 7 running\n");
+    for (int index = 0; index < 7; index++) {
+      block.append("    queued action ").append(index).append('\n');
+    }
+    return block.append("    ").append(action).append('\n').toString();
+  }
+
+  /** Bazel emits one CR / cursor-up / erase-line triplet for each old progress row. */
+  private static String clearPreviousLines(int count) {
+    return ("\r" + ESC + "[1A" + ESC + "[K").repeat(count);
   }
 }

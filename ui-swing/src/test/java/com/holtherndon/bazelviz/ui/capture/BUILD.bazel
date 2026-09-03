@@ -1,0 +1,118 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(
+        ["*.java"],
+        exclude = ["CaptureLeaseRegistryTest.java"],
+    ),
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/workspace",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_library(
+    name = "capture_lease_registry_test_lib",
+    testonly = True,
+    srcs = ["CaptureLeaseRegistryTest.java"],
+    deps = JUNIT_DEPS + [
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture:capture_leases",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "CaptureLeaseRegistryTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.CaptureLeaseRegistryTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":capture_lease_registry_test_lib"],
+)
+
+java_junit5_test(
+    name = "CapturePanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.CapturePanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ConsoleModelTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.ConsoleModelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ConsoleViewTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.ConsoleViewTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "DisclosurePanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.DisclosurePanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "LaunchControllerTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.LaunchControllerTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "LauncherHistoryTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.LauncherHistoryTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "LauncherHistoryStoreTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.LauncherHistoryStoreTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "LauncherPanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.LauncherPanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "LauncherStateStoreTest",
+    test_class = "com.holtherndon.bazelviz.ui.capture.LauncherStateStoreTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":CaptureLeaseRegistryTest",
+        ":CapturePanelTest",
+        ":ConsoleModelTest",
+        ":ConsoleViewTest",
+        ":DisclosurePanelTest",
+        ":LaunchControllerTest",
+        ":LauncherHistoryTest",
+        ":LauncherHistoryStoreTest",
+        ":LauncherPanelTest",
+        ":LauncherStateStoreTest",
+    ],
+)

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">Build analysis screenshot placeholder</title>
+  <desc id="desc">Replace this placeholder with a screenshot of a timeline or graph view.</desc>
+  <rect width="1200" height="675" rx="24" fill="#f4f7f5"/>
+  <rect x="24" y="24" width="1152" height="627" rx="16" fill="none" stroke="#43a047" stroke-width="4" stroke-dasharray="12 12"/>
+  <text x="600" y="315" fill="#1b5e20" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="700" text-anchor="middle">Screenshot placeholder</text>
+  <text x="600" y="370" fill="#4b6350" font-family="Arial, Helvetica, sans-serif" font-size="24" text-anchor="middle">Timeline, critical path, or dependency graph</text>
+</svg>

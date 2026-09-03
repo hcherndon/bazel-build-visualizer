@@ -1,0 +1,36 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/redact",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/portable",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/catalog",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/export",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/export",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "Phase9ExitCriteriaTest",
+    data = ["//app:src/main/packaging/bviz.properties"],
+    test_class = "com.holtherndon.bazelviz.ui.export.Phase9ExitCriteriaTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [":Phase9ExitCriteriaTest"],
+)

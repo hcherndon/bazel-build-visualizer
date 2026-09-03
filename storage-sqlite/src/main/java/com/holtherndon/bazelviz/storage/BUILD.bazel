@@ -1,0 +1,14 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "storage",
+    srcs = [
+        "BatchedInsert.java",
+        "SessionDatabase.java",
+    ],
+    deps = [
+        "@maven//:org_slf4j_slf4j_api",
+        "@maven//:org_xerial_sqlite_jdbc",
+    ],
+    visibility = ["//visibility:public"],
+)

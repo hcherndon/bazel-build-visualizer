@@ -169,9 +169,14 @@ restore immediately. A discovered ID is resolved only against the fresh startup
 discovery snapshot, so its profile remains ephemeral. Restoration opens
 Console, leaves the command draft blank and restores no captured session.
 Saved-profile command history and table/query-result layout live below
-`settings/workspace-windows/<sha256-profile-id>/`; discovered profiles do not
-create that state. Removing a durably saved profile removes its private state,
-and startup orphan cleanup runs only after a trustworthy profile-store load.
+`settings/workspace-windows/<sha256-profile-id>/`, while their Bazel selection
+lives in the saved profile. Discovered profiles retain only their Bazel
+executable override and bounded command history below
+`settings/discovered-workspace-history/<sha256-profile-id>/`; that sidecar
+contains no profile, connection, repository, label, draft, preset, or
+presentation state and cannot make an absent discovery result openable.
+Removing a durably saved profile removes its private state, and startup orphan
+cleanup runs only after a trustworthy profile-store load.
 The global query library and captured-session catalog serialize their file and
 database access across windows; catalog reconciliation runs once through the
 manager. A process-owned `SessionMutationCoordinator` also leases every open
@@ -183,6 +188,35 @@ share or remove each other's partial extraction. Desktop Open File routes to
 the focused Workspace window, or to the manager's workspace-less analysis
 shell when the manager owns focus. Desktop Quit closes all windows
 asynchronously before the controller releases global resources.
+
+Each window's Console is a bounded, selectable transcript over the exact raw
+stdout/stderr files retained by capture. Its incremental renderer interprets
+ANSI SGR colour and emphasis, collapses carriage-return progress repaints and
+wraps long lines to the viewport. Cursor-up/previous-line and erase-line
+commands replace the mutable transcript tail used by Bazel's progress block;
+the renderer truncates from the earliest changed line instead of rebuilding
+the retained prefix. It is deliberately not a second terminal session:
+unsupported cursor-addressed controls are omitted from display, while the
+original bytes remain available in the session. The interactive Terminal owns
+PTY and full xterm behavior.
+
+The Console's **Bazel Executable** starts as `bazel` and remains editable for
+the selected Workspace; it accepts either a command on that machine's PATH or
+an executable path. It sits first in one left-aligned row with **Capture
+detail**. There is no executable file chooser. A new typed value updates the
+saved profile or the discovered-profile sidecar without replacing its execution
+connection.
+
+The capture-detail combo does not duplicate the selected preset in a separate
+summary. Hovering an option exposes its complete capture scope and cost
+explanation immediately, and the selected option keeps the same explanation as
+the combo's accessible description. This keeps the launcher compact without
+hiding capture consequences from mouse or assistive-technology users.
+
+A window-owned key dispatcher handles Ctrl+Tab and Ctrl+Shift+Tab before a
+focused editor or Terminal can consume them. It moves only that window's
+visible left-navigation selection, wraps at both ends, and unregisters when the
+window closes.
 
 A window that has accepted close is immediately removed from command and file
 routing but remains in the restore snapshot until its asynchronous resource

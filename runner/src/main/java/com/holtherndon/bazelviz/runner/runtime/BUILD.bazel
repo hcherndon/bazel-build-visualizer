@@ -1,0 +1,12 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "runtime",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "@maven//:org_jetbrains_pty4j_pty4j",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+    visibility = ["//visibility:public"],
+)

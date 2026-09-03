@@ -1,0 +1,18 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "metrics",
+    srcs = [
+        "MetricQueries.java",
+        "SessionMetrics.java",
+    ],
+    deps = [
+        "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis:analysis",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph:graph",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure:measure",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph:graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph:graph",
+    ],
+    visibility = ["//visibility:public"],
+)

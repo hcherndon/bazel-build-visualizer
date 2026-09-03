@@ -1,0 +1,26 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "events",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/json",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
+        "//proto",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/format",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

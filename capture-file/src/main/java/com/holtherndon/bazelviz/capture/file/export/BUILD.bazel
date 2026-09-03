@@ -1,0 +1,15 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "export",
+    srcs = [
+        "BepStreamExport.java",
+    ],
+    deps = [
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec:bepcodec",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/json:json",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal:journal",
+        "@maven//:com_google_protobuf_protobuf_java",
+    ],
+    visibility = ["//visibility:public"],
+)

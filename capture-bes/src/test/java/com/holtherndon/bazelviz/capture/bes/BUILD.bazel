@@ -1,0 +1,70 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "REAL_BAZEL_ENV", "REAL_BAZEL_TAGS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "BesServerTest.java",
+        "BesStreamTrackerTest.java",
+        "RecordingSink.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//proto:proto",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:io_grpc_grpc_api",
+        "@maven//:io_grpc_grpc_netty_shaded",
+        "@maven//:io_grpc_grpc_stub",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BesServerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.bes.BesServerTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BesStreamTrackerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.bes.BesStreamTrackerTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "RealBazelBesTest",
+    srcs = ["RealBazelBesTest.java"],
+    deps = JUNIT_DEPS + [
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec:bepcodec",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
+        ":tests_lib",
+    ],
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "large",
+    tags = REAL_BAZEL_TAGS,
+    test_class = "com.holtherndon.bazelviz.capture.bes.RealBazelBesTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":BesServerTest",
+        ":BesStreamTrackerTest",
+    ],
+    visibility = ["//visibility:public"],
+)

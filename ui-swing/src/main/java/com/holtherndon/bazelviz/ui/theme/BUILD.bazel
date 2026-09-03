@@ -1,0 +1,13 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "theme",
+    srcs = glob(["*.java"]),
+    deps = [
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+        "@maven//:com_formdev_flatlaf",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)

@@ -1,0 +1,144 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "REAL_BAZEL_ENV", "REAL_BAZEL_TAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = [
+        "CliCancellationTest.java",
+        "CliDamagedSourceTest.java",
+        "CliHarness.java",
+        "CliHeadlessTest.java",
+        "CliImportTest.java",
+        "CliInspectTest.java",
+        "CliRunTest.java",
+        "CliUsageTest.java",
+    ],
+    deps = JUNIT_DEPS + [
+        "//app/src/main/java/com/holtherndon/bazelviz/app/cli:cli",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer:importer",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json:json",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep:bep",
+    ],
+    testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CliCancellationTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.cli.CliCancellationTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CliDamagedSourceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.cli.CliDamagedSourceTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CliHeadlessTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.cli.CliHeadlessTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CliImportTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.cli.CliImportTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CliInspectTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.cli.CliInspectTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CliRunTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.cli.CliRunTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CliUsageTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.app.cli.CliUsageTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "RealBazelCliRunTest",
+    srcs = ["RealBazelCliRunTest.java"],
+    deps = JUNIT_DEPS + [
+        "//app/src/main/java/com/holtherndon/bazelviz/app/cli:cli",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json:json",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
+        ":tests_lib",
+    ],
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "large",
+    tags = REAL_BAZEL_TAGS,
+    test_class = "com.holtherndon.bazelviz.app.cli.RealBazelCliRunTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "CliLoggingProcessTest",
+    srcs = ["CliLoggingProcessTest.java"],
+    data = ["//app:app_deploy.jar"],
+    deps = JUNIT_DEPS + [
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json:json",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep:bep",
+    ],
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "medium",
+    test_class = "com.holtherndon.bazelviz.app.cli.CliLoggingProcessTest",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":CliCancellationTest",
+        ":CliDamagedSourceTest",
+        ":CliHeadlessTest",
+        ":CliImportTest",
+        ":CliInspectTest",
+        ":CliLoggingProcessTest",
+        ":CliRunTest",
+        ":CliUsageTest",
+    ],
+    visibility = ["//visibility:public"],
+)

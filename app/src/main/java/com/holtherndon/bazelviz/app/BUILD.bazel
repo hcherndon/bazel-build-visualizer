@@ -1,0 +1,28 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "app",
+    srcs = [
+        "ApplicationController.java",
+        "ApplicationWindowRegistry.java",
+        "AppInfo.java",
+        "DesktopIntegration.java",
+        "Main.java",
+        "WorkspaceWindowPolicy.java",
+        "WorkspaceWindowSnapshots.java",
+    ],
+    deps = [
+        "//app/src/main/java/com/holtherndon/bazelviz/app/cli:cli",
+        "//app/src/main/java/com/holtherndon/bazelviz/app/dirs:dirs",
+        "//app/src/main/java/com/holtherndon/bazelviz/app/logging:logging",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture:capture",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture:capture_leases",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/logging:logging",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session:session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme:theme",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/workspace:workspace",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui:ui",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+    visibility = ["//visibility:public"],
+)

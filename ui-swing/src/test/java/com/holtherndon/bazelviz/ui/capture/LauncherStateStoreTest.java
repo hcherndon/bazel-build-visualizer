@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.ui.capture.LauncherStateStore.ExecutionHost;
+import com.holtherndon.bazelviz.ui.workspace.WorkspaceUiSettings;
+import java.awt.event.KeyEvent;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -192,7 +194,7 @@ class LauncherStateStoreTest {
 
     SwingUtilities.invokeAndWait(
         () -> {
-          LauncherPanel created = new LauncherPanel(() -> {}, () -> {}, () -> {});
+          LauncherPanel created = new LauncherPanel(() -> {}, () -> {});
           created.attachPersistence(store, queuedIo::add);
           panel.set(created);
         });
@@ -276,6 +278,58 @@ class LauncherStateStoreTest {
     queuedIo.remove().run();
     assertThat(store.load().command()).isEmpty();
     assertThat(store.load().history()).containsExactly("test //draft", "build //older");
+  }
+
+  @Test
+  void workspacePanelsLoadOnlyTheirOwnRecentCommands() throws Exception {
+    LauncherStateStore firstStore =
+        new LauncherStateStore(WorkspaceUiSettings.workspace(temporaryDirectory, "workspace-one"));
+    LauncherStateStore secondStore =
+        new LauncherStateStore(WorkspaceUiSettings.workspace(temporaryDirectory, "workspace-two"));
+    assertThat(
+            firstStore.save(
+                new LauncherStateStore.State(
+                    "/one",
+                    "bazel",
+                    CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                    "",
+                    List.of("build //one"))))
+        .isTrue();
+    assertThat(
+            secondStore.save(
+                new LauncherStateStore.State(
+                    "/two",
+                    "bazel",
+                    CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                    "",
+                    List.of("test //two"))))
+        .isTrue();
+
+    ArrayDeque<Runnable> firstIo = new ArrayDeque<>();
+    ArrayDeque<Runnable> secondIo = new ArrayDeque<>();
+    LauncherPanel firstPanel = panelAttachedTo(firstStore, firstIo);
+    LauncherPanel secondPanel = panelAttachedTo(secondStore, secondIo);
+    firstIo.remove().run();
+    secondIo.remove().run();
+    SwingUtilities.invokeAndWait(() -> {});
+
+    assertThat(firstPanel.historyEntriesForTest()).containsExactly("build //one");
+    assertThat(secondPanel.historyEntriesForTest()).containsExactly("test //two");
+    assertThat(firstPanel.recentCommandsListForTest().getModel().getElementAt(0))
+        .isEqualTo("build //one");
+    assertThat(secondPanel.recentCommandsListForTest().getModel().getElementAt(0))
+        .isEqualTo("test //two");
+    SwingUtilities.invokeAndWait(
+        () -> {
+          firstPanel.showRecentCommandsForTest();
+          assertThat(firstPanel.processCommandKeyForTest(KeyEvent.VK_DOWN, 0)).isTrue();
+          assertThat(firstPanel.processCommandKeyForTest(KeyEvent.VK_TAB, 0)).isTrue();
+          secondPanel.showRecentCommandsForTest();
+          assertThat(secondPanel.processCommandKeyForTest(KeyEvent.VK_DOWN, 0)).isTrue();
+          assertThat(secondPanel.processCommandKeyForTest(KeyEvent.VK_TAB, 0)).isTrue();
+        });
+    assertThat(firstPanel.command()).isEqualTo("build //one");
+    assertThat(secondPanel.command()).isEqualTo("test //two");
   }
 
   @Test
@@ -567,7 +621,7 @@ class LauncherStateStoreTest {
     AtomicReference<LauncherPanel> panel = new AtomicReference<>();
     SwingUtilities.invokeAndWait(
         () -> {
-          LauncherPanel created = new LauncherPanel(() -> {}, () -> {}, () -> {});
+          LauncherPanel created = new LauncherPanel(() -> {}, () -> {});
           created.attachPersistence(store, queuedIo::add);
           panel.set(created);
         });

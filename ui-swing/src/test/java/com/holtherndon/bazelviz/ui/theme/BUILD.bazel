@@ -1,0 +1,80 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_fifesoft_rsyntaxtextarea",
+        "@maven//:com_formdev_flatlaf",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "EmptyStatePanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.EmptyStatePanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "PlainTextTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.PlainTextTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ResponsiveGridLayoutTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.ResponsiveGridLayoutTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "SyntaxTextThemeTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.SyntaxTextThemeTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ThemePreferenceWriterTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.ThemePreferenceWriterTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ThemeSettingsStoreTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.ThemeSettingsStoreTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ThemesTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.ThemesTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":EmptyStatePanelTest",
+        ":PlainTextTest",
+        ":ResponsiveGridLayoutTest",
+        ":SyntaxTextThemeTest",
+        ":ThemePreferenceWriterTest",
+        ":ThemeSettingsStoreTest",
+        ":ThemesTest",
+    ],
+)

@@ -48,8 +48,13 @@ It contains launcher state (including command history and the most recently
 saved draft) and table/query-result presentation settings. Restoration clears
 the command draft before showing Console but deliberately retains history.
 Commands and target labels can be sensitive; protect this directory like the
-Workspace profile store. Discovered profiles create no private settings
-directory. Private state is removed only after profile removal is saved, and
+Workspace profile store. A discovered profile stores only its Bazel executable
+override and bounded command history below
+`settings/discovered-workspace-history/`, keyed by the SHA-256 digest of its
+deterministic ID. That file contains no profile label, machine, working
+directory, connection details, command draft, preset, or presentation state,
+so it cannot recreate or connect to a Workspace that discovery did not emit.
+Private saved-profile state is removed only after profile removal is saved, and
 orphan cleanup is skipped when the profile store cannot be trusted.
 
 Workspace Discovery is an explicit exception to treating settings as inert
@@ -73,8 +78,10 @@ Workspace resolves repository paths through its local `ExecutionFileSystem`.
 An explicitly connected SSH Workspace resolves them through its own filesystem
 and uses SFTP for content; arbitrary remote URI authorities are still refused.
 Historical local `file:` URIs remain local links, while recorded remote paths
-are provenance unless a user separately chooses a live Workspace.
-BUILD-file edits are written only after the user presses **Save**, and a
+are provenance unless a user separately chooses a live Workspace. The
+Console's **Bazel Executable** is a typed Workspace setting; it does not browse
+or read file metadata when edited. BUILD-file edits are written only after the
+user presses **Save**, and a
 content-stamp check prevents the editor from silently replacing newer local or
 remote work. Reads remain bounded and binary-refusing.
 

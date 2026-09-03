@@ -1,0 +1,77 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/actions",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/criticalpath",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/errors",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/events",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/metrics",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/query",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/targets",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/tests",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/workspace",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "EdtDisciplineTest",
+    test_class = "com.holtherndon.bazelviz.ui.EdtDisciplineTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "EntityViewsWiringTest",
+    test_class = "com.holtherndon.bazelviz.ui.EntityViewsWiringTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "MainWindowNavWiringTest",
+    test_class = "com.holtherndon.bazelviz.ui.MainWindowNavWiringTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "SectionPaneUsageTest",
+    test_class = "com.holtherndon.bazelviz.ui.SectionPaneUsageTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WindowNavigationKeysTest",
+    test_class = "com.holtherndon.bazelviz.ui.WindowNavigationKeysTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":EdtDisciplineTest",
+        ":EntityViewsWiringTest",
+        ":MainWindowNavWiringTest",
+        ":SectionPaneUsageTest",
+        ":WindowNavigationKeysTest",
+    ],
+)

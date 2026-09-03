@@ -1,0 +1,87 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//ui-swing:__pkg__"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/workspace",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+java_junit5_test(
+    name = "WorkspaceProfileTest",
+    test_class = "com.holtherndon.bazelviz.ui.workspace.WorkspaceProfileTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WorkspaceDiscoveryParserTest",
+    test_class = "com.holtherndon.bazelviz.ui.workspace.WorkspaceDiscoveryParserTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WorkspaceDiscoveryScriptStoreTest",
+    test_class = "com.holtherndon.bazelviz.ui.workspace.WorkspaceDiscoveryScriptStoreTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WorkspaceDiscoveryTest",
+    test_class = "com.holtherndon.bazelviz.ui.workspace.WorkspaceDiscoveryTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WorkspaceSelectionPanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.workspace.WorkspaceSelectionPanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WorkspaceStoreTest",
+    test_class = "com.holtherndon.bazelviz.ui.workspace.WorkspaceStoreTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WorkspaceWindowStateStoreTest",
+    test_class = "com.holtherndon.bazelviz.ui.workspace.WorkspaceWindowStateStoreTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "WorkspaceLauncherHistoryMigrationTest",
+    test_class = "com.holtherndon.bazelviz.ui.workspace.WorkspaceLauncherHistoryMigrationTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":WorkspaceDiscoveryParserTest",
+        ":WorkspaceDiscoveryScriptStoreTest",
+        ":WorkspaceDiscoveryTest",
+        ":WorkspaceLauncherHistoryMigrationTest",
+        ":WorkspaceProfileTest",
+        ":WorkspaceSelectionPanelTest",
+        ":WorkspaceStoreTest",
+        ":WorkspaceWindowStateStoreTest",
+    ],
+)
