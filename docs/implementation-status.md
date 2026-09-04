@@ -3115,3 +3115,18 @@ it is a different tab and was not reported.
   unsafe import-by-reference is explicitly refused for new imports and resume,
   including the same-size, preserved-mtime mutation case. Focused archive,
   coordinator, checkpoint, and importer regressions cover the seams.
+
+- **The deploy jar carries a complete reviewed runtime-attribution bundle**
+  (2026-09-04). A native Bazel `genquery` derives the exact 40-coordinate Maven
+  runtime closure shipped in `//app:app_deploy.jar`, including its two empty
+  compatibility artifacts, and the deploy-jar test compares those exact
+  coordinates so additions, removals, and version drift require review.
+  `META-INF/third-party/` maps every coordinate and embedded component to
+  collision-safe, byte-exact legal resources; the test pins every payload by
+  SHA-256, rejects duplicate names, and checks representative packaged code.
+  Exact gates also cover the gRPC, FlatLaf, JNA, Pty4J, and SQLite native sets;
+  Netty/JCTools and other shaded lineages; and the vendored protocol schemas
+  and icon assets. The official JSVG 2.1.0 source archive accompanies the
+  GPL-with-Classpath-Exception-derived object code in the deploy jar, and a
+  bounded test pins its hash and requires the derived sources and Gradle build
+  and wrapper entries. No dependency or dependency version changed.

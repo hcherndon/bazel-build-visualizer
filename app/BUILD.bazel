@@ -42,6 +42,14 @@ java_binary(
     visibility = ["//app:__subpackages__"],
 )
 
+genquery(
+    name = "app_runtime_maven_deps",
+    expression = 'kind("jvm_import|java_import", deps(//app:app))',
+    opts = ["--output=build"],
+    scope = [":app"],
+    visibility = ["//app:__subpackages__"],
+)
+
 # Preserve the original launcher and deploy-jar labels while the clearer
 # `//app:app` spelling remains the documented entry point.
 alias(

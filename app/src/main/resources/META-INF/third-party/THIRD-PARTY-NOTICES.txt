@@ -1,8 +1,522 @@
 THIRD-PARTY SOFTWARE DISTRIBUTED WITH BAZEL BUILD VISUALIZER
 
-Bazel Build Visualizer redistributes the components below in its deploy jar.
-The adjoining files preserve each upstream license and required notice under a
-component-specific name so fat-jar resource collisions cannot discard them.
+Bazel Build Visualizer redistributes the runtime components below in its
+deploy jar. Artifact coordinates and versions are the exact Bazel-resolved
+runtime closure shipped in //app:app_deploy.jar (the runtime closure of its
+//app:app binary input). Test and benchmark-only artifacts are excluded.
+The adjoining files preserve exact upstream license and notice texts under
+collision-safe names; the fat jar's ambiguous generic META-INF legal entries
+are not relied upon. APACHE-2.0.txt is the exact unmodified Apache License 2.0
+text and is shared only by projects that publish that standard text unchanged.
+
+MAVEN RUNTIME CLOSURE
+
+Aircompressor 2.0.3
+  Artifact: io.airlift:aircompressor:2.0.3
+  Project: https://github.com/airlift/aircompressor
+  License: Apache License 2.0.
+  Legal files: AIRCOMPRESSOR-APACHE-2.0.txt, AIRCOMPRESSOR-NOTICE.md
+
+  Snappy-derived Java implementation
+    Embedded source in Aircompressor 2.0.3; there is no separate runtime
+    artifact or version. Project ancestry: https://github.com/google/snappy
+    License: BSD-3-Clause.
+    Copyright and license: AIRCOMPRESSOR-NOTICE.md
+
+  Apache Hadoop/Apache Ant-derived BZip2 implementation (version not declared)
+    Embedded source in Aircompressor 2.0.3; there is no separate runtime
+    artifact. The code entered Aircompressor at commit
+    1ec9d30ce2b4041d89f84a045350d117b7a26712 as a fork from Apache Hadoop
+    and retains its attribution to Keiron Liddle and Aftex Software for work
+    contributed to Apache Ant.
+    Projects: https://hadoop.apache.org/ and https://ant.apache.org/
+    License: Apache License 2.0.
+    License text: AIRCOMPRESSOR-APACHE-2.0.txt
+
+AutoComplete 3.3.3
+  Artifact: com.fifesoft:autocomplete:3.3.3
+  Project: https://github.com/bobbylight/AutoComplete
+  License: BSD-3-Clause.
+  License text: AUTOCOMPLETE-BSD-3-CLAUSE.txt
+
+RSyntaxTextArea 3.6.1
+  Artifact: com.fifesoft:rsyntaxtextarea:3.6.1
+  Project: https://github.com/bobbylight/RSyntaxTextArea
+  License: BSD-3-Clause.
+  License text: RSYNTAXTEXTAREA-BSD-3-CLAUSE.txt
+
+FlatLaf and FlatLaf Extras 3.7.2
+  Artifacts:
+    com.formdev:flatlaf:3.7.2
+    com.formdev:flatlaf-extras:3.7.2
+  Project: https://github.com/JFormDesigner/FlatLaf
+  Source reviewed at: 7c54d898478a3af1133120d423f72f83cf3da028
+  License: Apache License 2.0.
+  License text: FLATLAF-APACHE-2.0.txt
+
+  minimal-json 0.9.5-derived parser
+    Embedded in FlatLaf 3.7.2; there is no separate runtime artifact.
+    Project: https://github.com/ralfstx/minimal-json
+    License: MIT.
+    License text: FLATLAF-MINIMAL-JSON-MIT.txt
+
+  IntelliJ Platform-derived GrayFilter and theme properties
+    Embedded in FlatLaf 3.7.2; there is no separate runtime artifact.
+    Project: https://github.com/JetBrains/intellij-community
+    Source reviewed at: 3840eab54746f5c4f301bb3ac78f00a980b5fd6e
+    License: Apache License 2.0.
+    Legal files: FLATLAF-INTELLIJ-APACHE-2.0.txt,
+      FLATLAF-INTELLIJ-NOTICE.txt
+
+  Tips4Java HSLColor (version not declared)
+    Embedded in FlatLaf 3.7.2; there is no separate runtime artifact.
+    Project: https://tips4java.wordpress.com/2009/07/05/hsl-color/
+    Grant: unrestricted use and modification; the exact source-header grant
+      is retained in FLATLAF-TIPS4JAVA-HSLCOLOR-NOTICE.txt.
+
+  FlatLaf native libraries 3.7.2
+    Seven Windows, Linux and macOS native libraries are shipped. They include:
+
+    Apple OpenJDK JNFRunLoop (xcodejdk14-release; no component version declared)
+      Embedded in the two macOS dylibs.
+      Project: https://github.com/apple/openjdk
+      License: BSD-3-Clause.
+      Exact upstream header and legal notice: FLATLAF-APPLE-JNFRUNLOOP.h
+
+    nativefiledialog-extended GTK window-handle routine
+      Embedded in the two Linux shared libraries; source based on commit
+      29e3bcb578345b9fa345d1d7683f00c150565ca3.
+      Project: https://github.com/btzy/nativefiledialog-extended
+      License: zlib.
+      License text: FLATLAF-NATIVEFILEDIALOG-EXTENDED-ZLIB.txt
+
+SQL Formatter 2.0.5
+  Artifact: com.github.vertical-blank:sql-formatter:2.0.5
+  Project: https://github.com/vertical-blank/sql-formatter
+  License: MIT.
+  License text: SQL-FORMATTER-MIT.txt
+
+  ZeroTurnaround SQL Formatter 2.3.2
+    The Java port embeds source derived from the JavaScript implementation;
+    there is no separate runtime artifact.
+    Project: https://github.com/zeroturnaround/sql-formatter
+    License: MIT.
+    License text: SQL-FORMATTER-ZEROTURNAROUND-MIT.txt
+
+JSVG 2.1.0
+  Artifact: com.github.weisj:jsvg:2.1.0
+  Project: https://github.com/weisJ/jsvg
+  Source reviewed at: a9effc5fd93811ac49a298a6516809efdb03687d
+  License: MIT.
+  License text: JSVG-MIT.txt
+
+  OpenJDK Java2D gradient-paint code (upstream version not declared by JSVG)
+    Four modified classes are embedded in JSVG 2.1.0.
+    Project: https://github.com/openjdk/jdk
+    License: GPL-2.0-only with the Classpath Exception.
+    License text: JSVG-OPENJDK-GPL-2.0-CLASSPATH-EXCEPTION.txt
+    GPL corresponding source: JSVG-2.1.0-CORRESPONDING-SOURCE.tar.gz is the
+      exact official v2.1.0 archive at commit
+      a9effc5fd93811ac49a298a6516809efdb03687d. It accompanies the executable
+      in this deploy jar and includes the modified gradient sources, Gradle
+      build scripts and wrapper. Its presence, contents and hash are a release
+      gate enforced by ThirdPartyNoticesTest.
+
+  Sun/Romain Guy AbstractBlendComposite (version not declared)
+    Embedded in JSVG 2.1.0; there is no separate runtime artifact.
+    License choice: BSD from the source's dual LGPL/BSD grant.
+    Exact source-header notice: JSVG-ABSTRACT-BLEND-COMPOSITE-BSD-NOTICE.txt
+
+  jDataUri 1.2.1-derived DataUri
+    Modified and embedded in JSVG 2.1.0; there is no separate runtime artifact.
+    Project: https://github.com/ooxi/jdatauri
+    License: zlib.
+    License text: JSVG-JDATAURI-ZLIB.txt
+
+Google Android Annotations 4.1.1.4
+  Artifact: com.google.android:annotations:4.1.1.4
+  Project: https://source.android.com/
+  License: Apache License 2.0, as declared by the resolved artifact POM.
+  License text: APACHE-2.0.txt
+
+Google Common Protos 2.64.1
+  Artifact: com.google.api.grpc:proto-google-common-protos:2.64.1
+  Project: https://github.com/googleapis/sdk-platform-java
+  License: Apache License 2.0.
+  License text: APACHE-2.0.txt
+
+JSR-305 3.0.2
+  Artifact: com.google.code.findbugs:jsr305:3.0.2
+  Project: https://code.google.com/archive/p/jsr-305
+  License: Apache License 2.0, as declared by the resolved artifact POM.
+  License text: APACHE-2.0.txt
+
+Gson 2.14.0
+  Artifact: com.google.code.gson:gson:2.14.0
+  Project: https://github.com/google/gson
+  License: Apache License 2.0.
+  License text: APACHE-2.0.txt
+
+Error Prone Annotations 2.50.0
+  Artifact: com.google.errorprone:error_prone_annotations:2.50.0
+  Project: https://github.com/google/error-prone
+  License: Apache License 2.0.
+  License text: APACHE-2.0.txt
+
+Guava 33.6.0-android and support artifacts
+  Artifacts:
+    com.google.guava:guava:33.6.0-android
+    com.google.guava:failureaccess:1.0.3
+    com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava
+  Project: https://github.com/google/guava
+  License: Apache License 2.0.
+  License text: APACHE-2.0.txt
+  The listenablefuture coordinate is Guava's intentionally empty compatibility
+  jar. Its coordinate metadata is still merged into the deploy jar.
+
+J2ObjC Annotations 3.1
+  Artifact: com.google.j2objc:j2objc-annotations:3.1
+  Project: https://github.com/google/j2objc
+  License: Apache License 2.0.
+  License text: APACHE-2.0.txt
+
+Protocol Buffers Java 4.36.0
+  Artifacts:
+    com.google.protobuf:protobuf-java:4.36.0
+    com.google.protobuf:protobuf-java-util:4.36.0
+  Project: https://github.com/protocolbuffers/protobuf
+  License: BSD-3-Clause.
+  License text: PROTOBUF-BSD-3-CLAUSE.txt
+
+gRPC Java 1.83.1
+  Artifacts:
+    io.grpc:grpc-api:1.83.1
+    io.grpc:grpc-context:1.83.1
+    io.grpc:grpc-core:1.83.1
+    io.grpc:grpc-netty-shaded:1.83.1
+    io.grpc:grpc-protobuf:1.83.1
+    io.grpc:grpc-protobuf-lite:1.83.1
+    io.grpc:grpc-stub:1.83.1
+    io.grpc:grpc-util:1.83.1
+  Project: https://github.com/grpc/grpc-java
+  License: Apache License 2.0.
+  Legal files: APACHE-2.0.txt, GRPC-JAVA-NOTICE.txt
+  grpc-context is an intentionally empty compatibility jar; Context.class is
+  supplied by grpc-api. The shaded Netty payload is detailed below.
+  The exact project-wide upstream notice is retained. Its OkHttp, Envoy,
+  protoc-gen-validate and UDPA entries describe other gRPC Java repository
+  modules that are not part of this deploy jar's runtime closure.
+
+PerfMark API 0.27.0
+  Artifact: io.perfmark:perfmark-api:0.27.0
+  Project: https://github.com/perfmark/perfmark
+  License: Apache License 2.0.
+  Legal files: PERFMARK-APACHE-2.0.txt, PERFMARK-NOTICE.txt
+  The exact project-wide upstream notice is retained. Its Catapult, Polymer
+  and ASM entries describe PerfMark traceviewer and agent modules that are not
+  part of this deploy jar's runtime closure.
+
+JNA and JNA Platform 5.14.0
+  Artifacts:
+    net.java.dev.jna:jna:5.14.0
+    net.java.dev.jna:jna-platform:5.14.0
+  Project: https://github.com/java-native-access/jna
+  License: Apache License 2.0, selected from JNA's dual
+  Apache-2.0/LGPL-2.1-or-later grant.
+  License choice and text: JNA-LICENSE.txt, JNA-APACHE-2.0.txt
+  The JNA jar ships libjnidispatch natives for AIX, macOS, BSD, Linux,
+  Solaris and Windows architectures. Those binaries statically link:
+
+  libffi 3.4.4
+    Embedded in JNA 5.14.0; there is no separate runtime artifact.
+    Project: https://github.com/libffi/libffi
+    License: MIT-like libffi license.
+    License text: JNA-LIBFFI-3.4.4-LICENSE.txt
+
+Animal Sniffer Annotations 1.27
+  Artifact: org.codehaus.mojo:animal-sniffer-annotations:1.27
+  Project: https://github.com/mojohaus/animal-sniffer
+  License: MIT.
+  License text: ANIMAL-SNIFFER-MIT.txt
+
+JetBrains Java Annotations 24.0.1
+  Artifact: org.jetbrains:annotations:24.0.1
+  Project: https://github.com/JetBrains/java-annotations
+  License: Apache License 2.0.
+  License text: JETBRAINS-ANNOTATIONS-LICENSE.txt
+
+JediTerm core and UI 3.74
+  Artifacts:
+    org.jetbrains.jediterm:jediterm-core:3.74
+    org.jetbrains.jediterm:jediterm-ui:3.74
+  Project: https://github.com/JetBrains/jediterm
+  Source reviewed at: 377b76e682a5f86bcbb18a318386f530dbebf5c1
+  License: Apache License 2.0, selected from the project's dual
+  Apache-2.0/LGPL-3.0 grant.
+  License text: JEDITERM-APACHE-2.0.txt
+
+Kotlin standard library 2.4.0
+  Artifact: org.jetbrains.kotlin:kotlin-stdlib:2.4.0
+  Project: https://github.com/JetBrains/kotlin
+  License: Apache License 2.0.
+  License and notice: KOTLIN-LICENSE.txt, KOTLIN-NOTICE.txt
+
+  Google Web Toolkit-derived collections code (version not declared)
+    Embedded in Kotlin stdlib 2.4.0; there is no separate runtime artifact.
+    Project: https://github.com/gwtproject/gwt
+    License: Apache License 2.0.
+    License text: APACHE-2.0.txt
+
+  ThreeTenBP-derived time code (version not declared)
+    Embedded in Kotlin stdlib 2.4.0; there is no separate runtime artifact.
+    Project: https://github.com/ThreeTen/threetenbp
+    License: BSD-3-Clause.
+    License text: KOTLIN-THREETENBP-BSD-3-CLAUSE.txt
+
+  Guava-derived unsigned arithmetic code (version not declared)
+    Embedded in Kotlin stdlib 2.4.0; there is no separate runtime artifact.
+    Project: https://github.com/google/guava
+    License: Apache License 2.0.
+    License text: APACHE-2.0.txt
+
+  Boost-derived JVM math code (version not declared)
+    Embedded in Kotlin stdlib 2.4.0; there is no separate runtime artifact.
+    Project: https://www.boost.org/
+    License: Boost Software License 1.0.
+    License text: KOTLIN-BOOST-1.0.txt
+
+Pty4J 0.13.8
+  Artifact: org.jetbrains.pty4j:pty4j:0.13.8
+  Project: https://github.com/JetBrains/pty4j
+  Source reviewed at: 35c94e734ed5fd54dc46b37432c71c6ac8ec82d9
+  License: Eclipse Public License 1.0.
+  License text: PTY4J-EPL-1.0.txt
+  Required attribution: PTY4J-NOTICE.txt
+
+JSpecify 1.0.0
+  Artifact: org.jspecify:jspecify:1.0.0
+  Project: https://github.com/jspecify/jspecify
+  License: Apache License 2.0.
+  License text: APACHE-2.0.txt
+
+SLF4J API 2.0.18
+  Artifact: org.slf4j:slf4j-api:2.0.18
+  Project: https://www.slf4j.org/
+  License: MIT.
+  License text: SLF4J-LICENSE.txt
+
+Logback Classic and Core 1.6.3
+  Artifacts:
+    ch.qos.logback:logback-classic:1.6.3
+    ch.qos.logback:logback-core:1.6.3
+  Project: https://logback.qos.ch/
+  License: Eclipse Public License 2.0, selected from Logback's dual
+  EPL-2.0/LGPL-2.1-only grant.
+  License choice and text: LOGBACK-LICENSE.txt, EPL-2.0.txt
+
+SQLite JDBC 3.53.2.1
+  Artifact: org.xerial:sqlite-jdbc:3.53.2.1
+  Project: https://github.com/xerial/sqlite-jdbc
+  License: Apache License 2.0, with retained Zentus BSD attribution.
+  Legal files: SQLITE-JDBC-APACHE-2.0.txt,
+    SQLITE-JDBC-ZENTUS-BSD.txt, SQLITE-JDBC-NOTICE.txt
+  This artifact carries compiled native libraries for each supported host.
+
+  SQLite 3.53.2 native engine
+    Embedded in SQLite JDBC 3.53.2.1; there is no separate Maven artifact.
+    Project: https://sqlite.org/
+    Status: public domain.
+    Exact SQLite documentation source: SQLITE-PUBLIC-DOMAIN-DECLARATION.html.in
+    SQLite docsrc artifact: b32cb1a1fab81560
+
+  Apache Commons Lang 3.4-derived date formatting classes
+    SQLite JDBC carries modified Commons Lang FastDateFormat sources under
+    org.sqlite.date; there is no separate runtime artifact. The source entered
+    SQLite JDBC at commit 0784026ea923f13c29aea2f210d950977a0dba67.
+    Project: https://commons.apache.org/proper/commons-lang/
+    License: Apache License 2.0.
+    Legal files: APACHE-2.0.txt, APACHE-COMMONS-LANG-3.4-NOTICE.txt
+
+SHADED AND NATIVE COMPONENTS
+
+gRPC Netty Shaded 1.83.1 packages these components under relocated names and
+ships their native libraries in META-INF/native/:
+
+  Netty 4.2.15.Final
+    Shaded modules cover common, buffer, transport, resolver, codec, HTTP/2,
+    proxy/SOCKS, handler and native epoll/unix support.
+    Project: https://github.com/netty/netty
+    License: Apache License 2.0.
+    Legal files: NETTY-APACHE-2.0.txt, NETTY-NOTICE.txt
+
+    The shaded code includes these components identified by Netty's notice;
+    except for JCTools, Netty does not declare their embedded versions:
+
+      JSR-166 EG/Doug Lea/Jason T. Greene concurrency code
+        Projects: http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/ and
+          http://viewvc.jboss.org/cgi-bin/viewvc.cgi/jbosscache/experimental/jsr166/
+        Status: public domain.
+        Legal file: NETTY-JSR166Y-LICENSE.txt
+
+      Robert Harder Base64 encoder/decoder
+        Project: http://iharder.sourceforge.net/current/java/base64/
+        Status: public domain.
+        Legal file: NETTY-BASE64-LICENSE.txt
+
+      Webbit-derived WebSocket code
+        Project: https://github.com/joewalnes/webbit
+        License: BSD.
+        Legal file: NETTY-WEBBIT-LICENSE.txt
+
+      SLF4J-derived message formatting code
+        Project: https://www.slf4j.org/
+        License: MIT.
+        Legal file: NETTY-SLF4J-LICENSE.txt
+
+      Apache Harmony-derived networking code
+        Project: https://archive.apache.org/dist/harmony/
+        License: Apache License 2.0.
+        Legal files: NETTY-HARMONY-LICENSE.txt, NETTY-HARMONY-NOTICE.txt
+
+      jbzip2 and libdivsufsort-derived BZip2 code
+        Projects: https://code.google.com/p/jbzip2/ and
+          https://github.com/y-256/libdivsufsort
+        License: MIT.
+        Legal files: NETTY-JBZIP2-LICENSE.txt,
+          NETTY-LIBDIVSUFSORT-LICENSE.txt
+
+      jfastlz-derived compression code
+        Project: https://code.google.com/p/jfastlz/
+        License: MIT.
+        Legal file: NETTY-JFASTLZ-LICENSE.txt
+
+      Twitter, python-hyper and nghttp2-derived HPACK code
+        Projects: https://github.com/twitter/hpack,
+          https://github.com/python-hyper/hpack/ and
+          https://github.com/nghttp2/nghttp2/
+        Licenses: Apache License 2.0 and MIT.
+        Legal files: NETTY-HPACK-LICENSE.txt,
+          NETTY-HYPER-HPACK-LICENSE.txt, NETTY-NGHTTP2-HPACK-LICENSE.txt
+
+      Apache Commons Lang-derived StringUtil code
+        Project: https://commons.apache.org/proper/commons-lang/
+        License: Apache License 2.0.
+        Legal file: NETTY-COMMONS-LANG-LICENSE.txt
+
+  JCTools Core 4.0.6
+    Netty's common module embeds a minimized and relocated JCTools payload;
+    there is no separate runtime artifact in the Bazel closure.
+    Project: https://github.com/JCTools/JCTools
+    License: Apache License 2.0.
+    Legal files: GRPC-NETTY-SHADED-JCTOOLS-APACHE-2.0.txt,
+      NETTY-JCTOOLS-LICENSE.txt
+
+    NETTY-NOTICE.txt is the exact Netty project-wide notice. The resolved
+    shaded jar instead places TCNative's notice at generic META-INF/NOTICE.txt,
+    so neither generic fat-jar entry is used for Netty attribution. The full
+    exact legal set referenced by Netty's notice is retained under these
+    collision-safe names (entries marked optional are not claimed as shipped):
+
+      license/LICENSE.aalto-xml.txt -> NETTY-AALTO-XML-LICENSE.txt (optional)
+      LICENSE.txt -> NETTY-APACHE-2.0.txt
+      license/LICENSE.base64.txt -> NETTY-BASE64-LICENSE.txt
+      license/LICENSE.boringssl.txt -> NETTY-BORINGSSL-LICENSE.txt
+      license/LICENSE.bouncycastle.txt -> NETTY-BOUNCY-CASTLE-LICENSE.txt (optional)
+      license/LICENSE.brotli4j.txt -> NETTY-BROTLI4J-LICENSE.txt (optional)
+      license/LICENSE.caliper.txt -> NETTY-CALIPER-LICENSE.txt (optional)
+      license/LICENSE.commons-lang.txt -> NETTY-COMMONS-LANG-LICENSE.txt
+      license/LICENSE.commons-logging.txt -> NETTY-COMMONS-LOGGING-LICENSE.txt (optional)
+      license/LICENSE.compress-lzf.txt -> NETTY-COMPRESS-LZF-LICENSE.txt (optional)
+      license/LICENSE.dnsinfo.txt -> NETTY-DNSINFO-LICENSE.txt (not shipped)
+      license/LICENSE.harmony.txt -> NETTY-HARMONY-LICENSE.txt
+      license/NOTICE.harmony.txt -> NETTY-HARMONY-NOTICE.txt
+      license/LICENSE.hpack.txt -> NETTY-HPACK-LICENSE.txt
+      license/LICENSE.hyper-hpack.txt -> NETTY-HYPER-HPACK-LICENSE.txt
+      license/LICENSE.jboss-marshalling.txt -> NETTY-JBOSS-MARSHALLING-LICENSE.txt (optional)
+      license/LICENSE.jbzip2.txt -> NETTY-JBZIP2-LICENSE.txt
+      license/LICENSE.jctools.txt -> NETTY-JCTOOLS-LICENSE.txt
+      license/LICENSE.jfastlz.txt -> NETTY-JFASTLZ-LICENSE.txt
+      license/LICENSE.jsr166y.txt -> NETTY-JSR166Y-LICENSE.txt
+      license/LICENSE.jzlib.txt -> NETTY-JZLIB-LICENSE.txt (optional)
+      license/LICENSE.libdivsufsort.txt -> NETTY-LIBDIVSUFSORT-LICENSE.txt
+      license/LICENSE.log4j.txt -> NETTY-LOG4J-LICENSE.txt (optional)
+      license/LICENSE.lz4.txt -> NETTY-LZ4-LICENSE.txt (optional)
+      license/LICENSE.lzma-java.txt -> NETTY-LZMA-JAVA-LICENSE.txt (optional)
+      license/LICENSE.mvn-wrapper.txt -> NETTY-MAVEN-WRAPPER-LICENSE.txt (build-only)
+      license/LICENSE.nghttp2-hpack.txt -> NETTY-NGHTTP2-HPACK-LICENSE.txt
+      NOTICE.txt -> NETTY-NOTICE.txt
+      license/LICENSE.protobuf.txt -> NETTY-PROTOBUF-LICENSE.txt (optional)
+      license/LICENSE.quiche.txt -> NETTY-QUICHE-LICENSE.txt (not shipped)
+      license/LICENSE.slf4j.txt -> NETTY-SLF4J-LICENSE.txt
+      license/LICENSE.snappy.txt -> NETTY-SNAPPY-LICENSE.txt (optional)
+      license/LICENSE.webbit.txt -> NETTY-WEBBIT-LICENSE.txt
+      license/LICENSE.zstd-jni.txt -> NETTY-ZSTD-JNI-LICENSE.txt (optional)
+
+  Netty TCNative BoringSSL Static 2.0.75.Final
+    TLS native libraries are shipped for Linux, macOS and Windows.
+    Project: https://github.com/netty/netty-tcnative
+    License: Apache License 2.0.
+    Legal files: GRPC-NETTY-SHADED-APACHE-2.0.txt,
+      GRPC-NETTY-SHADED-NOTICE.txt, TOMCAT-NATIVE-APACHE-2.0.txt,
+      BORINGSSL-LICENSE.txt
+
+  BoringSSL commit 0226f30467f540a3f62ef48d453f93927da199b6
+    Statically linked by Netty TCNative 2.0.75.Final.
+    Project: https://boringssl.googlesource.com/boringssl/
+    License: Apache License 2.0 plus the support-code terms retained upstream.
+    Legal file: BORINGSSL-LICENSE.txt
+
+  Apache Tomcat Native fork
+    Netty's upstream notice identifies a forked and modified Tomcat Native;
+    it does not assign that embedded fork a separate artifact or version.
+    Project: https://tomcat.apache.org/native-doc/
+    License: Apache License 2.0.
+    Legal files: GRPC-NETTY-SHADED-NOTICE.txt,
+      TOMCAT-NATIVE-APACHE-2.0.txt
+
+  The upstream Netty NOTICE also names Maven Wrapper build scripts. They are
+  not a runtime component, but its referenced exact legal file is retained as
+  MAVEN-WRAPPER-APACHE-2.0.txt so the unmodified NOTICE remains self-contained.
+
+Pty4J 0.13.8 packages libpty and helper binaries for macOS, Linux, FreeBSD and
+Windows under resources/com/pty4j/native/. Its upstream notice records its elt,
+JPty and JNA ancestry. Windows payloads also contain:
+
+  WinPTY (bundled with Pty4J 0.13.8; no separate version declared)
+    Project: https://github.com/JetBrains/winpty
+    License: MIT.
+    License text: WINPTY-LICENSE.txt
+
+  Windows Terminal 1.22.11141.0 (OpenConsole and ConPTY)
+    Project: https://github.com/microsoft/terminal
+    License: MIT.
+    License and upstream third-party notice:
+      WINDOWS-TERMINAL-LICENSE.txt, WINDOWS-TERMINAL-NOTICE.md
+
+VENDORED RUNTIME SOURCES AND ASSETS
+
+Bazel 9.2.0 protocol schemas
+  Vendored source from: https://github.com/bazelbuild/bazel/releases/tag/9.2.0
+  License: Apache License 2.0, including Bazel's upstream license additions.
+  License text: BAZEL-APACHE-2.0.txt
+  Thirteen Bazel .proto source files and their generated Java classes are in
+  the deploy jar.
+
+googleapis protocol schemas
+  Source reviewed at: c3e3d8a2031ec31f0f81fa42454ba55c7b40f284
+  Project: https://github.com/googleapis/googleapis
+  License: Apache License 2.0.
+  License text: GOOGLEAPIS-APACHE-2.0.txt
+  Eight Build Event Service and google/api .proto source files and their
+  generated Java classes are in the deploy jar.
+
+google/pprof profile schema
+  Source reviewed at: ca85771921e4d23ebb56030bf1e488f215f26d36
+  Project: https://github.com/google/pprof
+  License: Apache License 2.0.
+  License text: PPROF-APACHE-2.0.txt
+  The vendored profile.proto defines the normalized wire format read from
+  Bazel's --starlark_cpu_profile output.
 
 Material Icon Theme 5.38.1 (selected SVG assets)
   Copyright (c) 2025 Material Extensions.
@@ -15,98 +529,11 @@ Material Icon Theme 5.38.1 (selected SVG assets)
   Project and language names and symbols may be trademarks of their owners.
   They identify file types only and do not imply endorsement or affiliation.
 
-The separately packaged bazel.svg and bazel-folder.svg are original project artwork.
-They are not part of Material Icon Theme.
-They do not contain the official Bazel logo. Their labels identify Bazel and
-Starlark files or Bazel-generated directory links and do not imply endorsement
-or affiliation with Google or the Bazel project.
-
-FlatLaf and FlatLaf Extras 3.7.2
-  Copyright FormDev Software GmbH and contributors.
-  Project: https://github.com/JFormDesigner/FlatLaf
-  Source reviewed at: 7c54d898478a3af1133120d423f72f83cf3da028
-  License: Apache License 2.0.
-  License text: FLATLAF-APACHE-2.0.txt
-
-JSVG 2.1.0
-  Copyright (c) 2021-2024 Jannis Weis.
-  Project: https://github.com/weisJ/jsvg
-  Source reviewed at: a9effc5fd93811ac49a298a6516809efdb03687d
-  License: MIT.
-  License text: JSVG-MIT.txt
-
-google/pprof profile schema
-  Copyright Google LLC and contributors.
-  Project: https://github.com/google/pprof
-  Source reviewed at: ca85771921e4d23ebb56030bf1e488f215f26d36
-  License: Apache License 2.0.
-  License text: FLATLAF-APACHE-2.0.txt (the standard Apache-2.0 text).
-  The vendored profile.proto defines the normalized wire format read from
-  Bazel's --starlark_cpu_profile output.
-
-JediTerm core and UI 3.74
-  Copyright JetBrains s.r.o. and contributors.
-  Project: https://github.com/JetBrains/jediterm
-  Source reviewed at: 377b76e682a5f86bcbb18a318386f530dbebf5c1
-  License: Apache License 2.0, selected from the project's dual
-  Apache-2.0/LGPL-3.0 grant.
-  License text: JEDITERM-APACHE-2.0.txt
-
-Pty4J 0.13.8
-  Copyright JetBrains s.r.o. and contributors.
-  Project: https://github.com/JetBrains/pty4j
-  Source reviewed at: 35c94e734ed5fd54dc46b37432c71c6ac8ec82d9
-  License: Eclipse Public License 1.0.
-  License text: PTY4J-EPL-1.0.txt
-  Required attribution: PTY4J-NOTICE.txt
-
-JNA and JNA Platform 5.14.0
-  Copyright Timothy Wall and the JNA community.
-  Project: https://github.com/java-native-access/jna
-  License: Apache License 2.0, selected from JNA's dual
-  Apache-2.0/LGPL-2.1-or-later grant.
-  License choice and text: JNA-LICENSE.txt and JNA-APACHE-2.0.txt
-
-Kotlin standard library 2.4.0
-  Copyright 2010-2024 JetBrains s.r.o. and Kotlin contributors.
-  Project: https://github.com/JetBrains/kotlin
-  License: Apache License 2.0.
-  License and notice: KOTLIN-LICENSE.txt and KOTLIN-NOTICE.txt
-
-JetBrains Java Annotations 24.0.1
-  Copyright JetBrains s.r.o. and contributors.
-  Project: https://github.com/JetBrains/java-annotations
-  License: Apache License 2.0.
-  License text: JETBRAINS-ANNOTATIONS-LICENSE.txt
-
-SLF4J API 2.0.18
-  Copyright 2004-2022 QOS.ch Sarl.
-  Project: https://www.slf4j.org/
-  License: MIT.
-  License text: SLF4J-LICENSE.txt
-  This dependency was already present in the application; both terminal
-  libraries resolve to the application's existing version.
-
-Native software bundled inside Pty4J 0.13.8
-
-Pty4J's own upstream notice records its elt, JPty, and JNA ancestry. Its jar
-also carries signed WinPTY binaries and Windows Terminal 1.22.11141.0 ConPTY
-binaries even when the deploy jar is built on another host. Their notices are
-therefore retained in every deploy jar:
-
-  WinPTY
-    Copyright 2011-2016 Ryan Prichard.
-    Project: https://github.com/JetBrains/winpty
-    License: MIT.
-    License text: WINPTY-LICENSE.txt
-
-  Windows Terminal 1.22.11141.0 (OpenConsole and ConPTY)
-    Copyright Microsoft Corporation.
-    Project: https://github.com/microsoft/terminal
-    License: MIT.
-    License and upstream third-party notice:
-      WINDOWS-TERMINAL-LICENSE.txt
-      WINDOWS-TERMINAL-NOTICE.md
+The separately packaged bazel.svg and bazel-folder.svg are original project
+artwork. They are not part of Material Icon Theme and do not contain the
+official Bazel logo. Their labels identify Bazel and Starlark files or
+Bazel-generated directory links and do not imply endorsement or affiliation
+with Google or the Bazel project.
 
 These notices apply only to their named components. They do not change the
 license of Bazel Build Visualizer.
