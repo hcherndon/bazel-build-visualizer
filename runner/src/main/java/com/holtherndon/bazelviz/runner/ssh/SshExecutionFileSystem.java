@@ -239,21 +239,18 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     if (!metadata.isDirectory()) {
       throw new IOException("not a remote directory: " + directory);
     }
-    long offset = continuationToken.map(SshExecutionFileSystem::decodeOffset).orElse(0L);
-    long first = Math.addExact(offset, 1);
+    String after = continuationToken.map(SshExecutionFileSystem::decodeKey).orElse("");
     int requested = Math.addExact(maxEntries, 1);
-    String temporary = "${TMPDIR:-/tmp}/bbv-list.XXXXXX";
     String script =
-        "bbv_tmp=$(mktemp \""
-            + temporary
-            + "\") || exit 1; "
-            + "trap 'rm -f -- \"$bbv_tmp\"' EXIT HUP INT TERM; "
-            + "/usr/bin/find "
+        "/usr/bin/find "
             + PosixShell.quote(canonical.value())
             + " -mindepth 1 -maxdepth 1 -printf '%p\\037%y\\037%s\\037%T@\\0'"
-            + " >\"$bbv_tmp\" || exit 1; "
-            + "LC_ALL=C /usr/bin/sort -z \"$bbv_tmp\" | /usr/bin/tail -z -n +"
-            + first
+            + " | LC_ALL=C /usr/bin/sort -z | /usr/bin/awk -v bbv_after="
+            + PosixShell.quote(after)
+            + " 'BEGIN { RS=\"\\0\"; ORS=\"\\0\" }"
+            + " { bbv_separator=index($0, \"\\037\");"
+            + " bbv_name=substr($0, 1, bbv_separator-1);"
+            + " if (bbv_after == \"\" || bbv_name > bbv_after) print $0; }'"
             + " | /usr/bin/head -z -n "
             + requested;
     CommandResult result = run(List.of("/bin/sh", "-c", script));
@@ -267,9 +264,7 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
       entries = new ArrayList<>(entries.subList(0, maxEntries));
     }
     Optional<String> next =
-        hasMore
-            ? Optional.of(encodeOffset(Math.addExact(offset, entries.size())))
-            : Optional.empty();
+        hasMore ? Optional.of(encodeKey(entries.getLast().path().value())) : Optional.empty();
     DirectoryPage page = new DirectoryPage(canonical, entries, next, OptionalLong.empty());
     log.debug(
         "SSH filesystem operation completed operation=list execution={} entryCount={}"
@@ -725,20 +720,19 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
         && left.modifiedMillis().equals(right.modifiedMillis());
   }
 
-  private static String encodeOffset(long offset) {
+  static String encodeKey(String key) {
     return Base64.getUrlEncoder()
         .withoutPadding()
-        .encodeToString(Long.toString(offset).getBytes(StandardCharsets.US_ASCII));
+        .encodeToString(key.getBytes(StandardCharsets.UTF_8));
   }
 
-  private static long decodeOffset(String token) {
+  static String decodeKey(String token) {
     try {
-      String value = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.US_ASCII);
-      long offset = Long.parseLong(value);
-      if (offset < 0) {
-        throw new NumberFormatException("negative");
+      String value = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8);
+      if (!value.startsWith("/")) {
+        throw new IllegalArgumentException("not an absolute path");
       }
-      return offset;
+      return value;
     } catch (IllegalArgumentException invalid) {
       throw new IllegalArgumentException("invalid directory continuation token", invalid);
     }

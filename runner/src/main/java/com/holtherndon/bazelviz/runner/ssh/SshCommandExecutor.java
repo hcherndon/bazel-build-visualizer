@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.runner.ssh;
 
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
 import com.holtherndon.bazelviz.runner.runtime.CommandRequest;
 import com.holtherndon.bazelviz.runner.runtime.CommandResult;
@@ -87,7 +88,15 @@ public final class SshCommandExecutor implements CommandExecutor {
       stopTimedOut(command);
     }
     String out = stdout.awaitText();
+    if (stdout.incomplete()) {
+      stopIncomplete(command);
+      throw new IOException("the remote command output could not be drained to completion");
+    }
     String err = stderr.awaitText();
+    if (stderr.incomplete()) {
+      stopIncomplete(command);
+      throw new IOException("the remote command output could not be drained to completion");
+    }
     if (stdout.overflowed() || stderr.overflowed()) {
       throw new IOException("the remote command produced too much probe output");
     }
@@ -131,6 +140,10 @@ public final class SshCommandExecutor implements CommandExecutor {
       }
       IOException copyFailure = copy.awaitFailure();
       String err = stderr.awaitText();
+      if (copy.incomplete() || stderr.incomplete()) {
+        stopIncomplete(command);
+        throw new IOException("the remote command output could not be drained to completion");
+      }
       if (copyFailure != null) {
         throw copyFailure;
       }
@@ -334,6 +347,19 @@ public final class SshCommandExecutor implements CommandExecutor {
   private void stopTimedOut(RemoteRunningCommand command) throws IOException, InterruptedException {
     command.signal(CancellationMode.FORCE_KILL);
     if (!command.waitFor(Duration.ofSeconds(5))) {
+      command.localProcess.destroyForcibly();
+      command.localProcess.waitFor(2, TimeUnit.SECONDS);
+    }
+  }
+
+  private static void stopIncomplete(RemoteRunningCommand command)
+      throws IOException, InterruptedException {
+    if (command.localProcess.isAlive()) {
+      command.signal(CancellationMode.FORCE_KILL);
+    } else {
+      command.owner.signal(command.remotePid, command.remotePgid, CancellationMode.FORCE_KILL);
+    }
+    if (command.localProcess.isAlive()) {
       command.localProcess.destroyForcibly();
       command.localProcess.waitFor(2, TimeUnit.SECONDS);
     }
@@ -562,10 +588,13 @@ public final class SshCommandExecutor implements CommandExecutor {
 
   private static final class StreamCopy {
 
+    private final InputStream input;
     private final Thread thread;
     private volatile IOException failure;
+    private volatile boolean incomplete;
 
     private StreamCopy(InputStream input, Path destination) {
+      this.input = input;
       thread =
           Thread.ofVirtual()
               .name("bbv-ssh-binary-output")
@@ -589,18 +618,34 @@ public final class SshCommandExecutor implements CommandExecutor {
     }
 
     IOException awaitFailure() throws InterruptedException {
-      thread.join();
+      thread.join(Subprocess.OUTPUT_DRAIN_GRACE_MILLIS);
+      if (thread.isAlive()) {
+        incomplete = true;
+        try {
+          input.close();
+        } catch (IOException ignored) {
+          // The channel already closed its side.
+        }
+        thread.join(Subprocess.OUTPUT_DRAIN_GRACE_MILLIS);
+      }
       return failure;
+    }
+
+    boolean incomplete() {
+      return incomplete || thread.isAlive();
     }
   }
 
   private static final class BoundedDrain {
 
+    private final InputStream stream;
     private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
     private final Thread thread;
     private volatile boolean overflowed;
+    private volatile boolean incomplete;
 
     private BoundedDrain(InputStream stream, String name) {
+      this.stream = stream;
       thread =
           Thread.ofVirtual()
               .name(name)
@@ -634,12 +679,25 @@ public final class SshCommandExecutor implements CommandExecutor {
     }
 
     String awaitText() throws InterruptedException {
-      thread.join(TimeUnit.SECONDS.toMillis(5));
+      thread.join(Subprocess.OUTPUT_DRAIN_GRACE_MILLIS);
+      if (thread.isAlive()) {
+        incomplete = true;
+        try {
+          stream.close();
+        } catch (IOException ignored) {
+          // The channel already closed its side.
+        }
+        thread.join(Subprocess.OUTPUT_DRAIN_GRACE_MILLIS);
+      }
       return bytes.toString(StandardCharsets.UTF_8);
     }
 
     boolean overflowed() {
       return overflowed;
+    }
+
+    boolean incomplete() {
+      return incomplete || thread.isAlive();
     }
   }
 

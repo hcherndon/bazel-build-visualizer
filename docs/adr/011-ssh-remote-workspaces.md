@@ -244,8 +244,10 @@ native resources as described in `docs/packaging.md`.
   and explains the reverse forward, forced TTY, remote staging paths, and the
   fact that a TTY cannot preserve separate remote stdout/stderr channels.
 - The first implementation targets Linux servers with OpenSSH and common POSIX
-  userland tools. Unsupported hosts fail preflight with a concrete missing-tool
-  message; there is no silent fallback to local execution.
+  userland tools. Directory pages use GNU `find`, `sort`, `awk`, and `head` as
+  a streaming keyset pipeline; they do not create a whole-directory scratch
+  file. Unsupported hosts fail preflight with a concrete missing-tool message;
+  there is no silent fallback to local execution.
 - The terminal is now a transport-neutral, bounded emulator rather than a line
   transcript. JediTerm 3.74 supplies the Swing/xterm layer, and Pty4J 0.13.8 is
   deliberately the version its standalone application uses. The latter adds

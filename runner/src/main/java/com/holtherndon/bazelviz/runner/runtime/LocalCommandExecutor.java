@@ -9,9 +9,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -51,9 +53,9 @@ public final class LocalCommandExecutor implements CommandExecutor {
       process.waitFor(5, TimeUnit.SECONDS);
       closeQuietly(process.getInputStream());
       closeQuietly(process.getErrorStream());
-      return result(-1, stdout, stderr, true);
+      return result(process, -1, stdout, stderr, true);
     }
-    return result(process.exitValue(), stdout, stderr, false);
+    return result(process, process.exitValue(), stdout, stderr, false);
   }
 
   @Override
@@ -61,28 +63,45 @@ public final class LocalCommandExecutor implements CommandExecutor {
       CommandRequest request, Duration timeout, Path localOutputFile)
       throws IOException, InterruptedException {
     requireTimeout(timeout);
-    ProcessBuilder builder =
-        builder(request).redirectOutput(ProcessBuilder.Redirect.to(localOutputFile.toFile()));
-    Process process = builder.start();
-    closeQuietly(process.getOutputStream());
-    Drain stderr = Drain.start(process.getErrorStream(), "bbv-command-stderr");
-    boolean exited = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
-    if (!exited) {
-      process.descendants().forEach(ProcessHandle::destroyForcibly);
-      process.destroyForcibly();
-      process.waitFor(5, TimeUnit.SECONDS);
-      closeQuietly(process.getErrorStream());
+    Path destination = localOutputFile.toAbsolutePath().normalize();
+    Path parent = destination.getParent();
+    if (parent == null || !Files.isDirectory(parent)) {
+      throw new IOException("the output directory does not exist: " + parent);
+    }
+    Path temporary = Files.createTempFile(parent, ".bbv-command-output-", ".tmp");
+    boolean moved = false;
+    try {
+      ProcessBuilder builder =
+          builder(request).redirectOutput(ProcessBuilder.Redirect.to(temporary.toFile()));
+      Process process = builder.start();
+      closeQuietly(process.getOutputStream());
+      Drain stderr = Drain.start(process.getErrorStream(), "bbv-command-stderr");
+      boolean exited = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
+      if (!exited) {
+        destroyTree(process);
+        process.waitFor(5, TimeUnit.SECONDS);
+        closeQuietly(process.getErrorStream());
+      }
       String error = stderr.awaitText();
+      if (stderr.incomplete()) {
+        destroyTree(process);
+        throw new IOException("the command output could not be drained to completion");
+      }
       if (stderr.overflowed()) {
         throw new IOException("the command produced too much diagnostic output");
       }
-      return new CommandResult(-1, "", error, true);
+      CommandResult result =
+          new CommandResult(exited ? process.exitValue() : -1, "", error, !exited);
+      if (exited && result.exitCode() == 0) {
+        moveReplacement(temporary, destination);
+        moved = true;
+      }
+      return result;
+    } finally {
+      if (!moved) {
+        Files.deleteIfExists(temporary);
+      }
     }
-    String error = stderr.awaitText();
-    if (stderr.overflowed()) {
-      throw new IOException("the command produced too much diagnostic output");
-    }
-    return new CommandResult(process.exitValue(), "", error, false);
   }
 
   @Override
@@ -170,14 +189,47 @@ public final class LocalCommandExecutor implements CommandExecutor {
     return builder;
   }
 
-  private static CommandResult result(int exitCode, Drain stdout, Drain stderr, boolean timedOut)
+  private static CommandResult result(
+      Process process, int exitCode, Drain stdout, Drain stderr, boolean timedOut)
       throws IOException, InterruptedException {
     String out = stdout.awaitText();
+    if (stdout.incomplete()) {
+      destroyTree(process);
+      throw new IOException("the command output could not be drained to completion");
+    }
     String err = stderr.awaitText();
+    if (stderr.incomplete()) {
+      destroyTree(process);
+      throw new IOException("the command output could not be drained to completion");
+    }
     if (stdout.overflowed() || stderr.overflowed()) {
       throw new IOException("the command produced too much probe output");
     }
     return new CommandResult(exitCode, out, err, timedOut);
+  }
+
+  private static void destroyTree(Process process) {
+    try {
+      process.descendants().forEach(ProcessHandle::destroyForcibly);
+    } catch (RuntimeException ignored) {
+      // The root is still destroyed below.
+    }
+    try {
+      if (process.isAlive()) {
+        process.destroyForcibly();
+      }
+    } catch (RuntimeException ignored) {
+      // Cleanup is best effort; the caller reports the incomplete drain.
+    }
+  }
+
+  private static void moveReplacement(Path source, Path destination) throws IOException {
+    try {
+      Files.move(
+          source, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    } catch (AtomicMoveNotSupportedException unsupported) {
+      Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
+    }
   }
 
   private static void requireTimeout(Duration timeout) {
@@ -416,11 +468,14 @@ public final class LocalCommandExecutor implements CommandExecutor {
 
   private static final class Drain {
 
+    private final InputStream stream;
     private final Thread thread;
     private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
     private volatile boolean overflowed;
+    private volatile boolean incomplete;
 
     private Drain(InputStream stream, String name) {
+      this.stream = stream;
       thread =
           Thread.ofVirtual()
               .name(name)
@@ -454,12 +509,21 @@ public final class LocalCommandExecutor implements CommandExecutor {
     }
 
     String awaitText() throws InterruptedException {
-      thread.join(TimeUnit.SECONDS.toMillis(5));
+      thread.join(1_000);
+      if (thread.isAlive()) {
+        incomplete = true;
+        closeQuietly(stream);
+        thread.join(1_000);
+      }
       return bytes.toString(StandardCharsets.UTF_8);
     }
 
     boolean overflowed() {
       return overflowed;
+    }
+
+    boolean incomplete() {
+      return incomplete || thread.isAlive();
     }
   }
 }

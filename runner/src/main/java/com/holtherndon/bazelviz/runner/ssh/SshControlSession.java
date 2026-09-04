@@ -187,6 +187,7 @@ public final class SshControlSession implements AutoCloseable {
                     "/bin/rmdir",
                     "/bin/sh",
                     "/usr/bin/env",
+                    "/usr/bin/awk",
                     "/usr/bin/find",
                     "/usr/bin/flock",
                     "/usr/bin/head",

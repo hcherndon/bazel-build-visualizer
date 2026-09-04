@@ -8,6 +8,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -68,6 +69,38 @@ final class LocalCommandExecutorTest {
             Duration.ofMillis(50));
     assertThat(result.timedOut()).isTrue();
     assertThat(result.exitCode()).isEqualTo(-1);
+  }
+
+  @Test
+  void inheritedPipeAfterRootExitIsReportedIncomplete() {
+    assertThatThrownBy(
+            () ->
+                LocalCommandExecutor.INSTANCE.run(
+                    CommandRequest.of(List.of("/bin/sh", "-c", "(sleep 10) & exit 0"), temporary),
+                    Duration.ofSeconds(2)))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
+  }
+
+  @Test
+  void redirectedOutputIsNotReplacedAfterTimeout() throws Exception {
+    Path output = temporary.resolve("atomic-output.txt");
+    Files.writeString(output, "old");
+
+    CommandResult result =
+        LocalCommandExecutor.INSTANCE.runRedirectingStdout(
+            CommandRequest.of(List.of("/bin/sh", "-c", "printf new; sleep 10"), temporary),
+            Duration.ofMillis(50),
+            output);
+
+    assertThat(result.timedOut()).isTrue();
+    assertThat(Files.readString(output)).isEqualTo("old");
+    try (var files = Files.list(temporary)) {
+      assertThat(
+              files.filter(
+                  path -> path.getFileName().toString().startsWith(".bbv-command-output-")))
+          .isEmpty();
+    }
   }
 
   @Test

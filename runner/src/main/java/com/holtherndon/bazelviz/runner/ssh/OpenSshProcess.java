@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.runner.ssh;
 
+import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -8,6 +9,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,6 +40,11 @@ final class OpenSshProcess {
 
   static Result run(List<String> argv, Duration timeout, byte[] stdin)
       throws IOException, InterruptedException {
+    return run(argv, timeout, stdin, null);
+  }
+
+  static Result run(List<String> argv, Duration timeout, byte[] stdin, BooleanSupplier abort)
+      throws IOException, InterruptedException {
     Objects.requireNonNull(argv, "argv");
     Objects.requireNonNull(timeout, "timeout");
     if (argv.isEmpty()) {
@@ -61,13 +68,48 @@ final class OpenSshProcess {
     } catch (IOException closedEarly) {
       inputFailure = closedEarly;
     }
-    boolean exited = process.waitFor(Math.max(1, timeout.toMillis()), TimeUnit.MILLISECONDS);
+    boolean exited = false;
+    boolean aborted = false;
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (!exited) {
+      if (abort != null && abort.getAsBoolean()) {
+        aborted = true;
+        destroyDescendants(process);
+        process.destroyForcibly();
+        process.waitFor(5, TimeUnit.SECONDS);
+        break;
+      }
+      long remainingNanos = deadline - System.nanoTime();
+      if (remainingNanos <= 0) {
+        break;
+      }
+      exited =
+          process.waitFor(
+              Math.max(
+                  1,
+                  Math.min(
+                      TimeUnit.NANOSECONDS.toMillis(remainingNanos),
+                      SftpClient.TRANSFER_POLL_INTERVAL_MILLIS)),
+              TimeUnit.MILLISECONDS);
+    }
     if (!exited) {
-      process.destroyForcibly();
-      process.waitFor(5, TimeUnit.SECONDS);
+      if (!aborted) {
+        destroyDescendants(process);
+        process.destroyForcibly();
+        process.waitFor(5, TimeUnit.SECONDS);
+      }
     }
     String out = stdout.await();
+    if (stdout.incomplete()) {
+      destroyDescendants(process);
+    }
     String err = stderr.await();
+    if (stderr.incomplete()) {
+      destroyDescendants(process);
+    }
+    if (stdout.incomplete() || stderr.incomplete()) {
+      throw new IOException("OpenSSH output could not be drained to completion");
+    }
     if (stdout.overflowed() || stderr.overflowed()) {
       throw new IOException("OpenSSH produced more diagnostic output than can be retained");
     }
@@ -87,6 +129,17 @@ final class OpenSshProcess {
     return result;
   }
 
+  private static void destroyDescendants(Process process) {
+    try {
+      process
+          .descendants()
+          .limit(Subprocess.MAX_TRACKED_DESCENDANTS)
+          .forEach(ProcessHandle::destroyForcibly);
+    } catch (RuntimeException ignored) {
+      // The root is still terminated below; descendant cleanup is best effort here.
+    }
+  }
+
   private static long elapsedMillis(long startedNanos) {
     return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
   }
@@ -94,10 +147,13 @@ final class OpenSshProcess {
   static final class Capture {
 
     private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    private final InputStream stream;
     private final Thread thread;
     private volatile boolean overflowed;
+    private volatile boolean incomplete;
 
     private Capture(InputStream stream, String name) {
+      this.stream = stream;
       thread =
           Thread.ofVirtual()
               .name(name)
@@ -131,12 +187,25 @@ final class OpenSshProcess {
     }
 
     String await() throws InterruptedException {
-      thread.join(TimeUnit.SECONDS.toMillis(5));
+      thread.join(Subprocess.OUTPUT_DRAIN_GRACE_MILLIS);
+      if (thread.isAlive()) {
+        incomplete = true;
+        try {
+          stream.close();
+        } catch (IOException ignored) {
+          // The process already closed its side.
+        }
+        thread.join(Subprocess.OUTPUT_DRAIN_GRACE_MILLIS);
+      }
       return bytes.toString(StandardCharsets.UTF_8);
     }
 
     boolean overflowed() {
       return overflowed;
+    }
+
+    boolean incomplete() {
+      return incomplete || thread.isAlive();
     }
   }
 }

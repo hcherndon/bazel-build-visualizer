@@ -266,6 +266,44 @@ final class SshRuntimeTest {
   }
 
   @Test
+  void sftpDownloadAllowsExactBoundaryAndRemovesOverLimitPartialOutput() throws Exception {
+    Path exact = temporary.resolve("exact.bin");
+    Path fakeExact =
+        executable(
+            "fake-sftp-exact",
+            "#!/bin/sh\ncat >/dev/null\nprintf '1234567890' > '%s'\n".formatted(exact));
+    SftpClient exactClient =
+        new SftpClient(SshTarget.of("host"), fakeExact, temporary.resolve("control-exact"));
+    exactClient.download("/remote/exact", exact, 10);
+    assertThat(Files.size(exact)).isEqualTo(10);
+
+    Path overLimit = temporary.resolve("over-limit.bin");
+    Path fakeOverLimit =
+        executable(
+            "fake-sftp-over-limit",
+            "#!/bin/sh\ncat >/dev/null\nprintf '12345' > '%s'\nsleep 0.1\nprintf '678901' >> '%s'\nsleep 10\n"
+                .formatted(overLimit, overLimit));
+    SftpClient overLimitClient =
+        new SftpClient(SshTarget.of("host"), fakeOverLimit, temporary.resolve("control-over"));
+    assertThatThrownBy(() -> overLimitClient.download("/remote/over", overLimit, 10))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("exceeded")
+        .hasMessageContaining("10");
+    assertThat(Files.exists(overLimit)).isFalse();
+  }
+
+  @Test
+  void remoteContinuationKeysAreOpaqueAbsolutePathKeys() {
+    String key = "/repo/last entry";
+    String token = SshExecutionFileSystem.encodeKey(key);
+    assertThat(token).doesNotContain("/").doesNotContain(" ");
+    assertThat(SshExecutionFileSystem.decodeKey(token)).isEqualTo(key);
+    assertThatThrownBy(() -> SshExecutionFileSystem.decodeKey("12"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("continuation token");
+  }
+
+  @Test
   void fakeOpenSshReportsRemoteIdentityAndReceivesGroupSignal() throws Exception {
     Path stop = temporary.resolve("stop");
     Path signal = temporary.resolve("signal.txt");
