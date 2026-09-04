@@ -200,6 +200,22 @@ final class OpenRequestTest {
   }
 
   @Test
+  @DisplayName("portable manifests cannot use an alias spelling of the indexed UUID")
+  void archiveManifestIdentityMustBeCanonical() throws Exception {
+    Path archive = tempDir.resolve("alias-manifest.bviz");
+    writeManifestOnlyArchive(archive, SESSION_ID, "0193F0AA-1111-7000-8000-000000000000");
+    Path library = tempDir.resolve("alias-library");
+
+    assertThatThrownBy(() -> ArchiveImport.into(archive, library, BvizLimits.defaults()))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("canonical UUID identity")
+        .hasMessageContaining("nothing was adopted");
+    try (var files = Files.list(library)) {
+      assertThat(files).isEmpty();
+    }
+  }
+
+  @Test
   @DisplayName("a rejected archive leaves nothing in the library")
   void aRejectedArchiveLeavesNothing() throws Exception {
     Path library = tempDir.resolve("library");

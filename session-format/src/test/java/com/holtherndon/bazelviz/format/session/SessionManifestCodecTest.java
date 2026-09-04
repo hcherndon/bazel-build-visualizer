@@ -98,12 +98,27 @@ class SessionManifestCodecTest {
   }
 
   @Test
-  void rejectsANonCanonicalSessionIdSpelling() {
+  void localManifestsRetainVersion1UuidAliasCompatibility() throws Exception {
     String source =
         V1_MANIFEST.replace(
             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE");
 
-    assertThatThrownBy(() -> codec.readText(source, "non-canonical.json"))
+    assertThat(codec.readText(source, "legacy-local.json").sessionId()).isEqualTo(ID);
+
+    Path file = root.resolve("legacy-local.json");
+    Files.writeString(file, source);
+    assertThat(codec.read(file).sessionId()).isEqualTo(ID);
+  }
+
+  @Test
+  void portableManifestReadsRequireCanonicalSessionIdText() throws Exception {
+    Path file = root.resolve("portable.json");
+    Files.writeString(
+        file,
+        V1_MANIFEST.replace(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"));
+
+    assertThatThrownBy(() -> codec.readForPortableArchive(file))
         .isInstanceOf(SessionFormatException.class)
         .hasMessageContaining("canonical UUID sessionId");
   }

@@ -143,11 +143,12 @@ public final class ArchiveImport {
   private static void requireMatchingManifest(Path staging, BvizIndex index) throws IOException {
     SessionManifest manifest;
     try {
-      manifest = SessionManifestCodec.standard().read(staging.resolve("manifest.json"));
+      manifest =
+          SessionManifestCodec.standard().readForPortableArchive(staging.resolve("manifest.json"));
     } catch (IOException malformed) {
       throw new BvizFormatException(
-          "the extracted archive does not contain a readable session manifest; nothing was"
-              + " adopted",
+          "the extracted archive does not contain a readable session manifest with a canonical"
+              + " UUID identity; nothing was adopted",
           malformed);
     }
     String manifestSessionId = manifest.sessionId().toString();

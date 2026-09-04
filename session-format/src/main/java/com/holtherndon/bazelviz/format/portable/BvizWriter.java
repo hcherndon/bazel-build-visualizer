@@ -400,7 +400,10 @@ public final class BvizWriter {
 
   private static String sessionIdOf(Path manifest, Path sessionRoot) throws BvizFormatException {
     try {
-      return SessionManifestCodec.standard().read(manifest).sessionId().toString();
+      return SessionManifestCodec.standard()
+          .readForPortableArchive(manifest)
+          .sessionId()
+          .toString();
     } catch (IOException malformed) {
       throw new BvizFormatException(
           "cannot export "

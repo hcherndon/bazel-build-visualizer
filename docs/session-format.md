@@ -74,9 +74,11 @@ same UUID.
 
 The manifest is small, human-readable JSON and is the only file read to list
 sessions cheaply besides the catalog; catalog and manifest must agree, with
-the manifest winning on conflict (the directory is the artifact). Its
-`sessionId` uses the canonical lower-case UUID spelling; alternate spellings
-are refused instead of becoming aliases for the same managed session.
+the manifest winning on conflict (the directory is the artifact). Writers use
+the canonical lower-case UUID spelling. Ordinary local reads continue to
+normalize aliases accepted by version 1 for compatibility; portable import and
+export require canonical text because that identity becomes a mutation key and
+directory name.
 
 `executionLocation` is optional for compatibility with sessions written before
 ADR-011. A new live capture records `kind` (`LOCAL` or `SSH`) and a display

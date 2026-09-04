@@ -153,6 +153,21 @@ public final class SessionManifestCodec {
 
   /** Reads and migrates the manifest at {@code file}, streaming it from disk. */
   public SessionManifest read(Path file) throws IOException {
+    return read(file, false);
+  }
+
+  /**
+   * Reads a manifest at a portable archive boundary, requiring one canonical UUID spelling.
+   *
+   * <p>Ordinary local reads intentionally remain tolerant of UUID aliases written by older builds.
+   * An archive identity becomes a mutation key and directory name, so import and export use this
+   * stricter entry point instead.
+   */
+  public SessionManifest readForPortableArchive(Path file) throws IOException {
+    return read(file, true);
+  }
+
+  private SessionManifest read(Path file, boolean requireCanonicalSessionId) throws IOException {
     String location = file.toString();
     JsonValue document;
     try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
@@ -163,7 +178,7 @@ public final class SessionManifestCodec {
       throw new SessionFormatException(
           "manifest at " + location + " is not valid JSON: " + e.getMessage(), e);
     }
-    return fromJson(document, location);
+    return fromJson(document, location, requireCanonicalSessionId);
   }
 
   /** Parses manifest text. Convenience for tests and for in-memory documents. */
@@ -181,24 +196,35 @@ public final class SessionManifestCodec {
   /** Maps an already-parsed document, migrating it forward first. */
   public SessionManifest fromJson(JsonValue document, String location)
       throws SessionFormatException {
+    return fromJson(document, location, false);
+  }
+
+  private SessionManifest fromJson(
+      JsonValue document, String location, boolean requireCanonicalSessionId)
+      throws SessionFormatException {
     if (!(document instanceof JsonObject root)) {
       throw new SessionFormatException("manifest at " + location + " is not a JSON object");
     }
     JsonObject migrated = migrations.migrate(root, location);
     try {
-      return map(migrated, location);
+      return map(migrated, location, requireCanonicalSessionId);
     } catch (JsonException | IllegalArgumentException e) {
       throw new SessionFormatException(
           "manifest at " + location + " is malformed: " + e.getMessage(), e);
     }
   }
 
-  private SessionManifest map(JsonObject root, String location) throws SessionFormatException {
+  private SessionManifest map(JsonObject root, String location, boolean requireCanonicalSessionId)
+      throws SessionFormatException {
     SessionManifest.Builder builder =
         new SessionManifest.Builder()
             .formatVersion(ManifestMigrations.declaredVersion(root, location))
             .appVersion(requiredString(root, KEY_APP_VERSION, location))
-            .sessionId(parseSessionId(requiredString(root, KEY_SESSION_ID, location), location))
+            .sessionId(
+                parseSessionId(
+                    requiredString(root, KEY_SESSION_ID, location),
+                    location,
+                    requireCanonicalSessionId))
             .createdMicros(requiredLong(root, KEY_CREATED_MICROS, location))
             .finalizedMicros(optionalLong(root, KEY_FINALIZED_MICROS))
             .state(parseState(requiredString(root, KEY_STATE, location), location))
@@ -273,11 +299,16 @@ public final class SessionManifestCodec {
     return unknown;
   }
 
-  private static SessionId parseSessionId(String text, String location)
+  private static SessionId parseSessionId(
+      String text, String location, boolean requireCanonicalSessionId)
       throws SessionFormatException {
     try {
-      return SessionId.parseCanonical(text);
+      return requireCanonicalSessionId ? SessionId.parseCanonical(text) : SessionId.parse(text);
     } catch (IllegalArgumentException e) {
+      if (!requireCanonicalSessionId) {
+        throw new SessionFormatException(
+            "manifest at " + location + " has an unparseable sessionId '" + text + "'", e);
+      }
       throw new SessionFormatException(
           "manifest at " + location + " does not have a canonical UUID sessionId: '" + text + "'",
           e);
