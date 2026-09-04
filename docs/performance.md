@@ -1,13 +1,18 @@
 # Performance
 
-Performance is a feature gate, not an aspiration. Numbers in this file are
-only ever *measured* numbers — never estimates; a row with no measurement
-says so explicitly. The plan's own framing (section 20.2) applies: these are
-benchmark targets, not guarantees.
+Performance is a feature gate, not an aspiration. Measurements and analytic
+estimates are labelled separately; an estimate is never presented as a
+measurement. A row with no measurement says so explicitly. The plan's own
+framing (section 20.2) applies: these are benchmark targets, not guarantees.
 
 macOS on Apple Silicon is the platform the objectives are stated against
 (plan 20.2). Linux is a portability target and CI tests there, but no
 performance objective is gated on Linux numbers.
+
+For 0.1.0, objective 1 is not met, Tier 3 graph construction is unmeasured, and
+the EDT evidence is structural rather than an end-to-end pause trace. Ordinary
+CI does not run the benchmark tiers; the measurements below are deliberate
+manual records with their environment and method.
 
 **Build-system note (2026-08-24).** The build migrated from Gradle to Bazel
 (ADR-009) after every figure below was measured. The figures stand: the
@@ -81,7 +86,7 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 
 | # | Objective | Measured |
 |---|---|---|
-| 1 | Raw capture sustains 100,000 small synthetic events/sec for burst tests without loss | **not met — 79,400/s** at 200,000 events, without loss. The shortfall is gRPC's per-message acknowledgement, not this application: replacing the whole pipeline with a sink that stores nothing produces the same rate. |
+| 1 | Raw capture sustains 100,000 small synthetic events/sec for burst tests without loss | **not met — 79,400/s** at 200,000 events, without loss. A transport-only sink measured in the same range, so storage was not observed as the bottleneck at this scale; the cause of the remaining gap is unestablished. |
 | 2 | Normalization sustains at least 25,000 representative events/sec | **met — 114,667 actions/s** at 5,000,000 actions (`runEntityScaleSpike --rows=5000000`) |
 | 3 | Capture remains correct if normalization temporarily falls behind | **met** — every run completes with `received == journaled == normalized + stream-control` while backpressure is active, including the 50,000,000-event Tier 3 capture |
 | 4 | Live UI updates at least four times per second under ordinary load | **partial, by design** — capture progress and console output update several times a second; the overview snapshot is deliberately every 2 s because it re-reads a whole consistent snapshot, and the metric collection runs once per session rather than on a timer |
@@ -89,8 +94,8 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 | 6 | A cached action-table page appears within 100 ms | **met** — table cache max 25.0 µs; keyset pages 0.75–1.13 ms at 5,000,000 actions, at every depth |
 | 7 | An uncached indexed page normally appears within 500 ms | **met** — 0.6 ms for the first page of a 5,000,000-action session opened from cold |
 | 8 | Opening an already indexed Tier 3 session shows its overview within five seconds without loading all actions | **met — 9.6 ms** from cold, on a 1.5 GB, 5,000,000-action database |
-| 9 | Application-managed heap remains below 4 GB for Tier 3 | **met** — 0.48 GB resident while capturing 50,000,000 events (0.96 GB with the larger page cache); the CSR graph is 176 MB at Tier 2 and extrapolates to ~880 MB at Tier 3 |
-| 10 | No routine EDT pause exceeds 100 ms | **met structurally** — `EdtDisciplineTest` asserts every component that can reach a database owns a thread; three paint-isolation tests assert the painted views can reach neither. Frame p95s above are the empirical half. |
+| 9 | Application-managed heap remains below 4 GB for Tier 3 | **partial** — capture measured 0.48 GB resident at 50,000,000 events (0.96 GB with the larger page cache). CSR retained arrays measured 176 MB at Tier 2; ~880 MB at Tier 3 is a linear estimate, not a Tier 3 graph measurement. |
+| 10 | No routine EDT pause exceeds 100 ms | **structurally supported, not measured end to end** — `EdtDisciplineTest` requires database-reaching components to own a worker; paint-isolation tests keep connections and executors out of painted views. Frame p95s measure only the rendering spikes. |
 | 11 | Long queries are cancellable | **met** — `SessionReader.cancelRunningQuery`, `GraphLayoutService.cancel`, and every layout returns a placement of nothing rather than a partial one |
 | 12 | Session finalization can resume after application restart | **met** — an import interrupted at 145,000 of 300,000 events resumes to a state identical to a clean import |
 
@@ -215,11 +220,11 @@ and the object-per-edge column is a hand-written `32 B/edge + 64 B/node`
 estimate. Both are therefore invariant to JVM object-layout flags — see
 "Java 25 runtime options" below.
 
-The 8x memory advantage over an object-per-edge representation is the
+The analytic 8x memory advantage over an object-per-edge representation is the
 quantitative justification for ADR-006/007. Extrapolating Tier 2's 176 MB
-linearly, Tier 3 (100M edges) lands near 880 MB for both directions — inside
-the 4 GB heap objective, but close enough that the memory-mapped CSR files of
-plan 13.2 remain necessary rather than optional.
+linearly, Tier 3 (100M edges) lands near 880 MB for both directions. That
+estimate is below the 4 GB objective but does not prove a Tier 3 graph fits;
+the memory-mapped CSR files of plan 13.2 remain necessary rather than optional.
 
 Caveat: the synthetic edge generator biases producers to within 4096 indices
 of the consumer, which equals the spike's cluster size, so only ~c-1
@@ -479,36 +484,22 @@ real embedded BES server over a real loopback socket with a real gRPC client,
 through the real journal and the real SQLite writer. Machine: Apple Silicon,
 Java 25.0.1 (Corretto), macOS 26.
 
-One number, measured end to end: how fast events become *durable and
-acknowledged*, which is what Bazel waits for.
+The valid release-gate number is measured end to end: how fast events become
+*durable and acknowledged*, which is what Bazel waits for.
 
 | Configuration | Acknowledged (durable, end to end) |
 |---|---:|
-| 200k events, ~0-byte payloads | 87,446/s |
-| 200k events, ~64-byte payloads | 88,449/s |
-| 200k events, ~512-byte payloads | 83,857–86,086/s |
-| 200k events, ~512-byte, **transport only** (no journal, no database) | 80,058/s |
+| 200k events after fixing client flow control | 79,359/s |
 
-Every run completed with no loss: `received == journaled`, and
+The corrected run completed with no loss: `received == journaled`, and
 `journaled == normalized + stream-control envelopes`.
 
-An earlier version of this table carried a second column, "accepted (wire to
-receive queue)", reporting 869k–1.3M events/sec. It was wrong, and wrong in a
-flattering direction: it divided the *server's* received count by the
-*client's* send duration — two different intervals — so it measured how fast
-the benchmark's client could enqueue into gRPC, not how fast anything was
-captured. The server cannot have accepted 200,000 events by the time the
-client stopped sending, because it requests at most 64 ahead of a 4,096-deep
-queue. Read as a capture rate it said the transport was fast and this
-application's storage slow; both halves were false. The column is gone.
-
-**The bottleneck is not this application.** Replacing the whole pipeline with
-a sink that acknowledges immediately and stores nothing produces the *same*
-rate — 80k/s against 86k/s, i.e. slightly slower, within noise. The journal
-and the indexer are therefore free at this scale, and the ~11.5 µs per event
-is the gRPC message and acknowledgement round trip. The rate being
-independent of payload size, from 0 to 512 bytes, says the same thing: this is
-per-event overhead, not bandwidth.
+Earlier figures in this section were invalidated when the Tier 3 run proved
+that the benchmark client sent without flow control and could run ahead of the
+transport. They are removed rather than compared with the corrected result. A
+transport-only sink measured in the same range as the corrected end-to-end
+run, so storage was not observed as the bottleneck at 200,000 events. That
+experiment does not isolate the cause of the remaining shortfall.
 
 The spike prints PASS or FAIL against the objective and exits non-zero on a
 breach, like every other spike. It currently exits 1.
@@ -516,16 +507,16 @@ breach, like every other spike. It currently exits 1.
 ### The ADR-008 question, answered as far as it can be
 
 ADR-008 recorded that grpc-netty disables `sun.misc.Unsafe` on Java 25 and
-that the effect on the capture path was unmeasured. It is now measured:
-`PlatformDependent.hasUnsafe()` is `false`, and the path runs at 86,000
-events/sec.
+that the effect on the capture path was unmeasured. The supported path reports
+`PlatformDependent.hasUnsafe()` as `false` and runs at the corrected rate
+above.
 
 What could **not** be established is the counterfactual. Netty refuses to use
 `Unsafe` on Java 24 and later regardless of `-Dio.netty.tryUnsafe=true`
 (verified: `hasUnsafe` stays `false`), so the comparison would require running
 the same spike on Java 21 — which is no longer the baseline. The honest
-statement is that 86k/s is what the supported configuration does, not that
-Unsafe is what costs the missing 14%.
+statement is the supported configuration's measured rate, not that Unsafe
+accounts for the gap.
 
 ### What the shortfall means in practice
 
@@ -534,17 +525,12 @@ approach it: a Tier 3 build of five million actions emits its events over
 minutes, and the largest real stream measured in Phase 2 was 38 events. The
 gap matters for a burst test, not for a capture keeping up with Bazel.
 
-The obvious way to close it is to stop sending one acknowledgement message per
-event. That is deliberately **not** attempted here: an acknowledgement with the
-wrong sequence number kills the user's Bazel server on 6.5.0 and 9.2.0
-(docs/bazel-compatibility.md), and no experiment has established that Bazel
-accepts a coalesced acknowledgement covering a run of sequences. Changing ack
-semantics needs its own experiment against all four versions first.
-
-The flow-control window is 64 messages, chosen by measurement: at 1 the path
-is latency-bound at 45,000/s, at 64 it reaches 86,000/s, and 128, 256 and 512
-are indistinguishable from 64. The smallest window that reaches the plateau is
-the one that keeps the memory ceiling lowest.
+No optimization is prescribed without isolating the cause. In particular,
+changing acknowledgement semantics needs its own experiment against all four
+versions: an acknowledgement with the wrong sequence number kills the user's
+Bazel server on 6.5.0 and 9.2.0, and no experiment has established that Bazel
+accepts one acknowledgement covering a run of sequences. Pre-fix flow-control
+comparisons are not retained as performance evidence.
 
 ## Normalization and the actions table (Phase 3)
 
@@ -889,7 +875,7 @@ enough past the small case to show the effect and short enough to run twice:
 | | Before | After |
 |---|---:|---:|
 | 3,000,000 events | 43,803/s | **51,527/s** (+18%) |
-| 200,000 events | 79,359/s | 77,5xx/s (three runs: 75.9k, 77.6k, 77.5k) |
+| 200,000 events | 79,359/s | three runs: 75.9k/s, 77.6k/s, 77.5k/s |
 
 The small case is unchanged within noise, which is what the change predicts: at
 200,000 events the table fits in the default cache and a larger one buys
@@ -952,9 +938,8 @@ measured at all: its client called `onNext` fifty million times without flow
 control, and gRPC buffered everything the transport could not yet write. The
 first Tier 3 run died with an `OutOfMemoryError` inside `DelayedStream` — in the
 *client*, before the server had done anything. The client now waits on
-`isReady()`. That also means the previously published 83.8–86.1k/s figures were
-flattered by a client running ahead of the transport; the honest number for the
-same configuration is 79.4k/s.
+`isReady()`. That also invalidated the previously published burst figures; the
+corrected result for the same configuration is 79.4k/s.
 
 ## Build performance
 

@@ -1,3 +1,10 @@
 # Repository root. Module targets live in each module's own BUILD.bazel;
 # this package exists so root files (maven_install.json, .bazelversion) have
 # a home and so `bazel build //...` has a well-defined universe.
+
+exports_files([
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+])

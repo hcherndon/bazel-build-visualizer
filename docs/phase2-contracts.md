@@ -263,12 +263,14 @@ full record.
 - **The veto is in the dialog, not in the CLI.** Unticking a flag re-plans and
   reopens; `bbv run` has no equivalent switch, so a headless caller takes the
   preset as it is.
-- **Objective 1 is not met**: 84,000–88,000 events/sec against 100,000, and the
-  gap is gRPC's per-event acknowledgement round trip rather than this
-  application's code. Coalescing acknowledgements would close it and is not
-  attempted, because an acknowledgement with a wrong sequence number kills the
-  user's Bazel server on 6.5 and 9.2 and no experiment has established that
-  Bazel accepts a coalesced one. See `docs/performance.md`.
+- **Objective 1 is not met**: the corrected result is about 79,400 events/sec
+  against 100,000, end to end without loss. A transport-only sink measured in
+  the same range, so storage was not observed as the bottleneck at that scale;
+  the cause of the remaining gap has not been established. No acknowledgement
+  change is proposed without a separate experiment: a wrong sequence number
+  kills the user's Bazel server on 6.5 and 9.2, and no experiment has
+  established that Bazel accepts one acknowledgement covering several events.
+  See `docs/performance.md`.
 - **Everything was measured on macOS arm64.** Linux and Windows behaviour —
   particularly signal handling and the `flags-as-proto` line format — is
   unverified.

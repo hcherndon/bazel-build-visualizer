@@ -148,12 +148,15 @@ faithful (ADR-004) and is treated as sensitive at rest.
 - Pattern-based redaction of likely secrets in command lines and
   environment values: `*_TOKEN`, `*_SECRET`, `*_KEY`, `*PASSWORD*`,
   `AUTHORIZATION`, bearer-token shapes, URLs with embedded credentials.
-  The pattern list ships with the app and is user-extensible.
+  Built-in patterns ship with the app. The policy API accepts caller-supplied
+  patterns, but 0.1.0 has no UI for configuring them.
 - Sensitive well-known fields are masked by default in the UI:
   environment variable values, `--remote_header` values, repository-rule
   credentials.
-- **Export** (sharing a session or a report) runs redaction mandatorily and
-  shows the user exactly what was redacted before anything is written.
+- **Export** (sharing a session or a report) applies the selected redaction
+  policy and reports exactly what its rules matched before anything is written.
+  Pattern matching is best effort, not proof that the result contains no
+  secrets; review every export before sharing it.
 
 ## Sensitive-field inventory
 
@@ -252,13 +255,13 @@ instrumentation dialog says so before the build runs.
 
 ### Pseudonyms rather than a mask
 
-Each distinct secret gets a stable name — `[redacted:9f2c1a7b04]` — and the
+Each distinct matched value gets a stable name — `[redacted:9f2c1a7b04]` — and the
 same value redacts to the same name everywhere in one export. A mask that
 replaced everything with `****` would destroy the thing a reader most needs
 from a shared session: whether the token in these ten thousand actions is *the
 same* token. Measured on a synthetic 500,000-action session: 505,001 redactions
-over 5,000 distinct values, which is exactly the shape that tells a reader they
-have five thousand credentials rather than one.
+over 5,000 distinct values, which is exactly the shape that tells a reader there
+were five thousand distinct matches rather than one.
 
 The pseudonym is a truncated digest under a random key generated per export and
 never written anywhere. A bare digest of a low-entropy secret is a password
@@ -276,10 +279,11 @@ reason about.
 
 ### Name patterns are globs, not regular expressions
 
-Plan 22.2 requires the list to be user-editable, and a user-supplied regular
-expression run once per argument over five million actions is a
+Plan 22.2 requires the list to be user-editable, but that UI is not present in
+0.1.0. The caller-only policy extension accepts globs because a caller-supplied
+regular expression run once per argument over five million actions is a
 denial-of-service risk — catastrophic backtracking is a property of
-ordinary-looking patterns. A user writes `*_TOKEN`; it compiles to an anchored,
+ordinary-looking patterns. A caller supplies `*_TOKEN`; it compiles to an anchored,
 alternation-free expression. The three value rules that need real expressions —
 a bearer token, a URL with credentials, a PEM block — are built in and fixed.
 

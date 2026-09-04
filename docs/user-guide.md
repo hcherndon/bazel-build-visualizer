@@ -243,8 +243,9 @@ two-finger horizontal gesture pans left or right in time; Shift + wheel offers
 the same fallback. Hold Control or Command while scrolling to zoom around the
 pointer. A native pinch also zooms on macOS when the application is started
 through the Bazel launcher or packaged app; a manually launched jar needs the
-package export documented in the README. The **−**, **+**, and **Fit build**
-buttons offer the same controls without a gesture.
+[macOS package export](troubleshooting.md#timeline-pinch-does-not-zoom-on-macos).
+The **−**, **+**, and **Fit build** buttons offer the same controls without a
+gesture.
 
 Primary-button drag pans in time. Shift + primary-button drag selects a range,
 and the Actions table narrows to spans that overlap it. A short click still
@@ -374,6 +375,37 @@ already reading SQLite may finish in the background and is prevented from
 replacing newer results. Clearing the filter restores the ordinary view;
 revealing a target from another page clears a filter that would hide it.
 
+### Query
+
+**Query** runs SQL against the open session when a built-in view does not
+answer your question. The schema tree lists the session's tables, views, and
+columns; double-click a table to start a query. Press Ctrl-Enter (Command-Enter
+on macOS) or **Run**. **Format** changes only the editor text.
+
+The session database is opened read-only. The editor accepts one `SELECT`,
+`WITH`, or `VALUES` statement, read-only introspection `PRAGMA`s, and
+`EXPLAIN` of those statements. Its one non-read form is
+`CREATE TEMP VIEW <name> AS <read-only query>`: that view exists only on the
+current tab's connection and never changes the session file. Other writes,
+multiple statements, attachments, and unsafe pragmas are refused.
+
+Each tab owns its connection and can run alongside the others; at most 16 tabs
+may be open. Saved queries and saved views are `.sql` files below the
+application settings directory. Saved views are replayed onto every tab and a
+broken definition is reported and skipped.
+
+Results are paged from SQLite rather than loaded at once. The default visible
+row cap is 1,000,000 and the maximum selectable cap is 20,000,000. Reaching a
+cap is stated with the exact matching count; raise it or narrow the SQL. That
+exact `COUNT(*)` can itself be expensive, and every execution has a 60-second
+deadline plus an immediate **Cancel** action. A result's order comes from its
+SQL, so add `ORDER BY`; the grid does not sort only the pages already fetched.
+`NULL` and BLOB values are labeled explicitly.
+
+On a live capture the displayed exact count is a snapshot and therefore only a
+lower bound on the eventual rows, but 0.1.0 does not label it as such. Re-run
+the query after capture finishes when completeness matters.
+
 ### Graph and Tree
 
 The dependency graph, derived from which action produced the file another action
@@ -482,18 +514,21 @@ place that shows a rate over those records says what it was taken over.
 
 ### Redacted session archive
 
-A `.bviz` archive of the whole session with secrets and absolute paths replaced.
-You are shown **exactly what was redacted before anything is written** — counts
-by rule and by field — and can cancel.
+A `.bviz` archive of the whole session with pattern-matched likely secrets and
+absolute paths replaced. You are shown **exactly what the selected rules
+matched before anything is written** — counts by rule and by field — and can
+cancel. Pattern matching is best effort, and 0.1.0 has no UI for adding custom
+patterns even though the policy API accepts them. Review the result before
+sharing it; the report is not proof that every secret was found.
 
 A redacted archive **does not contain the raw capture**, because the raw capture
 is the unredacted bytes. That has a consequence worth knowing: the person you
 send it to cannot re-run the enrichments or rebuild the database from source
 bytes. The archive says so when they open it.
 
-Redaction replaces each distinct secret with a stable pseudonym rather than a
+Redaction replaces each distinct matched value with a stable pseudonym rather than a
 mask, so the recipient can still see that ten thousand actions used *the same*
-credential without seeing it.
+value without seeing it.
 
 Two further options, both off by default because each costs something:
 
@@ -544,7 +579,8 @@ Stated so you do not go looking:
   history remain direct controls.
 - **No implicit reconnect or historical remote storage.** SSH access exists
   only for a live connection the user started; no team server is provided.
-- **The desktop application is macOS; SSH execution hosts are Linux.** Other
+- **The 0.1.0 packaged desktop target is Apple Silicon macOS; SSH execution
+  hosts are Linux.** Intel macOS packaging is currently unavailable, and other
   desktop/remote combinations have not been tested.
 - **Terminal is tied to the selected live Workspace.** It is not reopened from
   historical session data, and its scrollback keeps the newest 20,000 lines

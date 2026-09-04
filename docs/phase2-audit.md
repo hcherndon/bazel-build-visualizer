@@ -1,5 +1,9 @@
 # Phase 2 Audit — Merged Findings
 
+> Historical audit record. Gradle commands and build references below are
+> nonauthoritative evidence from before ADR-009. The repository is Bazel-only;
+> use README.md and docs/implementation-status.md for current instructions.
+
 **Scope:** live capture (BES server, pipeline, journal, session finalization), process launch and cancellation, instrumentation planner, CLI (`bbv run`), Swing capture UI, plus a completeness sweep over everything no lens owned.
 
 **How to read the confidence column.** Every finding below was handed to three independent refuters per lens that filed it. Where two lenses filed the same defect the tallies are summed. A **unanimous** finding (N‑0) means every refuter tried to break it and could not; treat it as fact. A **contested** finding (N‑M) means at least one refuter's counter‑argument stands unrebutted — read the dissent before you spend effort, because in some cases it changes the fix rather than the verdict. Contested does not mean wrong: it means one reviewer found the harm smaller, narrower, or located elsewhere.

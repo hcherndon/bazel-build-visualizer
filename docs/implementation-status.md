@@ -3,6 +3,29 @@
 Last updated: 2026-09-04. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
+## 0.1.0 release status
+
+The ten implementation phases are closed, but the historical v1 definition of
+done is met in 29 of 31 items, not 31 of 31. Display limits are documented but
+not all configurable in Preferences. Intel macOS is unsupported for 0.1.0:
+the clean Bazel build has no Intel macOS protobuf code-generation tool pins, so
+the package cannot yet be built or verified there.
+
+Other release caveats remain explicit:
+
+- the 100,000-events/s synthetic burst objective is not met;
+- Tier 3 graph construction has not been run, though its bounded structure and
+  a linear memory estimate are documented;
+- no fuzzing or dependency-advisory scan has run;
+- ordinary CI omits native packaging and host-state real-Bazel tests; and
+- no signed and notarized candidate has passed the complete Finder, local
+  Terminal, and SSH Terminal smoke checklist.
+
+The current build is Bazel-only under ADR-009. Gradle commands and results in
+the phase records below are dated historical evidence, not current
+instructions. Use the README and section 26 of `docs/product-plan.md` for
+current commands.
+
 ## First-release input and lifecycle hardening (2026-09-04)
 
 - Rooted graph extraction now enforces separate node and edge budgets, preserves deterministic
@@ -50,10 +73,13 @@ renumbered or re-scoped here.
 | 6 | Timeline | **Complete** — all five exit criteria met, one task partial with a stated reason (see below) |
 | 7 | Graph visualization | **Complete** — all six exit criteria met and proved by test (see below) |
 | 8 | Metrics and findings | **Complete** — all five exit criteria met and proved by test (see below) |
-| 9 | Session export, redaction, and macOS packaging | **Complete** — all five exit criteria met and proved by test (see below) |
-| 10 | Scale hardening and compatibility release gate | **Complete** — six of seven exit criteria met and measured, one partial with a stated reason (see below) |
+| 9 | Session export, redaction, and macOS packaging | **Implementation complete; platform verification partial** — Apple Silicon verified, Intel unavailable (see below) |
+| 10 | Scale hardening and compatibility release gate | **Implementation complete; release gate partial** — remaining evidence gaps are stated above and below |
 
-## Phase 0 checklist (as of 2026-08-29)
+## Historical Phase 0 checklist (as of 2026-08-29)
+
+This section records the former Gradle implementation. ADR-009 superseded it;
+none of its commands or build configuration describes the current tree.
 
 | Task | Status |
 |---|---|
@@ -291,18 +317,17 @@ failing builds on purpose is the normal case.
 upload fails, whatever the build did, so it masks the real result.
 `CaptureResult.buildOutcomeKnown()` says when the exit code can be believed.
 
-**Objective 1 is not met, and the gap is not ours.** The capture path
-sustains 86,000 events/sec end to end without loss, against a target of
-100,000. Replacing the whole pipeline with a sink that acknowledges and stores
-nothing runs at the same speed, so the journal and the indexer are free at
-this scale and the cost is the gRPC acknowledgement round trip. See
-docs/performance.md.
+**Objective 1 is not met.** The corrected release-gate result at 200,000
+events is about 79,400 events/sec end to end without loss, against a target of
+100,000. A transport-only sink measured in the same range, so storage was not
+observed to be the bottleneck at that scale. Larger tables slow further. See
+`docs/performance.md` for the measurements and provenance.
 
-**What is deliberately not attempted.** Coalescing acknowledgements would
-close the throughput gap, and is not tried: an acknowledgement with a wrong
-sequence number kills the user's Bazel server on 6.5.0 and 9.2.0, and no
-experiment has established that Bazel accepts one acknowledgement covering a
-run of sequences.
+**What is deliberately not attempted.** No optimization is prescribed before
+the cause is isolated. Changing acknowledgement semantics would require a
+separate experiment: a wrong sequence number kills the user's Bazel server on
+6.5.0 and 9.2.0, and no experiment has established that Bazel accepts one
+acknowledgement covering a run of sequences.
 
 ## Phase 2 audit
 
@@ -973,7 +998,7 @@ ceiling without going near the memory that made the suite unrunnable earlier.
 | Add retention and cleanup | Done — a plan is shown, the sweep takes the plan rather than the policy, and a pinned session is never a candidate |
 | Add macOS file associations | Done — `.bviz` only, declared through jpackage and verified in the built `Info.plist` |
 | Add macOS app menu and open-file handlers | Done — About, Open File and Quit at Phase 9; post-v1 macOS Preferences now opens the same tabbed Theme/Discovery window as the Settings menu |
-| Build Apple Silicon and Intel packages | Partial with a stated reason — jpackage does not cross-compile, so this is one task run on two machines; `docs/packaging.md` says so rather than a build naming one package after both |
+| Build Apple Silicon and Intel packages | Partial with a stated reason — Apple Silicon has development-image evidence. Intel is unavailable because every macOS build currently selects arm64 protobuf and gRPC generators; `docs/packaging.md` records the required work. |
 | Add signing/notarization hooks without embedding credentials | Done — both read the environment, and `notarize` refuses without a keychain profile name rather than prompting for an Apple ID it should never see |
 
 ## Phase 9 exit criteria (plan section 24)
@@ -1074,11 +1099,11 @@ runs the CLI. That is not part of `build` — jpackage is slow and platform-boun
 |---|---|
 | Tier 3 raw capture succeeds without data loss | **Met** — 50,000,000 events sent, acknowledged, journaled (11.8 GB across 42 segments) and indexed. `received == journaled` and `journaled == normalized + stream-control`. 0.48 GB resident. |
 | Tier 3 indexed session can be reopened and queried | **Met** — 5,000,000 actions in a 1.5 GB database, closed and reopened from cold: overview in **9.6 ms** against a five-second objective, first page in **0.6 ms** against five hundred milliseconds. |
-| Aggregate timeline and graph remain usable | **Met** — timeline p95 **0.89 ms** at 5,000,000 spans; graph p95 **1.29 ms** at 1,000,000 nodes and 20,000,000 edges. The budget is 33 ms. |
+| Aggregate timeline and graph remain usable | **Met at the measured tiers** — timeline p95 **0.89 ms** at 5,000,000 spans; graph p95 **1.29 ms** at 1,000,000 nodes and 20,000,000 edges. Tier 3 graph construction was not run. |
 | Every limit is explicit | **Met** — `docs/limits.md` enumerates every bound, what happens when it is reached and whether it can be moved, and `LimitsDocTest` checks the page against the constants so it cannot drift. |
 | Bazel compatibility matrix is published | **Met** — `docs/bazel-compatibility.md`'s release matrix, produced by a test that prints the row it asserts. All four versions capture completely. |
-| No known routine path blocks the EDT | **Met** — `EdtDisciplineTest` walks every compiled Swing component and asserts that one which can reach a database owns a thread; three paint-isolation tests assert the painted views can reach neither a connection nor an executor. |
-| Release candidate packages launch on supported macOS architectures | **Partial, with a stated reason** — the Apple Silicon package was built and launched: the bundle declares the `.bviz` association, the launcher runs the CLI, and a smoke launch created the application-support directories and exited cleanly. **Intel is unverified**: jpackage does not cross-compile, so it needs an Intel machine. |
+| No known routine path blocks the EDT | **Structurally checked, not measured end to end** — `EdtDisciplineTest` requires database-reaching Swing components to own a worker, and paint-isolation tests keep connections and executors out of painted views. No broad pause-duration trace proves every routine path stays below 100 ms. |
+| Release candidate packages launch on supported macOS architectures | **Partial** — an unsigned Apple Silicon development image was built and launched. Intel is unsupported for 0.1.0 because the clean build lacks Intel macOS protobuf code-generation tools. No signed/notarized candidate has completed the release smoke checklist. |
 
 ### Interpretations worth knowing
 
@@ -1091,18 +1116,25 @@ b-tree. What this means for a real build is smaller than it sounds: a Tier 3
 build emits its events over minutes, and sixteen thousand a second is a million
 a minute.
 
-**Objective 1 is still not met**, and its gap is now better understood. 79.4k/s
-against a 100k/s target, and the shortfall is gRPC's per-message acknowledgement
-— replacing the whole pipeline with a sink that stores nothing produces the same
-rate. Closing it means coalescing acknowledgements, which cannot be attempted
-without an experiment against all four Bazel versions first: an acknowledgement
-with the wrong sequence number kills the user's Bazel server on 6.5.0 and 9.2.0.
+**Objective 1 is still not met.** The corrected result is 79.4k/s against a
+100k/s target. A transport-only sink measured in the same range, so storage was
+not observed as the bottleneck at that scale; the cause of the remaining gap
+has not been established. No acknowledgement change is proposed without a
+separate experiment against all four Bazel versions.
 
-**The Bazel sweep is excluded from `./gradlew build`.** Four servers is four
-downloads and several minutes, and Bazel sizes its server JVM from the machine's
-RAM. The fixture caps each at `-Xmx1g` and the sweep runs one at a time; it is
-still opt-in behind `-Pbbv.bazelSweep=true`. A single-version end-to-end capture
-stays in the default suite.
+**The Bazel sweep is excluded from ordinary tests.** Four servers means four
+downloads and several minutes, and Bazel sizes its server JVM from the
+machine's RAM. Run one supported version deliberately, with the positive
+hazard-tag filter and selector, for example:
+
+```
+BBV_BAZEL_MATRIX_VERSION=9.2.0 bazel test \
+  //capture-bes:BazelVersionMatrixTest \
+  --test_tag_filters=bazel-sweep --test_output=streamed
+```
+
+Never clear the tag filter. Ordinary CI also excludes all host-state
+`real-bazel` tests.
 
 ## Definition of done for v1 (plan section 25)
 
@@ -1116,11 +1148,11 @@ that are not are named.
 | **Analysis** (6 items) | Met. |
 | **Visualization** (5 items) | **4 of 5.** "Every display limit is visible and configurable" — every limit is visible and stated, and only the graph's node and edge limits are raisable from the UI. There was no settings screen at v1; post-v1 Preferences has Theme and Discovery tabs, not display limits. |
 | **Persistence** (5 items) | Met. |
-| **Performance** (4 items) | Met, with objective 1's burst target as the stated shortfall. |
-| **Quality** (5 items) | **4 of 5.** "Packaging works on Apple Silicon and Intel macOS" — Apple Silicon built and launched; Intel unverified because jpackage does not cross-compile. |
+| **Performance** (4 items) | Met as written in section 25; the separate 100,000-events/s objective remains unmet. |
+| **Quality** (5 items) | **4 of 5.** Intel packaging is unsupported because the clean build lacks Intel macOS code-generation tools. |
 
-Both shortfalls are the same kind: a thing that exists and is not reachable from
-where the plan wanted it. Neither is a defect in what was built.
+Both shortfalls remain product gaps. Documented limits are not all configurable,
+and the Intel build path does not exist yet.
 
 ## Phase 10 audit
 
@@ -1153,23 +1185,25 @@ produced it.
 
 ---
 
-# v1 is complete
+# 0.1.0 implementation and release status
 
-All ten phases are done. Plan section 25's definition of done is met in
-twenty-nine of thirty-one items, with both shortfalls named above and neither a
-defect in what was built.
+All ten implementation phases are closed. Plan section 25's definition of done
+is met in twenty-nine of thirty-one items, with both shortfalls named above.
+This is not a claim that every original v1 criterion or release verification
+step is complete.
 
 What ships: a local, single-user macOS application that launches or imports a
 Bazel build, captures it raw-first, normalizes it into a queryable session,
 enriches it from the execution log, the trace profile, `aquery` and `cquery`,
 and shows it as an overview, a timeline, an action table, dependency trees, a
-graph canvas, tests, errors, events, a console pane and evidence-backed findings —
-at five million actions, without loading the build into memory, and without
-claiming a number it does not have.
+graph canvas, tests, errors, events, a console pane and evidence-backed
+findings. Overview, table, and timeline paths were measured at five million
+actions; graph painting was measured at Tier 2 and full graph import was not
+measured at Tier 3.
 
 Plan section 28's deferred roadmap starts here.
 
-## After v1
+## Post-plan changes
 
 Two navigation changes from use, landed 2026-08-23. Neither changed a query, a
 table or a column; both are renames and one layout.
@@ -2648,13 +2682,14 @@ it is a different tab and was not reported.
   project artwork, do not contain the official Bazel logo, and total 9,080
   bytes. All 34 icons total 23,487 bytes.
   Language and project marks identify file types only and do not imply
-  endorsement. FlatLaf Extras 3.7.2 supplies the Swing icon adapter over JSVG
-  2.1.0. Both are pure Java, were current releases from active projects at
-  review time (2026-07-09 and 2026-05-05), and add 904,150 bytes of resolved
-  jars before deploy-jar compression. The renderer and assets are local-only;
-  no runtime download, remote file operation, or native dependency was added.
-  Their exact upstream license texts join the deploy jar's collision-safe
-  legal bundle, and the deploy-jar test pins those reviewed texts by SHA-256.
+  endorsement. FlatLaf Extras 3.7.2 supplies the pure-Java Swing icon adapter
+  over the pure-Java JSVG 2.1.0 renderer. They were current releases from
+  active projects at review time (2026-07-09 and 2026-05-05) and add 904,150
+  bytes of resolved jars before deploy-jar compression. The renderer and
+  assets are local-only and add no runtime download or remote file operation.
+  FlatLaf core separately carries seven Windows, Linux and macOS native
+  libraries. The deploy-jar test gates that exact native set, JSVG's required
+  corresponding source, and the reviewed legal payload.
 
   Exact Bazel convenience links at the repository root (`bazel-out`,
   `bazel-bin`, `bazel-testlogs`, legacy `bazel-genfiles`, and

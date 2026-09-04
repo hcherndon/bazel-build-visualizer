@@ -1,5 +1,9 @@
 # Phase 7 audit
 
+> Historical audit record. Gradle commands and build references below are
+> nonauthoritative evidence from before ADR-009. The repository is Bazel-only;
+> use README.md and docs/implementation-status.md for current instructions.
+
 The mechanical checks from Phases 4, 5 and 6, run again. **Sixteen findings,
 all fixed.** Eleven from counting call sites, two from measuring instead of
 assuming, one from writing the exit-criteria test, and two in the documentation
