@@ -82,6 +82,11 @@ grep -Fq '(troubleshooting.md#timeline-pinch-does-not-zoom-on-macos)' \
     "$docs/user-guide.md" || fail "user guide does not link the macOS pinch fix"
 grep -Fq '### Timeline pinch does not zoom on macOS' "$docs/troubleshooting.md" ||
     fail "troubleshooting guide has no macOS pinch anchor"
+grep -Fq 'pure-Java Swing icon adapter' "$docs/implementation-status.md" ||
+    fail "implementation status does not qualify the pure-Java icon adapter"
+grep -Fq 'FlatLaf core separately carries seven Windows, Linux and macOS native' \
+    "$docs/implementation-status.md" ||
+    fail "implementation status omits FlatLaf core native resources"
 grep -Fq '> Historical audit record.' "$docs/phase10-audit.md" ||
     fail "Phase 10 audit is not marked historical"
 if grep -Eq '84,000|shortfall is gRPC|gap is gRPC|80k/s against 86k/s|Coalescing acknowledgements would close' \
