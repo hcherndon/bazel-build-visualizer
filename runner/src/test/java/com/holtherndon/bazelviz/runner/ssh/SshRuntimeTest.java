@@ -246,6 +246,11 @@ final class SshRuntimeTest {
   }
 
   @Test
+  void sftpTransferTimeoutScalesToTheLargestRemoteCapture() {
+    assertThat(SftpClient.transferTimeout(32L * 1024 * 1024 * 1024)).isEqualTo(Duration.ofHours(6));
+  }
+
+  @Test
   void sftpTransfersUseNonInteractiveBatchCommands() throws Exception {
     Path batch = temporary.resolve("sftp.batch");
     Path destination = temporary.resolve("local file.txt");
@@ -426,6 +431,59 @@ final class SshRuntimeTest {
       if (page.size() < 2) {
         break;
       }
+      after = page.getLast();
+    }
+
+    assertThat(walked).containsExactlyElementsOf(paths.stream().sorted().toList());
+  }
+
+  @Test
+  void remoteDirectorySelectorTreatsGlobCharactersAsLiteralKeys() throws Exception {
+    List<String> paths =
+        List.of(
+            "/repo/a*literal",
+            "/repo/aaliteral",
+            "/repo/a-literal",
+            "/repo/b?literal",
+            "/repo/baliteral",
+            "/repo/c[ab]literal",
+            "/repo/caliteral");
+    StringBuilder emitter = new StringBuilder("#!/bin/bash\n");
+    for (String path : paths) {
+      emitter
+          .append("printf '%s\\0%s\\0%s\\0%s\\0' ")
+          .append(PosixShell.quote(path))
+          .append(" f 1 1.000000000\n");
+    }
+    Path find = executable("glob-key-find", emitter.toString());
+
+    Subprocess.Result heapPage =
+        Subprocess.run(
+            SshExecutionFileSystem.directoryListingCommand(
+                "/repo", "", 2, find.toString(), "/bin/bash"),
+            null,
+            Map.of(),
+            Duration.ofSeconds(5));
+    assertThat(heapPage.isSuccess()).as(heapPage.failureDetail()).isTrue();
+    assertThat(directoryPaths(heapPage.stdout()))
+        .containsExactly("/repo/a*literal", "/repo/a-literal");
+
+    List<String> walked = new ArrayList<>();
+    String after = "";
+    while (true) {
+      Subprocess.Result result =
+          Subprocess.run(
+              SshExecutionFileSystem.directoryListingCommand(
+                  "/repo", after, 1, find.toString(), "/bin/bash"),
+              null,
+              Map.of(),
+              Duration.ofSeconds(5));
+      assertThat(result.isSuccess()).as(result.failureDetail()).isTrue();
+      List<String> page = directoryPaths(result.stdout());
+      if (page.isEmpty()) {
+        break;
+      }
+      walked.addAll(page);
       after = page.getLast();
     }
 

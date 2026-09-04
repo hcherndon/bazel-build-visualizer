@@ -163,7 +163,7 @@ final class SftpClient {
     return escaped.append('"').toString();
   }
 
-  private static Duration transferTimeout(long bytes) {
+  static Duration transferTimeout(long bytes) {
     long bounded = Math.max(0, bytes);
     long seconds = 60 + Math.min(21_540, bounded / (64 * 1024));
     return Duration.ofSeconds(seconds);

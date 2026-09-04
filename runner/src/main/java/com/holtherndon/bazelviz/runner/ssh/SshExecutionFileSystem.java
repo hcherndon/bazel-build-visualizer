@@ -308,7 +308,7 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
           local i=$1 p
           while (( i > 1 )); do
             p=$((i / 2))
-            if [[ ${bbv_key[$p]} > ${bbv_key[$i]} || ${bbv_key[$p]} == ${bbv_key[$i]} ]]; then
+            if [[ ${bbv_key[$p]} > ${bbv_key[$i]} || ${bbv_key[$p]} == "${bbv_key[$i]}" ]]; then
               break
             fi
             bbv_swap "$p" "$i"
@@ -334,7 +334,7 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
         }
         bbv_add() {
           local key=$1 kind=$2 size=$3 time=$4 index
-          if [[ -n $BBV_AFTER ]] && [[ $key < $BBV_AFTER || $key == $BBV_AFTER ]]; then
+          if [[ -n $BBV_AFTER ]] && [[ $key < $BBV_AFTER || $key == "$BBV_AFTER" ]]; then
             return
           fi
           if (( bbv_count < BBV_LIMIT )); then
@@ -667,7 +667,8 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
                   "bbv-download-snapshot",
                   Long.toString(maxBytes),
                   source.value(),
-                  payload.value()));
+                  payload.value()),
+              SftpClient.transferTimeout(maxBytes));
       if (!copy.isSuccess()) {
         throw new IOException(
             "cannot create a bounded remote download snapshot: " + copy.failureDetail());
@@ -726,8 +727,12 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
   }
 
   private CommandResult run(List<String> argv) throws IOException {
+    return run(argv, Duration.ofSeconds(30));
+  }
+
+  private CommandResult run(List<String> argv, Duration timeout) throws IOException {
     try {
-      return commands.run(CommandRequest.of(argv, (String) null), Duration.ofSeconds(30));
+      return commands.run(CommandRequest.of(argv, (String) null), timeout);
     } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
       throw new IOException("interrupted while reading the remote filesystem", interrupted);
