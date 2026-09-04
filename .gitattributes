@@ -2,3 +2,9 @@
 * text=auto
 *.bat eol=crlf
 *.jar binary
+
+# Legal texts are byte-exact upstream copies; retain their original whitespace.
+app/src/main/resources/META-INF/third-party/** whitespace=-blank-at-eol,-blank-at-eof
+app/src/main/resources/META-INF/third-party/SQLITE-JDBC-APACHE-2.0.txt -text
+app/src/main/resources/META-INF/third-party/SQLITE-JDBC-NOTICE.txt -text
+app/src/main/resources/META-INF/third-party/SQLITE-JDBC-ZENTUS-BSD.txt -text
