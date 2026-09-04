@@ -71,7 +71,9 @@ grep -Fq 'it does not sign it' "$docs/packaging.md" ||
     fail "release checklist does not distinguish notarization from signing"
 grep -Fq '> Historical audit record.' "$docs/phase10-audit.md" ||
     fail "Phase 10 audit is not marked historical"
-if grep -Eq 'shortfall is gRPC|80k/s against 86k/s|Coalescing acknowledgements would close' \
-    "$docs/performance.md" "$docs/implementation-status.md"; then
+if grep -Eq '84,000|shortfall is gRPC|gap is gRPC|80k/s against 86k/s|Coalescing acknowledgements would close' \
+    "$docs/performance.md" \
+    "$docs/implementation-status.md" \
+    "$docs/phase2-contracts.md"; then
     fail "unsupported capture-throughput cause remains in release claims"
 fi
