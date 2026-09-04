@@ -125,10 +125,12 @@ Before a bounded download starts, a fixed helper copies at most the requested
 bytes into a client-named, private, read-only remote snapshot. The source's
 metadata and the snapshot's exact size are checked before SFTP reads that
 stable file and checked again before an adjacent local temporary is published
-with an atomic move. A source that grows or changes is refused; timeout,
-interruption, mismatch, or any other failure removes both temporaries and
-leaves an existing destination unchanged. This makes the retained transfer
-bound structural rather than dependent on periodic file-size polling.
+with an atomic move. A detected source size or modification-time change is
+refused. Timeout, interruption, mismatch, or any other failure leaves an
+existing destination unchanged and attempts to remove both temporaries; an
+unsuccessful remote removal, including after transport loss, is retained as a
+cleanup failure rather than hidden. This makes the retained transfer bound
+structural rather than dependent on periodic file-size polling.
 
 The primary remote build and the remote interactive terminal use forced remote
 TTYs. The terminal's local PTY lets OpenSSH forward window-size changes to the
