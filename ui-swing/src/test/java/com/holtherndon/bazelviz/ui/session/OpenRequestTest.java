@@ -230,13 +230,22 @@ final class OpenRequestTest {
   @Test
   @DisplayName("a redacted archive is imported and says what it does not carry")
   void redactedArchivesAreAnnounced() throws Exception {
-    Path redactedDatabase = tempDir.resolve("redacted.sqlite");
+    Path replacementRoot = tempDir.resolve("redacted-staging");
+    Files.createDirectory(replacementRoot);
+    Path redactedManifest = replacementRoot.resolve("manifest.json");
+    Files.copy(session.resolve("manifest.json"), redactedManifest);
+    Path redactedDatabase = replacementRoot.resolve("session.sqlite");
     Files.write(redactedDatabase, new byte[] {'r'});
     Path archive = tempDir.resolve("redacted.bviz");
     BvizWriter.write(
         session,
         archive,
-        BvizWriter.Options.redacted("shared", Map.of("session.sqlite", redactedDatabase)),
+        BvizWriter.Options.redacted(
+            "shared",
+            replacementRoot,
+            Map.of(
+                "manifest.json", redactedManifest,
+                "session.sqlite", redactedDatabase)),
         "0.1.0",
         CREATED);
 

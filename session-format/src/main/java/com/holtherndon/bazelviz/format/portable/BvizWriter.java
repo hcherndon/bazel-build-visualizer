@@ -6,18 +6,30 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileStore;
+import java.nio.file.FileVisitOption;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -68,32 +80,50 @@ public final class BvizWriter {
 
   private static final int BUFFER_BYTES = 64 * 1024;
 
+  private static final Set<String> REDACTED_ENTRY_NAMES = Set.of("manifest.json", "session.sqlite");
+
+  private static final FileAttribute<Set<PosixFilePermission>> OWNER_DIRECTORY =
+      PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"));
+
+  private static final Set<PosixFilePermission> OWNER_READ_ONLY =
+      PosixFilePermissions.fromString("r--------");
+
   /**
    * What to export.
    *
    * @param includeRawSources carry {@code raw/} — the whole capture, and as sensitive as the
    *     machine it ran on. Ignored when {@code redacted}.
    * @param redacted the contents went through the redaction engine; forces the raw sources out
-   * @param replacements archive-relative path to a substitute file, which is how a redacted
-   *     database and a redacted manifest reach the archive without this class knowing what
-   *     redaction is
+   * @param replacementRoot trusted root containing every replacement under its archive name
+   * @param replacements archive-relative path to a substitute file
    */
   public record Options(
-      boolean includeRawSources, boolean redacted, String note, Map<String, Path> replacements) {
+      boolean includeRawSources,
+      boolean redacted,
+      String note,
+      Path replacementRoot,
+      Map<String, Path> replacements) {
 
     public Options {
       Objects.requireNonNull(note, "note");
       replacements = Map.copyOf(replacements);
+      if (redacted && replacementRoot == null) {
+        throw new IllegalArgumentException("a redacted export needs a trusted replacement root");
+      }
+      if (!redacted && (replacementRoot != null || !replacements.isEmpty())) {
+        throw new IllegalArgumentException("only a redacted export may substitute source files");
+      }
     }
 
     /** Everything, including the raw bytes. As sensitive as the session. */
     public static Options complete(String note) {
-      return new Options(true, false, note, Map.of());
+      return new Options(true, false, note, null, Map.of());
     }
 
     /** A redacted export: no raw sources, substituted files for the rest. */
-    public static Options redacted(String note, Map<String, Path> replacements) {
-      return new Options(false, true, note, replacements);
+    public static Options redacted(
+        String note, Path replacementRoot, Map<String, Path> replacements) {
+      return new Options(false, true, note, replacementRoot, replacements);
     }
 
     boolean carriesRaw() {
@@ -123,29 +153,38 @@ public final class BvizWriter {
   /**
    * What the export will need, before it starts (plan 10.4).
    *
-   * @param sourceBytes the exact size of what will go in, which is also the upper bound on the
-   *     archive — a bound rather than a guess, because compression can only help and an
-   *     incompressible session cannot grow
+   * @param sourceBytes exact bytes copied into immutable writer snapshots
+   * @param archiveBytesUpperBound a saturating upper bound for the resulting ZIP
+   * @param requiredBytes peak target-filesystem space for snapshots plus the archive
    * @param freeBytes what the target's filesystem reports, or -1 when it would not say
    */
-  public record SpaceEstimate(long sourceBytes, int entryCount, long freeBytes) {
+  public record SpaceEstimate(
+      long sourceBytes,
+      long archiveBytesUpperBound,
+      long requiredBytes,
+      int entryCount,
+      long freeBytes) {
 
     /** True when the target filesystem certainly has room for the worst case. */
     public boolean fits() {
-      return freeBytes < 0 || freeBytes > sourceBytes;
+      return requiredBytes != Long.MAX_VALUE && (freeBytes < 0 || freeBytes >= requiredBytes);
     }
 
     public String describe() {
       if (freeBytes < 0) {
         return entryCount
             + " files, at most "
-            + sourceBytes
-            + " bytes. Free space could not be determined for this location.";
+            + archiveBytesUpperBound
+            + " archive bytes and "
+            + requiredBytes
+            + " peak temporary bytes. Free space could not be determined for this location.";
       }
       return entryCount
           + " files, at most "
-          + sourceBytes
-          + " bytes, with "
+          + archiveBytesUpperBound
+          + " archive bytes and "
+          + requiredBytes
+          + " peak temporary bytes, with "
           + freeBytes
           + " bytes free"
           + (fits() ? "." : " — that is not enough.");
@@ -153,26 +192,25 @@ public final class BvizWriter {
   }
 
   /** Measures what an export would need without writing anything. */
-  public static SpaceEstimate estimate(Path sessionRoot, Path target, Options options)
+  public static SpaceEstimate estimate(
+      Path sessionRoot, Path target, Options options, String appVersion, long createdMicros)
       throws IOException {
-    List<Source> sources = collect(sessionRoot, options);
-    long bytes = 0;
-    for (Source source : sources) {
-      bytes += Files.size(source.file());
-    }
-    long free = -1;
-    try {
-      Path location = target.toAbsolutePath().getParent();
-      if (location != null && Files.exists(location)) {
-        FileStore store = Files.getFileStore(location);
-        free = store.getUsableSpace();
-      }
-    } catch (IOException unavailable) {
-      // A filesystem that will not report usable space is not a reason to
-      // refuse the export; it is a reason not to promise it will fit.
-      free = -1;
-    }
-    return new SpaceEstimate(bytes, sources.size(), free);
+    return estimate(sessionRoot, target, options, appVersion, createdMicros, BvizLimits.defaults());
+  }
+
+  /** The same estimate with injected limits, for exact-boundary verification. */
+  static SpaceEstimate estimate(
+      Path sessionRoot,
+      Path target,
+      Options options,
+      String appVersion,
+      long createdMicros,
+      BvizLimits limits)
+      throws IOException {
+    Path protectedRoot = requireDirectoryWithoutLinks(sessionRoot, "session");
+    Path checkedTarget = requireTargetOutsideSession(protectedRoot, target);
+    List<Source> sources = collect(protectedRoot, options, limits);
+    return estimateFor(sources, checkedTarget, options, appVersion, createdMicros, limits);
   }
 
   /**
@@ -184,40 +222,62 @@ public final class BvizWriter {
   public static Result write(
       Path sessionRoot, Path target, Options options, String appVersion, long createdMicros)
       throws IOException {
+    return write(sessionRoot, target, options, appVersion, createdMicros, BvizLimits.defaults());
+  }
+
+  /** The same writer with injected archive limits, for exact-boundary verification. */
+  static Result write(
+      Path sessionRoot,
+      Path target,
+      Options options,
+      String appVersion,
+      long createdMicros,
+      BvizLimits limits)
+      throws IOException {
     Objects.requireNonNull(sessionRoot, "sessionRoot");
     Objects.requireNonNull(target, "target");
     Objects.requireNonNull(options, "options");
-    List<Source> sources = collect(sessionRoot, options);
+    Objects.requireNonNull(appVersion, "appVersion");
+    Objects.requireNonNull(limits, "limits");
+    Path protectedRoot = requireDirectoryWithoutLinks(sessionRoot, "session");
+    Path checkedTarget = requireTargetOutsideSession(protectedRoot, target);
+    List<Source> sources = collect(protectedRoot, options, limits);
     if (sources.isEmpty()) {
       throw new BvizFormatException(
           "there is nothing to export at "
               + sessionRoot
               + ": no manifest, no database, no raw sources");
     }
-
-    Path partial = target.resolveSibling(target.getFileName() + ".partial");
-    Files.deleteIfExists(partial);
-    Path parent = target.toAbsolutePath().getParent();
-    if (parent != null) {
-      Files.createDirectories(parent);
+    Path parent = checkedTarget.getParent();
+    if (parent == null) {
+      throw new BvizFormatException("an archive target needs a parent directory: " + target);
     }
-
-    List<BvizIndex.Entry> entries = new ArrayList<>(sources.size());
-    long sourceBytes = 0;
-    boolean ok = false;
-    Path manifestSnapshot = null;
+    // Entry, name, replacement and expanded-size refusals happen before
+    // anything is created beside the requested target.
+    Files.createDirectories(parent);
+    SpaceEstimate beforeScratch =
+        estimateFor(sources, checkedTarget, options, appVersion, createdMicros, limits);
+    if (!beforeScratch.fits()) {
+      throw new IOException("not enough room at " + parent + ": " + beforeScratch.describe());
+    }
+    Path scratch = null;
+    Throwable operationFailure = null;
     try {
+      scratch = createOwnerOnlyTempDirectory(parent, ".bviz-export-");
+      sources = snapshotSources(sources, scratch);
       Source manifest = manifestSource(sources, sessionRoot);
-      manifestSnapshot = Files.createTempFile(parent, ".bviz-manifest-", ".json");
-      Files.copy(manifest.file(), manifestSnapshot, StandardCopyOption.REPLACE_EXISTING);
-      sources = replaceManifest(sources, manifestSnapshot);
-      String sessionId = sessionIdOf(manifestSnapshot, sessionRoot);
+      String sessionId = sessionIdOf(manifest.file(), sessionRoot);
+      List<BvizIndex.Entry> entries = new ArrayList<>(sources.size());
+      long sourceBytes = 0;
+      Path partial = scratch.resolve("archive.partial");
 
-      try (OutputStream out = Files.newOutputStream(partial);
+      try (OutputStream out =
+              Files.newOutputStream(
+                  partial, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
           ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
         for (Source source : sources) {
           entries.add(writeEntry(zip, source, createdMicros));
-          sourceBytes += Files.size(source.file());
+          sourceBytes = saturatingAdd(sourceBytes, source.bytes());
         }
         BvizIndex index =
             new BvizIndex(
@@ -251,18 +311,34 @@ public final class BvizWriter {
       // what was just written is the only way to catch a truncated write,
       // a full disk that reported success, or a bit that flipped between
       // the buffer and the platter.
-      BvizReader.verify(partial, index, BvizLimits.defaults());
+      BvizReader.verify(partial, index, limits);
 
+      // No source snapshot survives publication. If deletion fails, the old target remains.
+      deleteTree(scratch.resolve("inputs"));
+      long archiveBytes = Files.size(partial);
+      Result result = new Result(target, index, archiveBytes, sourceBytes);
       Files.move(
-          partial, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-      ok = true;
-      return new Result(target, index, Files.size(target), sourceBytes);
+          partial,
+          checkedTarget,
+          StandardCopyOption.REPLACE_EXISTING,
+          StandardCopyOption.ATOMIC_MOVE);
+      return result;
+    } catch (IOException | RuntimeException failure) {
+      operationFailure = failure;
+      throw failure;
     } finally {
-      if (!ok) {
-        Files.deleteIfExists(partial);
-      }
-      if (manifestSnapshot != null) {
-        Files.deleteIfExists(manifestSnapshot);
+      if (scratch != null) {
+        try {
+          deleteTree(scratch);
+        } catch (IOException | RuntimeException cleanupFailure) {
+          if (operationFailure != null) {
+            operationFailure.addSuppressed(cleanupFailure);
+          } else if (cleanupFailure instanceof IOException io) {
+            throw io;
+          } else {
+            throw cleanupFailure;
+          }
+        }
       }
     }
   }
@@ -330,8 +406,9 @@ public final class BvizWriter {
     }
   }
 
-  /** One file to write, and the name it goes under. */
-  private record Source(String path, Path file) {}
+  /** One observed file to snapshot, and the name it goes under. */
+  private record Source(
+      String path, Path file, long bytes, Object fileKey, FileTime modifiedTime) {}
 
   /**
    * Every file that belongs in the archive, in a fixed order.
@@ -339,43 +416,424 @@ public final class BvizWriter {
    * <p>Sorted, so the same session exports to the same bytes. The lock directory is never included:
    * a lock is a statement about this machine's running processes and means nothing anywhere else.
    */
-  private static List<Source> collect(Path sessionRoot, Options options) throws IOException {
-    Map<String, Path> found = new LinkedHashMap<>();
-    if (!Files.isDirectory(sessionRoot)) {
-      throw new BvizFormatException("not a session directory: " + sessionRoot);
+  private static List<Source> collect(Path sessionRoot, Options options, BvizLimits limits)
+      throws IOException {
+    Objects.requireNonNull(options, "options");
+    Objects.requireNonNull(limits, "limits");
+    Path root = requireDirectoryWithoutLinks(sessionRoot, "session");
+    Map<String, Source> found = new LinkedHashMap<>();
+    if (options.redacted()) {
+      collectRedactedReplacements(options, found, limits);
+    } else {
+      collectCompleteSession(root, options, found, limits);
     }
-    try (var walk = Files.walk(sessionRoot)) {
-      walk.filter(Files::isRegularFile)
-          .forEach(
-              file -> {
-                String relative = sessionRoot.relativize(file).toString().replace('\\', '/');
-                if (!BvizPaths.isExportable(relative)) {
-                  return;
-                }
-                if (relative.equals(BvizIndex.FILE_NAME)) {
-                  // A session directory that already holds an archive.json —
-                  // an extracted archive, re-exported — must not carry the old
-                  // index into the new one.
-                  return;
-                }
-                if (BvizPaths.isRawSource(relative) && !options.carriesRaw()) {
-                  return;
-                }
-                found.put(relative, file);
-              });
+    int entryCount = found.size() + 1;
+    if (entryCount > limits.maxEntries()) {
+      throw new BvizFormatException(
+          "the export has "
+              + entryCount
+              + " entries including "
+              + BvizIndex.FILE_NAME
+              + "; the limit is "
+              + limits.maxEntries());
     }
-    options
-        .replacements()
-        .forEach(
-            (path, file) -> {
-              if (BvizPaths.isExportable(path)) {
-                found.put(path, file);
-              }
-            });
-    List<Source> sources = new ArrayList<>(found.size());
-    found.forEach((path, file) -> sources.add(new Source(path, file)));
+    List<Source> sources = new ArrayList<>(found.values());
     sources.sort((left, right) -> left.path().compareTo(right.path()));
     return List.copyOf(sources);
+  }
+
+  private static void collectCompleteSession(
+      Path root, Options options, Map<String, Source> found, BvizLimits limits) throws IOException {
+    Files.walkFileTree(
+        root,
+        EnumSet.noneOf(FileVisitOption.class),
+        Integer.MAX_VALUE,
+        new SimpleFileVisitor<>() {
+          @Override
+          public FileVisitResult visitFile(Path file, BasicFileAttributes attributes)
+              throws IOException {
+            if (attributes.isSymbolicLink()) {
+              throw new BvizFormatException(
+                  "a session export cannot follow a symbolic link: " + file);
+            }
+            if (!attributes.isRegularFile()) {
+              return FileVisitResult.CONTINUE;
+            }
+            requireContained(root, file, "session source");
+            String relative = archiveName(root.relativize(file));
+            if (!BvizPaths.isExportable(relative)) {
+              return FileVisitResult.CONTINUE;
+            }
+            BvizPaths.requireSafe(relative);
+            if (relative.equals(BvizIndex.FILE_NAME)) {
+              // An extracted archive can contain its old generated index.
+              return FileVisitResult.CONTINUE;
+            }
+            if (BvizPaths.isRawSource(relative) && !options.carriesRaw()) {
+              return FileVisitResult.CONTINUE;
+            }
+            requireEntryCapacity(found.size(), limits);
+            found.put(relative, source(relative, file, attributes));
+            return FileVisitResult.CONTINUE;
+          }
+        });
+  }
+
+  private static void collectRedactedReplacements(
+      Options options, Map<String, Source> found, BvizLimits limits) throws IOException {
+    if (!options.replacements().keySet().equals(REDACTED_ENTRY_NAMES)) {
+      throw new BvizFormatException(
+          "a redacted archive must stage exactly manifest.json and session.sqlite");
+    }
+    Path suppliedRoot = options.replacementRoot().toAbsolutePath().normalize();
+    Path replacementRoot =
+        requireDirectoryWithoutLinks(options.replacementRoot(), "replacement scratch");
+    for (Map.Entry<String, Path> replacement : options.replacements().entrySet()) {
+      String name = replacement.getKey();
+      BvizPaths.requireSafe(name);
+      if (!REDACTED_ENTRY_NAMES.contains(name)) {
+        throw new BvizFormatException("invalid redacted replacement name: " + name);
+      }
+      Path expected = suppliedRoot.resolve(name).normalize();
+      Path supplied = replacement.getValue().toAbsolutePath().normalize();
+      if (!supplied.equals(expected)) {
+        throw new BvizFormatException(
+            "replacement source must be staged under its archive name: " + name);
+      }
+      BasicFileAttributes attributes =
+          Files.readAttributes(supplied, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+      if (attributes.isSymbolicLink() || !attributes.isRegularFile()) {
+        throw new BvizFormatException(
+            "replacement source is not a regular no-follow file: " + name);
+      }
+      Path real = supplied.toRealPath();
+      if (!real.equals(replacementRoot.resolve(name))) {
+        throw new BvizFormatException(
+            "replacement source escapes or links within its trusted root: " + name);
+      }
+      requireEntryCapacity(found.size(), limits);
+      found.put(name, source(name, real, attributes));
+    }
+  }
+
+  private static void requireEntryCapacity(int currentSourceEntries, BvizLimits limits)
+      throws BvizFormatException {
+    if (currentSourceEntries >= limits.maxEntries() - 1L) {
+      throw new BvizFormatException(
+          "the export exceeds the "
+              + limits.maxEntries()
+              + " entry limit including "
+              + BvizIndex.FILE_NAME);
+    }
+  }
+
+  private static Source source(String path, Path file, BasicFileAttributes attributes) {
+    return new Source(
+        path,
+        file.toAbsolutePath().normalize(),
+        attributes.size(),
+        attributes.fileKey(),
+        attributes.lastModifiedTime());
+  }
+
+  private static Path requireDirectoryWithoutLinks(Path directory, String description)
+      throws IOException {
+    Objects.requireNonNull(directory, "directory");
+    BasicFileAttributes attributes =
+        Files.readAttributes(directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (attributes.isSymbolicLink() || !attributes.isDirectory()) {
+      throw new BvizFormatException("not a no-follow " + description + " directory: " + directory);
+    }
+    return directory.toRealPath();
+  }
+
+  /**
+   * Resolves existing parent aliases and refuses every destination protected by the session root.
+   */
+  private static Path requireTargetOutsideSession(Path sessionRoot, Path target)
+      throws IOException {
+    Objects.requireNonNull(target, "target");
+    Path absolute = target.toAbsolutePath().normalize();
+    Path parent = absolute.getParent();
+    Path name = absolute.getFileName();
+    if (parent == null || name == null) {
+      throw new BvizFormatException("an archive target needs a parent directory: " + target);
+    }
+    if (Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)) {
+      BasicFileAttributes attributes =
+          Files.readAttributes(absolute, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+      if (attributes.isSymbolicLink()) {
+        throw new BvizFormatException("an archive target cannot be a symbolic link: " + target);
+      }
+    }
+    Path existing = parent;
+    while (existing != null && !Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+      existing = existing.getParent();
+    }
+    if (existing == null) {
+      throw new BvizFormatException("an archive target has no existing ancestor: " + target);
+    }
+    Path resolvedParent = existing.toRealPath().resolve(existing.relativize(parent)).normalize();
+    Path resolvedTarget = resolvedParent.resolve(name).normalize();
+    if (resolvedTarget.equals(sessionRoot) || resolvedTarget.startsWith(sessionRoot)) {
+      throw new BvizFormatException(
+          "an archive target cannot be inside the protected session: " + target);
+    }
+    return resolvedTarget;
+  }
+
+  private static String archiveName(Path relative) {
+    StringBuilder name = new StringBuilder();
+    for (Path part : relative) {
+      if (!name.isEmpty()) {
+        name.append('/');
+      }
+      name.append(part);
+    }
+    return name.toString();
+  }
+
+  private static void requireContained(Path root, Path candidate, String description)
+      throws BvizFormatException {
+    Path normalizedRoot = root.toAbsolutePath().normalize();
+    Path normalizedCandidate = candidate.toAbsolutePath().normalize();
+    if (normalizedCandidate.equals(normalizedRoot)
+        || !normalizedCandidate.startsWith(normalizedRoot)) {
+      throw new BvizFormatException(description + " escapes its trusted root: " + candidate);
+    }
+  }
+
+  private static void ensureRealPath(Path file, Path root, String description) throws IOException {
+    Path real = file.toRealPath();
+    requireContained(root, real, description);
+    if (!real.equals(file.toAbsolutePath().normalize())) {
+      throw new BvizFormatException(description + " passes through a symbolic link: " + file);
+    }
+  }
+
+  private static List<Source> snapshotSources(List<Source> sources, Path scratch)
+      throws IOException {
+    Path inputDirectory = createOwnerOnlyDirectory(scratch.resolve("inputs"));
+    List<Source> snapshots = new ArrayList<>(sources.size());
+    for (int index = 0; index < sources.size(); index++) {
+      Source source = sources.get(index);
+      ensureRealPath(source.file(), source.file().getParent(), "export source");
+      BasicFileAttributes before =
+          Files.readAttributes(source.file(), BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+      if (!sameObservedFile(source, before)) {
+        throw new BvizFormatException(
+            "an export source changed before it could be snapshotted: " + source.path());
+      }
+      Path snapshot = inputDirectory.resolve(String.format(Locale.ROOT, "%08d", index));
+      createOwnerOnlyFile(snapshot);
+      copyExactly(source, snapshot);
+      BasicFileAttributes after =
+          Files.readAttributes(source.file(), BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+      ensureRealPath(source.file(), source.file().getParent(), "export source");
+      if (!sameObservedFile(source, after)) {
+        throw new BvizFormatException(
+            "an export source changed while it was snapshotted: " + source.path());
+      }
+      makeOwnerReadOnly(snapshot);
+      BasicFileAttributes snap =
+          Files.readAttributes(snapshot, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+      snapshots.add(source(source.path(), snapshot, snap));
+    }
+    return List.copyOf(snapshots);
+  }
+
+  private static void copyExactly(Source source, Path snapshot) throws IOException {
+    byte[] buffer = new byte[BUFFER_BYTES];
+    long remaining = source.bytes();
+    try (InputStream input =
+            Files.newInputStream(
+                source.file(), StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+        OutputStream output = Files.newOutputStream(snapshot, StandardOpenOption.WRITE)) {
+      while (remaining > 0) {
+        int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+        if (read < 0) {
+          throw new BvizFormatException(
+              "an export source shrank while it was snapshotted: " + source.path());
+        }
+        if (read == 0) {
+          continue;
+        }
+        output.write(buffer, 0, read);
+        remaining -= read;
+      }
+      if (input.read() >= 0) {
+        throw new BvizFormatException(
+            "an export source grew while it was snapshotted: " + source.path());
+      }
+    }
+  }
+
+  private static boolean sameObservedFile(Source source, BasicFileAttributes attributes) {
+    if (attributes.isSymbolicLink()
+        || !attributes.isRegularFile()
+        || attributes.size() != source.bytes()
+        || !attributes.lastModifiedTime().equals(source.modifiedTime())) {
+      return false;
+    }
+    return source.fileKey() == null
+        || attributes.fileKey() == null
+        || source.fileKey().equals(attributes.fileKey());
+  }
+
+  private static SpaceEstimate estimateFor(
+      List<Source> sources,
+      Path target,
+      Options options,
+      String appVersion,
+      long createdMicros,
+      BvizLimits limits)
+      throws IOException {
+    long sourceBytes = 0;
+    List<BvizIndex.Entry> placeholderEntries = new ArrayList<>(sources.size());
+    for (Source source : sources) {
+      if (source.bytes() > limits.maxEntryBytes()) {
+        throw new BvizFormatException(
+            "archive entry exceeds the expanded byte limit: " + source.path());
+      }
+      sourceBytes = saturatingAdd(sourceBytes, source.bytes());
+      placeholderEntries.add(new BvizIndex.Entry(source.path(), source.bytes(), "0".repeat(64)));
+    }
+    BvizIndex placeholder =
+        new BvizIndex(
+            BvizIndex.FORMAT_VERSION,
+            appVersion,
+            "00000000-0000-0000-0000-000000000000",
+            createdMicros,
+            options.redacted(),
+            options.carriesRaw(),
+            options.note(),
+            placeholderEntries);
+    long indexBytes = placeholder.toJson().getBytes(StandardCharsets.UTF_8).length;
+    if (indexBytes > limits.maxEntryBytes()
+        || saturatingAdd(sourceBytes, indexBytes) > limits.maxExpandedBytes()) {
+      throw new BvizFormatException("the export exceeds the expanded archive byte limit");
+    }
+    long archiveBytes = zipEndRecordsUpperBound();
+    for (Source source : sources) {
+      archiveBytes =
+          saturatingAdd(
+              archiveBytes,
+              conservativeZipEntryBytes(
+                  source.bytes(), source.path().getBytes(StandardCharsets.UTF_8).length));
+    }
+    archiveBytes =
+        saturatingAdd(
+            archiveBytes,
+            conservativeZipEntryBytes(
+                indexBytes, BvizIndex.FILE_NAME.getBytes(StandardCharsets.UTF_8).length));
+    long requiredBytes = saturatingAdd(sourceBytes, archiveBytes);
+    return new SpaceEstimate(
+        sourceBytes, archiveBytes, requiredBytes, sources.size() + 1, usableSpace(target));
+  }
+
+  /** Saturating worst-case bytes for one DEFLATED ZIP64 entry and both headers. */
+  static long conservativeZipEntryBytes(long uncompressedBytes, int nameBytes) {
+    if (uncompressedBytes < 0 || nameBytes < 0) {
+      throw new IllegalArgumentException("ZIP sizes cannot be negative");
+    }
+    // Twice the input plus a fixed margin is deliberately looser than the
+    // maximum output of the JDK's Deflater, including empty streams.
+    long compressed = saturatingAdd(saturatingMultiply(uncompressedBytes, 2), 1_024);
+    long localHeader = saturatingAdd(30 + 64, nameBytes);
+    long descriptor = 24;
+    long centralHeader = saturatingAdd(46 + 64, nameBytes);
+    return saturatingAdd(
+        saturatingAdd(compressed, localHeader), saturatingAdd(descriptor, centralHeader));
+  }
+
+  private static long zipEndRecordsUpperBound() {
+    return 22L + 56L + 20L;
+  }
+
+  static long saturatingAdd(long left, long right) {
+    if (left < 0 || right < 0 || Long.MAX_VALUE - left < right) {
+      return Long.MAX_VALUE;
+    }
+    return left + right;
+  }
+
+  private static long saturatingMultiply(long value, long multiplier) {
+    if (value < 0 || multiplier < 0 || (value != 0 && multiplier > Long.MAX_VALUE / value)) {
+      return Long.MAX_VALUE;
+    }
+    return value * multiplier;
+  }
+
+  private static long usableSpace(Path target) {
+    try {
+      Path location = target.toAbsolutePath().getParent();
+      if (location != null && Files.exists(location)) {
+        FileStore store = Files.getFileStore(location);
+        return store.getUsableSpace();
+      }
+    } catch (IOException unavailable) {
+      // Unknown is honest and lets the actual write report a real failure.
+    }
+    return -1;
+  }
+
+  static Path createOwnerOnlyTempDirectory(Path parent, String prefix) throws IOException {
+    try {
+      return Files.createTempDirectory(parent, prefix, OWNER_DIRECTORY);
+    } catch (UnsupportedOperationException unsupported) {
+      return Files.createTempDirectory(parent, prefix);
+    }
+  }
+
+  private static Path createOwnerOnlyDirectory(Path directory) throws IOException {
+    try {
+      return Files.createDirectory(directory, OWNER_DIRECTORY);
+    } catch (UnsupportedOperationException unsupported) {
+      return Files.createDirectory(directory);
+    }
+  }
+
+  private static void createOwnerOnlyFile(Path file) throws IOException {
+    try {
+      Files.createFile(
+          file, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+    } catch (UnsupportedOperationException unsupported) {
+      Files.createFile(file);
+    }
+  }
+
+  private static void makeOwnerReadOnly(Path file) throws IOException {
+    try {
+      Files.setPosixFilePermissions(file, OWNER_READ_ONLY);
+    } catch (UnsupportedOperationException unsupported) {
+      // Owner-only scratch still protects the file where POSIX modes do not exist.
+    }
+  }
+
+  static void deleteTree(Path root) throws IOException {
+    if (root == null || !Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
+      return;
+    }
+    Files.walkFileTree(
+        root,
+        new SimpleFileVisitor<>() {
+          @Override
+          public FileVisitResult visitFile(Path file, BasicFileAttributes attributes)
+              throws IOException {
+            Files.deleteIfExists(file);
+            return FileVisitResult.CONTINUE;
+          }
+
+          @Override
+          public FileVisitResult postVisitDirectory(Path directory, IOException failure)
+              throws IOException {
+            if (failure != null) {
+              throw failure;
+            }
+            Files.deleteIfExists(directory);
+            return FileVisitResult.CONTINUE;
+          }
+        });
   }
 
   private static Source manifestSource(List<Source> sources, Path sessionRoot)
@@ -387,15 +845,6 @@ public final class BvizWriter {
             () ->
                 new BvizFormatException(
                     "cannot export " + sessionRoot + ": it has no exportable manifest.json"));
-  }
-
-  private static List<Source> replaceManifest(List<Source> sources, Path snapshot) {
-    List<Source> stable = new ArrayList<>(sources.size());
-    for (Source source : sources) {
-      stable.add(
-          source.path().equals("manifest.json") ? new Source(source.path(), snapshot) : source);
-    }
-    return List.copyOf(stable);
   }
 
   private static String sessionIdOf(Path manifest, Path sessionRoot) throws BvizFormatException {

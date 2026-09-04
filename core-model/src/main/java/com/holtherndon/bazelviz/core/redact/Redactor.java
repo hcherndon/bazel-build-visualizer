@@ -111,7 +111,7 @@ public final class Redactor {
       if (rule != null) {
         return flag + "=" + pseudonymFor(value, rule, field);
       }
-      return flag + "=" + redactValue(value, field);
+      return flag + "=" + redactArgumentValue(value, field);
     }
     SecretPattern rule = matchingNameRule(argument);
     if (rule != null) {
@@ -120,7 +120,7 @@ public final class Redactor {
       // sees separately. Nothing to do but leave the flag readable.
       return argument;
     }
-    return redactValue(argument, field);
+    return redactArgumentValue(argument, field);
   }
 
   /**
@@ -182,17 +182,34 @@ public final class Redactor {
       return path;
     }
     report.countInspected();
+    String current = redactValue(path, field);
     for (Map.Entry<String, String> prefix : prefixes) {
-      if (path.startsWith(prefix.getKey())) {
+      if (current.startsWith(prefix.getKey())) {
         report.record("path-prefix", field, prefix.getValue(), "a known absolute prefix");
-        return prefix.getValue() + path.substring(prefix.getKey().length());
+        return prefix.getValue() + current.substring(prefix.getKey().length());
       }
     }
-    String masked = maskUserComponent(path);
-    if (!masked.equals(path)) {
+    String masked = maskUserComponent(current);
+    if (!masked.equals(current)) {
       report.record("home-directory", field, "[user]", "the account name in a home-directory path");
     }
     return masked;
+  }
+
+  /**
+   * Replaces a value even when it does not match a pattern.
+   *
+   * <p>Some provenance is identifying by definition rather than by shape. An SSH destination must
+   * not survive merely because it did not look like a token.
+   */
+  public String pseudonymize(String value, String field, String description) {
+    if (value == null) {
+      return null;
+    }
+    Objects.requireNonNull(field, "field");
+    Objects.requireNonNull(description, "description");
+    report.countInspected();
+    return pseudonymFor(value, "forced-pseudonym", description, field);
   }
 
   /**
@@ -263,6 +280,20 @@ public final class Redactor {
     return current;
   }
 
+  /** Applies both secret and path policy to one argv value. */
+  private String redactArgumentValue(String value, String field) {
+    String current = redactValue(value, field);
+    if (!policy.redactAbsolutePaths()) {
+      return current;
+    }
+    current = mapPrefixesWithin(current, field);
+    String masked = maskUserComponent(current);
+    if (!masked.equals(current)) {
+      report.record("home-directory", field, "[user]", "the account name in a home-directory path");
+    }
+    return masked;
+  }
+
   /** Maps every known prefix wherever it appears inside a longer string. */
   private String mapPrefixesWithin(String text, String field) {
     String current = text;
@@ -299,13 +330,17 @@ public final class Redactor {
 
   /** The stable pseudonym for one value, minting one on first sight. */
   private String pseudonymFor(String value, SecretPattern rule, String field) {
+    return pseudonymFor(value, rule.displayName(), rule.description(), field);
+  }
+
+  private String pseudonymFor(String value, String rule, String description, String field) {
     String existing = pseudonyms.get(value);
     if (existing == null) {
       existing = mint(value);
       pseudonyms.put(value, existing);
       report.countDistinctSecret();
     }
-    report.record(rule.displayName(), field, existing, rule.description());
+    report.record(rule, field, existing, description);
     return existing;
   }
 

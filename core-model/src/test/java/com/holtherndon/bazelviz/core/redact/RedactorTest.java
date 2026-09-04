@@ -182,6 +182,19 @@ final class RedactorTest {
     assertThat(one).isNotEqualTo(two);
   }
 
+  @Test
+  @DisplayName("forced pseudonyms stay stable within one export without relying on token shape")
+  void forcedPseudonymsAreExportScoped() {
+    Redactor redactor = exporting();
+
+    String first = redactor.pseudonymize("builder@internal", "ssh.display", "an SSH identity");
+    String again =
+        redactor.pseudonymize("builder@internal", "ssh.destination", "an SSH destination");
+
+    assertThat(first).startsWith("[redacted:").isEqualTo(again);
+    assertThat(redactor.report().byField()).containsKeys("ssh.display", "ssh.destination");
+  }
+
   // --- paths -------------------------------------------------------------
 
   @Test
@@ -233,6 +246,42 @@ final class RedactorTest {
   void relativePathsSurvive() {
     assertThat(exporting().path("bazel-out/darwin-fastbuild/bin/a.o", "path"))
         .isEqualTo("bazel-out/darwin-fastbuild/bin/a.o");
+  }
+
+  @Test
+  @DisplayName("credentials embedded in a path-like URL are removed before path mapping")
+  void pathUrlsLoseCredentials() {
+    String redacted =
+        exporting().path("https://ci-user:verysecretpassword@cache.example/build", "source.path");
+
+    assertThat(redacted)
+        .contains("ci-user")
+        .contains("cache.example")
+        .doesNotContain("verysecretpassword");
+  }
+
+  @Test
+  @DisplayName("bare and inline argv paths apply path mapping after secret redaction")
+  void argvPathsAreRedacted() {
+    Redactor redactor =
+        new Redactor(
+            RedactionPolicy.forExport().withPathPrefix("/Users/alice/workspace", "[workspace]"),
+            KEY);
+
+    List<String> redacted =
+        redactor.argv(
+            List.of(
+                "/Users/alice/workspace/pkg/input.txt",
+                "--output_base=/Users/bob/.cache/bazel",
+                "--remote_header=Bearer secret-value"),
+            "manifest.command");
+
+    assertThat(redacted).hasSize(3);
+    assertThat(redacted.get(0)).isEqualTo("[workspace]/pkg/input.txt");
+    assertThat(redacted.get(1)).isEqualTo("--output_base=/Users/[user]/.cache/bazel");
+    assertThat(redacted.get(2))
+        .startsWith("--remote_header=[redacted:")
+        .doesNotContain("secret-value");
   }
 
   @Test
