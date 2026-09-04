@@ -1,6 +1,10 @@
 package com.holtherndon.bazelviz.runner.ssh;
 
 import com.holtherndon.bazelviz.runner.files.ExecutionFileSystem;
+import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.runner.proc.Subprocess;
+import com.holtherndon.bazelviz.runner.proc.Subprocess.EnvironmentInheritance;
+import com.holtherndon.bazelviz.runner.proc.Subprocess.ManagedProcess;
 import com.holtherndon.bazelviz.runner.runtime.CommandRequest;
 import com.holtherndon.bazelviz.runner.runtime.CommandResult;
 import com.holtherndon.bazelviz.runner.runtime.RuntimeEnvironment;
@@ -32,8 +36,9 @@ public final class SshControlSession implements AutoCloseable {
   private final OpenSshBinaries binaries;
   private final Path controlDirectory;
   private final Path controlSocket;
-  private final Process master;
-  private final OpenSshProcess.Capture masterErrors;
+  private final ManagedProcess master;
+  private final Subprocess.BoundedDrain masterOutput;
+  private final Subprocess.BoundedDrain masterErrors;
   private final SshCommandExecutor commandExecutor;
   private final ExecutionFileSystem fileSystem;
   private final List<SshReverseForward> forwards = new CopyOnWriteArrayList<>();
@@ -63,11 +68,24 @@ public final class SshControlSession implements AutoCloseable {
     makePrivate(directory);
     Path socket = directory.resolve("c");
     List<String> argv = masterArguments(binaries.ssh(), socket, target);
-    Process process;
+    ManagedProcess process = null;
     try {
-      process = new ProcessBuilder(argv).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
-    } catch (IOException failure) {
-      deletePrivateDirectory(directory, socket);
+      process =
+          Subprocess.startManaged(argv, null, Map.of(), EnvironmentInheritance.INHERIT, false);
+      process.stdin().close();
+      process.awaitIsolationReady(Duration.ofSeconds(5));
+    } catch (IOException | InterruptedException | RuntimeException failure) {
+      if (process != null) {
+        MasterCleanup cleanup = cleanupMaster(process, null, null);
+        if (cleanup.failure() != null) {
+          failure.addSuppressed(cleanup.failure());
+        }
+        if (cleanup.terminated()) {
+          deletePrivateDirectory(directory, socket);
+        }
+      } else {
+        deletePrivateDirectory(directory, socket);
+      }
       log.warn(
           "SSH connection failed target={} durationMs={} failureType={}",
           target.displayName(),
@@ -77,20 +95,25 @@ public final class SshControlSession implements AutoCloseable {
     }
     log.debug(
         "SSH control master started target={} processId={}", target.displayName(), process.pid());
-    OpenSshProcess.Capture errors =
-        OpenSshProcess.Capture.start(process.getErrorStream(), "bbv-ssh-master-stderr");
+    Subprocess.BoundedDrain output = null;
+    Subprocess.BoundedDrain errors = null;
     boolean handedOff = false;
+    Throwable connectionFailure = null;
     try {
+      output = Subprocess.BoundedDrain.start(process.stdout(), "bbv-ssh-master-stdout", 256 * 1024);
+      errors = Subprocess.BoundedDrain.start(process.stderr(), "bbv-ssh-master-stderr", 256 * 1024);
       long deadline = System.nanoTime() + timeout.toNanos();
       boolean ready = false;
       while (System.nanoTime() < deadline) {
         if (!process.isAlive()) {
-          String detail = errors.await().strip();
-          if (errors.overflowed()) {
-            detail =
-                detail
-                    + (detail.isEmpty() ? "" : "\n")
-                    + "SSH diagnostics exceeded the retained output limit";
+          Subprocess.CapturedOutput standardOutput = output.await();
+          Subprocess.CapturedOutput diagnostics = errors.await();
+          String detail = diagnosticText(standardOutput, diagnostics);
+          if (standardOutput.incomplete() || diagnostics.incomplete()) {
+            throw new IOException("SSH connection diagnostics could not be drained to completion");
+          }
+          if (standardOutput.truncated() || diagnostics.truncated()) {
+            throw new IOException("SSH connection diagnostics exceeded the retained output limit");
           }
           throw new IOException("SSH connection failed" + (detail.isEmpty() ? "" : ": " + detail));
         }
@@ -112,14 +135,15 @@ public final class SshControlSession implements AutoCloseable {
         throw new IOException("SSH connection did not become ready in " + timeout);
       }
       SshControlSession session =
-          finishConnection(target, binaries, directory, socket, process, errors, timeout);
+          finishConnection(target, binaries, directory, socket, process, output, errors, timeout);
       handedOff = true;
       log.info(
           "SSH connection ready target={} durationMs={}",
           target.displayName(),
           elapsedMillis(startedNanos));
       return session;
-    } catch (IOException | InterruptedException failure) {
+    } catch (IOException | InterruptedException | RuntimeException failure) {
+      connectionFailure = failure;
       log.warn(
           "SSH connection failed target={} durationMs={} failureType={}",
           target.displayName(),
@@ -128,10 +152,11 @@ public final class SshControlSession implements AutoCloseable {
       throw failure;
     } finally {
       if (!handedOff) {
-        process.destroyForcibly();
-        try {
-          process.waitFor(2, TimeUnit.SECONDS);
-        } finally {
+        MasterCleanup cleanup = cleanupMaster(process, output, errors);
+        if (connectionFailure != null && cleanup.failure() != null) {
+          connectionFailure.addSuppressed(cleanup.failure());
+        }
+        if (cleanup.terminated()) {
           deletePrivateDirectory(directory, socket);
         }
       }
@@ -143,8 +168,9 @@ public final class SshControlSession implements AutoCloseable {
       OpenSshBinaries binaries,
       Path directory,
       Path socket,
-      Process process,
-      OpenSshProcess.Capture errors,
+      ManagedProcess process,
+      Subprocess.BoundedDrain output,
+      Subprocess.BoundedDrain errors,
       Duration timeout)
       throws IOException, InterruptedException {
     AtomicBoolean closed = new AtomicBoolean();
@@ -180,6 +206,7 @@ public final class SshControlSession implements AutoCloseable {
                         + "exit 69; }; done",
                     "bbv-tools",
                     "/bin/chmod",
+                    "/bin/bash",
                     "/bin/kill",
                     "/bin/ln",
                     "/bin/mv",
@@ -212,7 +239,7 @@ public final class SshControlSession implements AutoCloseable {
     SshExecutionFileSystem files =
         new SshExecutionFileSystem("ssh-" + UUID.randomUUID(), directoryOnTarget, executor, sftp);
     return new SshControlSession(
-        target, binaries, directory, socket, process, errors, executor, files, closed);
+        target, binaries, directory, socket, process, output, errors, executor, files, closed);
   }
 
   private SshControlSession(
@@ -220,8 +247,9 @@ public final class SshControlSession implements AutoCloseable {
       OpenSshBinaries binaries,
       Path controlDirectory,
       Path controlSocket,
-      Process master,
-      OpenSshProcess.Capture masterErrors,
+      ManagedProcess master,
+      Subprocess.BoundedDrain masterOutput,
+      Subprocess.BoundedDrain masterErrors,
       SshCommandExecutor commandExecutor,
       ExecutionFileSystem fileSystem,
       AtomicBoolean closed) {
@@ -230,6 +258,7 @@ public final class SshControlSession implements AutoCloseable {
     this.controlDirectory = controlDirectory;
     this.controlSocket = controlSocket;
     this.master = master;
+    this.masterOutput = masterOutput;
     this.masterErrors = masterErrors;
     this.commandExecutor = commandExecutor;
     this.fileSystem = fileSystem;
@@ -316,7 +345,7 @@ public final class SshControlSession implements AutoCloseable {
           target.displayName(),
           exit.exitCode(),
           exit.timedOut());
-    } catch (IOException | InterruptedException failure) {
+    } catch (IOException | InterruptedException | RuntimeException failure) {
       log.debug(
           "SSH control master exit request failed target={} failureType={}",
           target.displayName(),
@@ -325,23 +354,16 @@ public final class SshControlSession implements AutoCloseable {
         Thread.currentThread().interrupt();
       }
     }
-    if (master.isAlive()) {
-      master.destroy();
-      try {
-        if (!master.waitFor(2, TimeUnit.SECONDS)) {
-          master.destroyForcibly();
-        }
-      } catch (InterruptedException interrupted) {
-        master.destroyForcibly();
-        Thread.currentThread().interrupt();
-      }
+    MasterCleanup cleanup = cleanupMaster(master, masterOutput, masterErrors);
+    if (cleanup.terminated()) {
+      deletePrivateDirectory(controlDirectory, controlSocket);
     }
-    try {
-      masterErrors.await();
-    } catch (InterruptedException interrupted) {
-      Thread.currentThread().interrupt();
+    if (cleanup.failure() != null) {
+      log.warn(
+          "SSH control master cleanup incomplete target={} failureType={}",
+          target.displayName(),
+          failureType(cleanup.failure()));
     }
-    deletePrivateDirectory(controlDirectory, controlSocket);
     log.info(
         "SSH connection closed target={} durationMs={}",
         target.displayName(),
@@ -371,7 +393,7 @@ public final class SshControlSession implements AutoCloseable {
           result.exitCode(),
           result.timedOut(),
           elapsedMillis(startedNanos));
-    } catch (IOException | InterruptedException ignored) {
+    } catch (IOException | InterruptedException | RuntimeException ignored) {
       log.debug(
           "SSH reverse forward close failed target={} failureType={}",
           target.displayName(),
@@ -496,6 +518,112 @@ public final class SshControlSession implements AutoCloseable {
 
   private static long elapsedMillis(long startedNanos) {
     return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+  }
+
+  private record MasterCleanup(boolean terminated, IOException failure) {}
+
+  private static MasterCleanup cleanupMaster(
+      ManagedProcess process,
+      Subprocess.BoundedDrain standardOutput,
+      Subprocess.BoundedDrain diagnostics) {
+    boolean restoreInterrupt = Thread.interrupted();
+    IOException failure = null;
+    try {
+      if (process.isAlive()) {
+        process.signal(CancellationMode.TERMINATE);
+        if (!process.awaitExit(Duration.ofSeconds(2))) {
+          process.terminate();
+        }
+      }
+    } catch (IOException | InterruptedException | RuntimeException gracefulFailure) {
+      restoreInterrupt |= gracefulFailure instanceof InterruptedException;
+      Thread.interrupted();
+      log.debug(
+          "SSH control master graceful cleanup failed failureType={}",
+          failureType(gracefulFailure));
+    }
+    boolean terminated = false;
+    try {
+      process.terminate();
+      terminated = true;
+    } catch (IOException | InterruptedException | RuntimeException forcedFailure) {
+      restoreInterrupt |= forcedFailure instanceof InterruptedException;
+      Thread.interrupted();
+      failure =
+          appendCleanupFailure(
+              failure, "could not terminate the SSH control master", forcedFailure);
+    }
+    for (Subprocess.BoundedDrain drain :
+        new Subprocess.BoundedDrain[] {standardOutput, diagnostics}) {
+      if (drain == null) {
+        continue;
+      }
+      try {
+        Subprocess.CapturedOutput captured = drain.await();
+        if (captured.incomplete()) {
+          failure =
+              appendCleanupFailure(
+                  failure,
+                  "SSH control master output could not be drained to completion",
+                  new IOException("incomplete control-master output"));
+        }
+        if (captured.truncated()) {
+          failure =
+              appendCleanupFailure(
+                  failure,
+                  "SSH control master output exceeded the retained limit",
+                  new IOException("truncated control-master output"));
+        }
+      } catch (IOException | InterruptedException drainFailure) {
+        restoreInterrupt |= drainFailure instanceof InterruptedException;
+        Thread.interrupted();
+        drain.close();
+        try {
+          drain.awaitCleanup();
+        } catch (IOException | InterruptedException joinFailure) {
+          restoreInterrupt |= joinFailure instanceof InterruptedException;
+          Thread.interrupted();
+          drainFailure.addSuppressed(joinFailure);
+        }
+        failure =
+            appendCleanupFailure(
+                failure, "could not clean up SSH control master output", drainFailure);
+      }
+    }
+    try {
+      process.close();
+    } catch (IOException closeFailure) {
+      failure =
+          appendCleanupFailure(
+              failure, "could not remove SSH control master isolation state", closeFailure);
+    }
+    if (restoreInterrupt) {
+      Thread.currentThread().interrupt();
+    }
+    return new MasterCleanup(terminated, failure);
+  }
+
+  private static IOException appendCleanupFailure(
+      IOException aggregate, String message, Throwable failure) {
+    IOException next = failure instanceof IOException io ? io : new IOException(message, failure);
+    if (aggregate == null) {
+      return next;
+    }
+    aggregate.addSuppressed(next);
+    return aggregate;
+  }
+
+  private static String diagnosticText(
+      Subprocess.CapturedOutput standardOutput, Subprocess.CapturedOutput standardError) {
+    String output = standardOutput.text().strip();
+    String error = standardError.text().strip();
+    if (output.isEmpty()) {
+      return error;
+    }
+    if (error.isEmpty()) {
+      return output;
+    }
+    return output + "\n" + error;
   }
 
   private static String failureType(Throwable failure) {

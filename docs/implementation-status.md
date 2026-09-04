@@ -42,6 +42,20 @@ current commands.
   unverified hosts without the required POSIX permissions, `/bin/sh`, or Linux `setsid`, the fixed
   `ProcessHandle` tracker is a best-effort fallback; it cannot recover a child already reparented
   before Java observed it.
+- Remote downloads create a private, client-named snapshot with `head -c` before SFTP starts, so
+  the retained remote source cannot exceed the requested byte ceiling. Exact snapshot and local
+  sizes plus source size and modification time are verified; a detected change is refused. On
+  timeout, interruption, mismatch, or failure, the destination stays unchanged and removal of both
+  temporary files is attempted. Inability to remove the remote snapshot after transport loss is
+  reported as a cleanup failure rather than hidden. SSH directory pages fully consume their
+  producer but retain only a page-sized max-heap, use opaque revision-and-path keyset continuations,
+  and report totals as unknown. Producer/selector failure, mutation, literal backslashes, newlines,
+  and incomplete records fail explicitly. Local and SSH redirected output is installed atomically
+  only after successful, fully drained execution.
+- Bounded local commands, OpenSSH helpers, remote command transports, and the SSH control master
+  share `Subprocess` process-group isolation, persistent descendant tracking, and complete pipe
+  drains. The primary Bazel build still belongs to the capture coordinator's separate live-command
+  cancellation lifecycle; it is not described as a bounded probe.
 - The raw-byte gRPC marshaller reads at most the configured message limit plus one byte before
   returning `RESOURCE_EXHAUSTED`; an unknown stream length can no longer force an unbounded read.
 - Protobuf timestamps and durations pass through one range-, sign-, and overflow-checked boundary.

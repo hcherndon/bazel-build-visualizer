@@ -1,17 +1,18 @@
 package com.holtherndon.bazelviz.runner.runtime;
 
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import com.pty4j.PtyProcess;
 import com.pty4j.PtyProcessBuilder;
 import com.pty4j.WinSize;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -39,21 +40,14 @@ public final class LocalCommandExecutor implements CommandExecutor {
   @Override
   public CommandResult run(CommandRequest request, Duration timeout)
       throws IOException, InterruptedException {
-    requireTimeout(timeout);
-    Process process = builder(request).start();
-    closeQuietly(process.getOutputStream());
-    Drain stdout = Drain.start(process.getInputStream(), "bbv-command-stdout");
-    Drain stderr = Drain.start(process.getErrorStream(), "bbv-command-stderr");
-    boolean exited = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
-    if (!exited) {
-      process.descendants().forEach(ProcessHandle::destroyForcibly);
-      process.destroyForcibly();
-      process.waitFor(5, TimeUnit.SECONDS);
-      closeQuietly(process.getInputStream());
-      closeQuietly(process.getErrorStream());
-      return result(-1, stdout, stderr, true);
-    }
-    return result(process.exitValue(), stdout, stderr, false);
+    requireNonTty(request);
+    Subprocess.Result result =
+        Subprocess.runWithExactEnvironment(
+            request.argv(),
+            request.workingDirectory().map(Path::of).orElse(null),
+            environment(request),
+            timeout);
+    return commandResult(result);
   }
 
   @Override
@@ -61,36 +55,58 @@ public final class LocalCommandExecutor implements CommandExecutor {
       CommandRequest request, Duration timeout, Path localOutputFile)
       throws IOException, InterruptedException {
     requireTimeout(timeout);
-    ProcessBuilder builder =
-        builder(request).redirectOutput(ProcessBuilder.Redirect.to(localOutputFile.toFile()));
-    Process process = builder.start();
-    closeQuietly(process.getOutputStream());
-    Drain stderr = Drain.start(process.getErrorStream(), "bbv-command-stderr");
-    boolean exited = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
-    if (!exited) {
-      process.descendants().forEach(ProcessHandle::destroyForcibly);
-      process.destroyForcibly();
-      process.waitFor(5, TimeUnit.SECONDS);
-      closeQuietly(process.getErrorStream());
-      String error = stderr.awaitText();
-      if (stderr.overflowed()) {
-        throw new IOException("the command produced too much diagnostic output");
+    requireNonTty(request);
+    Path destination = localOutputFile.toAbsolutePath().normalize();
+    Path parent = destination.getParent();
+    if (parent == null || !Files.isDirectory(parent)) {
+      throw new IOException("the output directory does not exist: " + parent);
+    }
+    Path temporary = Files.createTempFile(parent, ".bbv-command-output-", ".tmp");
+    boolean moved = false;
+    try {
+      Subprocess.Result result =
+          Subprocess.runRedirectingStdoutWithExactEnvironment(
+              request.argv(),
+              request.workingDirectory().map(Path::of).orElse(null),
+              environment(request),
+              timeout,
+              temporary);
+      if (result.isSuccess()) {
+        moveReplacement(temporary, destination);
+        moved = true;
       }
-      return new CommandResult(-1, "", error, true);
+      return commandResult(result);
+    } finally {
+      if (!moved) {
+        Files.deleteIfExists(temporary);
+      }
     }
-    String error = stderr.awaitText();
-    if (stderr.overflowed()) {
-      throw new IOException("the command produced too much diagnostic output");
-    }
-    return new CommandResult(process.exitValue(), "", error, false);
   }
 
   @Override
   public RunningCommand start(CommandRequest request) throws IOException {
-    if (request.forceTty()) {
-      throw new IOException("the local command executor does not allocate a pseudo-terminal");
+    requireNonTty(request);
+    Subprocess.ManagedProcess process =
+        Subprocess.startManaged(
+            request.argv(),
+            request.workingDirectory().map(Path::of).orElse(null),
+            environment(request),
+            Subprocess.EnvironmentInheritance.REPLACE,
+            false);
+    try {
+      process.awaitIsolationReady(Duration.ofSeconds(5));
+      return new LocalRunningCommand(process);
+    } catch (IOException | InterruptedException | RuntimeException failure) {
+      cleanupManagedStart(process, failure);
+      if (failure instanceof InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new IOException("interrupted while starting the local command", interrupted);
+      }
+      if (failure instanceof IOException io) {
+        throw io;
+      }
+      throw (RuntimeException) failure;
     }
-    return new LocalRunningCommand(builder(request).start());
   }
 
   @Override
@@ -154,30 +170,20 @@ public final class LocalCommandExecutor implements CommandExecutor {
     }
   }
 
-  private static ProcessBuilder builder(CommandRequest request) throws IOException {
+  private static void moveReplacement(Path source, Path destination) throws IOException {
+    try {
+      Files.move(
+          source, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    } catch (AtomicMoveNotSupportedException unsupported) {
+      throw new IOException("atomic command-output replacement is not supported", unsupported);
+    }
+  }
+
+  private static void requireNonTty(CommandRequest request) throws IOException {
+    Objects.requireNonNull(request, "request");
     if (request.forceTty()) {
       throw new IOException("the local command executor does not allocate a pseudo-terminal");
     }
-    ProcessBuilder builder = new ProcessBuilder(request.argv());
-    if (request.workingDirectory().isPresent()) {
-      Path directory = Path.of(request.workingDirectory().get());
-      if (!Files.isDirectory(directory)) {
-        throw new IOException("the working directory does not exist: " + directory);
-      }
-      builder.directory(directory.toFile());
-    }
-    applyEnvironment(builder.environment(), request);
-    return builder;
-  }
-
-  private static CommandResult result(int exitCode, Drain stdout, Drain stderr, boolean timedOut)
-      throws IOException, InterruptedException {
-    String out = stdout.awaitText();
-    String err = stderr.awaitText();
-    if (stdout.overflowed() || stderr.overflowed()) {
-      throw new IOException("the command produced too much probe output");
-    }
-    return new CommandResult(exitCode, out, err, timedOut);
   }
 
   private static void requireTimeout(Duration timeout) {
@@ -186,12 +192,38 @@ public final class LocalCommandExecutor implements CommandExecutor {
     }
   }
 
-  private static void closeQuietly(InputStream stream) {
+  private static void cleanupManagedStart(
+      Subprocess.ManagedProcess process, Throwable originalFailure) {
+    boolean restoreInterrupt = Thread.interrupted();
     try {
-      stream.close();
-    } catch (IOException ignored) {
-      // The process already closed its side.
+      process.terminate();
+    } catch (IOException | InterruptedException | RuntimeException cleanupFailure) {
+      originalFailure.addSuppressed(cleanupFailure);
+      restoreInterrupt |= cleanupFailure instanceof InterruptedException;
+      Thread.interrupted();
     }
+    try {
+      process.close();
+    } catch (IOException | RuntimeException cleanupFailure) {
+      originalFailure.addSuppressed(cleanupFailure);
+    }
+    if (restoreInterrupt) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  private static CommandResult commandResult(Subprocess.Result result) throws IOException {
+    if (result.outputTruncated()) {
+      throw new IOException(result.failureDetail());
+    }
+    return new CommandResult(
+        result.exitCode(), result.stdout(), result.stderr(), result.timedOut());
+  }
+
+  private static Map<String, String> environment(CommandRequest request) {
+    Map<String, String> environment = new HashMap<>(System.getenv());
+    applyEnvironment(environment, request);
+    return environment;
   }
 
   private static void closeQuietly(OutputStream stream) {
@@ -199,6 +231,14 @@ public final class LocalCommandExecutor implements CommandExecutor {
       stream.close();
     } catch (IOException ignored) {
       // The process already closed its side.
+    }
+  }
+
+  private static void closeQuietly(InputStream stream) {
+    try {
+      stream.close();
+    } catch (IOException ignored) {
+      // Cleanup is best effort after the terminal closes.
     }
   }
 
@@ -328,25 +368,25 @@ public final class LocalCommandExecutor implements CommandExecutor {
 
   private static final class LocalRunningCommand implements RunningCommand {
 
-    private final Process process;
+    private final Subprocess.ManagedProcess process;
 
-    private LocalRunningCommand(Process process) {
+    private LocalRunningCommand(Subprocess.ManagedProcess process) {
       this.process = process;
     }
 
     @Override
     public InputStream stdout() {
-      return process.getInputStream();
+      return process.stdout();
     }
 
     @Override
     public InputStream stderr() {
-      return process.getErrorStream();
+      return process.stderr();
     }
 
     @Override
     public OutputStream stdin() {
-      return process.getOutputStream();
+      return process.stdin();
     }
 
     @Override
@@ -371,12 +411,20 @@ public final class LocalCommandExecutor implements CommandExecutor {
 
     @Override
     public int waitFor() throws InterruptedException {
-      return process.waitFor();
+      try {
+        return process.waitForRoot();
+      } finally {
+        closeQuietly();
+      }
     }
 
     @Override
     public boolean waitFor(Duration timeout) throws InterruptedException {
-      return process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
+      boolean exited = process.waitForRoot(timeout);
+      if (exited) {
+        closeQuietly();
+      }
+      return exited;
     }
 
     @Override
@@ -386,80 +434,15 @@ public final class LocalCommandExecutor implements CommandExecutor {
 
     @Override
     public void signal(CancellationMode mode) throws IOException, InterruptedException {
-      switch (mode) {
-        case CANCEL -> interrupt(process);
-        case TERMINATE -> {
-          if (process.isAlive()) {
-            process.destroy();
-          }
-        }
-        case FORCE_KILL -> {
-          process.descendants().forEach(ProcessHandle::destroyForcibly);
-          process.destroyForcibly();
-        }
+      process.signal(mode);
+    }
+
+    private void closeQuietly() {
+      try {
+        process.close();
+      } catch (IOException ignored) {
+        // The process has exited; this only removes its private control file.
       }
-    }
-
-    private static void interrupt(Process process) throws IOException, InterruptedException {
-      if (!process.isAlive()) {
-        return;
-      }
-      Process kill =
-          new ProcessBuilder("/bin/kill", "-INT", Long.toString(process.pid()))
-              .redirectErrorStream(true)
-              .start();
-      if (!kill.waitFor(5, TimeUnit.SECONDS) || kill.exitValue() != 0) {
-        process.destroy();
-      }
-    }
-  }
-
-  private static final class Drain {
-
-    private final Thread thread;
-    private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-    private volatile boolean overflowed;
-
-    private Drain(InputStream stream, String name) {
-      thread =
-          Thread.ofVirtual()
-              .name(name)
-              .unstarted(
-                  () -> {
-                    try (stream) {
-                      byte[] buffer = new byte[16 * 1024];
-                      int read;
-                      while ((read = stream.read(buffer)) >= 0) {
-                        if (read == 0) {
-                          continue;
-                        }
-                        int remaining = 16 * 1024 * 1024 - bytes.size();
-                        if (remaining > 0) {
-                          bytes.write(buffer, 0, Math.min(read, remaining));
-                        }
-                        if (read > remaining) {
-                          overflowed = true;
-                        }
-                      }
-                    } catch (IOException closed) {
-                      // The process ended while the pipe was being drained.
-                    }
-                  });
-    }
-
-    static Drain start(InputStream stream, String name) {
-      Drain drain = new Drain(stream, name);
-      drain.thread.start();
-      return drain;
-    }
-
-    String awaitText() throws InterruptedException {
-      thread.join(TimeUnit.SECONDS.toMillis(5));
-      return bytes.toString(StandardCharsets.UTF_8);
-    }
-
-    boolean overflowed() {
-      return overflowed;
     }
   }
 }

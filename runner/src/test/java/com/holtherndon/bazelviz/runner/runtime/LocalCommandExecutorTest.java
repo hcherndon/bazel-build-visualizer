@@ -8,6 +8,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -17,6 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -71,6 +73,100 @@ final class LocalCommandExecutorTest {
   }
 
   @Test
+  void inheritedPipeAfterRootExitIsReportedIncomplete() {
+    Path pid = temporary.resolve("inherited-child.pid");
+    assertThatThrownBy(
+            () ->
+                LocalCommandExecutor.INSTANCE.run(
+                    CommandRequest.of(
+                        List.of(
+                            "/bin/sh",
+                            "-c",
+                            "(sleep 10) & printf '%s' $! > \"$1\"; exit 0",
+                            "local-inherited-pipe",
+                            pid.toString()),
+                        temporary),
+                    Duration.ofSeconds(2)))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
+    assertProcessGone(pid);
+  }
+
+  @Test
+  void redirectedInheritedPipeLeavesDestinationUntouchedAndReapsChild() throws Exception {
+    Path output = temporary.resolve("inherited-output.txt");
+    Path pid = temporary.resolve("redirected-child.pid");
+    Files.writeString(output, "old");
+
+    assertThatThrownBy(
+            () ->
+                LocalCommandExecutor.INSTANCE.runRedirectingStdout(
+                    CommandRequest.of(
+                        List.of(
+                            "/bin/sh",
+                            "-c",
+                            "printf new; (sleep 10) & printf '%s' $! > \"$1\"; exit 0",
+                            "local-redirected-inherited-pipe",
+                            pid.toString()),
+                        temporary),
+                    Duration.ofSeconds(2),
+                    output))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
+
+    assertThat(Files.readString(output)).isEqualTo("old");
+    assertProcessGone(pid);
+    assertNoCommandOutputTemporary();
+  }
+
+  @Test
+  void redirectedOutputIsNotReplacedAfterTimeout() throws Exception {
+    Path output = temporary.resolve("atomic-output.txt");
+    Files.writeString(output, "old");
+
+    CommandResult result =
+        LocalCommandExecutor.INSTANCE.runRedirectingStdout(
+            CommandRequest.of(List.of("/bin/sh", "-c", "printf new; sleep 10"), temporary),
+            Duration.ofMillis(50),
+            output);
+
+    assertThat(result.timedOut()).isTrue();
+    assertThat(Files.readString(output)).isEqualTo("old");
+    try (var files = Files.list(temporary)) {
+      assertThat(
+              files.filter(
+                  path -> path.getFileName().toString().startsWith(".bbv-command-output-")))
+          .isEmpty();
+    }
+  }
+
+  @Test
+  void interruptingRedirectCleansTheRunningProcessAndTemporaryOutput() throws Exception {
+    Path output = temporary.resolve("interrupted-output.txt");
+    Files.writeString(output, "old");
+    FutureTask<CommandResult> task =
+        new FutureTask<>(
+            () ->
+                LocalCommandExecutor.INSTANCE.runRedirectingStdout(
+                    CommandRequest.of(List.of("/bin/sh", "-c", "printf new; sleep 10"), temporary),
+                    Duration.ofSeconds(30),
+                    output));
+    Thread worker = Thread.ofVirtual().start(task);
+    TimeUnit.MILLISECONDS.sleep(100);
+    worker.interrupt();
+
+    assertThatThrownBy(() -> task.get(5, TimeUnit.SECONDS))
+        .hasCauseInstanceOf(InterruptedException.class);
+    assertThat(Files.readString(output)).isEqualTo("old");
+    try (var files = Files.list(temporary)) {
+      assertThat(
+              files.filter(
+                  path -> path.getFileName().toString().startsWith(".bbv-command-output-")))
+          .isEmpty();
+    }
+  }
+
+  @Test
   void boundedCommandsReceiveEndOfInput() throws Exception {
     CommandResult result =
         LocalCommandExecutor.INSTANCE.run(
@@ -80,6 +176,75 @@ final class LocalCommandExecutorTest {
 
     assertThat(result.isSuccess()).isTrue();
     assertThat(result.stdout()).isEqualTo("reached-eof");
+  }
+
+  @Test
+  void noneEnvironmentIsExactForRunRedirectAndStart() throws Exception {
+    CommandRequest request =
+        new CommandRequest(
+            List.of("/usr/bin/env"),
+            Optional.of(temporary.toString()),
+            Map.of("BBV_ONLY", Optional.of("present")),
+            RuntimeEnvironment.NONE,
+            false);
+
+    CommandResult bounded = LocalCommandExecutor.INSTANCE.run(request, Duration.ofSeconds(2));
+    assertThat(environmentFrom(bounded.stdout())).isEqualTo(Map.of("BBV_ONLY", "present"));
+
+    Path redirected = temporary.resolve("environment.txt");
+    CommandResult redirect =
+        LocalCommandExecutor.INSTANCE.runRedirectingStdout(
+            request, Duration.ofSeconds(2), redirected);
+    assertThat(redirect.isSuccess()).isTrue();
+    assertThat(environmentFrom(Files.readString(redirected)))
+        .isEqualTo(Map.of("BBV_ONLY", "present"));
+
+    RunningCommand running = LocalCommandExecutor.INSTANCE.start(request);
+    running.stdin().close();
+    String streaming = new String(running.stdout().readAllBytes(), StandardCharsets.UTF_8);
+    assertThat(running.waitFor()).isZero();
+    assertThat(environmentFrom(streaming)).isEqualTo(Map.of("BBV_ONLY", "present"));
+  }
+
+  @Test
+  void essentialEnvironmentContainsOnlyTheDocumentedSubsetAndOverrides() throws Exception {
+    CommandRequest request =
+        new CommandRequest(
+            List.of("/usr/bin/env"),
+            Optional.empty(),
+            Map.of("BBV_ONLY", Optional.of("present"), "HOME", Optional.empty()),
+            RuntimeEnvironment.INHERIT_ESSENTIAL,
+            false);
+
+    Map<String, String> actual =
+        environmentFrom(LocalCommandExecutor.INSTANCE.run(request, Duration.ofSeconds(2)).stdout());
+
+    assertThat(actual).containsEntry("BBV_ONLY", "present").doesNotContainKey("HOME");
+    assertThat(actual.keySet())
+        .isSubsetOf("PATH", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL", "BBV_ONLY");
+    for (String name : Set.of("PATH", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL")) {
+      if (System.getenv(name) != null) {
+        assertThat(actual).containsEntry(name, System.getenv(name));
+      }
+    }
+  }
+
+  @Test
+  void nonTerminalOperationsRejectForcedTty() throws Exception {
+    CommandRequest request = CommandRequest.of(List.of("/bin/true"), temporary).withForceTty(true);
+
+    assertThatThrownBy(() -> LocalCommandExecutor.INSTANCE.run(request, Duration.ofSeconds(2)))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("pseudo-terminal");
+    assertThatThrownBy(
+            () ->
+                LocalCommandExecutor.INSTANCE.runRedirectingStdout(
+                    request, Duration.ofSeconds(2), temporary.resolve("tty-output")))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("pseudo-terminal");
+    assertThatThrownBy(() -> LocalCommandExecutor.INSTANCE.start(request))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("pseudo-terminal");
   }
 
   @Test
@@ -211,5 +376,32 @@ final class LocalCommandExecutorTest {
     FutureTask<String> read = new FutureTask<>(reader::readLine);
     Thread.ofVirtual().name("bbv-test-local-terminal-read").start(read);
     return read.get(5, TimeUnit.SECONDS);
+  }
+
+  private static Map<String, String> environmentFrom(String output) {
+    return output
+        .lines()
+        .map(line -> line.split("=", 2))
+        .collect(Collectors.toMap(parts -> parts[0], parts -> parts[1]));
+  }
+
+  private void assertNoCommandOutputTemporary() throws IOException {
+    try (var files = Files.list(temporary)) {
+      assertThat(
+              files.filter(
+                  path -> path.getFileName().toString().startsWith(".bbv-command-output-")))
+          .isEmpty();
+    }
+  }
+
+  private static void assertProcessGone(Path pidFile) {
+    assertThat(pidFile).exists();
+    long pid;
+    try {
+      pid = Long.parseLong(Files.readString(pidFile));
+    } catch (IOException failure) {
+      throw new AssertionError(failure);
+    }
+    assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)).isFalse();
   }
 }

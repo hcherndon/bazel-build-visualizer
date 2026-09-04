@@ -1,6 +1,6 @@
 # ADR-011: SSH remote workspaces and execution-scoped I/O
 
-Status: accepted (2026-08-28; amended 2026-08-30 for saved workspaces and local terminals; amended 2026-09-03 for per-workspace Bazel selection)
+Status: accepted (2026-08-28; amended 2026-08-30 for saved workspaces and local terminals; amended 2026-09-03 for per-workspace Bazel selection; amended 2026-09-04 for bounded remote I/O)
 
 ## Context
 
@@ -121,6 +121,16 @@ One private OpenSSH control connection supplies the command, terminal, reverse
 forward, and SFTP channels. File contents move through non-interactive SFTP;
 fixed non-TTY SSH helpers provide structured metadata and the content-stamp
 check around an atomic rename. Human-formatted `sftp ls` output is not parsed.
+Before a bounded download starts, a fixed helper copies at most the requested
+bytes into a client-named, private, read-only remote snapshot. The source's
+metadata and the snapshot's exact size are checked before SFTP reads that
+stable file and checked again before an adjacent local temporary is published
+with an atomic move. A detected source size or modification-time change is
+refused. Timeout, interruption, mismatch, or any other failure leaves an
+existing destination unchanged and attempts to remove both temporaries; an
+unsuccessful remote removal, including after transport loss, is retained as a
+cleanup failure rather than hidden. This makes the retained transfer bound
+structural rather than dependent on periodic file-size polling.
 
 The primary remote build and the remote interactive terminal use forced remote
 TTYs. The terminal's local PTY lets OpenSSH forward window-size changes to the
@@ -244,8 +254,13 @@ native resources as described in `docs/packaging.md`.
   and explains the reverse forward, forced TTY, remote staging paths, and the
   fact that a TTY cannot preserve separate remote stdout/stderr channels.
 - The first implementation targets Linux servers with OpenSSH and common POSIX
-  userland tools. Unsupported hosts fail preflight with a concrete missing-tool
-  message; there is no silent fallback to local execution.
+  userland tools. Directory pages fully consume GNU `find` through Bash
+  `pipefail` and retain only a page-sized max-heap before emitting the next
+  path-keyset page. Opaque continuations bind the last literal path to a
+  directory revision, totals stay unknown, and no whole-directory scratch file
+  or numeric offset is created. Unsupported hosts fail preflight with a
+  concrete missing-tool message; there is no silent fallback to local
+  execution.
 - The terminal is now a transport-neutral, bounded emulator rather than a line
   transcript. JediTerm 3.74 supplies the Swing/xterm layer, and Pty4J 0.13.8 is
   deliberately the version its standalone application uses. The latter adds

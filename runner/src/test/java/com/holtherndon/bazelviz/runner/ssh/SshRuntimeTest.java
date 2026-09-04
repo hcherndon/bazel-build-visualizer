@@ -10,6 +10,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.holtherndon.bazelviz.runner.files.ExecutionPath;
 import com.holtherndon.bazelviz.runner.files.FileMetadata;
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import com.holtherndon.bazelviz.runner.runtime.CommandRequest;
 import com.holtherndon.bazelviz.runner.runtime.CommandResult;
 import com.holtherndon.bazelviz.runner.runtime.InteractiveChannel;
@@ -24,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -244,25 +246,484 @@ final class SshRuntimeTest {
   }
 
   @Test
+  void sftpTransferTimeoutScalesToTheLargestRemoteCapture() {
+    assertThat(SftpClient.transferTimeout(32L * 1024 * 1024 * 1024)).isEqualTo(Duration.ofHours(6));
+  }
+
+  @Test
   void sftpTransfersUseNonInteractiveBatchCommands() throws Exception {
     Path batch = temporary.resolve("sftp.batch");
+    Path destination = temporary.resolve("local file.txt");
     Path fake =
         executable(
             "fake-sftp",
             """
             #!/bin/sh
             cat > '%s'
+            /usr/bin/yes x | /usr/bin/head -c 100 > %s
             """
-                .formatted(batch));
+                .formatted(batch, PosixShell.quote(destination.toString())));
     SftpClient client = new SftpClient(SshTarget.of("host"), fake, temporary.resolve("control"));
 
-    client.download("/remote/a [x].txt", temporary.resolve("local file.txt"), 100);
+    client.download("/remote/a [x].txt", destination, 100);
 
     assertThat(Files.readString(batch))
-        .isEqualTo(
-            "get \"/remote/a \\[x\\].txt\" \""
-                + temporary.resolve("local file.txt")
-                + "\"\nquit\n");
+        .isEqualTo("get \"/remote/a \\[x\\].txt\" \"" + destination + "\"\nquit\n");
+  }
+
+  @Test
+  void sftpDownloadAllowsExactBoundaryAndRejectsSizeMismatch() throws Exception {
+    Path exact = temporary.resolve("exact.bin");
+    Path fakeExact =
+        executable(
+            "fake-sftp-exact",
+            "#!/bin/sh\ncat >/dev/null\nprintf '1234567890' > '%s'\n".formatted(exact));
+    SftpClient exactClient =
+        new SftpClient(SshTarget.of("host"), fakeExact, temporary.resolve("control-exact"));
+    exactClient.download("/remote/exact", exact, 10);
+    assertThat(Files.size(exact)).isEqualTo(10);
+
+    Path overLimit = temporary.resolve("over-limit.bin");
+    Path overLimitPid = temporary.resolve("over-limit.pid");
+    Path fakeOverLimit =
+        executable(
+            "fake-sftp-over-limit",
+            "#!/bin/sh\nprintf '%%s' \"$$\" > '%s'\ncat >/dev/null\nprintf '12345678901' > '%s'\n"
+                .formatted(overLimitPid, overLimit));
+    SftpClient overLimitClient =
+        new SftpClient(SshTarget.of("host"), fakeOverLimit, temporary.resolve("control-over"));
+    assertThatThrownBy(() -> overLimitClient.download("/remote/over", overLimit, 10))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("expected")
+        .hasMessageContaining("10");
+    assertThat(Files.exists(overLimit)).isFalse();
+    long processId = Long.parseLong(Files.readString(overLimitPid));
+    assertThat(ProcessHandle.of(processId).map(ProcessHandle::isAlive).orElse(false)).isFalse();
+  }
+
+  @Test
+  void sshFilesystemDownloadPublishesAnExactBoundedSnapshotAndRejectsGrowth() throws Exception {
+    Path source = temporary.resolve("remote-source.bin");
+    Path destination = temporary.resolve("download.bin");
+    Path snapshot = temporary.resolve("snapshot-path");
+    Path stagedSize = temporary.resolve("snapshot-size");
+    Path sftpPid = temporary.resolve("snapshot-sftp.pid");
+    Files.writeString(source, "1234567890");
+    Files.writeString(destination, "old");
+    SshExecutionFileSystem exact =
+        downloadFileSystem(source, false, false, snapshot, stagedSize, sftpPid);
+
+    try {
+      exact.download(exact.path("/remote/source"), destination, 10);
+
+      assertThat(Files.readString(destination)).isEqualTo("1234567890");
+      assertThat(Files.readString(stagedSize)).isEqualTo("10");
+      assertRecordedSnapshotGone(snapshot);
+      assertProcessGone(sftpPid);
+      assertNoSftpDownloadTemporary();
+
+      Files.writeString(source, "abcdefghij");
+      Files.writeString(destination, "old");
+      Files.deleteIfExists(snapshot);
+      Files.deleteIfExists(stagedSize);
+      Files.deleteIfExists(sftpPid);
+      SshExecutionFileSystem growing =
+          downloadFileSystem(source, true, false, snapshot, stagedSize, sftpPid);
+
+      assertThatThrownBy(() -> growing.download(growing.path("/remote/source"), destination, 10))
+          .isInstanceOf(IOException.class)
+          .hasMessageContaining("changed");
+      assertThat(Files.readString(destination)).isEqualTo("old");
+      assertThat(Files.readString(stagedSize)).isEqualTo("10");
+      assertProcessGone(sftpPid);
+      assertRecordedSnapshotGone(snapshot);
+      assertNoSftpDownloadTemporary();
+    } finally {
+      deleteRecordedSnapshot(snapshot);
+    }
+  }
+
+  @Test
+  void interruptedSshFilesystemDownloadReapsTransferAndCleansBothSnapshots() throws Exception {
+    Path source = temporary.resolve("interrupt-source.bin");
+    Path destination = temporary.resolve("interrupt-download.bin");
+    Path snapshot = temporary.resolve("interrupt-snapshot-path");
+    Path stagedSize = temporary.resolve("interrupt-snapshot-size");
+    Path sftpPid = temporary.resolve("interrupt-sftp.pid");
+    Files.writeString(source, "1234567890");
+    Files.writeString(destination, "old");
+    SshExecutionFileSystem files =
+        downloadFileSystem(source, false, true, snapshot, stagedSize, sftpPid);
+    FutureTask<Void> task =
+        new FutureTask<>(
+            () -> {
+              files.download(files.path("/remote/source"), destination, 10);
+              return null;
+            });
+    Thread worker = Thread.ofVirtual().start(task);
+    try {
+      awaitFile(sftpPid);
+
+      worker.interrupt();
+
+      assertThatThrownBy(() -> task.get(10, TimeUnit.SECONDS))
+          .hasCauseInstanceOf(IOException.class)
+          .hasRootCauseInstanceOf(InterruptedException.class);
+      assertThat(Files.readString(destination)).isEqualTo("old");
+      assertProcessGone(sftpPid);
+      assertRecordedSnapshotGone(snapshot);
+      assertNoSftpDownloadTemporary();
+    } finally {
+      worker.interrupt();
+      deleteRecordedSnapshot(snapshot);
+    }
+  }
+
+  @Test
+  void remoteContinuationKeysAreOpaqueAbsolutePathKeys() {
+    String key = "/repo/last entry";
+    String token = SshExecutionFileSystem.encodeKey("revision", key);
+    assertThat(token).doesNotContain("/").doesNotContain(" ");
+    assertThat(SshExecutionFileSystem.decodeKey(token).revision()).isEqualTo("revision");
+    assertThat(SshExecutionFileSystem.decodeKey(token).after()).isEqualTo(key);
+    assertThatThrownBy(() -> SshExecutionFileSystem.decodeKey("12"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("continuation token");
+  }
+
+  @Test
+  void remoteDirectorySelectorUsesBoundedByteSafeKeysetPages() throws Exception {
+    Path completed = temporary.resolve("find-completed");
+    List<String> paths =
+        List.of(
+            "/repo/z-last",
+            "/repo/a\\literal",
+            "/repo/a\nnewline",
+            "/repo/a\u001fseparator",
+            "/repo/quote'$value",
+            "/repo/middle");
+    StringBuilder emitter = new StringBuilder("#!/bin/bash\n");
+    for (String path : paths) {
+      emitter
+          .append("printf '%s\\0%s\\0%s\\0%s\\0' ")
+          .append(PosixShell.quote(path))
+          .append(" f 1 1.000000000\n");
+    }
+    emitter.append(": > ").append(PosixShell.quote(completed.toString())).append('\n');
+    Path find = executable("unsorted-find", emitter.toString());
+
+    List<String> walked = new ArrayList<>();
+    String after = "";
+    while (true) {
+      Subprocess.Result result =
+          Subprocess.run(
+              SshExecutionFileSystem.directoryListingCommand(
+                  "/repo", after, 2, find.toString(), "/bin/bash"),
+              null,
+              Map.of(),
+              Duration.ofSeconds(5));
+      assertThat(result.isSuccess()).as(result.failureDetail()).isTrue();
+      List<String> page = directoryPaths(result.stdout());
+      assertThat(page).hasSizeLessThanOrEqualTo(2);
+      walked.addAll(page);
+      assertThat(completed).exists();
+      Files.delete(completed);
+      if (page.size() < 2) {
+        break;
+      }
+      after = page.getLast();
+    }
+
+    assertThat(walked).containsExactlyElementsOf(paths.stream().sorted().toList());
+  }
+
+  @Test
+  void remoteDirectorySelectorTreatsGlobCharactersAsLiteralKeys() throws Exception {
+    List<String> paths =
+        List.of(
+            "/repo/a*literal",
+            "/repo/aaliteral",
+            "/repo/a-literal",
+            "/repo/b?literal",
+            "/repo/baliteral",
+            "/repo/c[ab]literal",
+            "/repo/caliteral");
+    StringBuilder emitter = new StringBuilder("#!/bin/bash\n");
+    for (String path : paths) {
+      emitter
+          .append("printf '%s\\0%s\\0%s\\0%s\\0' ")
+          .append(PosixShell.quote(path))
+          .append(" f 1 1.000000000\n");
+    }
+    Path find = executable("glob-key-find", emitter.toString());
+
+    Subprocess.Result heapPage =
+        Subprocess.run(
+            SshExecutionFileSystem.directoryListingCommand(
+                "/repo", "", 2, find.toString(), "/bin/bash"),
+            null,
+            Map.of(),
+            Duration.ofSeconds(5));
+    assertThat(heapPage.isSuccess()).as(heapPage.failureDetail()).isTrue();
+    assertThat(directoryPaths(heapPage.stdout()))
+        .containsExactly("/repo/a*literal", "/repo/a-literal");
+
+    List<String> walked = new ArrayList<>();
+    String after = "";
+    while (true) {
+      Subprocess.Result result =
+          Subprocess.run(
+              SshExecutionFileSystem.directoryListingCommand(
+                  "/repo", after, 1, find.toString(), "/bin/bash"),
+              null,
+              Map.of(),
+              Duration.ofSeconds(5));
+      assertThat(result.isSuccess()).as(result.failureDetail()).isTrue();
+      List<String> page = directoryPaths(result.stdout());
+      if (page.isEmpty()) {
+        break;
+      }
+      walked.addAll(page);
+      after = page.getLast();
+    }
+
+    assertThat(walked).containsExactlyElementsOf(paths.stream().sorted().toList());
+  }
+
+  @Test
+  void remoteDirectorySelectorPropagatesEveryPipelineFailureAndPartialTuple() throws Exception {
+    Path failedFind =
+        executable(
+            "failed-find", "#!/bin/sh\nprintf '%s\\0%s\\0%s\\0%s\\0' /repo/a f 1 1.0\nexit 23\n");
+    Path partialFind = executable("partial-find", "#!/bin/sh\nprintf partial\nexit 0\n");
+    Path failedSelector = executable("failed-selector", "#!/bin/sh\ncat >/dev/null\nexit 24\n");
+
+    assertThat(runDirectorySelector(failedFind, Path.of("/bin/bash")).exitCode()).isEqualTo(23);
+    assertThat(runDirectorySelector(partialFind, Path.of("/bin/bash")).exitCode()).isEqualTo(65);
+    assertThat(runDirectorySelector(partialFind, failedSelector).exitCode()).isEqualTo(24);
+  }
+
+  @Test
+  void remoteDirectoryParserRejectsACompleteLookingRecordWithoutItsTerminator() throws Exception {
+    Path unused = executable("unused-directory-parser-ssh", "#!/bin/sh\nexit 1\n");
+    SshTarget target = SshTarget.of("fake");
+    SshExecutionFileSystem files =
+        new SshExecutionFileSystem(
+            "execution-one",
+            "/repo",
+            new SshCommandExecutor(target, unused, temporary.resolve("control")),
+            new SftpClient(target, unused, temporary.resolve("control")));
+    String record = "/repo/a" + '\0' + "f" + '\0' + "1" + '\0' + "1.0";
+
+    assertThatThrownBy(() -> files.parseDirectoryRecords(record))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("incomplete");
+  }
+
+  @Test
+  void remoteDirectoryContinuationRejectsARealMutationAndKeepsTotalUnknown() throws Exception {
+    Path mutation = temporary.resolve("directory-mutated");
+    Path fake =
+        executable(
+            "fake-directory-ssh",
+            "#!/bin/sh\n"
+                + "last=''\n"
+                + "for argument do last=\"$argument\"; done\n"
+                + "marker=$(printf '%s' \"$last\" | sed -n"
+                + " 's/.*\\(BBV_PROCESS_[0-9a-f]*:\\).*/\\1/p')\n"
+                + "printf '%s6500:6500\\n' \"$marker\"\n"
+                + "case \"$last\" in\n"
+                + "  *'/usr/bin/readlink'*) printf '/repo\\n' ;;\n"
+                + "  *'--printf=%d:%i:%s:%y'*) if [ -f "
+                + PosixShell.quote(mutation.toString())
+                + " ]; then printf 'revision-after'; else printf 'revision-before'; fi ;;\n"
+                + "  *'/usr/bin/stat'*) printf 'directory\\0' ; printf '0\\0' ; printf '1\\0' ;;\n"
+                + "  *'/usr/bin/find'*) printf '%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0'"
+                + " '/repo/a' f 1 1.0 '/repo/b' f 1 1.0 ;;\n"
+                + "  *) exit 1 ;;\n"
+                + "esac\n");
+    SshCommandExecutor executor =
+        new SshCommandExecutor(SshTarget.of("fake"), fake, temporary.resolve("control"));
+    SshExecutionFileSystem files =
+        new SshExecutionFileSystem(
+            "execution-one",
+            "/repo",
+            executor,
+            new SftpClient(SshTarget.of("fake"), fake, temporary.resolve("control")));
+
+    var first = files.list(files.path("/repo"), Optional.empty(), 1);
+    Files.createFile(mutation);
+
+    assertThat(first.entries())
+        .extracting(entry -> entry.path().value())
+        .containsExactly("/repo/a");
+    assertThat(first.totalEntries()).isEmpty();
+    assertThatThrownBy(() -> files.list(files.path("/repo"), first.nextToken(), 1))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("changed");
+  }
+
+  @Test
+  void remoteDirectoryMutationDuringTheScanRefusesThePage() throws Exception {
+    Path remoteDirectory = Files.createDirectory(temporary.resolve("mutating-directory"));
+    Path newEntry = remoteDirectory.resolve("new-entry");
+    Path fake =
+        executable(
+            "fake-mutating-directory-ssh",
+            "#!/bin/sh\n"
+                + "last=''\n"
+                + "for argument do last=\"$argument\"; done\n"
+                + "marker=$(printf '%s' \"$last\" | sed -n"
+                + " 's/.*\\(BBV_PROCESS_[0-9a-f]*:\\).*/\\1/p')\n"
+                + "printf '%s6550:6550\\n' \"$marker\"\n"
+                + "case \"$last\" in\n"
+                + "  *'/usr/bin/readlink'*) printf '/repo\\n' ;;\n"
+                + "  *'--printf=%d:%i:%s:%y'*) if [ -f "
+                + PosixShell.quote(newEntry.toString())
+                + " ]; then printf 'revision-after'; else printf 'revision-before'; fi ;;\n"
+                + "  *'/usr/bin/stat'*) printf 'directory\\0' ; printf '0\\0' ; printf '1\\0' ;;\n"
+                + "  *'/usr/bin/find'*) : > "
+                + PosixShell.quote(newEntry.toString())
+                + "; printf '%s\\0%s\\0%s\\0%s\\0' '/repo/a' f 1 1.0 ;;\n"
+                + "  *) exit 1 ;;\n"
+                + "esac\n");
+    SshTarget target = SshTarget.of("fake");
+    SshExecutionFileSystem files =
+        new SshExecutionFileSystem(
+            "execution-one",
+            "/repo",
+            new SshCommandExecutor(target, fake, temporary.resolve("control")),
+            new SftpClient(target, fake, temporary.resolve("control")));
+
+    assertThatThrownBy(() -> files.list(files.path("/repo"), Optional.empty(), 2))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("changed while it was being listed");
+    assertThat(newEntry).exists();
+  }
+
+  @Test
+  void openSshInheritedPipeAfterRootExitFailsClosed() throws Exception {
+    Path child = temporary.resolve("openssh-child.pid");
+    Path fake =
+        executable(
+            "fake-openssh-inherited-pipe",
+            "#!/bin/sh\n(sleep 10) &\nprintf '%s' $! > "
+                + PosixShell.quote(child.toString())
+                + "\nexit 0\n");
+
+    assertThatThrownBy(() -> OpenSshProcess.run(List.of(fake.toString()), Duration.ofSeconds(2)))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
+    assertProcessGone(child);
+  }
+
+  @Test
+  void boundedAndRedirectedSshCommandsReapInheritedPipeChildren() throws Exception {
+    Path boundedChild = temporary.resolve("bounded-ssh-child.pid");
+    Path redirectedChild = temporary.resolve("redirected-ssh-child.pid");
+    Path callCount = temporary.resolve("inherited-call-count");
+    Path fake =
+        executable(
+            "fake-ssh-inherited-pipes",
+            """
+            #!/bin/sh
+            last=''
+            for argument do last="$argument"; done
+            case "$last" in
+              *"/bin/kill"*) exit 0 ;;
+            esac
+            marker=$(printf '%%s' "$last" | sed -n 's/.*\\(BBV_PROCESS_[0-9a-f]*:\\).*/\\1/p')
+            printf '%%s7300:7300\n' "$marker"
+            if [ -f %s ]; then
+              pid_file=%s
+              printf new
+            else
+              : > %s
+              pid_file=%s
+            fi
+            (sleep 10) &
+            printf '%%s' $! > "$pid_file"
+            exit 0
+            """
+                .formatted(
+                    PosixShell.quote(callCount.toString()),
+                    PosixShell.quote(redirectedChild.toString()),
+                    PosixShell.quote(callCount.toString()),
+                    PosixShell.quote(boundedChild.toString())));
+    SshCommandExecutor executor =
+        new SshCommandExecutor(SshTarget.of("fake"), fake, temporary.resolve("control"));
+
+    assertThatThrownBy(
+            () -> executor.run(CommandRequest.of(List.of("probe"), "/repo"), Duration.ofSeconds(2)))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
+    assertProcessGone(boundedChild);
+
+    Path destination = temporary.resolve("ssh-inherited-output");
+    Files.writeString(destination, "old");
+    assertThatThrownBy(
+            () ->
+                executor.runRedirectingStdout(
+                    CommandRequest.of(List.of("redirect"), "/repo"),
+                    Duration.ofSeconds(2),
+                    destination))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
+    assertThat(Files.readString(destination)).isEqualTo("old");
+    assertProcessGone(redirectedChild);
+    assertNoSshOutputTemporary();
+  }
+
+  @Test
+  void interruptedSshRedirectSignalsRemoteAndCleansLocalProcessAndOutput() throws Exception {
+    Path child = temporary.resolve("interrupted-ssh-child.pid");
+    Path signal = temporary.resolve("interrupted-ssh-signal");
+    Path stop = temporary.resolve("interrupted-ssh-stop");
+    Path fake =
+        executable(
+            "fake-interrupted-ssh",
+            """
+            #!/bin/sh
+            last=''
+            for argument do last="$argument"; done
+            case "$last" in
+              *"/bin/kill"*) printf '%%s' "$last" > %s; : > %s; exit 0 ;;
+            esac
+            marker=$(printf '%%s' "$last" | sed -n 's/.*\\(BBV_PROCESS_[0-9a-f]*:\\).*/\\1/p')
+            printf '%%s7400:7400\nnew' "$marker"
+            (sleep 30) & child=$!
+            printf '%%s' "$child" > %s
+            while [ ! -f %s ]; do sleep 0.02; done
+            kill "$child" 2>/dev/null || :
+            wait "$child" 2>/dev/null || :
+            """
+                .formatted(
+                    PosixShell.quote(signal.toString()),
+                    PosixShell.quote(stop.toString()),
+                    PosixShell.quote(child.toString()),
+                    PosixShell.quote(stop.toString())));
+    SshCommandExecutor executor =
+        new SshCommandExecutor(SshTarget.of("fake"), fake, temporary.resolve("control"));
+    Path destination = temporary.resolve("interrupted-ssh-output");
+    Files.writeString(destination, "old");
+    FutureTask<CommandResult> task =
+        new FutureTask<>(
+            () ->
+                executor.runRedirectingStdout(
+                    CommandRequest.of(List.of("redirect"), "/repo"),
+                    Duration.ofSeconds(30),
+                    destination));
+    Thread worker = Thread.ofVirtual().start(task);
+    awaitFile(child);
+
+    worker.interrupt();
+
+    assertThatThrownBy(() -> task.get(10, TimeUnit.SECONDS))
+        .hasCauseInstanceOf(InterruptedException.class);
+    assertThat(Files.readString(destination)).isEqualTo("old");
+    assertThat(Files.readString(signal)).contains("'/bin/kill' '-KILL'");
+    assertProcessGone(child);
+    assertNoSshOutputTemporary();
   }
 
   @Test
@@ -308,6 +769,32 @@ final class SshRuntimeTest {
     running.signal(CancellationMode.TERMINATE);
     assertThat(running.waitFor(Duration.ofSeconds(2))).isTrue();
     assertThat(Files.readString(signal)).contains("'/bin/kill' '-TERM' '--' '-4321'");
+  }
+
+  @Test
+  void signalAfterTheSshTransportExitedDoesNotTargetAStaleRemotePid() throws Exception {
+    Path calls = temporary.resolve("stale-signal-calls");
+    Path fake =
+        executable(
+            "fake-stale-signal-ssh",
+            """
+            #!/bin/sh
+            last=''
+            for argument do last="$argument"; done
+            printf '%%s\n' "$last" >> %s
+            marker=$(printf '%%s' "$last" | sed -n 's/.*\\(BBV_PROCESS_[0-9a-f]*:\\).*/\\1/p')
+            printf '%%s7600:7600\n' "$marker"
+            exit 0
+            """
+                .formatted(PosixShell.quote(calls.toString())));
+    SshCommandExecutor executor =
+        new SshCommandExecutor(SshTarget.of("fake"), fake, temporary.resolve("control"));
+    RunningCommand running = executor.start(CommandRequest.of(List.of("probe"), "/repo"));
+    assertThat(running.waitFor(Duration.ofSeconds(2))).isTrue();
+
+    running.signal(CancellationMode.FORCE_KILL);
+
+    assertThat(Files.readString(calls)).doesNotContain("/bin/kill");
   }
 
   @Test
@@ -416,7 +903,13 @@ final class SshRuntimeTest {
 
   @Test
   void sftpLogsNeverContainBatchScriptsOrPaths() throws Exception {
-    Path fake = executable("fake-secret-safe-sftp", "#!/bin/sh\ncat >/dev/null\n");
+    Path destination = temporary.resolve("sftp-path-secret-31a6e.txt");
+    Path fake =
+        executable(
+            "fake-secret-safe-sftp",
+            "#!/bin/sh\ncat >/dev/null\n/usr/bin/yes x | /usr/bin/head -c 100 > "
+                + PosixShell.quote(destination.toString())
+                + "\n");
     SftpClient client =
         new SftpClient(SshTarget.of("fake"), fake, temporary.resolve("private-control"));
     String pathSecret = "sftp-path-secret-31a6e";
@@ -428,7 +921,7 @@ final class SshRuntimeTest {
     logger.addAppender(events);
     logger.setLevel(Level.TRACE);
     try {
-      client.download("/remote/" + pathSecret, temporary.resolve(pathSecret + ".txt"), 100);
+      client.download("/remote/" + pathSecret, destination, 100);
 
       assertThat(rendered(events))
           .contains("operation=download")
@@ -582,5 +1075,142 @@ final class SshRuntimeTest {
     return events.list.stream()
         .map(ILoggingEvent::getFormattedMessage)
         .collect(Collectors.joining("\n"));
+  }
+
+  private Subprocess.Result runDirectorySelector(Path find, Path selector) throws Exception {
+    return Subprocess.run(
+        SshExecutionFileSystem.directoryListingCommand(
+            "/repo", "", 2, find.toString(), selector.toString()),
+        null,
+        Map.of(),
+        Duration.ofSeconds(5));
+  }
+
+  private SshExecutionFileSystem downloadFileSystem(
+      Path source,
+      boolean growSource,
+      boolean slowSftp,
+      Path snapshotLog,
+      Path stagedSize,
+      Path sftpPid)
+      throws Exception {
+    Path ssh =
+        executable(
+            "fake-download-ssh-" + growSource + "-" + slowSftp,
+            """
+            #!/bin/bash
+            last=''
+            for argument do last="$argument"; done
+            marker=$(printf '%%s' "$last" | sed -n 's/.*\\(BBV_PROCESS_[0-9a-f]*:\\).*/\\1/p')
+            printf '%%s7500:7500\n' "$marker"
+            remote_snapshot=$(printf '%%s' "$last" | sed -n 's#.*\\(/tmp/\\.bbv-download-[0-9a-f-]*\\).*#\\1#p')
+            case "$last" in
+              *"/usr/bin/readlink"*) printf '%%s\n' %s ;;
+              *"bbv-download-snapshot"*)
+                /usr/bin/head -c 10 %s > "$remote_snapshot"
+                /bin/chmod 0400 "$remote_snapshot"
+                /usr/bin/wc -c < "$remote_snapshot" | /usr/bin/tr -d '[:space:]' > %s
+                printf '%%s' "$remote_snapshot" > %s
+                ;;
+              *"/bin/rm"*) /bin/rm -f "$remote_snapshot" ;;
+              *"/usr/bin/stat"*)
+                if [ -n "$remote_snapshot" ] && [ -f "$remote_snapshot" ]; then
+                  target="$remote_snapshot"
+                else
+                  target=%s
+                fi
+                bytes=$(/usr/bin/wc -c < "$target" | /usr/bin/tr -d '[:space:]')
+                printf 'regular file\\0%%s\\0%%s\\0' "$bytes" 1
+                ;;
+              *) exit 1 ;;
+            esac
+            """
+                .formatted(
+                    PosixShell.quote(source.toString()),
+                    PosixShell.quote(source.toString()),
+                    PosixShell.quote(stagedSize.toString()),
+                    PosixShell.quote(snapshotLog.toString()),
+                    PosixShell.quote(source.toString())));
+    String transfer;
+    if (slowSftp) {
+      transfer =
+          "/usr/bin/head -c 5 \"$2\" > \"$3\"\nprintf '%s' \"$$\" > "
+              + PosixShell.quote(sftpPid.toString())
+              + "\nsleep 30\n";
+    } else {
+      transfer =
+          "/bin/cp \"$2\" \"$3\"\nprintf '%s' \"$$\" > "
+              + PosixShell.quote(sftpPid.toString())
+              + "\n";
+      if (growSource) {
+        transfer += "printf x >> " + PosixShell.quote(source.toString()) + "\n";
+      }
+    }
+    Path sftp =
+        executable(
+            "fake-download-sftp-" + growSource + "-" + slowSftp,
+            "#!/bin/bash\nIFS= read -r line\neval \"set -- $line\"\ncat >/dev/null\n" + transfer);
+    SshTarget target = SshTarget.of("fake");
+    Path control = temporary.resolve("download-control");
+    return new SshExecutionFileSystem(
+        "execution-one",
+        "/remote",
+        new SshCommandExecutor(target, ssh, control),
+        new SftpClient(target, sftp, control));
+  }
+
+  private static List<String> directoryPaths(String output) {
+    String[] fields = output.split(String.valueOf('\0'), -1);
+    List<String> paths = new ArrayList<>();
+    for (int index = 0; index + 3 < fields.length; index += 4) {
+      paths.add(fields[index]);
+    }
+    return paths;
+  }
+
+  private static void assertProcessGone(Path pidFile) throws IOException {
+    assertThat(pidFile).exists();
+    long pid = Long.parseLong(Files.readString(pidFile));
+    assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)).isFalse();
+  }
+
+  private static void assertRecordedSnapshotGone(Path snapshotLog) throws IOException {
+    assertThat(snapshotLog).exists();
+    Path snapshot = Path.of(Files.readString(snapshotLog));
+    assertThat(snapshot.toString()).startsWith("/tmp/.bbv-download-");
+    assertThat(snapshot).doesNotExist();
+  }
+
+  private static void deleteRecordedSnapshot(Path snapshotLog) throws IOException {
+    if (!Files.exists(snapshotLog)) {
+      return;
+    }
+    Path snapshot = Path.of(Files.readString(snapshotLog));
+    if (snapshot.toString().startsWith("/tmp/.bbv-download-")) {
+      Files.deleteIfExists(snapshot);
+    }
+  }
+
+  private static void awaitFile(Path path) throws Exception {
+    long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+    while (!Files.exists(path) && System.nanoTime() < deadline) {
+      TimeUnit.MILLISECONDS.sleep(10);
+    }
+    assertThat(path).exists();
+  }
+
+  private void assertNoSshOutputTemporary() throws IOException {
+    try (var files = Files.list(temporary)) {
+      assertThat(files.filter(path -> path.getFileName().toString().startsWith(".bbv-ssh-output-")))
+          .isEmpty();
+    }
+  }
+
+  private void assertNoSftpDownloadTemporary() throws IOException {
+    try (var files = Files.list(temporary)) {
+      assertThat(
+              files.filter(path -> path.getFileName().toString().startsWith(".bbv-sftp-download-")))
+          .isEmpty();
+    }
   }
 }

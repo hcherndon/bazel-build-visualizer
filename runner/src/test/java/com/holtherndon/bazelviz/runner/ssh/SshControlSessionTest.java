@@ -88,8 +88,10 @@ final class SshControlSessionTest {
     }
     assertThat(Files.readString(log))
         .contains("-R 127.0.0.1:0:127.0.0.1:9876")
+        .contains("/bin/bash", "/usr/bin/find")
         .contains("-O cancel")
         .contains("-O exit")
+        .doesNotContain("/usr/bin/awk")
         .doesNotContain("StrictHostKeyChecking=no");
     assertThat(Files.exists(socket.getParent())).isFalse();
     assertThatThrownBy(
@@ -98,6 +100,43 @@ final class SshControlSessionTest {
                     CommandRequest.of(List.of("true"), "/remote/home"), Duration.ofSeconds(1)))
         .isInstanceOf(IOException.class)
         .hasMessageContaining("control session is closed");
+  }
+
+  @Test
+  void failedMasterReapsAChildThatInheritedItsPipesBeforeDeletingControlState() throws Exception {
+    Path child = temporary.resolve("master-child.pid");
+    Path calls = temporary.resolve("failed-master-calls");
+    Path ssh =
+        executable(
+            "failed-master-ssh",
+            """
+            #!/bin/sh
+            printf '%%s\n' "$*" >> '%s'
+            case " $* " in
+              *" -M "*)
+                (sleep 10) &
+                printf '%%s' $! > '%s'
+                exit 1
+                ;;
+              *) exit 1 ;;
+            esac
+            """
+                .formatted(calls, child));
+    Path sftp = executable("unused-sftp", "#!/bin/sh\nexit 1\n");
+
+    assertThatThrownBy(
+            () ->
+                SshControlSession.connect(
+                    SshTarget.of("builder@fake"),
+                    Duration.ofSeconds(3),
+                    new OpenSshBinaries(ssh, sftp)))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
+
+    long pid = Long.parseLong(Files.readString(child));
+    assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)).isFalse();
+    Path socket = socketFrom(Files.readAllLines(calls).getFirst());
+    assertThat(socket.getParent()).doesNotExist();
   }
 
   private static Path socketFrom(String argv) {

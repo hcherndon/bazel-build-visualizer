@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.runner.ssh;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -33,12 +34,26 @@ final class SftpClient {
     this.sessionOpen = Objects.requireNonNull(sessionOpen, "sessionOpen");
   }
 
-  void download(String remote, Path local, long expectedMaximumBytes)
+  void download(String remote, Path local, long expectedBytes)
       throws IOException, InterruptedException {
-    transfer(
-        "download",
-        "get " + quoteBatchPath(remote) + " " + quoteBatchPath(local.toString()),
-        expectedMaximumBytes);
+    try {
+      transfer(
+          "download",
+          "get " + quoteBatchPath(remote) + " " + quoteBatchPath(local.toString()),
+          expectedBytes);
+      long actual = Files.size(local);
+      if (actual != expectedBytes) {
+        throw new IOException(
+            "SFTP downloaded " + actual + " bytes from an expected " + expectedBytes + " bytes");
+      }
+    } catch (IOException | InterruptedException | RuntimeException failure) {
+      try {
+        Files.deleteIfExists(local);
+      } catch (IOException | RuntimeException cleanupFailure) {
+        failure.addSuppressed(cleanupFailure);
+      }
+      throw failure;
+    }
   }
 
   void upload(Path local, String remote, long expectedMaximumBytes)
@@ -148,7 +163,7 @@ final class SftpClient {
     return escaped.append('"').toString();
   }
 
-  private static Duration transferTimeout(long bytes) {
+  static Duration transferTimeout(long bytes) {
     long bounded = Math.max(0, bytes);
     long seconds = 60 + Math.min(21_540, bounded / (64 * 1024));
     return Duration.ofSeconds(seconds);

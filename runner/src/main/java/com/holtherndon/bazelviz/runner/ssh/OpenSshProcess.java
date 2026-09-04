@@ -1,11 +1,10 @@
 package com.holtherndon.bazelviz.runner.ssh;
 
-import java.io.ByteArrayOutputStream;
+import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -49,94 +48,39 @@ final class OpenSshProcess {
         argv.size(),
         stdin == null ? 0 : stdin.length,
         timeout.toMillis());
-    Process process = new ProcessBuilder(argv).start();
-    log.trace("OpenSSH subprocess started processId={}", process.pid());
-    Capture stdout = Capture.start(process.getInputStream(), "bbv-openssh-stdout");
-    Capture stderr = Capture.start(process.getErrorStream(), "bbv-openssh-stderr");
-    IOException inputFailure = null;
-    try (var input = process.getOutputStream()) {
-      if (stdin != null) {
-        input.write(stdin);
-      }
-    } catch (IOException closedEarly) {
-      inputFailure = closedEarly;
+    Subprocess.Result subprocess =
+        Subprocess.runWithInput(
+            argv,
+            null,
+            Map.of(),
+            timeout,
+            stdin == null ? new byte[0] : stdin,
+            256 * 1024,
+            256 * 1024);
+    if (subprocess.outputTruncated()) {
+      boolean exceeded =
+          subprocess.stdoutBytes() > subprocess.stdoutLimit()
+              || subprocess.stderrBytes() > subprocess.stderrLimit();
+      throw new IOException(
+          exceeded
+              ? "OpenSSH produced more diagnostic output than can be retained"
+              : "OpenSSH output could not be drained to completion");
     }
-    boolean exited = process.waitFor(Math.max(1, timeout.toMillis()), TimeUnit.MILLISECONDS);
-    if (!exited) {
-      process.destroyForcibly();
-      process.waitFor(5, TimeUnit.SECONDS);
-    }
-    String out = stdout.await();
-    String err = stderr.await();
-    if (stdout.overflowed() || stderr.overflowed()) {
-      throw new IOException("OpenSSH produced more diagnostic output than can be retained");
-    }
-    int exitCode = exited ? process.exitValue() : -1;
-    if (inputFailure != null && exitCode == 0) {
-      throw new IOException("could not send input to OpenSSH", inputFailure);
-    }
-    Result result = new Result(exitCode, out, err, !exited);
+    Result result =
+        new Result(
+            subprocess.exitCode(), subprocess.stdout(), subprocess.stderr(), subprocess.timedOut());
     log.trace(
         "OpenSSH subprocess completed exitCode={} timedOut={} durationMs={}"
             + " stdoutBytes={} stderrBytes={}",
         result.exitCode(),
         result.timedOut(),
         elapsedMillis(startedNanos),
-        out.getBytes(StandardCharsets.UTF_8).length,
-        err.getBytes(StandardCharsets.UTF_8).length);
+        subprocess.stdoutBytes(),
+        subprocess.stderrBytes());
     return result;
   }
 
   private static long elapsedMillis(long startedNanos) {
     return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
-  }
-
-  static final class Capture {
-
-    private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-    private final Thread thread;
-    private volatile boolean overflowed;
-
-    private Capture(InputStream stream, String name) {
-      thread =
-          Thread.ofVirtual()
-              .name(name)
-              .unstarted(
-                  () -> {
-                    byte[] buffer = new byte[8 * 1024];
-                    try (stream) {
-                      int read;
-                      while ((read = stream.read(buffer)) >= 0) {
-                        if (read == 0) {
-                          continue;
-                        }
-                        int remaining = 256 * 1024 - bytes.size();
-                        if (remaining > 0) {
-                          bytes.write(buffer, 0, Math.min(remaining, read));
-                        }
-                        if (read > remaining) {
-                          overflowed = true;
-                        }
-                      }
-                    } catch (IOException closed) {
-                      // The process and its pipe end together. Retain what arrived.
-                    }
-                  });
-    }
-
-    static Capture start(InputStream stream, String name) {
-      Capture capture = new Capture(stream, name);
-      capture.thread.start();
-      return capture;
-    }
-
-    String await() throws InterruptedException {
-      thread.join(TimeUnit.SECONDS.toMillis(5));
-      return bytes.toString(StandardCharsets.UTF_8);
-    }
-
-    boolean overflowed() {
-      return overflowed;
-    }
   }
 }
