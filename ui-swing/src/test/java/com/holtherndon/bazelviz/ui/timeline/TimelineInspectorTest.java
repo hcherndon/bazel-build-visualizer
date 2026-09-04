@@ -15,6 +15,7 @@ import java.awt.GraphicsEnvironment;
 import java.awt.KeyboardFocusManager;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
+import java.awt.geom.Rectangle2D;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -29,8 +30,10 @@ import javax.swing.JComponent;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 import javax.swing.JSplitPane;
+import javax.swing.JTextArea;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
+import javax.swing.text.BadLocationException;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -130,6 +133,33 @@ final class TimelineInspectorTest {
     Object key = component.getInputMap(JComponent.WHEN_FOCUSED).get(stroke);
     assertThat(key).as("action bound to %s", stroke).isNotNull();
     return key;
+  }
+
+  /** Runs enough headless layout passes for width-sensitive text to settle. */
+  private static void layoutTree(Container root, int width, int height) {
+    root.setSize(width, height);
+    for (int pass = 0; pass < 4; pass++) {
+      invalidateTree(root);
+      layoutChildren(root);
+    }
+  }
+
+  private static void invalidateTree(Container root) {
+    root.invalidate();
+    for (Component child : root.getComponents()) {
+      if (child instanceof Container nested) {
+        invalidateTree(nested);
+      }
+    }
+  }
+
+  private static void layoutChildren(Container root) {
+    root.doLayout();
+    for (Component child : root.getComponents()) {
+      if (child instanceof Container nested) {
+        layoutChildren(nested);
+      }
+    }
   }
 
   @Test
@@ -284,15 +314,83 @@ final class TimelineInspectorTest {
               actionKey(
                   canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, KeyEvent.SHIFT_DOWN_MASK)));
       assertThat(keyboardActions).doesNotHaveDuplicates();
-
-      invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0));
-      assertThat(view.hoverTextForTest())
-          .contains("Left and Right")
-          .contains("R to select the visible time range")
-          .contains("I and Shift+I");
     } finally {
       view.showEmpty("done");
     }
+  }
+
+  @Test
+  @DisplayName("selecting an in-flight target replaces a prior action selection")
+  void inFlightSelectionClearsSelectedAction() {
+    TimelineModel.LiveBand band =
+        new TimelineModel.LiveBand(
+            true, List.of(new TimelineModel.LiveBand.InFlight("//pkg:live", 1_000_000)), 1, 0);
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setClockForTest(() -> 10_000_000);
+    view.setModel(aModel(band));
+    SpanWindow.Builder window = SpanWindow.builder(0, 10_000_000);
+    window.add(0, 5_000_000, 0, 42, "");
+    view.setWindow(window.build());
+
+    try {
+      invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+      assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(42);
+
+      invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_I, 0));
+
+      assertThat(view.selectedInFlightTargetForTest()).contains("//pkg:live");
+      assertThat(view.viewport().orElseThrow().selectedNode()).isEmpty();
+      assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+          .contains("Selected in-flight target //pkg:live")
+          .doesNotContain("Selected action 42");
+    } finally {
+      view.showEmpty("done");
+    }
+  }
+
+  @Test
+  @DisplayName("F1 help wraps its final shortcuts into visible rows at a constrained width")
+  void keyboardHelpWrapsAtConstrainedWidth() throws Exception {
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setModel(aModel());
+
+    SwingUtilities.invokeAndWait(
+        () -> {
+          layoutTree(view, 900, 600);
+          invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0));
+          layoutTree(view, 900, 600);
+        });
+
+    JTextArea help = view.interactionTextForTest();
+    int lineHeight = help.getFontMetrics(help.getFont()).getHeight();
+    int rIndex = help.getText().indexOf("R to select");
+    int escapeIndex = help.getText().indexOf("Escape to clear");
+    assertThat(rIndex).isNotNegative();
+    assertThat(escapeIndex).isNotNegative();
+
+    AtomicReference<Rectangle2D> rBounds = new AtomicReference<>();
+    AtomicReference<Rectangle2D> escapeBounds = new AtomicReference<>();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          try {
+            rBounds.set(help.modelToView2D(rIndex));
+            escapeBounds.set(help.modelToView2D(escapeIndex));
+          } catch (BadLocationException e) {
+            throw new AssertionError(e);
+          }
+        });
+
+    assertThat(help.getWidth())
+        .isLessThan(help.getFontMetrics(help.getFont()).stringWidth(help.getText()));
+    assertThat(help.getHeight()).isGreaterThan(lineHeight);
+    assertThat(rBounds.get().getY()).isGreaterThan(0);
+    assertThat(rBounds.get().getMaxY()).isLessThanOrEqualTo(help.getHeight());
+    assertThat(escapeBounds.get().getY()).isGreaterThan(0);
+    assertThat(escapeBounds.get().getMaxY()).isLessThanOrEqualTo(help.getHeight());
   }
 
   @Test

@@ -8,6 +8,7 @@ import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.theme.CanvasAccessibility;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
+import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
@@ -183,7 +184,7 @@ public final class TimelineView extends JPanel {
   private final JLabel empty = new JLabel("No timeline for this session.", SwingConstants.CENTER);
   private final JLabel status = new JLabel(" ");
   private final JLabel coverage = new JLabel(" ");
-  private final JLabel hover = new JLabel(" ");
+  private final JTextArea hover = WrappingLabel.create(" ");
 
   private final JComboBox<LaneGrouping.By> groupChoice = new JComboBox<>(LaneGrouping.By.values());
   private final JComboBox<LaneGrouping.SortBy> sortChoice =
@@ -290,7 +291,6 @@ public final class TimelineView extends JPanel {
     PlainText.disableHtml(empty);
     PlainText.disableHtml(status);
     PlainText.disableHtml(coverage);
-    PlainText.disableHtml(hover);
     empty.setEnabled(false);
     coverage.setFont(coverage.getFont().deriveFont(Font.ITALIC));
 
@@ -2122,6 +2122,7 @@ public final class TimelineView extends JPanel {
   private void selectBand(int bandIndex) {
     TimelineModel.LiveBand.InFlight target = model.liveBand().inFlight().get(bandIndex);
     selectedInFlight = target;
+    viewport = viewport.selecting(OptionalLong.empty());
     int row = Math.min(bandIndex, bandRows() - 1);
     canvas.scrollRectToVisible(new Rectangle(0, row * SUB_ROW_HEIGHT, 1, SUB_ROW_HEIGHT));
     double intoBuild = (target.startMicros() - model.wallStartMicros()) / 1_000_000.0;
@@ -2427,9 +2428,9 @@ public final class TimelineView extends JPanel {
     return coverage.getText();
   }
 
-  /** Visible interaction/help text, for keyboard discoverability tests. */
-  String hoverTextForTest() {
-    return hover.getText();
+  /** Visible interaction/help component, for keyboard discoverability and layout tests. */
+  JTextArea interactionTextForTest() {
+    return hover;
   }
 
   /** The in-flight target selected through either input path, for focused keyboard tests. */
