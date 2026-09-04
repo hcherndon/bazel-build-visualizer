@@ -88,8 +88,10 @@ final class SshControlSessionTest {
     }
     assertThat(Files.readString(log))
         .contains("-R 127.0.0.1:0:127.0.0.1:9876")
+        .contains("/bin/bash", "/usr/bin/find")
         .contains("-O cancel")
         .contains("-O exit")
+        .doesNotContain("/usr/bin/awk")
         .doesNotContain("StrictHostKeyChecking=no");
     assertThat(Files.exists(socket.getParent())).isFalse();
     assertThatThrownBy(
