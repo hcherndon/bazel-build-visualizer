@@ -12,6 +12,7 @@ java_library(
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/configurations",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
     ],
     visibility = ["//visibility:private"],
 )

@@ -7,6 +7,8 @@ import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.ViewClose;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
@@ -79,7 +81,7 @@ import org.slf4j.LoggerFactory;
  * one, so the label above it is the only thing standing between the user and a confident wrong
  * answer.
  */
-public final class TreeView extends JPanel {
+public final class TreeView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
 
@@ -102,6 +104,13 @@ public final class TreeView extends JPanel {
   private final JTextArea pathResult = WrappingLabel.create(" ");
   private final JLabel empty =
       new JLabel("No dependency graph has been imported.", SwingConstants.CENTER);
+  private final JLabel sourceLabel = labelFor("Graph", sourceChoice, "tree.graphLabel");
+  private final JLabel findLabel = labelFor("Find", search, "tree.findLabel");
+  private final JButton showSearch = button("Show", this::showSearched);
+  private final JPanel sourceRow = row(sourceLabel, sourceChoice);
+  private final JPanel findRow = row(findLabel, search, showSearch);
+  private final JPanel localTop = new JPanel();
+  private final JPanel body = new JPanel(new BorderLayout());
 
   /**
    * The path pane and its title, which names the nodes for what they are.
@@ -134,6 +143,8 @@ public final class TreeView extends JPanel {
    */
   private GraphKind shownGraph = GraphKind.DECLARED_ACTIONS;
 
+  private PageToolbar pageToolbar;
+
   public TreeView() {
     super(new BorderLayout());
     PlainText.install(dependencies);
@@ -148,17 +159,12 @@ public final class TreeView extends JPanel {
     sourceChoice.setRenderer(new SourceRenderer());
     sourceChoice.addActionListener(event -> sourceChanged());
 
-    JPanel top = new JPanel();
-    top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
-    top.setBorder(BorderFactory.createEmptyBorder(8, 8, 4, 8));
-    top.add(row(labelFor("Graph", sourceChoice, "tree.graphLabel"), sourceChoice));
-    top.add(sourceDetail);
-    top.add(warning);
-    top.add(
-        row(
-            labelFor("Find", search, "tree.findLabel"),
-            search,
-            button("Show", this::showSearched)));
+    localTop.setLayout(new BoxLayout(localTop, BoxLayout.Y_AXIS));
+    localTop.setBorder(BorderFactory.createEmptyBorder(8, 8, 4, 8));
+    localTop.add(sourceRow);
+    localTop.add(sourceDetail);
+    localTop.add(warning);
+    localTop.add(findRow);
 
     JScrollPane forward = new JScrollPane(dependencies);
     forward.setBorder(BorderFactory.createTitledBorder("Depends on"));
@@ -183,8 +189,7 @@ public final class TreeView extends JPanel {
     lists.add(trees, BorderLayout.CENTER);
     lists.add(pathPanel, BorderLayout.SOUTH);
 
-    JPanel body = new JPanel(new BorderLayout());
-    body.add(top, BorderLayout.NORTH);
+    body.add(localTop, BorderLayout.NORTH);
     body.add(lists, BorderLayout.CENTER);
 
     deck.add(empty, "empty");
@@ -194,6 +199,26 @@ public final class TreeView extends JPanel {
 
     dependencies.addTreeWillExpandListener(dependenciesExpander);
     dependents.addTreeWillExpandListener(dependentsExpander);
+  }
+
+  /** Moves graph selection and root search into the shared window chrome. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = toolbar;
+    localTop.remove(sourceRow);
+    localTop.remove(findRow);
+    toolbar.addAction(sourceLabel);
+    toolbar.addAction(sourceChoice);
+    toolbar.addAction(findLabel);
+    toolbar.addAction(search);
+    toolbar.addAction(showSearch);
+    syncPageMetadata();
+    body.revalidate();
+    body.repaint();
   }
 
   /** Adds shared right-click actions to both lazy dependency trees. */
@@ -307,6 +332,7 @@ public final class TreeView extends JPanel {
     String text = GraphSourceSummary.warning(source).orElse(" ");
     warning.setText(text);
     warning.setToolTipText(PlainText.tooltip(text));
+    syncPageMetadata();
 
     // The selector is a control, not a caption: picking a source switches
     // which graph the search and the trees traverse. Node indexes do not
@@ -669,6 +695,24 @@ public final class TreeView extends JPanel {
 
   private void showCard(String name) {
     ((CardLayout) deck.getLayout()).show(deck, name);
+    if ("empty".equals(name) && sourceChoice.getSelectedItem() == null && pageToolbar != null) {
+      pageToolbar.setMetadata("");
+    }
+  }
+
+  private void syncPageMetadata() {
+    if (pageToolbar == null) {
+      return;
+    }
+    GraphQueries.GraphSource source = (GraphQueries.GraphSource) sourceChoice.getSelectedItem();
+    if (source == null) {
+      pageToolbar.setMetadata("");
+      return;
+    }
+    String detail = GraphSourceSummary.describe(source);
+    String warningText = GraphSourceSummary.warning(source).orElse("");
+    pageToolbar.setMetadata(
+        source.displayName(), warningText.isBlank() ? detail : detail + " " + warningText);
   }
 
   private static void closeQuietly(GraphQueries open) {

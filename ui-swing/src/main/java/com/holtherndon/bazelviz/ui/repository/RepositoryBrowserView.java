@@ -5,6 +5,8 @@ import com.holtherndon.bazelviz.runner.files.ExecutionFileSystem;
 import com.holtherndon.bazelviz.runner.files.ExecutionPath;
 import com.holtherndon.bazelviz.runner.files.FileMetadata;
 import com.holtherndon.bazelviz.ui.lifecycle.ExecutorClose;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SelectableLabel;
 import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
@@ -47,7 +49,7 @@ import javax.swing.tree.TreePath;
 import javax.swing.tree.TreeSelectionModel;
 
 /** A bounded, lazy browser for one local or remote execution workspace. */
-public final class RepositoryBrowserView extends JPanel implements AutoCloseable {
+public final class RepositoryBrowserView extends JPanel implements AutoCloseable, PageChrome {
 
   private static final long serialVersionUID = 1L;
 
@@ -61,6 +63,7 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
   private final JTextField location = SelectableLabel.create("No repository is connected.");
   private final JTextArea status = WrappingLabel.create(" ");
   private final JButton refresh = new JButton("Refresh");
+  private final JPanel localHeader = new JPanel(new BorderLayout(8, 0));
   private final DefaultMutableTreeNode emptyRoot = new DefaultMutableTreeNode("Repository");
   private final DefaultTreeModel treeModel = new DefaultTreeModel(emptyRoot);
   private final JTree tree = new JTree(treeModel);
@@ -69,6 +72,7 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
 
   private ExecutionFileSystem fileSystem;
   private ExecutionPath repositoryRoot;
+  private PageToolbar pageToolbar;
   private String hostDescription = "";
   private Consumer<ExecutionPath> openFile = ignored -> {};
   private RepositoryNode rootNode;
@@ -136,8 +140,7 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
     refresh.setToolTipText("Reload the repository root and discard cached directory listings.");
     refresh.addActionListener(event -> refresh());
 
-    JPanel header = new JPanel(new BorderLayout(8, 0));
-    header.setBorder(BorderFactory.createEmptyBorder(6, 8, 0, 8));
+    localHeader.setBorder(BorderFactory.createEmptyBorder(6, 8, 0, 8));
     JPanel heading = new JPanel(new BorderLayout(8, 2));
     JLabel label = new JLabel("Repository:");
     label.setFont(label.getFont().deriveFont(Font.BOLD));
@@ -145,11 +148,11 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
     heading.add(location, BorderLayout.CENTER);
     JPanel actions = new JPanel(new FlowLayout(FlowLayout.TRAILING, 0, 0));
     actions.add(refresh);
-    header.add(heading, BorderLayout.CENTER);
-    header.add(actions, BorderLayout.EAST);
+    localHeader.add(heading, BorderLayout.CENTER);
+    localHeader.add(actions, BorderLayout.EAST);
 
     status.setBorder(BorderFactory.createEmptyBorder(0, 8, 6, 8));
-    add(header, BorderLayout.NORTH);
+    add(localHeader, BorderLayout.NORTH);
     add(new JScrollPane(tree), BorderLayout.CENTER);
     add(status, BorderLayout.SOUTH);
     showDisconnected();
@@ -194,8 +197,20 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
     repositoryRoot = Objects.requireNonNull(newRoot, "newRoot");
     location.setText(hostDescription + " · " + repositoryRoot.value());
     location.setToolTipText(PlainText.tooltip(location.getText()));
+    syncPageMetadata();
     refresh.setEnabled(true);
     refresh();
+  }
+
+  /** Moves this page's existing location and Refresh action into the common window toolbar. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    remove(localHeader);
+    toolbar.addAction(refresh);
+    pageToolbar = toolbar;
+    syncPageMetadata();
+    revalidate();
   }
 
   /** Clears the bound execution without closing its externally owned filesystem. */
@@ -484,11 +499,20 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
   private void showDisconnected() {
     location.setText("No repository is connected.");
     location.setToolTipText(null);
+    syncPageMetadata();
     refresh.setEnabled(false);
     emptyRoot.removeAllChildren();
     emptyRoot.add(messageNode("Choose a build host to browse its repository."));
     treeModel.setRoot(emptyRoot);
     status.setText("0 entries loaded. View limit: %,d.".formatted(visibleEntryLimit));
+  }
+
+  private void syncPageMetadata() {
+    if (pageToolbar == null) {
+      return;
+    }
+    String path = repositoryRoot == null ? "" : repositoryRoot.value();
+    pageToolbar.setMetadata(path);
   }
 
   private static DefaultMutableTreeNode swingNode(RepositoryNode value) {

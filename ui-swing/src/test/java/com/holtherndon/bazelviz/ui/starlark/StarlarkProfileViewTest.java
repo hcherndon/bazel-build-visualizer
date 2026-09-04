@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.awt.GraphicsEnvironment;
 import java.lang.reflect.Proxy;
 import java.util.OptionalLong;
@@ -30,9 +31,11 @@ final class StarlarkProfileViewTest {
   void pageSeparatesViewsAndExplainsCpuSemantics() throws Exception {
     FakeStarlarkProfileReader reader = new FakeStarlarkProfileReader();
     StarlarkProfileView view = onEdt(StarlarkProfileView::new);
+    PageToolbar toolbar = onEdt(() -> new PageToolbar("Starlark Profile"));
 
     onEdt(
         () -> {
+          view.installPageToolbar(toolbar);
           view.openSession(source(reader));
           return null;
         });
@@ -64,6 +67,8 @@ final class StarlarkProfileViewTest {
               assertThat(content.getScrollableTracksViewportHeight()).isFalse();
             });
     assertThat(onEdt(view::summaryCardCountForTest)).isEqualTo(10);
+    assertThat(onEdt(toolbar::actionCount)).isZero();
+    assertThat(onEdt(toolbar::metadata)).contains("sampled CPU", "functions");
     assertThat(onEdt(view::summaryExplanationVisibleForTest)).isTrue();
     assertThat(reader.queriedOnEdt).isFalse();
 

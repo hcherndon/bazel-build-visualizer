@@ -3,10 +3,15 @@ package com.holtherndon.bazelviz.ui.capture;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.capture.live.CaptureProgress;
+import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.awt.BorderLayout;
+import java.awt.Component;
+import java.awt.Container;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.swing.AbstractButton;
 import javax.swing.SwingUtilities;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.TitledBorder;
@@ -15,6 +20,32 @@ import org.junit.jupiter.api.Test;
 
 /** The compact live-status strip shown above console output. */
 final class CapturePanelTest {
+
+  @Test
+  @DisplayName("shared Console chrome reparents the live controls without replacing callbacks")
+  void sharedChromeOwnsLiveActions() throws Exception {
+    CapturePanel panel = panel();
+    PageToolbar toolbar = new PageToolbar("Console");
+    AtomicReference<CancellationMode> stopped = new AtomicReference<>();
+    CaptureStatusModel active =
+        new CaptureStatusModel(
+            CaptureStatusModel.Phase.CAPTURING,
+            Optional.of(new CaptureProgress(1, 1, 1, 1, 0, List.of(), true)),
+            "running",
+            true);
+
+    SwingUtilities.invokeAndWait(
+        () -> {
+          panel.setStopAction(stopped::set);
+          panel.installPageToolbar(toolbar);
+          panel.show(active);
+          findButton(toolbar, "Cancel Build").doClick();
+        });
+
+    assertThat(toolbar.actionCount()).isEqualTo(4);
+    assertThat(panel.isVisible()).isFalse();
+    assertThat(stopped).hasValue(CancellationMode.CANCEL);
+  }
 
   @Test
   @DisplayName("idle status is one framed strip without inactive controls")
@@ -68,5 +99,20 @@ final class CapturePanelTest {
     AtomicReference<CapturePanel> panel = new AtomicReference<>();
     SwingUtilities.invokeAndWait(() -> panel.set(new CapturePanel()));
     return panel.get();
+  }
+
+  private static AbstractButton findButton(Container root, String text) {
+    for (Component component : root.getComponents()) {
+      if (component instanceof AbstractButton button && text.equals(button.getText())) {
+        return button;
+      }
+      if (component instanceof Container nested) {
+        AbstractButton found = findButton(nested, text);
+        if (found != null) {
+          return found;
+        }
+      }
+    }
+    return null;
   }
 }

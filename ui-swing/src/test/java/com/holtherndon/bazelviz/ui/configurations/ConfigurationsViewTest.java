@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.holtherndon.bazelviz.storage.entities.ConfigurationQueries;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.GraphicsEnvironment;
@@ -34,9 +35,11 @@ final class ConfigurationsViewTest {
   @DisplayName("the no-session message owns the full Configurations pane")
   void emptyStateFillsThePane() throws Exception {
     ConfigurationsView view = onEdt(ConfigurationsView::new);
+    PageToolbar toolbar = onEdt(() -> new PageToolbar("Configurations"));
 
     onEdt(
         () -> {
+          view.installPageToolbar(toolbar);
           view.setSize(960, 600);
           layoutTree(view);
 
@@ -44,6 +47,8 @@ final class ConfigurationsViewTest {
           assertThat(view.emptyStateForTest().isVisible()).isTrue();
           assertThat(view.emptyStateForTest().getLocation()).isEqualTo(new Point());
           assertThat(view.emptyStateForTest().getSize()).isEqualTo(view.getSize());
+          assertThat(toolbar.actionCount()).isZero();
+          assertThat(toolbar.metadata()).isEqualTo("Inspect and compare build configurations");
           return null;
         });
   }

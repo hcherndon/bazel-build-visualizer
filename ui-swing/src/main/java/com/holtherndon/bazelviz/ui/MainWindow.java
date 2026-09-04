@@ -89,6 +89,8 @@ import com.holtherndon.bazelviz.ui.targets.TargetsView;
 import com.holtherndon.bazelviz.ui.terminal.TerminalView;
 import com.holtherndon.bazelviz.ui.tests.TestsView;
 import com.holtherndon.bazelviz.ui.theme.AppTheme;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import com.holtherndon.bazelviz.ui.theme.ThemePreferenceWriter;
@@ -119,8 +121,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -161,7 +165,6 @@ import javax.swing.JTextArea;
 import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
-import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.event.MenuEvent;
 import javax.swing.event.MenuListener;
@@ -246,6 +249,9 @@ public final class MainWindow extends JFrame {
   // Unknown-is-not-zero: counts are unknown until a session exists, so the
   // status bar shows an em dash, never "0".
   private static final String UNKNOWN = EventValueFormat.UNKNOWN;
+
+  /** One independent toolbar per page and per native window. */
+  private final EnumMap<NavEntry, PageToolbar> pageToolbars = newPageToolbars();
 
   private final Path sessionsRoot;
   private final SessionManager sessions;
@@ -715,6 +721,8 @@ public final class MainWindow extends JFrame {
     setSize(1280, 840);
     setLocationByPlatform(true);
 
+    installPageChrome();
+    updatePageWorkspace();
     for (NavEntry entry : NavEntry.values()) {
       cards.add(cardFor(entry), entry.cardName());
     }
@@ -3054,6 +3062,7 @@ public final class MainWindow extends JFrame {
     WorkspaceProfile previousProfile = activeWorkspace;
     activeWorkspace = profile;
     activeWorkspaceDiscovered = discovered;
+    updatePageWorkspace();
     launcherPanel.useManagedWorkspace(
         profile.label(),
         profile.kind() == WorkspaceProfile.Kind.LOCAL ? ExecutionHost.LOCAL : ExecutionHost.SSH,
@@ -3164,10 +3173,8 @@ public final class MainWindow extends JFrame {
         new LocalExecutionFileSystem("local-workspace-" + profile.id());
     repositoryFileSystem = files;
     captureLeaseKey = CaptureLeaseKey.localRealPath(repository);
-    repositoryBrowserView.openRepository(
-        profile.label() + " · This computer", files, files.path(repository));
-    terminalView.bind(
-        profile.label() + " · This computer", working.toString(), LocalCommandExecutor.INSTANCE);
+    repositoryBrowserView.openRepository("This computer", files, files.path(repository));
+    terminalView.bind("This computer", working.toString(), LocalCommandExecutor.INSTANCE);
     workspaceReady(profile);
   }
 
@@ -3243,13 +3250,8 @@ public final class MainWindow extends JFrame {
           CaptureLeaseKey.ssh(
               profile.destination().orElseThrow(), profile.port(), remote.repositoryRootText());
       repositoryBrowserView.openRepository(
-          profile.label() + " · " + remote.displayName(),
-          repositoryFileSystem,
-          remote.repositoryRoot());
-      terminalView.bind(
-          profile.label() + " · " + remote.displayName(),
-          remote.workingDirectory(),
-          remote.commandExecutor());
+          remote.displayName(), repositoryFileSystem, remote.repositoryRoot());
+      terminalView.bind(remote.displayName(), remote.workingDirectory(), remote.commandExecutor());
       workspaceReady(profile);
       if (currentSource != null) {
         openEventsSession(currentSource);
@@ -3341,6 +3343,7 @@ public final class MainWindow extends JFrame {
     ++workspaceConnectionGeneration;
     activeWorkspace = null;
     activeWorkspaceDiscovered = false;
+    updatePageWorkspace();
     launcherPanel.clearManagedWorkspace();
     launcherPanel.setRunEnabled(false);
     RemoteExecution previous = activeRemoteExecution;
@@ -4007,6 +4010,7 @@ public final class MainWindow extends JFrame {
       return applicationHost.workspaceUpdated(replacement);
     }
     activeWorkspace = replacement;
+    updatePageWorkspace();
     if (activeWorkspaceDiscovered) {
       discoveredWorkspaceProfiles =
           discoveredWorkspaceProfiles.stream()
@@ -4037,6 +4041,7 @@ public final class MainWindow extends JFrame {
   private void setCaptureStatus(CaptureStatusModel model) {
     this.captureStatus = model;
     capturePanel.show(model);
+    updateConsoleMetadata(model);
   }
 
   private void showCard(NavEntry entry) {
@@ -4314,39 +4319,90 @@ public final class MainWindow extends JFrame {
     }
   }
 
-  /** The real view for an entry whose phase has arrived, else a placeholder. */
+  /** The real view and common page toolbar for every navigation entry. */
   private JComponent cardFor(NavEntry entry) {
-    return switch (entry) {
-      case OVERVIEW -> overviewCard;
-      case ACTIONS -> actionsView;
-      case TARGETS -> targetsView;
-      case ALL_TARGETS -> allTargetsView;
-      case CONFIGURATIONS -> configurationsView;
-      case TESTS -> testsView;
-      case ERRORS -> errorsView;
-      case GRAPH -> graphExplorerView;
-      case TREE -> treeView;
-      case TIMELINE -> timeline.view();
-      case CRITICAL_PATH -> criticalPathView;
-      case STARLARK_PROFILE -> starlarkProfileView;
-      case EVENTS -> eventsView;
-      case BUILD -> buildCard;
-      case FINDINGS -> findingsView;
-      case QUERY -> queryView;
-      case REPOSITORY -> repositoryBrowserView;
-      case TERMINAL -> terminalView;
-      default -> placeholderCard(entry);
-    };
+    JComponent body =
+        switch (entry) {
+          case OVERVIEW -> overviewCard;
+          case ACTIONS -> actionsView;
+          case TARGETS -> targetsView;
+          case ALL_TARGETS -> allTargetsView;
+          case CONFIGURATIONS -> configurationsView;
+          case TESTS -> testsView;
+          case ERRORS -> errorsView;
+          case GRAPH -> graphExplorerView;
+          case TREE -> treeView;
+          case TIMELINE -> timeline.view();
+          case CRITICAL_PATH -> criticalPathView;
+          case STARLARK_PROFILE -> starlarkProfileView;
+          case EVENTS -> eventsView;
+          case BUILD -> buildCard;
+          case FINDINGS -> findingsView;
+          case QUERY -> queryView;
+          case REPOSITORY -> repositoryBrowserView;
+          case TERMINAL -> terminalView;
+        };
+    return pageCard(entry, body, pageToolbars);
   }
 
-  private static JComponent placeholderCard(NavEntry entry) {
-    JLabel label =
-        new JLabel(
-            entry.title() + " — arrives in Phase " + entry.arrivalPhase(), SwingConstants.CENTER);
-    label.setEnabled(false);
+  /** Builds every toolbar from the same exhaustive navigation registry. */
+  static EnumMap<NavEntry, PageToolbar> newPageToolbars() {
+    EnumMap<NavEntry, PageToolbar> toolbars = new EnumMap<>(NavEntry.class);
+    for (NavEntry entry : NavEntry.values()) {
+      toolbars.put(entry, new PageToolbar(entry.title()));
+    }
+    return toolbars;
+  }
+
+  /** Wraps page chrome outside the body's scroll, empty, loading, and import decks. */
+  static JComponent pageCard(NavEntry entry, JComponent body, Map<NavEntry, PageToolbar> toolbars) {
+    PageToolbar toolbar =
+        Objects.requireNonNull(toolbars.get(Objects.requireNonNull(entry, "entry")), "toolbar");
     JPanel card = new JPanel(new BorderLayout());
-    card.add(label, BorderLayout.CENTER);
+    card.add(toolbar, BorderLayout.NORTH);
+    card.add(Objects.requireNonNull(body, "body"), BorderLayout.CENTER);
     return card;
+  }
+
+  /** Gives migrated views their existing root-level controls; later tasks use the same API. */
+  private void installPageChrome() {
+    installPageChrome(NavEntry.TERMINAL, terminalView);
+    installPageChrome(NavEntry.REPOSITORY, repositoryBrowserView);
+    installPageChrome(NavEntry.OVERVIEW, overviewPanel);
+    installPageChrome(NavEntry.CRITICAL_PATH, criticalPathView);
+    installPageChrome(NavEntry.STARLARK_PROFILE, starlarkProfileView);
+    installPageChrome(NavEntry.CONFIGURATIONS, configurationsView);
+    installPageChrome(NavEntry.TREE, treeView);
+    installPageChrome(NavEntry.FINDINGS, findingsView);
+
+    PageToolbar console = pageToolbars.get(NavEntry.BUILD);
+    launcherPanel.installPageToolbar(console);
+    capturePanel.installPageToolbar(console);
+    console.setControls(launcherPanel);
+    updateConsoleMetadata(captureStatus);
+  }
+
+  private void installPageChrome(NavEntry entry, PageChrome chrome) {
+    chrome.installPageToolbar(pageToolbars.get(entry));
+  }
+
+  private void updatePageWorkspace() {
+    String workspaceName = activeWorkspace == null ? "" : activeWorkspace.label();
+    updatePageWorkspace(pageToolbars, workspaceName);
+  }
+
+  /** Applies only live workspace identity; imported-session provenance is deliberately excluded. */
+  static void updatePageWorkspace(Map<NavEntry, PageToolbar> toolbars, String workspaceName) {
+    for (PageToolbar toolbar : toolbars.values()) {
+      toolbar.setWorkspaceName(workspaceName);
+    }
+  }
+
+  private void updateConsoleMetadata(CaptureStatusModel model) {
+    String counters = model.counterLine().strip();
+    String concise = model.phase().label() + (counters.isEmpty() ? "" : " · " + counters);
+    String detail = model.detail().isBlank() ? concise : concise + " — " + model.detail();
+    pageToolbars.get(NavEntry.BUILD).setMetadata(concise, detail);
   }
 
   /** Stacks the build summary above the coverage panel, split and resizable. */
@@ -4371,13 +4427,9 @@ public final class MainWindow extends JFrame {
     return split;
   }
 
-  /** Stacks launcher, capture status, and console in their reading order. */
+  /** Keeps the build transcript below the window-owned Console toolbar. */
   private JComponent buildBuildCard() {
     JPanel card = new JPanel(new BorderLayout());
-    JPanel controls = new JPanel(new BorderLayout());
-    controls.add(launcherPanel, BorderLayout.NORTH);
-    controls.add(capturePanel, BorderLayout.CENTER);
-    card.add(controls, BorderLayout.NORTH);
     card.add(new SectionPane("Build output", consoleView), BorderLayout.CENTER);
     return card;
   }

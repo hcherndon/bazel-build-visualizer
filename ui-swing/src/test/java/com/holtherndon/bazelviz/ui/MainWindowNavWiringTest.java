@@ -6,6 +6,7 @@ import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.OpenRequest.Kind;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.workspace.WorkspaceProfile;
 import java.awt.BorderLayout;
 import java.awt.Component;
@@ -13,10 +14,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
@@ -26,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import javax.swing.JComponent;
 import javax.swing.JPanel;
 import javax.swing.JSplitPane;
 import javax.swing.SwingUtilities;
@@ -46,6 +50,48 @@ import org.junit.jupiter.api.io.TempDir;
 final class MainWindowNavWiringTest {
 
   @TempDir Path tempDir;
+
+  @Test
+  @DisplayName("all eighteen navigation cards receive exactly one matching page toolbar")
+  void everyNavigationCardHasSharedChrome() throws Exception {
+    EnumMap<NavEntry, PageToolbar> toolbars = onEdt(MainWindow::newPageToolbars);
+
+    assertThat(toolbars.keySet()).containsExactlyInAnyOrder(NavEntry.values());
+    assertThat(toolbars).hasSize(18);
+    onEdt(
+        () -> {
+          for (NavEntry entry : NavEntry.values()) {
+            JPanel body = new JPanel();
+            JComponent card = MainWindow.pageCard(entry, body, toolbars);
+            BorderLayout layout = (BorderLayout) card.getLayout();
+            assertThat(layout.getLayoutComponent(BorderLayout.NORTH)).isSameAs(toolbars.get(entry));
+            assertThat(layout.getLayoutComponent(BorderLayout.CENTER)).isSameAs(body);
+            assertThat(toolbars.get(entry).pageTitle()).isEqualTo(entry.title());
+          }
+          return null;
+        });
+  }
+
+  @Test
+  @DisplayName("only the active live workspace appears in page chrome")
+  void pageWorkspaceContextIsHonestAndPerWindow() throws Exception {
+    EnumMap<NavEntry, PageToolbar> first = onEdt(MainWindow::newPageToolbars);
+    EnumMap<NavEntry, PageToolbar> second = onEdt(MainWindow::newPageToolbars);
+
+    onEdt(
+        () -> {
+          MainWindow.updatePageWorkspace(first, "Live workspace");
+          assertThat(first.values())
+              .allMatch(toolbar -> toolbar.workspaceName().equals("Live workspace"));
+          assertThat(second.values()).allMatch(toolbar -> toolbar.workspaceName().isEmpty());
+
+          // An imported session has no active WorkspaceProfile. Clearing that identity must not
+          // substitute the session's recorded command directory or other provenance.
+          MainWindow.updatePageWorkspace(first, "");
+          assertThat(first.values()).allMatch(toolbar -> toolbar.workspaceName().isEmpty());
+          return null;
+        });
+  }
 
   @Test
   @DisplayName("open-path metadata is not read until the background executor runs")
@@ -464,5 +510,22 @@ final class MainWindowNavWiringTest {
     assertThat(((TitledBorder) section.getBorder()).getTitle()).isEqualTo(title);
     assertThat(((BorderLayout) section.getLayout()).getLayoutComponent(BorderLayout.CENTER))
         .isSameAs(expectedBody);
+  }
+
+  private static <T> T onEdt(Callable<T> work) throws Exception {
+    AtomicReference<T> value = new AtomicReference<>();
+    AtomicReference<Exception> failure = new AtomicReference<>();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          try {
+            value.set(work.call());
+          } catch (Exception e) {
+            failure.set(e);
+          }
+        });
+    if (failure.get() != null) {
+      throw failure.get();
+    }
+    return value.get();
   }
 }

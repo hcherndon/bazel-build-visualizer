@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.capture;
 
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
@@ -9,6 +10,7 @@ import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
+import java.util.Objects;
 import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
@@ -43,6 +45,7 @@ public final class CapturePanel extends JPanel {
   private final JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
 
   private Consumer<CancellationMode> stopAction = mode -> {};
+  private boolean pageToolbarInstalled;
 
   public CapturePanel() {
     super(new BorderLayout(8, 0));
@@ -105,6 +108,24 @@ public final class CapturePanel extends JPanel {
     this.stopAction = action == null ? mode -> {} : action;
   }
 
+  /** Moves progress and build-stop actions into the Console page's shared identity row. */
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbarInstalled) {
+      throw new IllegalStateException("the Console capture toolbar is already installed");
+    }
+    pageToolbarInstalled = true;
+    toolbar.addAction(activity);
+    toolbar.addAction(cancel);
+    toolbar.addAction(terminate);
+    toolbar.addAction(forceKill);
+    boolean showStops = cancel.isEnabled();
+    cancel.setVisible(showStops);
+    terminate.setVisible(showStops);
+    forceKill.setVisible(showStops);
+    setVisible(false);
+  }
+
   /** Renders one snapshot. EDT only. */
   public void show(CaptureStatusModel model) {
     assert SwingUtilities.isEventDispatchThread() : "capture status must be shown on the EDT";
@@ -122,6 +143,11 @@ public final class CapturePanel extends JPanel {
     cancel.setEnabled(model.cancellable());
     terminate.setEnabled(model.cancellable());
     forceKill.setEnabled(model.cancellable());
+    if (pageToolbarInstalled) {
+      cancel.setVisible(model.cancellable());
+      terminate.setVisible(model.cancellable());
+      forceKill.setVisible(model.cancellable());
+    }
     buttons.setVisible(model.cancellable());
     actions.setVisible(active || model.cancellable());
   }

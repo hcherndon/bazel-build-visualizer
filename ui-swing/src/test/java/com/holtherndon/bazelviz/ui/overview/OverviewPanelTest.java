@@ -24,6 +24,7 @@ import com.holtherndon.bazelviz.ui.session.QueryReader;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
 import java.awt.Component;
 import java.awt.Container;
@@ -84,8 +85,10 @@ class OverviewPanelTest {
   @DisplayName("a stream that never reached its end marker says so")
   void truncatedStreamsAreCalledOut() throws Exception {
     OverviewPanel panel = onEdt(OverviewPanel::new);
+    PageToolbar toolbar = onEdt(() -> new PageToolbar("Overview"));
     onEdt(
         () -> {
+          panel.installPageToolbar(toolbar);
           panel.show(snapshot(Optional.of(true), false));
           return null;
         });
@@ -94,6 +97,9 @@ class OverviewPanelTest {
     // at the wrong place is missing the whole failed-target list. The
     // subhead is where that gets said.
     assertThat(panel.subheadForTest()).contains("did not reach its end marker");
+    assertThat(onEdt(toolbar::actionCount)).isZero();
+    assertThat(onEdt(toolbar::metadata))
+        .contains("bazel build — succeeded", "did not reach its end marker");
   }
 
   @Test

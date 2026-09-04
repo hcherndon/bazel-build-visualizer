@@ -10,6 +10,7 @@ import com.holtherndon.bazelviz.runner.runtime.InteractiveChannel;
 import com.holtherndon.bazelviz.runner.runtime.RunningCommand;
 import com.holtherndon.bazelviz.runner.runtime.TerminalSize;
 import com.holtherndon.bazelviz.ui.theme.AppTheme;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.Themes;
 import java.awt.Color;
 import java.io.ByteArrayOutputStream;
@@ -128,9 +129,11 @@ final class SshTerminalViewTest {
     FakeCommandExecutor executor = new FakeCommandExecutor();
     FakeChannel channel = executor.enqueueChannel();
     SshTerminalView view = onEdt(() -> new SshTerminalView(TERMINAL_IO, TERMINAL_SCHEDULER));
+    PageToolbar toolbar = onEdt(() -> new PageToolbar("Terminal"));
 
     onEdt(
         () -> {
+          view.installPageToolbar(toolbar);
           view.bind("builder.example", "/work/repo", executor);
           view.connect();
           return null;
@@ -138,6 +141,8 @@ final class SshTerminalViewTest {
     await(() -> onEdt(() -> view.connectionState() == SshTerminalView.ConnectionState.CONNECTED));
 
     assertThat(executor.openedOnEdt).isFalse();
+    assertThat(onEdt(toolbar::actionCount)).isEqualTo(3);
+    assertThat(onEdt(toolbar::metadata)).isEqualTo("/work/repo · Connected");
     assertThat(onEdt(view::locationForTest)).isEqualTo("builder.example · /work/repo");
     assertThat(onEdt(view::capabilityForTest))
         .contains("xterm-compatible", "full-screen", "resize");

@@ -9,6 +9,8 @@ import com.holtherndon.bazelviz.analysis.MetricFormat;
 import com.holtherndon.bazelviz.analysis.MetricSeries;
 import com.holtherndon.bazelviz.core.measure.Measured;
 import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
@@ -68,7 +70,7 @@ import org.slf4j.LoggerFactory;
  * <p>The view renders a {@link MetricsService.Result} it is handed. The service owns the reading,
  * on its own thread; this class has no connection, no executor and no query (rule 8, rule 19).
  */
-public final class FindingsView extends JPanel {
+public final class FindingsView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
   private static final String CARD_EMPTY = "empty";
@@ -98,6 +100,7 @@ public final class FindingsView extends JPanel {
   private final JPanel catalog = new JPanel();
   private final JLabel headline = new JLabel(" ");
   private final JButton recompute = new JButton("Recompute");
+  private final JPanel localHeader = new JPanel(new BorderLayout());
   private final CardLayout cards = new CardLayout();
   private final JPanel deck = new JPanel(cards);
   private final EmptyStatePanel emptyState = new EmptyStatePanel("No session is open.");
@@ -114,6 +117,7 @@ public final class FindingsView extends JPanel {
   private MetricsService service;
   private LongConsumer onActionSelected = actionId -> {};
   private Consumer<Finding.Link> onNavigate = link -> {};
+  private PageToolbar pageToolbar;
 
   public FindingsView() {
     super(new BorderLayout());
@@ -137,16 +141,15 @@ public final class FindingsView extends JPanel {
     catalog.setLayout(new BoxLayout(catalog, BoxLayout.Y_AXIS));
     catalog.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
 
-    JPanel header = new JPanel(new BorderLayout());
-    header.setBorder(BorderFactory.createEmptyBorder(12, 12, 0, 12));
-    header.add(headline, BorderLayout.CENTER);
-    header.add(recompute, BorderLayout.EAST);
+    localHeader.setBorder(BorderFactory.createEmptyBorder(12, 12, 0, 12));
+    localHeader.add(headline, BorderLayout.CENTER);
+    localHeader.add(recompute, BorderLayout.EAST);
 
     top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
-    header.setAlignmentX(LEFT_ALIGNMENT);
+    localHeader.setAlignmentX(LEFT_ALIGNMENT);
     summary.setAlignmentX(LEFT_ALIGNMENT);
     catalog.setAlignmentX(LEFT_ALIGNMENT);
-    top.add(header);
+    top.add(localHeader);
     top.add(summary);
     top.add(catalog);
 
@@ -174,6 +177,21 @@ public final class FindingsView extends JPanel {
     recompute.addActionListener(event -> refresh());
     recompute.setEnabled(false);
     showEmpty();
+  }
+
+  /** Moves the page-level status and refresh action into the shared window chrome. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = toolbar;
+    top.remove(localHeader);
+    toolbar.addAction(recompute);
+    setHeadline(headline.getText());
+    top.revalidate();
+    top.repaint();
   }
 
   /** Where an evidence row sends the reader. */
@@ -214,7 +232,7 @@ public final class FindingsView extends JPanel {
       return;
     }
     cards.show(deck, CARD_CONTENT);
-    headline.setText("Reading the build…");
+    setHeadline("Reading the build…");
     recompute.setEnabled(false);
     running.collect(
         result -> {
@@ -230,7 +248,7 @@ public final class FindingsView extends JPanel {
           }
           recompute.setEnabled(true);
           log.error("could not collect metrics", failure);
-          headline.setText("Could not read the metrics: " + failure.getMessage());
+          setHeadline("Could not read the metrics: " + failure.getMessage());
         });
   }
 
@@ -242,7 +260,7 @@ public final class FindingsView extends JPanel {
     for (Finding finding : result.findings()) {
       model.addElement(finding);
     }
-    headline.setText(
+    setHeadline(
         result.findings().isEmpty()
             ? "No findings. Every rule ran and none of them matched."
             : result.findings().size()
@@ -718,12 +736,21 @@ public final class FindingsView extends JPanel {
   }
 
   private void showEmpty() {
-    headline.setText(" ");
+    setHeadline(" ");
     catalog.removeAll();
     detail.removeAll();
     cards.show(deck, CARD_EMPTY);
     revalidate();
     repaint();
+  }
+
+  private void setHeadline(String text) {
+    String value = text == null ? "" : text;
+    headline.setText(value.isBlank() ? " " : value);
+    if (pageToolbar != null) {
+      String concise = value.length() <= 140 ? value : value.substring(0, 137) + "…";
+      pageToolbar.setMetadata(concise, value);
+    }
   }
 
   private static JLabel heading(String text) {

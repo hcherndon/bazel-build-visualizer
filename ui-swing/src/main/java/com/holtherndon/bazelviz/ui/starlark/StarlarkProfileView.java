@@ -8,6 +8,8 @@ import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.ColumnSpec;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.ResponsiveGridLayout;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
@@ -60,7 +62,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** Queryable Starlark CPU profile summary, tables, call graph, and flame view. */
-public final class StarlarkProfileView extends JPanel {
+public final class StarlarkProfileView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
   private static final Logger log = LoggerFactory.getLogger(StarlarkProfileView.class);
@@ -98,6 +100,8 @@ public final class StarlarkProfileView extends JPanel {
   private final JPanel deck = new JPanel(cards);
   private final EmptyStatePanel emptyState = new EmptyStatePanel("No session is open.");
   private final JTabbedPane tabs = new JTabbedPane();
+  private final JPanel content = new JPanel(new BorderLayout());
+  private final JPanel localHeader = header();
 
   private final JPanel summaryCards = new JPanel(new ResponsiveGridLayout(4, 180, 10, 10));
   private final JTextArea summaryDetail = WrappingLabel.create(" ");
@@ -169,6 +173,7 @@ public final class StarlarkProfileView extends JPanel {
   private long callQueryGeneration;
   private long directedGraphQueryGeneration;
   private long flameQueryGeneration;
+  private PageToolbar pageToolbar;
   private boolean filesLoaded;
   private boolean directedGraphLoaded;
   private boolean flameLoaded;
@@ -256,13 +261,26 @@ public final class StarlarkProfileView extends JPanel {
     tabs.addTab("Flame", flameTab());
     tabs.addChangeListener(event -> tabSelected());
 
-    JPanel content = new JPanel(new BorderLayout());
-    content.add(header(), BorderLayout.NORTH);
+    content.add(localHeader, BorderLayout.NORTH);
     content.add(tabs, BorderLayout.CENTER);
     deck.add(emptyState, CARD_EMPTY);
     deck.add(content, CARD_CONTENT);
     add(deck, BorderLayout.CENTER);
     showEmpty("No session is open.");
+  }
+
+  /** Moves the page introduction into the shared window chrome. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = toolbar;
+    content.remove(localHeader);
+    syncPageMetadata("", "");
+    content.revalidate();
+    content.repaint();
   }
 
   /** Opens a session asynchronously and reads only its summary initially. */
@@ -305,6 +323,15 @@ public final class StarlarkProfileView extends JPanel {
     }
     reader = ready;
     summary = loaded;
+    if (loaded.isAvailable()) {
+      String cpu = EntityFormat.duration(loaded.sampledCpuMicros());
+      String functions = EntityFormat.count(loaded.functionCount());
+      syncPageMetadata(
+          cpu + " sampled CPU · " + functions + " functions",
+          loaded.detail() + " Sampled CPU: " + cpu + ". Functions: " + functions + ".");
+    } else {
+      syncPageMetadata(loaded.availability().displayName(), loaded.detail());
+    }
     cards.show(deck, CARD_CONTENT);
     renderSummary(loaded);
     boolean available = loaded.isAvailable();
@@ -1282,6 +1309,13 @@ public final class StarlarkProfileView extends JPanel {
   private void showEmpty(String message) {
     emptyState.setText(message);
     cards.show(deck, CARD_EMPTY);
+    syncPageMetadata(message.startsWith("No session") ? "" : message, message);
+  }
+
+  private void syncPageMetadata(String concise, String detail) {
+    if (pageToolbar != null) {
+      pageToolbar.setMetadata(concise, detail);
+    }
   }
 
   private static Timer searchDelay(Runnable action) {
