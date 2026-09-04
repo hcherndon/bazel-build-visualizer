@@ -6,3 +6,12 @@
 # external test tree, reached through a worktree's bazel-* symlink, fails
 # loading in seconds). .bazelignore is the only fence Bazel offers here.
 .claude
+
+# Codex also creates full repository worktrees below .Codex/worktrees/. Keep
+# their BUILD files and Bazel output symlinks outside this workspace's //...
+# package traversal.
+.Codex
+
+# JetBrains' Bazel plugin downloads generated aspect BUILD files here. They
+# are tool state and must not become packages in this workspace.
+.bazelbsp

@@ -2,6 +2,8 @@
 # BUILD files invoke native and contrib_rules_jvm rules directly; this package
 # does not define rule macros.
 
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
 alias(
     name = "format_java",
     actual = "//tools/java_quality:format_java",
@@ -11,3 +13,10 @@ exports_files([
     "java_format.bzl",
     "java_test_settings.bzl",
 ])
+
+sh_test(
+    name = "test_inventory_test",
+    size = "small",
+    srcs = ["test_inventory_test.py"],
+    data = ["test_inventory.py"],
+)
