@@ -76,14 +76,24 @@ final class LegacySpawnFields {
    * enrichment explicitly instead of being stored as either state.
    */
   static OptionalLong walltimeMicros(SpawnExec spawn) throws IOException {
-    List<ByteString> values =
-        spawn.getUnknownFields().getField(WALLTIME_FIELD).getLengthDelimitedList();
+    UnknownFieldSet.Field field = spawn.getUnknownFields().getField(WALLTIME_FIELD);
+    if (!field.getVarintList().isEmpty()
+        || !field.getFixed32List().isEmpty()
+        || !field.getFixed64List().isEmpty()
+        || !field.getGroupList().isEmpty()) {
+      throw new IOException(
+          "legacy execution-log walltime uses a wire type other than length-delimited Duration");
+    }
+    List<ByteString> values = field.getLengthDelimitedList();
     if (values.isEmpty()) {
       return OptionalLong.empty();
     }
     try {
-      Duration duration = Duration.parseFrom(values.getFirst());
-      ProtoTimes.Checked checked = ProtoTimes.checkedNonnegativeDurationMicros(duration);
+      Duration.Builder duration = Duration.newBuilder();
+      for (ByteString value : values) {
+        duration.mergeFrom(value);
+      }
+      ProtoTimes.Checked checked = ProtoTimes.checkedNonnegativeDurationMicros(duration.build());
       if (checked.isInvalid()) {
         throw new IOException(
             "legacy execution-log walltime is malformed, negative, or outside microsecond"

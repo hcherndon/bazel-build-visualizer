@@ -334,6 +334,17 @@ public final class EventNormalizer {
       Optional<String> invocationId,
       Optional<BuildEvent> event,
       List<String> timeAnomalies) {
+
+    /** Compatibility constructor for callers that predate explicit time anomalies. */
+    public Normalization(
+        NormalizedEvent normalized,
+        DecodeStatus status,
+        String failureDetail,
+        Optional<String> invocationId,
+        Optional<BuildEvent> event) {
+      this(normalized, status, failureDetail, invocationId, event, List.of());
+    }
+
     public Normalization {
       timeAnomalies = List.copyOf(timeAnomalies);
     }

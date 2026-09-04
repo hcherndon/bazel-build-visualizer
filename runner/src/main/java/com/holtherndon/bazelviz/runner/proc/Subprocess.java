@@ -13,6 +13,8 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -20,6 +22,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
+import java.util.stream.Stream;
 
 /**
  * Runs a short command and collects its output.
@@ -61,12 +64,16 @@ public final class Subprocess {
           + "(while ! IFS= read -r gate < \"$control\"; do :; done; exec \"$@\") "
           + "& child=$!; "
           + "set +m; "
-          + "if kill -0 \"-$child\" 2>/dev/null; then "
-          + "printf 'READY %s\\n' \"$child\" > \"$control\"; "
-          + "else printf 'UNAVAILABLE\\n' > \"$control\"; fi; "
-          + "wait \"$child\"";
+          + "if kill -0 \"-$child\" 2>/dev/null; then state=\"READY $child\"; "
+          + "else state=UNAVAILABLE; fi; "
+          + "if printf '%s\\n' \"$state\" > \"$control\"; then wait \"$child\"; "
+          + "else kill -KILL \"-$child\" 2>/dev/null "
+          + "|| kill -KILL \"$child\" 2>/dev/null || :; "
+          + "wait \"$child\" 2>/dev/null; exit 125; fi";
   private static final String LINUX_SESSION_WRAPPER =
-      "control=$1; shift; printf 'READY %s\\n' \"$$\" > \"$control\"; exec \"$@\"";
+      "control=$1; shift; "
+          + "if printf 'READY %s\\n' \"$$\" > \"$control\"; then exec \"$@\"; "
+          + "else exit 125; fi";
   private static final String GROUP_SIGNAL_WRAPPER = "kill \"$1\" \"$2\"";
 
   /** What a probe produced. */
@@ -212,7 +219,45 @@ public final class Subprocess {
     if (argv.isEmpty()) {
       throw new IllegalArgumentException("argv must not be empty");
     }
-    try (ProcessIsolation isolation = ProcessIsolation.prepare(argv)) {
+    return runWithIsolation(
+        ProcessIsolation.prepare(argv),
+        workingDirectory,
+        environment,
+        timeout,
+        stdoutLimit,
+        stderrLimit);
+  }
+
+  /** Package seam for injecting hostile process-control failures without changing host state. */
+  static Result runWithIsolationForTesting(
+      ProbeIsolation isolation,
+      Path workingDirectory,
+      Map<String, String> environment,
+      Duration timeout,
+      int stdoutLimit,
+      int stderrLimit)
+      throws IOException, InterruptedException {
+    Objects.requireNonNull(isolation, "isolation");
+    Objects.requireNonNull(environment, "environment");
+    requirePositiveTimeout(timeout);
+    requirePositiveLimit("stdoutLimit", stdoutLimit);
+    requirePositiveLimit("stderrLimit", stderrLimit);
+    if (isolation.command().isEmpty()) {
+      throw new IllegalArgumentException("isolation command must not be empty");
+    }
+    return runWithIsolation(
+        isolation, workingDirectory, environment, timeout, stdoutLimit, stderrLimit);
+  }
+
+  private static Result runWithIsolation(
+      ProbeIsolation isolation,
+      Path workingDirectory,
+      Map<String, String> environment,
+      Duration timeout,
+      int stdoutLimit,
+      int stderrLimit)
+      throws IOException, InterruptedException {
+    try (isolation) {
       ProcessBuilder builder = builder(isolation.command(), workingDirectory, environment);
       Process process = builder.start();
       closeQuietly(process.getOutputStream());
@@ -286,7 +331,7 @@ public final class Subprocess {
     if (argv.isEmpty()) {
       throw new IllegalArgumentException("argv must not be empty");
     }
-    try (ProcessIsolation isolation = ProcessIsolation.prepare(argv)) {
+    try (ProbeIsolation isolation = ProcessIsolation.prepare(argv)) {
       ProcessBuilder builder = builder(isolation.command(), workingDirectory, environment);
       builder.redirectOutput(ProcessBuilder.Redirect.to(outputFile.toFile()));
       Process process = builder.start();
@@ -336,7 +381,7 @@ public final class Subprocess {
       int exitCode,
       Process process,
       DescendantTracker descendants,
-      ProcessIsolation isolation,
+      ProbeIsolation isolation,
       StreamDrain stdout,
       StreamDrain stderr,
       boolean timedOut,
@@ -367,13 +412,15 @@ public final class Subprocess {
   private static void cleanupAfterFailure(
       Process process,
       DescendantTracker descendants,
-      ProcessIsolation isolation,
+      ProbeIsolation isolation,
       Throwable failure,
       StreamDrain... drains) {
+    boolean restoreInterrupt = failure instanceof InterruptedException;
     try {
       forceAndVerify(process, descendants, isolation);
     } catch (IOException | InterruptedException | RuntimeException cleanupFailure) {
       failure.addSuppressed(cleanupFailure);
+      restoreInterrupt |= cleanupFailure instanceof InterruptedException;
     }
     for (StreamDrain drain : drains) {
       drain.close();
@@ -383,12 +430,17 @@ public final class Subprocess {
         drain.awaitCleanup();
       } catch (IOException | InterruptedException cleanupFailure) {
         failure.addSuppressed(cleanupFailure);
+        restoreInterrupt |= cleanupFailure instanceof InterruptedException;
       }
+    }
+    restoreInterrupt |= Thread.interrupted();
+    if (restoreInterrupt) {
+      Thread.currentThread().interrupt();
     }
   }
 
   private static boolean awaitExit(
-      Process process, Duration timeout, DescendantTracker descendants, ProcessIsolation isolation)
+      Process process, Duration timeout, DescendantTracker descendants, ProbeIsolation isolation)
       throws IOException, InterruptedException {
     long timeoutNanos;
     try {
@@ -422,28 +474,86 @@ public final class Subprocess {
   }
 
   private static void forceAndVerify(
-      Process process, DescendantTracker descendants, ProcessIsolation isolation)
+      Process process, DescendantTracker descendants, ProbeIsolation isolation)
       throws IOException, InterruptedException {
+    CleanupFailures failures = new CleanupFailures();
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
     while (true) {
-      isolation.capture(process);
-      descendants.capture(process);
-      process.descendants().forEach(ProcessHandle::destroyForcibly);
-      descendants.destroyAll();
-      if (process.isAlive()) {
-        process.destroyForcibly();
+      rememberInterrupt(failures);
+      try {
+        isolation.capture(process);
+      } catch (IOException | RuntimeException failure) {
+        failures.record(CleanupOperation.CAPTURE_GROUP, failure);
       }
-      isolation.destroyForcibly();
-      if (!process.isAlive() && !descendants.anyAlive() && !isolation.anyAlive()) {
-        return;
+      try {
+        descendants.capture(process);
+        if (descendants.overflowed()) {
+          failures.record(
+              CleanupOperation.CAPTURE_DESCENDANTS,
+              new IOException(
+                  "subprocess spawned more than "
+                      + MAX_TRACKED_DESCENDANTS
+                      + " descendants; cleanup was capped"));
+        }
+      } catch (RuntimeException failure) {
+        failures.record(CleanupOperation.CAPTURE_DESCENDANTS, failure);
+      }
+      try {
+        descendants.destroyAll();
+      } catch (RuntimeException failure) {
+        failures.record(CleanupOperation.DESTROY_DESCENDANTS, failure);
+      }
+      try {
+        if (process.isAlive()) {
+          process.destroyForcibly();
+        }
+      } catch (RuntimeException failure) {
+        failures.record(CleanupOperation.DESTROY_ROOT, failure);
+      }
+      try {
+        isolation.destroyForcibly();
+      } catch (IOException | InterruptedException | RuntimeException failure) {
+        failures.record(CleanupOperation.DESTROY_GROUP, failure);
+      }
+
+      boolean rootAlive = true;
+      try {
+        rootAlive = process.isAlive();
+      } catch (RuntimeException failure) {
+        failures.record(CleanupOperation.CHECK_ROOT, failure);
+      }
+      boolean descendantsAlive = true;
+      try {
+        descendantsAlive = descendants.anyAlive();
+      } catch (RuntimeException failure) {
+        failures.record(CleanupOperation.CHECK_DESCENDANTS, failure);
+      }
+      boolean groupAlive = true;
+      try {
+        groupAlive = isolation.anyAlive();
+      } catch (IOException | InterruptedException | RuntimeException failure) {
+        failures.record(CleanupOperation.CHECK_GROUP, failure);
+      }
+      rememberInterrupt(failures);
+      if (!rootAlive && !descendantsAlive && !groupAlive) {
+        break;
       }
       if (System.nanoTime() >= deadline) {
-        throw new IOException("could not terminate every process in the subprocess tree");
-      }
-      if (Thread.interrupted()) {
-        throw new InterruptedException("interrupted while reaping a subprocess tree");
+        failures.record(
+            CleanupOperation.VERIFY_TREE,
+            new IOException("could not terminate every process in the subprocess tree"));
+        break;
       }
       LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+    }
+    failures.throwIfAny();
+  }
+
+  private static void rememberInterrupt(CleanupFailures failures) {
+    if (Thread.interrupted()) {
+      failures.record(
+          CleanupOperation.INTERRUPTED,
+          new InterruptedException("interrupted while reaping a subprocess tree"));
     }
   }
 
@@ -475,6 +585,9 @@ public final class Subprocess {
       throw new IOException("process-group control response exceeds 64 bytes");
     }
     if (response.length == 0) {
+      if (!writerAlive) {
+        throw new IOException("missing process-group control response");
+      }
       return 0;
     }
     if (response[response.length - 1] != '\n') {
@@ -511,9 +624,30 @@ public final class Subprocess {
     List<String> wrapped = new ArrayList<>(argv.size() + 7);
     wrapped.add(setsid.toString());
     wrapped.add("--wait");
+    wrapped.addAll(linuxSessionCommand(controlFile, argv));
+    return List.copyOf(wrapped);
+  }
+
+  /**
+   * Package seam for proving that a failed Linux control write cannot run the requested command.
+   */
+  static List<String> linuxSessionCommand(Path controlFile, List<String> argv) {
+    List<String> wrapped = new ArrayList<>(argv.size() + 5);
     wrapped.add(POSIX_SHELL.toString());
     wrapped.add("-c");
     wrapped.add(LINUX_SESSION_WRAPPER);
+    wrapped.add("bazelviz-probe-group");
+    wrapped.add(controlFile.toString());
+    wrapped.addAll(argv);
+    return List.copyOf(wrapped);
+  }
+
+  /** Package seam for proving that the macOS gate also refuses a failed control write. */
+  static List<String> macProcessGroupCommand(Path controlFile, List<String> argv) {
+    List<String> wrapped = new ArrayList<>(argv.size() + 5);
+    wrapped.add(POSIX_SHELL.toString());
+    wrapped.add("-c");
+    wrapped.add(POSIX_GROUP_WRAPPER);
     wrapped.add("bazelviz-probe-group");
     wrapped.add(controlFile.toString());
     wrapped.addAll(argv);
@@ -539,6 +673,80 @@ public final class Subprocess {
 
   private record Captured(String text, long totalBytes, boolean truncated, boolean incomplete) {}
 
+  interface ProbeIsolation extends AutoCloseable {
+
+    List<String> command();
+
+    void capture(Process root) throws IOException;
+
+    void destroyForcibly() throws IOException, InterruptedException;
+
+    boolean anyAlive() throws IOException, InterruptedException;
+
+    @Override
+    void close() throws IOException;
+  }
+
+  private enum CleanupOperation {
+    CAPTURE_GROUP,
+    CAPTURE_DESCENDANTS,
+    DESTROY_DESCENDANTS,
+    DESTROY_ROOT,
+    DESTROY_GROUP,
+    CHECK_ROOT,
+    CHECK_DESCENDANTS,
+    CHECK_GROUP,
+    VERIFY_TREE,
+    INTERRUPTED,
+    SIGNAL_TRIGGER,
+    SIGNAL_DESTROY,
+    SIGNAL_CHECK,
+    SIGNAL_REAP
+  }
+
+  /** Retains at most one failure for each fixed cleanup avenue. */
+  private static final class CleanupFailures {
+
+    private final EnumMap<CleanupOperation, Throwable> failures =
+        new EnumMap<>(CleanupOperation.class);
+
+    void record(CleanupOperation operation, Throwable failure) {
+      failures.putIfAbsent(operation, failure);
+    }
+
+    void throwIfAny() throws IOException, InterruptedException {
+      if (failures.isEmpty()) {
+        return;
+      }
+      InterruptedException interrupted = null;
+      for (Throwable failure : failures.values()) {
+        if (failure instanceof InterruptedException interruption) {
+          interrupted = interruption;
+          break;
+        }
+      }
+      if (interrupted != null) {
+        addOtherFailures(interrupted);
+        throw interrupted;
+      }
+      Throwable first = failures.values().iterator().next();
+      IOException aggregate =
+          first instanceof IOException ioFailure
+              ? ioFailure
+              : new IOException("subprocess cleanup failed", first);
+      addOtherFailures(aggregate);
+      throw aggregate;
+    }
+
+    private void addOtherFailures(Throwable primary) {
+      for (Throwable failure : failures.values()) {
+        if (failure != primary && failure != primary.getCause()) {
+          primary.addSuppressed(failure);
+        }
+      }
+    }
+  }
+
   /**
    * Gives a probe its own POSIX process group so a child remains identifiable after reparenting.
    *
@@ -548,7 +756,7 @@ public final class Subprocess {
    * argument vector. The private control file is the only out-of-band channel; stdout and stderr
    * remain byte-for-byte command streams. An unverified host uses only {@link DescendantTracker}.
    */
-  private static final class ProcessIsolation implements AutoCloseable {
+  private static final class ProcessIsolation implements ProbeIsolation {
 
     private final List<String> command;
     private final Path controlFile;
@@ -589,14 +797,7 @@ public final class Subprocess {
           return new ProcessIsolation(
               linuxProcessGroupCommand(linuxSetsid, control, argv), control, true);
         }
-        List<String> wrapped = new ArrayList<>(argv.size() + 5);
-        wrapped.add(POSIX_SHELL.toString());
-        wrapped.add("-c");
-        wrapped.add(POSIX_GROUP_WRAPPER);
-        wrapped.add("bazelviz-probe-group");
-        wrapped.add(control.toString());
-        wrapped.addAll(argv);
-        return new ProcessIsolation(wrapped, control, false);
+        return new ProcessIsolation(macProcessGroupCommand(control, argv), control, false);
       } catch (IOException | RuntimeException failure) {
         try {
           Files.deleteIfExists(control);
@@ -607,11 +808,13 @@ public final class Subprocess {
       }
     }
 
-    List<String> command() {
+    @Override
+    public List<String> command() {
       return command;
     }
 
-    void capture(Process root) throws IOException {
+    @Override
+    public void capture(Process root) throws IOException {
       if (controlFile == null || groupId > 0 || unavailable) {
         return;
       }
@@ -630,13 +833,15 @@ public final class Subprocess {
       }
     }
 
-    void destroyForcibly() throws IOException, InterruptedException {
+    @Override
+    public void destroyForcibly() throws IOException, InterruptedException {
       if (groupId > 0) {
         signal("-KILL");
       }
     }
 
-    boolean anyAlive() throws IOException, InterruptedException {
+    @Override
+    public boolean anyAlive() throws IOException, InterruptedException {
       return groupId > 0 && signal("-0") == 0;
     }
 
@@ -649,20 +854,59 @@ public final class Subprocess {
       closeQuietly(sender.getOutputStream());
       try {
         if (!sender.waitFor(1, TimeUnit.SECONDS)) {
-          sender.destroyForcibly();
-          sender.onExit().join();
-          throw new IOException("timed out while signalling subprocess process group " + groupId);
+          stopAndReapSignalSender(
+              sender,
+              new IOException("timed out while signalling subprocess process group " + groupId));
         }
         return sender.exitValue();
       } catch (InterruptedException interrupted) {
-        sender.destroyForcibly();
-        try {
-          sender.onExit().join();
-        } catch (RuntimeException cleanupFailure) {
-          interrupted.addSuppressed(cleanupFailure);
-        }
+        stopAndReapSignalSender(sender, interrupted);
         throw interrupted;
       }
+    }
+
+    private static void stopAndReapSignalSender(Process sender, Throwable original)
+        throws IOException, InterruptedException {
+      CleanupFailures failures = new CleanupFailures();
+      failures.record(
+          original instanceof InterruptedException
+              ? CleanupOperation.INTERRUPTED
+              : CleanupOperation.SIGNAL_TRIGGER,
+          original);
+      try {
+        sender.destroyForcibly();
+      } catch (RuntimeException failure) {
+        failures.record(CleanupOperation.SIGNAL_DESTROY, failure);
+      }
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+      while (true) {
+        if (Thread.interrupted()) {
+          failures.record(
+              CleanupOperation.INTERRUPTED,
+              new InterruptedException("interrupted while reaping a process-group signal helper"));
+        }
+        boolean alive = true;
+        try {
+          alive = sender.isAlive();
+        } catch (RuntimeException failure) {
+          failures.record(CleanupOperation.SIGNAL_CHECK, failure);
+        }
+        if (!alive) {
+          break;
+        }
+        if (System.nanoTime() >= deadline) {
+          failures.record(
+              CleanupOperation.SIGNAL_REAP,
+              new IOException("could not reap the process-group signal helper"));
+          break;
+        }
+        try {
+          sender.waitFor(20, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+          failures.record(CleanupOperation.INTERRUPTED, interrupted);
+        }
+      }
+      failures.throwIfAny();
     }
 
     @Override
@@ -697,26 +941,61 @@ public final class Subprocess {
     private boolean overflowed;
 
     void capture(Process process) {
-      process.descendants().forEach(this::remember);
+      try (Stream<ProcessHandle> stream = process.descendants()) {
+        Iterator<ProcessHandle> handles =
+            stream.limit((long) MAX_TRACKED_DESCENDANTS + 1).iterator();
+        int observed = 0;
+        while (handles.hasNext()) {
+          if (observed == MAX_TRACKED_DESCENDANTS) {
+            overflowed = true;
+            break;
+          }
+          remember(handles.next());
+          observed++;
+        }
+      }
     }
 
     void destroyAll() {
+      RuntimeException firstFailure = null;
       for (int index = 0; index < size; index++) {
         ProcessHandle handle = handles[index];
-        if (handle != null && handle.isAlive()) {
-          handle.destroyForcibly();
+        try {
+          if (handle != null && handle.isAlive()) {
+            handle.destroyForcibly();
+          }
+        } catch (RuntimeException failure) {
+          if (firstFailure == null) {
+            firstFailure = failure;
+          } else {
+            firstFailure.addSuppressed(failure);
+          }
         }
+      }
+      if (firstFailure != null) {
+        throw firstFailure;
       }
     }
 
     boolean anyAlive() {
+      boolean alive = false;
+      RuntimeException firstFailure = null;
       for (int index = 0; index < size; index++) {
         ProcessHandle handle = handles[index];
-        if (handle != null && handle.isAlive()) {
-          return true;
+        try {
+          alive |= handle != null && handle.isAlive();
+        } catch (RuntimeException failure) {
+          if (firstFailure == null) {
+            firstFailure = failure;
+          } else {
+            firstFailure.addSuppressed(failure);
+          }
         }
       }
-      return false;
+      if (firstFailure != null) {
+        throw firstFailure;
+      }
+      return alive;
     }
 
     boolean overflowed() {

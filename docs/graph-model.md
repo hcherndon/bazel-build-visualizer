@@ -83,10 +83,11 @@ warned about.
 
 ### Traversals
 
-Forward and reverse BFS, depth- and node-budgeted; bidirectional shortest path,
-also budgeted. Running out of budget is reported as its own outcome and never
-as "there is no path" — plan 13.3 forbids a transitive closure, so a search has
-to be able to give up, and giving up is not an answer.
+Forward and reverse BFS are depth-, node-, and edge-budgeted; bidirectional
+shortest path is also budgeted. Running out of either resource budget is
+reported as its own outcome and never as "there is no path" — plan 13.3 forbids
+a transitive closure, so a search has to be able to give up, and giving up is
+not an answer.
 
 ## What Phase 7 added (2026-08-22)
 
@@ -108,11 +109,11 @@ invocation — are absent from the map rather than mapped to zero.
 ### Extraction is always bounded, and always says so
 
 `GraphExtract` returns a subgraph plus the totals it came from. Plan 13.3
-forbids a transitive closure, so every traversal takes a node budget; hitting it
-is reported as its own fact and never as having finished. `whole()` refuses a
-graph that will not fit rather than truncating it, because a "whole graph"
-silently showing the first fifty thousand nodes would be the most misleading
-view in the application.
+forbids a transitive closure, so every rooted traversal takes separate node and
+edge budgets; hitting either is reported as its own partial-result cause and
+never as having finished. `whole()` refuses a graph that will not fit rather
+than truncating it, because a "whole graph" silently showing the first fifty
+thousand nodes would be the most misleading view in the application.
 
 ### Clustering is an aggregation, not a sample
 

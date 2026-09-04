@@ -14,14 +14,17 @@ is planned to exist. Update it in the same change that lands the work.
   drain failure, and a root that exits while a child inherits its pipes can kill and verify the
   group even after that child is reparented. Linux uses the standard util-linux `/usr/bin/setsid`
   or `/bin/setsid` helper without forcing a fork; macOS uses shell job control. Redirected binary
-  stdout uses the same lifecycle. On unverified hosts without the required POSIX permissions,
-  `/bin/sh`, or Linux `setsid`, the fixed `ProcessHandle` tracker is a best-effort fallback; it
-  cannot recover a child already reparented before Java observed it.
+  stdout uses the same lifecycle. A failed handshake cannot execute user argv, and cleanup keeps
+  trying the bounded descendant, root, and process-group avenues when any one of them fails. On
+  unverified hosts without the required POSIX permissions, `/bin/sh`, or Linux `setsid`, the fixed
+  `ProcessHandle` tracker is a best-effort fallback; it cannot recover a child already reparented
+  before Java observed it.
 - The raw-byte gRPC marshaller reads at most the configured message limit plus one byte before
   returning `RESOURCE_EXHAUSTED`; an unknown stream length can no longer force an unbounded read.
 - Protobuf timestamps and durations pass through one range-, sign-, and overflow-checked boundary.
   Present epoch zero remains present, absent legacy zero remains absent, and malformed BEP values
-  become unavailable with a bounded `INVALID_TIME_VALUE` import diagnostic. Malformed execution-log
+  become unavailable. Offline import records them through its bounded `INVALID_TIME_VALUE`
+  diagnostic accumulator; live capture writes an event-scoped diagnostic. Malformed execution-log
   timing fails that enrichment transaction explicitly, preserving both its source and any prior
   complete enrichment. Test timeouts validate the full Duration and never overflow in the UI.
 - JSON profile anchors and relative placement use exact arithmetic. An overflowing anchor is a

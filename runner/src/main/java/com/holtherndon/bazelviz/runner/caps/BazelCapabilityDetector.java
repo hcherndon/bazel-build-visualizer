@@ -423,18 +423,25 @@ public final class BazelCapabilityDetector {
         result.exitCode(), result.stdout(), result.stderr(), result.timedOut(), false);
   }
 
-  private record ProbeResult(
+  record ProbeResult(
       int exitCode, String stdout, String stderr, boolean timedOut, boolean outputTruncated) {
     boolean isSuccess() {
       return !timedOut && !outputTruncated && exitCode == 0;
     }
 
     String failureDetail() {
-      if (timedOut) {
-        return "the command did not finish in time";
-      }
-      if (outputTruncated) {
-        return "the command's probe output exceeded its bounded capture limit";
+      if (timedOut || outputTruncated) {
+        StringBuilder detail = new StringBuilder();
+        if (timedOut) {
+          detail.append("the command did not finish in time");
+        }
+        if (outputTruncated) {
+          if (!detail.isEmpty()) {
+            detail.append("; ");
+          }
+          detail.append("the command's probe output exceeded its bounded capture limit");
+        }
+        return detail.toString();
       }
       String text = stderr.isBlank() ? stdout : stderr;
       return text.isBlank()

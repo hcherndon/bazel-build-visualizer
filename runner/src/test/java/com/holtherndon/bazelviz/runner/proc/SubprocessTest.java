@@ -10,6 +10,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.DisplayName;
@@ -101,6 +105,16 @@ final class SubprocessTest {
   }
 
   @Test
+  @DisplayName("an empty process-group control record is malformed after its writer exits")
+  void emptyControlRecordFromDeadWriterIsMalformed() throws Exception {
+    assertThat(Subprocess.parseProcessGroupControlResponse(new byte[0], true, 999, false)).isZero();
+    assertThatThrownBy(
+            () -> Subprocess.parseProcessGroupControlResponse(new byte[0], false, 999, false))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("missing process-group control response");
+  }
+
+  @Test
   @DisplayName("Linux setsid may report the ProcessBuilder root as the isolated group")
   void linuxControlRecordMayUseRootPid() throws Exception {
     byte[] rootGroup = "READY 123\n".getBytes(StandardCharsets.US_ASCII);
@@ -128,6 +142,54 @@ final class SubprocessTest {
         .containsExactly(
             "bazelviz-probe-group", "/tmp/private-control", "tool", "space value", "quote'\"$*");
     assertThat(command.subList(0, 5)).doesNotContain("-f", "--fork");
+  }
+
+  @Test
+  @DisplayName("a failed Linux control-record write never executes the requested command")
+  void linuxControlWriteFailureStopsBeforeExec(@TempDir Path temporary) throws Exception {
+    Path marker = temporary.resolve("command-ran");
+    Path unavailableControl = temporary.resolve("missing-parent").resolve("control");
+    Process process =
+        new ProcessBuilder(
+                Subprocess.linuxSessionCommand(
+                    unavailableControl,
+                    List.of(
+                        "/bin/sh",
+                        "-c",
+                        "printf ran > \"$1\"",
+                        "subprocess-test-command",
+                        marker.toString())))
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start();
+
+    assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(process.exitValue()).isEqualTo(125);
+    assertThat(marker).doesNotExist();
+  }
+
+  @Test
+  @DisplayName("a failed macOS control-record write kills the gate before the command runs")
+  void macControlWriteFailureStopsBeforeExec(@TempDir Path temporary) throws Exception {
+    Path marker = temporary.resolve("command-ran");
+    Path unavailableControl = temporary.resolve("missing-parent").resolve("control");
+    Process process =
+        new ProcessBuilder(
+                Subprocess.macProcessGroupCommand(
+                    unavailableControl,
+                    List.of(
+                        "/bin/sh",
+                        "-c",
+                        "printf ran > \"$1\"",
+                        "subprocess-test-command",
+                        marker.toString())))
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start();
+
+    assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(process.exitValue()).isEqualTo(125);
+    assertThat(marker).doesNotExist();
   }
 
   @Test
@@ -217,6 +279,89 @@ final class SubprocessTest {
       worker.interrupt();
       worker.join(Duration.ofSeconds(8));
       cleanupAnnouncedProcess(ready);
+    }
+  }
+
+  @Test
+  @DisplayName("repeated control failures and a cleanup interrupt cannot abandon known processes")
+  void cleanupSurvivesRepeatedCaptureFailureAndInterruption(@TempDir Path temporary)
+      throws Exception {
+    Path ready = temporary.resolve("tree.pids");
+    AtomicInteger captureAttempts = new AtomicInteger();
+    AtomicBoolean interruptCleanupOnce = new AtomicBoolean(true);
+    CountDownLatch cleanupStarted = new CountDownLatch(1);
+    CountDownLatch waitForInterrupt = new CountDownLatch(1);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicReference<Boolean> interruptRestored = new AtomicReference<>(false);
+    Subprocess.ProbeIsolation isolation =
+        new Subprocess.ProbeIsolation() {
+          @Override
+          public List<String> command() {
+            return announcedTreeCommand(ready);
+          }
+
+          @Override
+          public void capture(Process root) throws IOException {
+            awaitPidValues(ready);
+            captureAttempts.incrementAndGet();
+            throw new IOException("injected control-record read failure");
+          }
+
+          @Override
+          public void destroyForcibly() throws InterruptedException {
+            cleanupStarted.countDown();
+            if (interruptCleanupOnce.getAndSet(false)) {
+              waitForInterrupt.await();
+            }
+          }
+
+          @Override
+          public boolean anyAlive() {
+            return false;
+          }
+
+          @Override
+          public void close() {}
+        };
+    Thread worker =
+        Thread.ofPlatform()
+            .start(
+                () -> {
+                  try {
+                    Subprocess.runWithIsolationForTesting(
+                        isolation, null, Map.of(), Duration.ofSeconds(30), 64, 64);
+                  } catch (Throwable caught) {
+                    failure.set(caught);
+                  } finally {
+                    interruptRestored.set(Thread.currentThread().isInterrupted());
+                  }
+                });
+
+    long[] pids = new long[0];
+    try {
+      assertThat(cleanupStarted.await(5, TimeUnit.SECONDS)).isTrue();
+      pids = awaitPids(ready);
+      worker.interrupt();
+      worker.join(Duration.ofSeconds(8));
+
+      assertThat(worker.isAlive()).isFalse();
+      assertThat(failure.get())
+          .isInstanceOf(IOException.class)
+          .hasMessageContaining("injected control-record read failure");
+      assertThat(failure.get().getSuppressed())
+          .anyMatch(suppressed -> suppressed instanceof InterruptedException);
+      assertThat(interruptRestored.get()).isTrue();
+      assertThat(captureAttempts.get()).isGreaterThanOrEqualTo(2);
+      for (long pid : pids) {
+        assertProcessGone(pid);
+      }
+    } finally {
+      worker.interrupt();
+      worker.join(Duration.ofSeconds(8));
+      for (long pid : pids) {
+        cleanupProcess(pid);
+      }
+      cleanupAnnouncedProcesses(ready);
     }
   }
 
@@ -336,6 +481,35 @@ final class SubprocessTest {
         ready.toString());
   }
 
+  private static List<String> announcedTreeCommand(Path ready) {
+    return List.of(
+        "/bin/sh",
+        "-c",
+        "sleep 30 & child=$!; printf '%s %s' \"$$\" \"$child\" > \"$1\"; wait",
+        "subprocess-test",
+        ready.toString());
+  }
+
+  private static String[] awaitPidValues(Path file) throws IOException {
+    long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+    while (System.nanoTime() < deadline) {
+      if (Files.exists(file)) {
+        String[] values = Files.readString(file).strip().split(" ");
+        if (values.length == 2) {
+          try {
+            if (Long.parseLong(values[0]) > 0 && Long.parseLong(values[1]) > 0) {
+              return values;
+            }
+          } catch (NumberFormatException incomplete) {
+            // The shell may still be completing its one small regular-file write.
+          }
+        }
+      }
+      LockSupport.parkNanos(Duration.ofMillis(1).toNanos());
+    }
+    throw new IOException("timed out waiting for a complete hostile process-tree record");
+  }
+
   private static long awaitPid(Path file) throws Exception {
     long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
     while (!Files.exists(file) && System.nanoTime() < deadline) {
@@ -343,6 +517,11 @@ final class SubprocessTest {
     }
     assertThat(Files.exists(file)).as("child process announced itself").isTrue();
     return Long.parseLong(Files.readString(file));
+  }
+
+  private static long[] awaitPids(Path file) throws Exception {
+    String[] values = awaitPidValues(file);
+    return new long[] {Long.parseLong(values[0]), Long.parseLong(values[1])};
   }
 
   private static void assertProcessGone(long pid) {
@@ -369,5 +548,27 @@ final class SubprocessTest {
     } catch (RuntimeException | IOException ignored) {
       // Best-effort test cleanup must not hide the product assertion that failed.
     }
+  }
+
+  private static void cleanupAnnouncedProcesses(Path file) {
+    try {
+      if (!Files.exists(file)) {
+        return;
+      }
+      for (String value : Files.readString(file).strip().split(" ")) {
+        cleanupProcess(Long.parseLong(value));
+      }
+    } catch (RuntimeException | IOException ignored) {
+      // Best-effort test cleanup must not hide the product assertion that failed.
+    }
+  }
+
+  private static void cleanupProcess(long pid) {
+    ProcessHandle.of(pid)
+        .ifPresent(
+            process -> {
+              process.descendants().forEach(ProcessHandle::destroyForcibly);
+              process.destroyForcibly();
+            });
   }
 }

@@ -278,6 +278,42 @@ final class ExecLogParserTest {
   }
 
   @Test
+  @DisplayName("legacy walltime with the wrong outer wire type is explicitly malformed")
+  void legacyRejectsWrongWalltimeWireType() {
+    UnknownFieldSet unknownFields =
+        UnknownFieldSet.newBuilder()
+            .addField(17, UnknownFieldSet.Field.newBuilder().addVarint(1).build())
+            .build();
+
+    assertThatThrownBy(
+            () -> parseBinary(SpawnExec.newBuilder().setUnknownFields(unknownFields).build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("wire type");
+  }
+
+  @Test
+  @DisplayName("a malformed later legacy walltime occurrence cannot be ignored")
+  void legacyRejectsMalformedDuplicateWalltime() {
+    ByteString validDuration = Duration.newBuilder().setSeconds(1).build().toByteString();
+    ByteString malformedDuration = ByteString.copyFrom(new byte[] {(byte) 0x80});
+    UnknownFieldSet unknownFields =
+        UnknownFieldSet.newBuilder()
+            .addField(
+                17,
+                UnknownFieldSet.Field.newBuilder()
+                    .addLengthDelimited(validDuration)
+                    .addLengthDelimited(malformedDuration)
+                    .build())
+            .build();
+
+    assertThatThrownBy(
+            () -> parseBinary(SpawnExec.newBuilder().setUnknownFields(unknownFields).build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("legacy execution-log walltime")
+        .hasMessageContaining("not a protobuf Duration");
+  }
+
+  @Test
   @DisplayName("present zero exec-log times remain distinct from absent times")
   void zeroAndAbsentTimesStayDistinct() throws Exception {
     SpawnMetrics zero =
