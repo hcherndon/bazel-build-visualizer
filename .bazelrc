@@ -50,12 +50,12 @@ build --output_groups=+java_format_checks
 # --- Tests -----------------------------------------------------------------
 test --test_output=errors
 
-# The four-version Bazel sweep (BazelVersionMatrixTest) is fenced twice: its
-# target is tagged "manual" so //... never expands to it, and this filter
-# excludes the tag even from an explicit wildcard. It downloads and starts
-# four Bazel servers and has crashed machines; run it only deliberately, one
-# target, one version at a time. real-bazel tests stay INCLUDED by default,
-# matching Gradle's `./gradlew build` semantics.
+# The Bazel compatibility matrix target is fenced twice: its target is tagged
+# "manual" so //... never expands to it, and this filter excludes the tag even
+# from an explicit wildcard. Refreshing all four versions starts four Bazel
+# servers and has crashed machines; each deliberate invocation must select one
+# version. Ordinary real-bazel tests stay INCLUDED by default; only the matrix
+# carries the bazel-sweep hazard tag.
 test --test_tag_filters=-bazel-sweep
 
 # Each test JVM gets 2 GiB (bbv.java-common parity); a machine-size fleet of
