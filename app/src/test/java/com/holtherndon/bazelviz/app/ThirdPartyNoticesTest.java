@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -14,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import org.junit.jupiter.api.DisplayName;
@@ -24,6 +26,53 @@ final class ThirdPartyNoticesTest {
 
   private static final String PREFIX = "META-INF/third-party/";
   private static final String ICON_PREFIX = "com/holtherndon/bazelviz/ui/repository/icons/";
+  private static final String JCTOOLS_PREFIX =
+      "io/grpc/netty/shaded/io/netty/util/internal/shaded/org/jctools/";
+  private static final String JSVG_SOURCE_ARCHIVE = "JSVG-2.1.0-CORRESPONDING-SOURCE.tar.gz";
+  private static final String JSVG_SOURCE_ARCHIVE_SHA256 =
+      "10d0c55cbfe150cf6dc4b0856cabc974a7c33f0c068383642dbeb0285d8125b0";
+
+  private static final Set<String> JSVG_REQUIRED_SOURCE_ENTRIES =
+      Set.of(
+          "jsvg-2.1.0/build.gradle.kts",
+          "jsvg-2.1.0/settings.gradle.kts",
+          "jsvg-2.1.0/gradlew",
+          "jsvg-2.1.0/gradle/wrapper/gradle-wrapper.jar",
+          "jsvg-2.1.0/jsvg/src/main/java/com/github/weisj/jsvg/paint/impl/jdk/SVGMultipleGradientPaint.java",
+          "jsvg-2.1.0/jsvg/src/main/java/com/github/weisj/jsvg/paint/impl/jdk/SVGMultipleGradientPaintContext.java",
+          "jsvg-2.1.0/jsvg/src/main/java/com/github/weisj/jsvg/paint/impl/jdk/SVGRadialGradientPaint.java",
+          "jsvg-2.1.0/jsvg/src/main/java/com/github/weisj/jsvg/paint/impl/jdk/SVGRadialGradientPaintContext.java");
+
+  private static final Map<String, String> NETTY_EMBEDDED_EVIDENCE =
+      Map.ofEntries(
+          Map.entry(
+              "JSR-166 concurrency code",
+              "io/grpc/netty/shaded/io/netty/util/concurrent/ConcurrentSkipListIntObjMultimap.class"),
+          Map.entry(
+              "Robert Harder Base64 code",
+              "io/grpc/netty/shaded/io/netty/handler/codec/base64/Base64.class"),
+          Map.entry(
+              "Webbit WebSocket code",
+              "io/grpc/netty/shaded/io/netty/handler/codec/http/websocketx/WebSocket08FrameEncoder.class"),
+          Map.entry(
+              "SLF4J message formatting code",
+              "io/grpc/netty/shaded/io/netty/util/internal/logging/MessageFormatter.class"),
+          Map.entry(
+              "Apache Harmony networking code", "io/grpc/netty/shaded/io/netty/util/NetUtil.class"),
+          Map.entry(
+              "jbzip2 code",
+              "io/grpc/netty/shaded/io/netty/handler/codec/compression/Bzip2Decoder.class"),
+          Map.entry(
+              "libdivsufsort code",
+              "io/grpc/netty/shaded/io/netty/handler/codec/compression/Bzip2DivSufSort.class"),
+          Map.entry(
+              "jfastlz code",
+              "io/grpc/netty/shaded/io/netty/handler/codec/compression/FastLz.class"),
+          Map.entry(
+              "HPACK code", "io/grpc/netty/shaded/io/netty/handler/codec/http2/HpackDecoder.class"),
+          Map.entry(
+              "Apache Commons Lang code",
+              "io/grpc/netty/shaded/io/netty/util/internal/StringUtil.class"));
 
   private static final List<String> MATERIAL_REPOSITORY_ICONS =
       List.of(
@@ -101,8 +150,29 @@ final class ThirdPartyNoticesTest {
               "FLATLAF-APACHE-2.0.txt",
               "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
           Map.entry(
+              "FLATLAF-APPLE-JNFRUNLOOP.h",
+              "0b44c1e1eded2d7614280e2811794d7dcbce991192d3e390622846ecf0dd3ace"),
+          Map.entry(
+              "FLATLAF-INTELLIJ-APACHE-2.0.txt",
+              "7dea75e38a7369ab41879858ffbad944914300f468dad80cd84b5e3d9baaf0e0"),
+          Map.entry(
+              "FLATLAF-INTELLIJ-NOTICE.txt",
+              "83903abdebe3b3dda1a178fb3f03ac71ef31c4503b79226b66ef27f1aa9d3993"),
+          Map.entry(
+              "FLATLAF-MINIMAL-JSON-MIT.txt",
+              "2c694bf3dc1665bde8f642f3234734762228028ef42cc4ad743acf98c3161e18"),
+          Map.entry(
+              "FLATLAF-NATIVEFILEDIALOG-EXTENDED-ZLIB.txt",
+              "b332d6f507142c66a0e904838b6437e6273734589c22a16b57392b89bfdccb2a"),
+          Map.entry(
+              "FLATLAF-TIPS4JAVA-HSLCOLOR-NOTICE.txt",
+              "9607f4612e40e7d7a881b8ab17795750848513049812206a55dc71f3b49e0236"),
+          Map.entry(
               "GRPC-NETTY-SHADED-APACHE-2.0.txt",
               "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
+          Map.entry(
+              "GRPC-NETTY-SHADED-JCTOOLS-APACHE-2.0.txt",
+              "cb5e8e7e5f4a3988e1063c142c60dc2df75605f4c46515e776e3aca6df976e14"),
           Map.entry(
               "GRPC-NETTY-SHADED-NOTICE.txt",
               "45d84f3f695ff7b50308c68727227e57b5e5be6739f9fcfe8b8a21068803da65"),
@@ -110,8 +180,11 @@ final class ThirdPartyNoticesTest {
               "GOOGLEAPIS-APACHE-2.0.txt",
               "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
           Map.entry(
+              "GRPC-JAVA-NOTICE.txt",
+              "d891421cec918666dce9dc4516dad6a76557d12203fec121662efff365e72d63"),
+          Map.entry(
               "JEDITERM-APACHE-2.0.txt",
-              "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"),
+              "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3"),
           Map.entry(
               "JETBRAINS-ANNOTATIONS-LICENSE.txt",
               "8c1e966c7855fb54027bcaf6ebe7a43abe4785791e8cf9148c363761d493d097"),
@@ -125,13 +198,28 @@ final class ThirdPartyNoticesTest {
               "JNA-LICENSE.txt",
               "521bb271ac56e0e29a1b1b688b94af17d00d378fc8e63478d8c8b2a7c4a229d0"),
           Map.entry(
+              "JSVG-ABSTRACT-BLEND-COMPOSITE-BSD-NOTICE.txt",
+              "8231ac5c45b63e15dc18c52b3c78bef6cd2c157190c601084329927e1bc2c4d9"),
+          Map.entry(
+              "JSVG-JDATAURI-ZLIB.txt",
+              "41b4e996568e50f71d781d70133fda23428b2f3ea3fb08fd9ea8cfbc22da3717"),
+          Map.entry(
               "JSVG-MIT.txt", "4ef80d54216cb7a7063cd8b068b6abc1236d99a416841a81766234846e32f3c5"),
+          Map.entry(
+              "JSVG-OPENJDK-GPL-2.0-CLASSPATH-EXCEPTION.txt",
+              "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726"),
+          Map.entry(
+              "KOTLIN-BOOST-1.0.txt",
+              "8d8291caf1cee26d23acf3eb67c9f9a2d58f1c681b16a4fbe8cbfb9e3c0b5a9b"),
           Map.entry(
               "KOTLIN-LICENSE.txt",
               "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"),
           Map.entry(
               "KOTLIN-NOTICE.txt",
               "0b09a83d3ef7795c7dec65e815866597c066c53898f2852a76599b8f5552941a"),
+          Map.entry(
+              "KOTLIN-THREETENBP-BSD-3-CLAUSE.txt",
+              "d1bc53b493a3ab387b42717ed5c4b1976a5048996f81154278100bff86d39331"),
           Map.entry(
               "LOGBACK-LICENSE.txt",
               "f1eedf4f2cb9e901d6ae549a06d0c20dcde0136d37e38b50adaf51d4673f66d2"),
@@ -142,20 +230,125 @@ final class ThirdPartyNoticesTest {
               "MAVEN-WRAPPER-APACHE-2.0.txt",
               "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"),
           Map.entry(
+              "NETTY-AALTO-XML-LICENSE.txt",
+              "2dca650805d8e96b8fcd3c2ac8bd17a8813fee479caefce929c75528710f35df"),
+          Map.entry(
+              "NETTY-APACHE-2.0.txt",
+              "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe"),
+          Map.entry(
+              "NETTY-BASE64-LICENSE.txt",
+              "922754f715103e9366d1099f85bfea7df192d3d457cd7e222786321c9ab01954"),
+          Map.entry(
+              "NETTY-BORINGSSL-LICENSE.txt",
+              "827c8d8fc207c2392794eef9e00fe246f9f61fdcc132556c275be3dd8c3cd97f"),
+          Map.entry(
+              "NETTY-BOUNCY-CASTLE-LICENSE.txt",
+              "3ad769df48f54692f561debc1be6134efb95b63b6e5031b8167f821bd82a204f"),
+          Map.entry(
+              "NETTY-BROTLI4J-LICENSE.txt",
+              "c1b9df1275e769f3dbab000d1e457a2d4b0f28eb5da6c77e48dc37eeba202ed7"),
+          Map.entry(
+              "NETTY-CALIPER-LICENSE.txt",
+              "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe"),
+          Map.entry(
+              "NETTY-COMMONS-LANG-LICENSE.txt",
+              "3e4af21da9cb8a50d6a8f32225d7630fbf94a263e89945489d4863585f4aca4e"),
+          Map.entry(
+              "NETTY-COMMONS-LOGGING-LICENSE.txt",
+              "3e4af21da9cb8a50d6a8f32225d7630fbf94a263e89945489d4863585f4aca4e"),
+          Map.entry(
+              "NETTY-COMPRESS-LZF-LICENSE.txt",
+              "95eab05f6010cc64dedb668523c01fc9f48665cded448de86404b14a7a557ddd"),
+          Map.entry(
+              "NETTY-DNSINFO-LICENSE.txt",
+              "f0bdf5682bf317b1f85c80ed32cb4c7bf77b5a231dee485aa92d983673b7c58f"),
+          Map.entry(
+              "NETTY-HARMONY-LICENSE.txt",
+              "3e4af21da9cb8a50d6a8f32225d7630fbf94a263e89945489d4863585f4aca4e"),
+          Map.entry(
+              "NETTY-HARMONY-NOTICE.txt",
+              "9cea0d3fe0550735946cec78eaf6cfccce153ae06bdcdf17fa3b9f8d9b22196a"),
+          Map.entry(
+              "NETTY-HPACK-LICENSE.txt",
+              "62fb8a3a9621dc2388174caaabe9c2317b694bb9a1d46c98bcf5655b68f51be3"),
+          Map.entry(
+              "NETTY-HYPER-HPACK-LICENSE.txt",
+              "763a9342a04df62046c9dc748a5287934eb0a5331c6863b3ca0aee20e18cb4ed"),
+          Map.entry(
+              "NETTY-JBOSS-MARSHALLING-LICENSE.txt",
+              "ff420781e0005270cd1894a265e526dec4eb332f99df62a481b06672db202290"),
+          Map.entry(
+              "NETTY-JBZIP2-LICENSE.txt",
+              "77edfb9953d4a58f573c40280f9703df301b1f28e68b556914a561b03559c5e9"),
+          Map.entry(
+              "NETTY-JCTOOLS-LICENSE.txt",
+              "3e4af21da9cb8a50d6a8f32225d7630fbf94a263e89945489d4863585f4aca4e"),
+          Map.entry(
+              "NETTY-JFASTLZ-LICENSE.txt",
+              "06c1bf4cd5304c64bb72a6e03b461c389c35af26d623e3add7d828c398482e1d"),
+          Map.entry(
+              "NETTY-JSR166Y-LICENSE.txt",
+              "17869cb6184447de9663a752a7663c118a9ed0d4ce0a2208986afc75206e1bbb"),
+          Map.entry(
+              "NETTY-JZLIB-LICENSE.txt",
+              "2ce9cdc96c015e5bb03fb1b565f33ffc7590c35ff2a33abe923e299135c01ce1"),
+          Map.entry(
+              "NETTY-LIBDIVSUFSORT-LICENSE.txt",
+              "a801f489b279d91b8afc67d41e3769ec4df476fda218d63f4326c005db881541"),
+          Map.entry(
+              "NETTY-LOG4J-LICENSE.txt",
+              "3e4af21da9cb8a50d6a8f32225d7630fbf94a263e89945489d4863585f4aca4e"),
+          Map.entry(
+              "NETTY-LZ4-LICENSE.txt",
+              "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe"),
+          Map.entry(
+              "NETTY-LZMA-JAVA-LICENSE.txt",
+              "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe"),
+          Map.entry(
+              "NETTY-MAVEN-WRAPPER-LICENSE.txt",
+              "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe"),
+          Map.entry(
+              "NETTY-NGHTTP2-HPACK-LICENSE.txt",
+              "6b94f3abc1aabd0c72a7c7d92a77f79dda7c8a0cb3df839a97890b4116a2de2a"),
+          Map.entry(
+              "NETTY-NOTICE.txt",
+              "1775b0d91666fcb82493a5198f761b59a6d4d050bae6a4d26ecc377354068571"),
+          Map.entry(
+              "NETTY-PROTOBUF-LICENSE.txt",
+              "8fa16eae6ec99dfa982ab552ecbf9e98421bf5062356538cac4cd0c7bacd0093"),
+          Map.entry(
+              "NETTY-QUICHE-LICENSE.txt",
+              "2ef4b5abfce387a83933bda738e72467a79d15c1c17679143ec55011dae66b84"),
+          Map.entry(
+              "NETTY-SLF4J-LICENSE.txt",
+              "e45deaad2824e38410545e2ed8ced91eccd13bc03b41643a4bd79c96e106e106"),
+          Map.entry(
+              "NETTY-SNAPPY-LICENSE.txt",
+              "38139f9e51ce002fccec3b6cf2011a24e18e5096b8e6ad715f718828fa0b57d1"),
+          Map.entry(
+              "NETTY-WEBBIT-LICENSE.txt",
+              "9a746c7a218e6ee1ef719a39a0a66454c82ada93c60f06f9f819b505f6401046"),
+          Map.entry(
+              "NETTY-ZSTD-JNI-LICENSE.txt",
+              "101b8b218e3784b326bcbf7fb4a6b0138f63e8df53242d9b10eb80a0056a1133"),
+          Map.entry(
               "PERFMARK-APACHE-2.0.txt",
               "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
           Map.entry(
+              "PERFMARK-NOTICE.txt",
+              "7fd15f7217ae4bb4f9b7000b709dbe05f90caf2387c707bfe3a1840e0fc11a4c"),
+          Map.entry(
               "PPROF-APACHE-2.0.txt",
-              "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac"),
+              "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"),
           Map.entry(
               "PROTOBUF-BSD-3-CLAUSE.txt",
               "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"),
           Map.entry(
               "PTY4J-EPL-1.0.txt",
-              "44277b2bec6093e4ac313afec251a4de599d24c4e768f8574d95b13a9d2d97b5"),
+              "3a4a6fe55f67f02b92be0ec9907e347de8ab5c8edf9214c5c8019e5820517884"),
           Map.entry(
               "PTY4J-NOTICE.txt",
-              "81c2565e0cf16cd6d3a0e4601197ff0e0a7ec8bab04d4ed85d74f48977f83015"),
+              "7f1b01b809cecc274e9a0aaeba288ccb36a18cb96a97b8cc1fde58c1e713e845"),
           Map.entry(
               "RSYNTAXTEXTAREA-BSD-3-CLAUSE.txt",
               "cf2db2da16a070dbded576b7cbf4ece41dfc4c2063d712fa8e0d20fe4239b393"),
@@ -166,6 +359,9 @@ final class ThirdPartyNoticesTest {
               "SQL-FORMATTER-MIT.txt",
               "e28764ff43225205a81cdc025509c4de751a17e638efde0a2ca4740cf7ea0e55"),
           Map.entry(
+              "SQL-FORMATTER-ZEROTURNAROUND-MIT.txt",
+              "d15f5d4a914b854e095ae3c4b2e5d03eface4b0d43a1bda89edfab93b89586d9"),
+          Map.entry(
               "SQLITE-JDBC-APACHE-2.0.txt",
               "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"),
           Map.entry(
@@ -175,17 +371,17 @@ final class ThirdPartyNoticesTest {
               "SQLITE-JDBC-ZENTUS-BSD.txt",
               "89167dab92289c7e5e2b65b044f0856b703d05e5d5e35c3548e73d9c7d2f5048"),
           Map.entry(
-              "SQLITE-PUBLIC-DOMAIN.md",
-              "ee6af51062b30d532991face5164136ae6f84e265ecf8abe89dc69dac45ca1e7"),
+              "SQLITE-PUBLIC-DOMAIN-DECLARATION.html.in",
+              "5c22c2aa28ec06d68f6cb1c911c02076841dafea7607577dcd41aa77e4227dc4"),
           Map.entry(
               "TOMCAT-NATIVE-APACHE-2.0.txt",
               "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"),
           Map.entry(
               "WINDOWS-TERMINAL-LICENSE.txt",
-              "ad0cf28f3381ca9bb0bf101d127402d44c17bfa0991e1a00bff7ae6679e9dada"),
+              "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b"),
           Map.entry(
               "WINDOWS-TERMINAL-NOTICE.md",
-              "158036acf1095ff84839831f4bbaa8d116015e4ae14ab3d944664e05ed12136e"),
+              "f2a21ffa8034b40efd99188309053e16a9497342bf96515127e099959043b700"),
           Map.entry(
               "WINPTY-LICENSE.txt",
               "c39e428064b4f3e4fe81a975bf0fd3b845922b431bc4d9a7ffc8bfb091981836"));
@@ -338,6 +534,16 @@ final class ThirdPartyNoticesTest {
           "META-INF/native/libio_grpc_netty_shaded_netty_transport_native_epoll_aarch_64.so",
           "META-INF/native/libio_grpc_netty_shaded_netty_transport_native_epoll_x86_64.so");
 
+  private static final Set<String> FLATLAF_NATIVE_FILES =
+      Set.of(
+          "com/formdev/flatlaf/natives/flatlaf-windows-arm64.dll",
+          "com/formdev/flatlaf/natives/flatlaf-windows-x86.dll",
+          "com/formdev/flatlaf/natives/flatlaf-windows-x86_64.dll",
+          "com/formdev/flatlaf/natives/libflatlaf-linux-arm64.so",
+          "com/formdev/flatlaf/natives/libflatlaf-linux-x86_64.so",
+          "com/formdev/flatlaf/natives/libflatlaf-macos-arm64.dylib",
+          "com/formdev/flatlaf/natives/libflatlaf-macos-x86_64.dylib");
+
   private static final Set<String> JNA_NATIVE_FILES =
       Set.of(
           "com/sun/jna/aix-ppc/libjnidispatch.a",
@@ -454,11 +660,29 @@ final class ThirdPartyNoticesTest {
       assertThat(text)
           .contains("grpc-context is an intentionally empty compatibility jar")
           .contains("Snappy-derived Java implementation")
+          .contains("Apache Hadoop/Apache Ant-derived BZip2 implementation")
+          .contains("Keiron Liddle and Aftex Software")
+          .contains("ZeroTurnaround SQL Formatter 2.3.2")
+          .contains("minimal-json 0.9.5-derived parser")
+          .contains("Apple OpenJDK JNFRunLoop")
+          .contains("nativefiledialog-extended GTK window-handle routine")
+          .contains("OpenJDK Java2D gradient-paint code")
+          .contains("GPL corresponding source")
+          .contains("Sun/Romain Guy AbstractBlendComposite")
+          .contains("jDataUri 1.2.1-derived DataUri")
+          .contains("GRPC-JAVA-NOTICE.txt")
+          .contains("PERFMARK-NOTICE.txt")
           .contains("Netty 4.2.15.Final")
+          .contains("JCTools Core 4.0.6")
           .contains("Netty TCNative BoringSSL Static 2.0.75.Final")
           .contains("BoringSSL commit 0226f30467f540a3f62ef48d453f93927da199b6")
           .contains("libffi 3.4.4")
+          .contains("Google Web Toolkit-derived collections code")
+          .contains("ThreeTenBP-derived time code")
+          .contains("Guava-derived unsigned arithmetic code")
+          .contains("Boost-derived JVM math code")
           .contains("SQLite 3.53.2 native engine")
+          .contains("SQLite docsrc artifact: b32cb1a1fab81560")
           .contains("Apache Commons Lang 3.4-derived date formatting classes")
           .contains("Bazel 9.2.0 protocol schemas")
           .contains("c3e3d8a2031ec31f0f81fa42454ba55c7b40f284")
@@ -466,6 +690,67 @@ final class ThirdPartyNoticesTest {
           .contains("Material Icon Theme 5.38.1")
           .contains("448ab3977ef83b817c2c722ce7cd5034d195b39f")
           .contains("These notices apply only to their named components");
+
+      assertThat(jar.getEntry("io/airlift/compress/bzip2/BZip2Constants.class"))
+          .as("Aircompressor's Hadoop/Ant-derived BZip2 implementation")
+          .isNotNull();
+      assertThat(jar.getEntry("com/github/vertical_blank/sqlformatter/SqlFormatter.class"))
+          .as("the Java port of ZeroTurnaround SQL Formatter")
+          .isNotNull();
+
+      for (String minimalJsonClass :
+          List.of(
+              "JsonParser.class", "Location.class", "ParseException.class", "JsonHandler.class")) {
+        assertThat(jar.getEntry("com/formdev/flatlaf/json/" + minimalJsonClass))
+            .as("FlatLaf's minimal-json-derived " + minimalJsonClass)
+            .isNotNull();
+      }
+      assertThat(jar.getEntry("com/formdev/flatlaf/util/GrayFilter.class"))
+          .as("FlatLaf's IntelliJ-derived GrayFilter")
+          .isNotNull();
+      for (String themeProperties :
+          List.of(
+              "FlatDarkLaf.properties",
+              "FlatLightLaf.properties",
+              "FlatDarculaLaf.properties",
+              "FlatIntelliJLaf.properties")) {
+        assertThat(jar.getEntry("com/formdev/flatlaf/" + themeProperties))
+            .as("FlatLaf's IntelliJ-derived " + themeProperties)
+            .isNotNull();
+      }
+      assertThat(jar.getEntry("com/formdev/flatlaf/util/HSLColor.class"))
+          .as("FlatLaf's Tips4Java-derived HSLColor")
+          .isNotNull();
+
+      for (String gradientClass :
+          List.of(
+              "SVGMultipleGradientPaint.class",
+              "SVGMultipleGradientPaintContext.class",
+              "SVGRadialGradientPaint.class",
+              "SVGRadialGradientPaintContext.class")) {
+        assertThat(jar.getEntry("com/github/weisj/jsvg/paint/impl/jdk/" + gradientClass))
+            .as("JSVG's GPL-2.0-with-Classpath-Exception " + gradientClass)
+            .isNotNull();
+      }
+      assertThat(jar.getEntry("com/github/weisj/jsvg/nodes/filter/AbstractBlendComposite.class"))
+          .as("JSVG's BSD-selected Sun/Romain Guy blend implementation")
+          .isNotNull();
+      assertThat(jar.getEntry("com/github/weisj/jsvg/util/DataUri.class"))
+          .as("JSVG's jDataUri-derived implementation")
+          .isNotNull();
+
+      assertThat(jar.getEntry("kotlin/collections/AbstractList.class"))
+          .as("Kotlin's GWT-derived collections implementation")
+          .isNotNull();
+      assertThat(jar.getEntry("kotlin/time/Duration.class"))
+          .as("Kotlin's ThreeTenBP-derived time implementation")
+          .isNotNull();
+      assertThat(jar.getEntry("kotlin/UnsignedKt.class"))
+          .as("Kotlin's Guava-derived unsigned implementation")
+          .isNotNull();
+      assertThat(jar.getEntry("kotlin/math/MathKt__MathJVMKt.class"))
+          .as("Kotlin's Boost-derived JVM math implementation")
+          .isNotNull();
     }
   }
 
@@ -493,6 +778,7 @@ final class ThirdPartyNoticesTest {
   void deployJarCarriesExactLegalPayload() throws Exception {
     try (ZipFile jar = new ZipFile(deployJar().toFile())) {
       Set<String> expectedNames = new HashSet<>(UPSTREAM_LEGAL_FILES.keySet());
+      expectedNames.add(JSVG_SOURCE_ARCHIVE);
       expectedNames.add("THIRD-PARTY-NOTICES.txt");
       List<String> actualNames =
           jar.stream()
@@ -505,6 +791,24 @@ final class ThirdPartyNoticesTest {
 
       assertExactFiles(jar, PREFIX, UPSTREAM_LEGAL_FILES);
       assertExactFiles(jar, "", ORIGINAL_ARTIFACT_LEGAL_FILES);
+
+      String index =
+          new String(
+              readBounded(jar, requiredEntry(jar, PREFIX + "THIRD-PARTY-NOTICES.txt")),
+              StandardCharsets.UTF_8);
+      for (String legalFile : UPSTREAM_LEGAL_FILES.keySet()) {
+        assertThat(index).as(legalFile + " index mapping").contains(legalFile);
+      }
+      assertThat(index).contains(JSVG_SOURCE_ARCHIVE);
+
+      byte[] sourceArchive =
+          readBounded(jar, requiredEntry(jar, PREFIX + JSVG_SOURCE_ARCHIVE), 500_000);
+      assertThat(sha256(sourceArchive))
+          .as("exact official JSVG v2.1.0 corresponding-source archive")
+          .isEqualTo(JSVG_SOURCE_ARCHIVE_SHA256);
+      assertThat(gzipTarEntryNames(sourceArchive))
+          .as("GPL-derived JSVG sources and their build scripts")
+          .containsAll(JSVG_REQUIRED_SOURCE_ENTRIES);
     }
   }
 
@@ -513,12 +817,32 @@ final class ThirdPartyNoticesTest {
   void deployJarCarriesCompleteNativePayloads() throws Exception {
     try (ZipFile jar = new ZipFile(deployJar().toFile())) {
       assertExactResourceSet(jar, "META-INF/native/", GRPC_NATIVE_FILES);
+      assertExactResourceSet(jar, "com/formdev/flatlaf/natives/", FLATLAF_NATIVE_FILES);
       assertExactNativeResourceSet(jar, "com/sun/jna/", JNA_NATIVE_FILES);
       assertExactResourceSet(jar, "resources/com/pty4j/native/", PTY4J_NATIVE_FILES);
       assertExactResourceSet(jar, "org/sqlite/native/", SQLITE_NATIVE_FILES);
       assertThat(jar.getEntry("org/sqlite/date/FastDateFormat.class"))
           .as("SQLite JDBC's embedded Commons Lang-derived date formatter")
           .isNotNull();
+
+      List<String> jctoolsEntries =
+          jar.stream()
+              .map(ZipEntry::getName)
+              .filter(name -> name.startsWith(JCTOOLS_PREFIX))
+              .toList();
+      assertThat(jctoolsEntries)
+          .as("Netty's complete minimized and relocated JCTools 4.0.6 payload")
+          .hasSize(136)
+          .doesNotHaveDuplicates()
+          .contains(
+              JCTOOLS_PREFIX + "queues/MpscArrayQueue.class",
+              JCTOOLS_PREFIX + "util/UnsafeAccess.class");
+
+      for (Map.Entry<String, String> evidence : NETTY_EMBEDDED_EVIDENCE.entrySet()) {
+        assertThat(jar.getEntry(evidence.getValue()))
+            .as("Netty embedded " + evidence.getKey())
+            .isNotNull();
+      }
 
       String nettyVersion =
           new String(
@@ -619,12 +943,62 @@ final class ThirdPartyNoticesTest {
   }
 
   private static byte[] readBounded(ZipFile jar, ZipEntry entry) throws Exception {
-    assertThat(entry.getSize()).as(entry.getName() + " declared size").isBetween(0L, 262_144L);
+    return readBounded(jar, entry, 262_144);
+  }
+
+  private static byte[] readBounded(ZipFile jar, ZipEntry entry, int maxBytes) throws Exception {
+    assertThat(entry.getSize())
+        .as(entry.getName() + " declared size")
+        .isBetween(0L, (long) maxBytes);
     try (InputStream input = jar.getInputStream(entry)) {
-      byte[] bytes = input.readNBytes(262_145);
-      assertThat(bytes).as(entry.getName() + " bounded content").hasSizeLessThanOrEqualTo(262_144);
+      byte[] bytes = input.readNBytes(maxBytes + 1);
+      assertThat(bytes).as(entry.getName() + " bounded content").hasSizeLessThanOrEqualTo(maxBytes);
       return bytes;
     }
+  }
+
+  private static Set<String> gzipTarEntryNames(byte[] compressedTar) throws Exception {
+    byte[] tar;
+    try (GZIPInputStream input = new GZIPInputStream(new ByteArrayInputStream(compressedTar))) {
+      tar = input.readNBytes(4_000_001);
+    }
+    assertThat(tar).as("bounded expanded JSVG source archive").hasSizeLessThanOrEqualTo(4_000_000);
+
+    Set<String> names = new HashSet<>();
+    int offset = 0;
+    while (offset + 512 <= tar.length && !isZeroBlock(tar, offset)) {
+      String name = tarString(tar, offset, 100);
+      String prefix = tarString(tar, offset + 345, 155);
+      if (!prefix.isEmpty()) {
+        name = prefix + "/" + name;
+      }
+      names.add(name);
+
+      String octalSize = tarString(tar, offset + 124, 12).trim();
+      long size = octalSize.isEmpty() ? 0 : Long.parseLong(octalSize, 8);
+      assertThat(size).as(name + " tar entry size").isBetween(0L, 4_000_000L);
+      long nextOffset = offset + 512L + ((size + 511L) / 512L) * 512L;
+      assertThat(nextOffset).as(name + " bounded tar offset").isLessThanOrEqualTo(tar.length);
+      offset = Math.toIntExact(nextOffset);
+    }
+    return names;
+  }
+
+  private static boolean isZeroBlock(byte[] bytes, int offset) {
+    for (int index = offset; index < offset + 512; index++) {
+      if (bytes[index] != 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static String tarString(byte[] bytes, int offset, int length) {
+    int end = offset;
+    while (end < offset + length && bytes[end] != 0) {
+      end++;
+    }
+    return new String(bytes, offset, end - offset, StandardCharsets.UTF_8);
   }
 
   private static byte[] readBounded(Path path) throws Exception {

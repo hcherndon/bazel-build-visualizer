@@ -1,4 +1,4 @@
-This library is based on
+This library is based on 
 elt - Local Terminal Plug-In for Eclipse (Eclipse Public License)
 and JPty - A small PTY interface for Java(Apache Software License)  Copyright (c) 2012 - J.W. Janssen <j.w.janssen@lxtreme.nl>.
 
