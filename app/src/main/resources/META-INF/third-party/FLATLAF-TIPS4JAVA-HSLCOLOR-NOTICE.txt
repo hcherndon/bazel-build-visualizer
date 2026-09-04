@@ -1,0 +1,8 @@
+/*
+ * From http://tips4java.wordpress.com/2009/07/05/hsl-color/
+ *
+ * License note on http://tips4java.wordpress.com/about/
+ *   "You are free to use and/or modify any or all code posted on the
+ *    Java Tips Weblog without restriction. A credit in the code comments
+ *    would be nice, but not in any way mandatory."
+ */

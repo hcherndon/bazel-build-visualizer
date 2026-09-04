@@ -66,7 +66,10 @@ java_junit5_test(
 
 java_junit5_test(
     name = "ThirdPartyNoticesTest",
-    data = ["//app:app_deploy.jar"],
+    data = [
+        "//app:app_deploy.jar",
+        "//app:app_runtime_maven_deps",
+    ],
     jvm_flags = HEADLESS_TEST_JVM_FLAGS,
     runtime_deps = [
         ":tests_lib",
