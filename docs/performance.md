@@ -86,7 +86,7 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 
 | # | Objective | Measured |
 |---|---|---|
-| 1 | Raw capture sustains 100,000 small synthetic events/sec for burst tests without loss | **not met — 79,400/s** at 200,000 events, without loss. The shortfall is gRPC's per-message acknowledgement, not this application: replacing the whole pipeline with a sink that stores nothing produces the same rate. |
+| 1 | Raw capture sustains 100,000 small synthetic events/sec for burst tests without loss | **not met — 79,400/s** at 200,000 events, without loss. A transport-only sink measured in the same range, so storage was not observed as the bottleneck at this scale; the cause of the remaining gap is unestablished. |
 | 2 | Normalization sustains at least 25,000 representative events/sec | **met — 114,667 actions/s** at 5,000,000 actions (`runEntityScaleSpike --rows=5000000`) |
 | 3 | Capture remains correct if normalization temporarily falls behind | **met** — every run completes with `received == journaled == normalized + stream-control` while backpressure is active, including the 50,000,000-event Tier 3 capture |
 | 4 | Live UI updates at least four times per second under ordinary load | **partial, by design** — capture progress and console output update several times a second; the overview snapshot is deliberately every 2 s because it re-reads a whole consistent snapshot, and the metric collection runs once per session rather than on a timer |
@@ -484,36 +484,22 @@ real embedded BES server over a real loopback socket with a real gRPC client,
 through the real journal and the real SQLite writer. Machine: Apple Silicon,
 Java 25.0.1 (Corretto), macOS 26.
 
-One number, measured end to end: how fast events become *durable and
-acknowledged*, which is what Bazel waits for.
+The valid release-gate number is measured end to end: how fast events become
+*durable and acknowledged*, which is what Bazel waits for.
 
 | Configuration | Acknowledged (durable, end to end) |
 |---|---:|
-| 200k events, ~0-byte payloads | 87,446/s |
-| 200k events, ~64-byte payloads | 88,449/s |
-| 200k events, ~512-byte payloads | 83,857–86,086/s |
-| 200k events, ~512-byte, **transport only** (no journal, no database) | 80,058/s |
+| 200k events after fixing client flow control | 79,359/s |
 
-Every run completed with no loss: `received == journaled`, and
+The corrected run completed with no loss: `received == journaled`, and
 `journaled == normalized + stream-control envelopes`.
 
-An earlier version of this table carried a second column, "accepted (wire to
-receive queue)", reporting 869k–1.3M events/sec. It was wrong, and wrong in a
-flattering direction: it divided the *server's* received count by the
-*client's* send duration — two different intervals — so it measured how fast
-the benchmark's client could enqueue into gRPC, not how fast anything was
-captured. The server cannot have accepted 200,000 events by the time the
-client stopped sending, because it requests at most 64 ahead of a 4,096-deep
-queue. Read as a capture rate it said the transport was fast and this
-application's storage slow; both halves were false. The column is gone.
-
-**The bottleneck is not this application.** Replacing the whole pipeline with
-a sink that acknowledges immediately and stores nothing produces the *same*
-rate — 80k/s against 86k/s, i.e. slightly slower, within noise. The journal
-and the indexer are therefore free at this scale, and the ~11.5 µs per event
-is the gRPC message and acknowledgement round trip. The rate being
-independent of payload size, from 0 to 512 bytes, says the same thing: this is
-per-event overhead, not bandwidth.
+Earlier figures in this section were invalidated when the Tier 3 run proved
+that the benchmark client sent without flow control and could run ahead of the
+transport. They are removed rather than compared with the corrected result. A
+transport-only sink measured in the same range as the corrected end-to-end
+run, so storage was not observed as the bottleneck at 200,000 events. That
+experiment does not isolate the cause of the remaining shortfall.
 
 The spike prints PASS or FAIL against the objective and exits non-zero on a
 breach, like every other spike. It currently exits 1.
@@ -521,16 +507,16 @@ breach, like every other spike. It currently exits 1.
 ### The ADR-008 question, answered as far as it can be
 
 ADR-008 recorded that grpc-netty disables `sun.misc.Unsafe` on Java 25 and
-that the effect on the capture path was unmeasured. It is now measured:
-`PlatformDependent.hasUnsafe()` is `false`, and the path runs at 86,000
-events/sec.
+that the effect on the capture path was unmeasured. The supported path reports
+`PlatformDependent.hasUnsafe()` as `false` and runs at the corrected rate
+above.
 
 What could **not** be established is the counterfactual. Netty refuses to use
 `Unsafe` on Java 24 and later regardless of `-Dio.netty.tryUnsafe=true`
 (verified: `hasUnsafe` stays `false`), so the comparison would require running
 the same spike on Java 21 — which is no longer the baseline. The honest
-statement is that 86k/s is what the supported configuration does, not that
-Unsafe is what costs the missing 14%.
+statement is the supported configuration's measured rate, not that Unsafe
+accounts for the gap.
 
 ### What the shortfall means in practice
 
@@ -539,17 +525,12 @@ approach it: a Tier 3 build of five million actions emits its events over
 minutes, and the largest real stream measured in Phase 2 was 38 events. The
 gap matters for a burst test, not for a capture keeping up with Bazel.
 
-The obvious way to close it is to stop sending one acknowledgement message per
-event. That is deliberately **not** attempted here: an acknowledgement with the
-wrong sequence number kills the user's Bazel server on 6.5.0 and 9.2.0
-(docs/bazel-compatibility.md), and no experiment has established that Bazel
-accepts a coalesced acknowledgement covering a run of sequences. Changing ack
-semantics needs its own experiment against all four versions first.
-
-The flow-control window is 64 messages, chosen by measurement: at 1 the path
-is latency-bound at 45,000/s, at 64 it reaches 86,000/s, and 128, 256 and 512
-are indistinguishable from 64. The smallest window that reaches the plateau is
-the one that keeps the memory ceiling lowest.
+No optimization is prescribed without isolating the cause. In particular,
+changing acknowledgement semantics needs its own experiment against all four
+versions: an acknowledgement with the wrong sequence number kills the user's
+Bazel server on 6.5.0 and 9.2.0, and no experiment has established that Bazel
+accepts one acknowledgement covering a run of sequences. Pre-fix flow-control
+comparisons are not retained as performance evidence.
 
 ## Normalization and the actions table (Phase 3)
 
@@ -957,9 +938,8 @@ measured at all: its client called `onNext` fifty million times without flow
 control, and gRPC buffered everything the transport could not yet write. The
 first Tier 3 run died with an `OutOfMemoryError` inside `DelayedStream` — in the
 *client*, before the server had done anything. The client now waits on
-`isReady()`. That also means the previously published 83.8–86.1k/s figures were
-flattered by a client running ahead of the transport; the honest number for the
-same configuration is 79.4k/s.
+`isReady()`. That also invalidated the previously published burst figures; the
+corrected result for the same configuration is 79.4k/s.
 
 ## Build performance
 

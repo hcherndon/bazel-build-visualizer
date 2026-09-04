@@ -215,20 +215,27 @@ on an Intel host.
 
 These are manual release gates; they have not all passed for 0.1.0 yet.
 
-1. On a clean Apple Silicon macOS host, select JDK 25 and build the deploy jar
-   and DMG with `bazel run //app:jpackage -- --type=dmg`.
+1. On a clean Apple Silicon macOS host, select JDK 25, set
+   `BBV_MAC_SIGNING_IDENTITY` to the intended Developer ID identity, and build
+   the deploy jar and DMG with `bazel run //app:jpackage -- --type=dmg`. An
+   unsigned DMG is a development artifact, not a release candidate.
 2. Inspect the finished `Info.plist`: short version `0.1.0`, bundle version `1`,
    the `.bviz` association, and no unsupported minimum-macOS claim. Inspect the
    launcher configuration for all required JVM options.
-3. Run the packaged launcher, check `--version`, open the GUI, import a known
-   session, and confirm the application and state directories.
-4. Install the DMG through Finder and double-click a `.bviz` file. Repeat the
-   packaged local Terminal text, resize, and alternate-screen smoke.
-5. Repeat the packaged Terminal smoke through an authorized SSH Workspace.
-6. Sign, notarize, and staple the exact tested artifacts. Verify Gatekeeper on
-   a clean machine; do not mutate or repackage them after notarization.
-7. Record the host, JDK, artifact hashes, and results. Publish only a candidate
-   that passed every applicable step.
+3. Before submission, run `codesign --verify --strict` on the DMG and
+   `codesign --verify --deep --strict` on the mounted application, then inspect
+   both with `codesign --display --verbose=4`. Confirm the expected Developer
+   ID identity; stop if either artifact is unsigned or signed by another identity.
+4. Smoke the signed candidate: run its launcher and `--version`, open the GUI,
+   import a known session, double-click a `.bviz` file, and exercise both local
+   and authorized-SSH Terminal text, resize, and alternate-screen behavior.
+5. Set `BBV_MAC_NOTARY_PROFILE` and run `bazel run //app:notarize`. That script
+   submits the already-signed DMG and staples the result; it does not sign it.
+6. Hash the final stapled artifact. On a clean machine, verify Gatekeeper,
+   install through Finder, and repeat every smoke in steps 2–4 against that
+   exact final artifact. Do not mutate or repackage it afterward.
+7. Record the host, JDK, final artifact hash, signing/notarization evidence, and
+   results. Publish only the exact candidate that passed every applicable step.
 
 ## What is not here
 

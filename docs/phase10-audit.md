@@ -1,5 +1,10 @@
 # Phase 10 audit
 
+> Historical audit record. Its Gradle commands and pre-release status claims
+> are nonauthoritative evidence from before ADR-009 and later product work. The
+> repository is Bazel-only; use README.md, docs/implementation-status.md, and
+> docs/packaging.md for current release status and instructions.
+
 The release gate. The four standing checks were run again, and a fifth was added
 because this is the phase where the plan's own definition of done gets walked
 item by item.
@@ -30,9 +35,9 @@ Two things follow, and the second is the one that matters.
 
 - The client now waits on `isReady()` through a `setOnReadyHandler`, which is
   the documented manual-flow-control pattern for a blocking producer.
-- **The previously published capture figures were flattered by that defect.**
-  83.8–86.1k events/sec was measured with a client running ahead of the
-  transport; the honest figure for the same configuration is 79.4k/s.
+- **The previously published burst figures were invalidated by that defect.**
+  The client had been running ahead of the transport; the corrected figure for
+  the same configuration is 79.4k/s.
 
 This is the *second* time this page's capture numbers have had to be corrected
 in a flattering direction — the first was a column that divided the server's
@@ -130,11 +135,13 @@ here so a release reviewer sees them in one place.
   cover the failure modes somebody thought of.
 - **No dependency advisory scan.** Dependencies are locked and were reviewed
   when introduced; nothing re-checks them per build.
-- **No settings screen**, so fourteen of plan 20.3's nineteen configurable
-  limits are constants a caller can change and a user cannot.
-- **Intel macOS is unverified.** jpackage does not cross-compile; the Apple
-  Silicon package was built and launched, and the Intel one needs an Intel
-  machine.
+- **The Phase 10 build had no settings screen.** The current Preferences window
+  has Theme and Discovery tabs, but the documented display limits still are
+  not all user-configurable.
+- **Intel macOS packaging is currently unavailable, not merely unverified.**
+  Every macOS build selects arm64 protobuf and gRPC generators. Intel support
+  requires pinned x86-64 tools before a clean Intel build and release smoke can
+  run.
 - **The timeline's critical-path overlay was never drawn.** An unshipped Phase 6
   deliverable, recorded as such since Phase 8.
 - **"Prefer rebuilding from raw files"** (plan 22.4) is implemented as *refuse

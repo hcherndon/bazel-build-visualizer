@@ -323,11 +323,11 @@ events is about 79,400 events/sec end to end without loss, against a target of
 observed to be the bottleneck at that scale. Larger tables slow further. See
 `docs/performance.md` for the measurements and provenance.
 
-**What is deliberately not attempted.** Coalescing acknowledgements would
-close the throughput gap, and is not tried: an acknowledgement with a wrong
-sequence number kills the user's Bazel server on 6.5.0 and 9.2.0, and no
-experiment has established that Bazel accepts one acknowledgement covering a
-run of sequences.
+**What is deliberately not attempted.** No optimization is prescribed before
+the cause is isolated. Changing acknowledgement semantics would require a
+separate experiment: a wrong sequence number kills the user's Bazel server on
+6.5.0 and 9.2.0, and no experiment has established that Bazel accepts one
+acknowledgement covering a run of sequences.
 
 ## Phase 2 audit
 
@@ -1116,12 +1116,11 @@ b-tree. What this means for a real build is smaller than it sounds: a Tier 3
 build emits its events over minutes, and sixteen thousand a second is a million
 a minute.
 
-**Objective 1 is still not met**, and its gap is now better understood. 79.4k/s
-against a 100k/s target, and the shortfall is gRPC's per-message acknowledgement
-— replacing the whole pipeline with a sink that stores nothing produces the same
-rate. Closing it means coalescing acknowledgements, which cannot be attempted
-without an experiment against all four Bazel versions first: an acknowledgement
-with the wrong sequence number kills the user's Bazel server on 6.5.0 and 9.2.0.
+**Objective 1 is still not met.** The corrected result is 79.4k/s against a
+100k/s target. A transport-only sink measured in the same range, so storage was
+not observed as the bottleneck at that scale; the cause of the remaining gap
+has not been established. No acknowledgement change is proposed without a
+separate experiment against all four Bazel versions.
 
 **The Bazel sweep is excluded from ordinary tests.** Four servers means four
 downloads and several minutes, and Bazel sizes its server JVM from the

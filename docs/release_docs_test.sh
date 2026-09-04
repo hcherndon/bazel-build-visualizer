@@ -64,3 +64,14 @@ fi
 if grep -Fq '77,5xx' "$readme" "$docs/performance.md" "$docs/implementation-status.md"; then
     fail "non-measurement 77,5xx remains in release claims"
 fi
+
+grep -Fq 'BBV_MAC_SIGNING_IDENTITY' "$docs/packaging.md" ||
+    fail "release checklist does not require a signing identity"
+grep -Fq 'it does not sign it' "$docs/packaging.md" ||
+    fail "release checklist does not distinguish notarization from signing"
+grep -Fq '> Historical audit record.' "$docs/phase10-audit.md" ||
+    fail "Phase 10 audit is not marked historical"
+if grep -Eq 'shortfall is gRPC|80k/s against 86k/s|Coalescing acknowledgements would close' \
+    "$docs/performance.md" "$docs/implementation-status.md"; then
+    fail "unsupported capture-throughput cause remains in release claims"
+fi
