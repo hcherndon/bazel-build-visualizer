@@ -100,6 +100,43 @@ final class SshControlSessionTest {
         .hasMessageContaining("control session is closed");
   }
 
+  @Test
+  void failedMasterReapsAChildThatInheritedItsPipesBeforeDeletingControlState() throws Exception {
+    Path child = temporary.resolve("master-child.pid");
+    Path calls = temporary.resolve("failed-master-calls");
+    Path ssh =
+        executable(
+            "failed-master-ssh",
+            """
+            #!/bin/sh
+            printf '%%s\n' "$*" >> '%s'
+            case " $* " in
+              *" -M "*)
+                (sleep 10) &
+                printf '%%s' $! > '%s'
+                exit 1
+                ;;
+              *) exit 1 ;;
+            esac
+            """
+                .formatted(calls, child));
+    Path sftp = executable("unused-sftp", "#!/bin/sh\nexit 1\n");
+
+    assertThatThrownBy(
+            () ->
+                SshControlSession.connect(
+                    SshTarget.of("builder@fake"),
+                    Duration.ofSeconds(3),
+                    new OpenSshBinaries(ssh, sftp)))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
+
+    long pid = Long.parseLong(Files.readString(child));
+    assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)).isFalse();
+    Path socket = socketFrom(Files.readAllLines(calls).getFirst());
+    assertThat(socket.getParent()).doesNotExist();
+  }
+
   private static Path socketFrom(String argv) {
     String[] parts = argv.split(" ");
     for (int index = 0; index + 1 < parts.length; index++) {

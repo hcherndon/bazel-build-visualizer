@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
@@ -40,6 +41,12 @@ import java.util.stream.Stream;
  * produces something that is not base64 any more.
  */
 public final class Subprocess {
+
+  /** Whether a child starts with this JVM's environment or only the supplied entries. */
+  public enum EnvironmentInheritance {
+    INHERIT,
+    REPLACE
+  }
 
   /** Maximum stdout retained from one short probe. The stream is still drained after this. */
   public static final int MAX_STDOUT_BYTES = 16 * 1024 * 1024;
@@ -187,22 +194,162 @@ public final class Subprocess {
 
   private Subprocess() {}
 
-  /** Terminates an already-started process and its bounded descendant set. */
-  public static void terminate(Process process) throws IOException, InterruptedException {
-    Objects.requireNonNull(process, "process");
-    ProcessHandle[] descendants =
-        process.descendants().limit(MAX_TRACKED_DESCENDANTS).toArray(ProcessHandle[]::new);
-    for (ProcessHandle descendant : descendants) {
-      descendant.destroyForcibly();
+  /**
+   * Starts a process with the same pre-start isolation and persistent descendant tracking used by
+   * the bounded probe helpers.
+   *
+   * <p>The caller owns the returned process. Every timeout or exceptional exit must call {@link
+   * ManagedProcess#terminate()} before closing it. Closing only removes the private control file;
+   * it deliberately does not kill a successfully detached child whose standard streams are closed.
+   * Linux and macOS get pre-start process-group isolation. Other hosts fall back to bounded,
+   * continuously sampled descendant tracking and therefore cannot recover a child that reparents
+   * before its first sample.
+   */
+  public static ManagedProcess startManaged(
+      List<String> argv,
+      Path workingDirectory,
+      Map<String, String> environment,
+      EnvironmentInheritance environmentInheritance,
+      boolean redirectErrorStream)
+      throws IOException {
+    Objects.requireNonNull(argv, "argv");
+    Objects.requireNonNull(environment, "environment");
+    Objects.requireNonNull(environmentInheritance, "environmentInheritance");
+    if (argv.isEmpty()) {
+      throw new IllegalArgumentException("argv must not be empty");
     }
-    process.destroyForcibly();
-    try {
-      if (!process.waitFor(5, TimeUnit.SECONDS)) {
-        throw new IOException("could not terminate subprocess root");
+    List<String> effectiveCommand =
+        environmentInheritance == EnvironmentInheritance.REPLACE
+            ? exactEnvironmentCommand(argv, environment)
+            : argv;
+    return startManaged(
+        ProcessIsolation.prepare(effectiveCommand),
+        workingDirectory,
+        environment,
+        environmentInheritance,
+        redirectErrorStream);
+  }
+
+  /** A process whose group and descendants remain identifiable after its root exits. */
+  public static final class ManagedProcess implements AutoCloseable {
+
+    private final Process process;
+    private final ProbeIsolation isolation;
+    private final DescendantTracker descendants = new DescendantTracker();
+    private boolean closed;
+
+    private ManagedProcess(Process process, ProbeIsolation isolation) {
+      this.process = process;
+      this.isolation = isolation;
+    }
+
+    public InputStream stdout() {
+      return process.getInputStream();
+    }
+
+    public InputStream stderr() {
+      return process.getErrorStream();
+    }
+
+    public OutputStream stdin() {
+      return process.getOutputStream();
+    }
+
+    public long pid() {
+      return process.pid();
+    }
+
+    public boolean isAlive() {
+      return process.isAlive();
+    }
+
+    public int exitValue() {
+      return process.exitValue();
+    }
+
+    /** Waits while continuously retaining the bounded process identity needed for cleanup. */
+    public boolean awaitExit(Duration timeout) throws IOException, InterruptedException {
+      requirePositiveTimeout(timeout);
+      return Subprocess.awaitExit(process, timeout, descendants, isolation);
+    }
+
+    /** Captures the process group and currently visible descendants without waiting. */
+    public void capture() throws IOException {
+      isolation.capture(process);
+      descendants.capture(process);
+      if (descendants.overflowed()) {
+        throw new IOException(
+            "subprocess spawned more than "
+                + MAX_TRACKED_DESCENDANTS
+                + " descendants; it was stopped so cleanup remains bounded");
       }
-    } catch (InterruptedException interrupted) {
-      process.destroyForcibly();
-      throw interrupted;
+    }
+
+    /** Waits for the pre-start process-group handshake before exposing a streaming process. */
+    public void awaitIsolationReady(Duration timeout) throws IOException, InterruptedException {
+      requirePositiveTimeout(timeout);
+      long deadline = System.nanoTime() + timeout.toNanos();
+      while (!isolation.ready()) {
+        capture();
+        if (isolation.ready()) {
+          return;
+        }
+        if (System.nanoTime() >= deadline) {
+          throw new IOException("subprocess process-group isolation did not become ready");
+        }
+        Thread.sleep(1);
+      }
+    }
+
+    /** Forcibly stops and verifies every retained descendant, the root, and its isolated group. */
+    public void terminate() throws IOException, InterruptedException {
+      forceAndVerify(process, descendants, isolation);
+    }
+
+    /** Delivers a graceful signal to the isolated group, or forcibly verifies cleanup. */
+    public void signal(CancellationMode mode) throws IOException, InterruptedException {
+      Objects.requireNonNull(mode, "mode");
+      if (mode == CancellationMode.FORCE_KILL) {
+        terminate();
+        return;
+      }
+      capture();
+      String signal = mode == CancellationMode.CANCEL ? "-INT" : "-TERM";
+      if (isolation.signal(signal)) {
+        return;
+      }
+      if (mode == CancellationMode.TERMINATE) {
+        process.destroy();
+        return;
+      }
+      Result result =
+          Subprocess.run(
+              List.of("/bin/kill", signal, Long.toString(process.pid())),
+              null,
+              Map.of(),
+              Duration.ofSeconds(5));
+      if (!result.isSuccess()) {
+        process.destroy();
+      }
+    }
+
+    /** Raw root wait for the streaming {@code RunningCommand} interface. */
+    public int waitForRoot() throws InterruptedException {
+      return process.waitFor();
+    }
+
+    /** Raw root wait for the streaming {@code RunningCommand} interface. */
+    public boolean waitForRoot(Duration timeout) throws InterruptedException {
+      requirePositiveTimeout(timeout);
+      return process.waitFor(Math.max(1, timeout.toMillis()), TimeUnit.MILLISECONDS);
+    }
+
+    @Override
+    public synchronized void close() throws IOException {
+      if (!closed) {
+        closed = true;
+        isolation.close();
+      }
     }
   }
 
@@ -218,7 +365,52 @@ public final class Subprocess {
   public static Result run(
       List<String> argv, Path workingDirectory, Map<String, String> environment, Duration timeout)
       throws IOException, InterruptedException {
-    return run(argv, workingDirectory, environment, timeout, MAX_STDOUT_BYTES, MAX_STDERR_BYTES);
+    return run(
+        argv,
+        workingDirectory,
+        environment,
+        EnvironmentInheritance.INHERIT,
+        timeout,
+        null,
+        MAX_STDOUT_BYTES,
+        MAX_STDERR_BYTES);
+  }
+
+  /** Runs a command with exactly {@code environment}, without inheriting other variables. */
+  public static Result runWithExactEnvironment(
+      List<String> argv, Path workingDirectory, Map<String, String> environment, Duration timeout)
+      throws IOException, InterruptedException {
+    return run(
+        argv,
+        workingDirectory,
+        environment,
+        EnvironmentInheritance.REPLACE,
+        timeout,
+        null,
+        MAX_STDOUT_BYTES,
+        MAX_STDERR_BYTES);
+  }
+
+  /** Runs a command while sending the complete bounded byte array to its standard input. */
+  public static Result runWithInput(
+      List<String> argv,
+      Path workingDirectory,
+      Map<String, String> environment,
+      Duration timeout,
+      byte[] stdin,
+      int stdoutLimit,
+      int stderrLimit)
+      throws IOException, InterruptedException {
+    Objects.requireNonNull(stdin, "stdin");
+    return run(
+        argv,
+        workingDirectory,
+        environment,
+        EnvironmentInheritance.INHERIT,
+        timeout,
+        stdin.clone(),
+        stdoutLimit,
+        stderrLimit);
   }
 
   /** Package seam for exercising the same bounded collector with small limits. */
@@ -230,19 +422,47 @@ public final class Subprocess {
       int stdoutLimit,
       int stderrLimit)
       throws IOException, InterruptedException {
+    return run(
+        argv,
+        workingDirectory,
+        environment,
+        EnvironmentInheritance.INHERIT,
+        timeout,
+        null,
+        stdoutLimit,
+        stderrLimit);
+  }
+
+  private static Result run(
+      List<String> argv,
+      Path workingDirectory,
+      Map<String, String> environment,
+      EnvironmentInheritance environmentInheritance,
+      Duration timeout,
+      byte[] stdin,
+      int stdoutLimit,
+      int stderrLimit)
+      throws IOException, InterruptedException {
     Objects.requireNonNull(argv, "argv");
     Objects.requireNonNull(environment, "environment");
+    Objects.requireNonNull(environmentInheritance, "environmentInheritance");
     requirePositiveTimeout(timeout);
     requirePositiveLimit("stdoutLimit", stdoutLimit);
     requirePositiveLimit("stderrLimit", stderrLimit);
     if (argv.isEmpty()) {
       throw new IllegalArgumentException("argv must not be empty");
     }
+    List<String> effectiveCommand =
+        environmentInheritance == EnvironmentInheritance.REPLACE
+            ? exactEnvironmentCommand(argv, environment)
+            : argv;
     return runWithIsolation(
-        ProcessIsolation.prepare(argv),
+        ProcessIsolation.prepare(effectiveCommand),
         workingDirectory,
         environment,
+        environmentInheritance,
         timeout,
+        stdin,
         stdoutLimit,
         stderrLimit);
   }
@@ -265,46 +485,70 @@ public final class Subprocess {
       throw new IllegalArgumentException("isolation command must not be empty");
     }
     return runWithIsolation(
-        isolation, workingDirectory, environment, timeout, stdoutLimit, stderrLimit);
+        isolation,
+        workingDirectory,
+        environment,
+        EnvironmentInheritance.INHERIT,
+        timeout,
+        null,
+        stdoutLimit,
+        stderrLimit);
   }
 
   private static Result runWithIsolation(
       ProbeIsolation isolation,
       Path workingDirectory,
       Map<String, String> environment,
+      EnvironmentInheritance environmentInheritance,
       Duration timeout,
+      byte[] stdin,
       int stdoutLimit,
       int stderrLimit)
       throws IOException, InterruptedException {
-    try (isolation) {
-      ProcessBuilder builder = builder(isolation.command(), workingDirectory, environment);
-      Process process = builder.start();
-      closeQuietly(process.getOutputStream());
-
-      StreamDrain out =
-          StreamDrain.start(process.getInputStream(), "subprocess-stdout", stdoutLimit);
-      StreamDrain err =
-          StreamDrain.start(process.getErrorStream(), "subprocess-stderr", stderrLimit);
-      DescendantTracker descendants = new DescendantTracker();
+    try (ManagedProcess process =
+        startManaged(isolation, workingDirectory, environment, environmentInheritance, false)) {
+      InputFeed input = null;
+      BoundedDrain out = null;
+      BoundedDrain err = null;
       try {
-        boolean exited = awaitExit(process, timeout, descendants, isolation);
+        input = InputFeed.start(process.stdin(), stdin);
+        out = BoundedDrain.start(process.stdout(), "subprocess-stdout", stdoutLimit);
+        err = BoundedDrain.start(process.stderr(), "subprocess-stderr", stderrLimit);
+        boolean exited = process.awaitExit(timeout);
         if (!exited) {
-          forceAndVerify(process, descendants, isolation);
+          process.terminate();
         }
-        return result(
-            exited ? process.exitValue() : -1,
-            process,
-            descendants,
-            isolation,
-            out,
-            err,
-            !exited,
-            stdoutLimit,
-            stderrLimit);
+        IOException inputFailure = input.awaitFailure();
+        if (inputFailure != null && exited && process.exitValue() == 0) {
+          throw new IOException("could not send input to subprocess", inputFailure);
+        }
+        return result(process, out, err, !exited, stdoutLimit, stderrLimit);
       } catch (IOException | InterruptedException | RuntimeException failure) {
-        cleanupAfterFailure(process, descendants, isolation, failure, out, err);
+        cleanupAfterFailure(process, failure, input, out, err);
         throw failure;
       }
+    }
+  }
+
+  private static ManagedProcess startManaged(
+      ProbeIsolation isolation,
+      Path workingDirectory,
+      Map<String, String> environment,
+      EnvironmentInheritance environmentInheritance,
+      boolean redirectErrorStream)
+      throws IOException {
+    try {
+      ProcessBuilder builder =
+          builder(isolation.command(), workingDirectory, environment, environmentInheritance);
+      builder.redirectErrorStream(redirectErrorStream);
+      return new ManagedProcess(builder.start(), isolation);
+    } catch (IOException | RuntimeException failure) {
+      try {
+        isolation.close();
+      } catch (IOException cleanupFailure) {
+        failure.addSuppressed(cleanupFailure);
+      }
+      throw failure;
     }
   }
 
@@ -330,7 +574,31 @@ public final class Subprocess {
       Path outputFile)
       throws IOException, InterruptedException {
     return runRedirectingStdout(
-        argv, workingDirectory, environment, timeout, outputFile, MAX_STDERR_BYTES);
+        argv,
+        workingDirectory,
+        environment,
+        EnvironmentInheritance.INHERIT,
+        timeout,
+        outputFile,
+        MAX_STDERR_BYTES);
+  }
+
+  /** Redirects stdout while giving the child exactly the supplied environment. */
+  public static Result runRedirectingStdoutWithExactEnvironment(
+      List<String> argv,
+      Path workingDirectory,
+      Map<String, String> environment,
+      Duration timeout,
+      Path outputFile)
+      throws IOException, InterruptedException {
+    return runRedirectingStdout(
+        argv,
+        workingDirectory,
+        environment,
+        EnvironmentInheritance.REPLACE,
+        timeout,
+        outputFile,
+        MAX_STDERR_BYTES);
   }
 
   /** Package seam for testing redirected probes with a small stderr limit. */
@@ -342,81 +610,135 @@ public final class Subprocess {
       Path outputFile,
       int stderrLimit)
       throws IOException, InterruptedException {
+    return runRedirectingStdout(
+        argv,
+        workingDirectory,
+        environment,
+        EnvironmentInheritance.INHERIT,
+        timeout,
+        outputFile,
+        stderrLimit);
+  }
+
+  private static Result runRedirectingStdout(
+      List<String> argv,
+      Path workingDirectory,
+      Map<String, String> environment,
+      EnvironmentInheritance environmentInheritance,
+      Duration timeout,
+      Path outputFile,
+      int stderrLimit)
+      throws IOException, InterruptedException {
     Objects.requireNonNull(argv, "argv");
     Objects.requireNonNull(outputFile, "outputFile");
     Objects.requireNonNull(environment, "environment");
+    Objects.requireNonNull(environmentInheritance, "environmentInheritance");
     requirePositiveTimeout(timeout);
     requirePositiveLimit("stderrLimit", stderrLimit);
     if (argv.isEmpty()) {
       throw new IllegalArgumentException("argv must not be empty");
     }
-    try (ProbeIsolation isolation = ProcessIsolation.prepare(argv)) {
-      ProcessBuilder builder = builder(isolation.command(), workingDirectory, environment);
-      builder.redirectOutput(ProcessBuilder.Redirect.to(outputFile.toFile()));
-      Process process = builder.start();
-      closeQuietly(process.getOutputStream());
+    try (ManagedProcess process =
+        startManaged(
+            ProcessIsolation.prepare(
+                environmentInheritance == EnvironmentInheritance.REPLACE
+                    ? exactEnvironmentCommand(argv, environment)
+                    : argv),
+            workingDirectory,
+            environment,
+            environmentInheritance,
+            false)) {
+      return runRedirectingStdout(process, timeout, outputFile, stderrLimit);
+    }
+  }
 
-      StreamDrain err =
-          StreamDrain.start(process.getErrorStream(), "subprocess-stderr", stderrLimit);
-      DescendantTracker descendants = new DescendantTracker();
-      try {
-        boolean exited = awaitExit(process, timeout, descendants, isolation);
-        if (!exited) {
-          forceAndVerify(process, descendants, isolation);
-        }
-        Captured error = err.await();
-        if (error.incomplete()) {
-          forceAndVerify(process, descendants, isolation);
-        }
-        return new Result(
-            exited ? process.exitValue() : -1,
-            "",
-            error.text(),
-            !exited,
-            false,
-            error.truncated() || error.incomplete(),
-            0,
-            error.totalBytes(),
-            MAX_STDOUT_BYTES,
-            stderrLimit);
-      } catch (IOException | InterruptedException | RuntimeException failure) {
-        cleanupAfterFailure(process, descendants, isolation, failure, err);
-        throw failure;
+  private static Result runRedirectingStdout(
+      ManagedProcess process, Duration timeout, Path outputFile, int stderrLimit)
+      throws IOException, InterruptedException {
+    FileDrain out = null;
+    BoundedDrain err = null;
+    try {
+      closeQuietly(process.stdin());
+      out = FileDrain.start(process.stdout(), outputFile);
+      err = BoundedDrain.start(process.stderr(), "subprocess-stderr", stderrLimit);
+      boolean exited = process.awaitExit(timeout);
+      if (!exited) {
+        process.terminate();
       }
+      FileDrainResult output = out.await();
+      if (output.incomplete()) {
+        process.terminate();
+      }
+      CapturedOutput error = err.await();
+      if (error.incomplete()) {
+        process.terminate();
+      }
+      return new Result(
+          exited ? process.exitValue() : -1,
+          "",
+          error.text(),
+          !exited,
+          output.incomplete(),
+          error.truncated() || error.incomplete(),
+          output.receivedBytes(),
+          error.totalBytes(),
+          MAX_STDOUT_BYTES,
+          stderrLimit);
+    } catch (IOException | InterruptedException | RuntimeException failure) {
+      cleanupAfterFailure(process, failure, out, err);
+      throw failure;
     }
   }
 
   private static ProcessBuilder builder(
-      List<String> command, Path workingDirectory, Map<String, String> environment) {
+      List<String> command,
+      Path workingDirectory,
+      Map<String, String> environment,
+      EnvironmentInheritance environmentInheritance) {
     ProcessBuilder builder = new ProcessBuilder(command);
     if (workingDirectory != null) {
       builder.directory(workingDirectory.toFile());
+    }
+    if (environmentInheritance == EnvironmentInheritance.REPLACE) {
+      builder.environment().clear();
     }
     builder.environment().putAll(environment);
     return builder;
   }
 
+  private static List<String> exactEnvironmentCommand(
+      List<String> argv, Map<String, String> environment) {
+    List<String> command = new ArrayList<>(argv.size() + environment.size() + 3);
+    command.add("/usr/bin/env");
+    command.add("-i");
+    // BSD and GNU env both accept the option boundary here. After a NAME=VALUE operand BSD env
+    // treats "--" as the command name instead.
+    command.add("--");
+    environment.entrySet().stream()
+        .sorted(Map.Entry.comparingByKey())
+        .forEach(entry -> command.add(entry.getKey() + "=" + entry.getValue()));
+    command.addAll(argv);
+    return List.copyOf(command);
+  }
+
   private static Result result(
-      int exitCode,
-      Process process,
-      DescendantTracker descendants,
-      ProbeIsolation isolation,
-      StreamDrain stdout,
-      StreamDrain stderr,
+      ManagedProcess process,
+      BoundedDrain stdout,
+      BoundedDrain stderr,
       boolean timedOut,
       int stdoutLimit,
       int stderrLimit)
       throws IOException, InterruptedException {
-    Captured out = stdout.await();
+    CapturedOutput out = stdout.await();
     if (out.incomplete()) {
-      forceAndVerify(process, descendants, isolation);
+      process.terminate();
     }
-    Captured err = stderr.await();
+    CapturedOutput err = stderr.await();
     if (err.incomplete()) {
-      forceAndVerify(process, descendants, isolation);
+      process.terminate();
     }
     return new Result(
-        exitCode,
+        timedOut ? -1 : process.exitValue(),
         out.text(),
         err.text(),
         timedOut,
@@ -429,33 +751,47 @@ public final class Subprocess {
   }
 
   private static void cleanupAfterFailure(
-      Process process,
-      DescendantTracker descendants,
-      ProbeIsolation isolation,
-      Throwable failure,
-      StreamDrain... drains) {
-    boolean restoreInterrupt = failure instanceof InterruptedException;
+      ManagedProcess process, Throwable failure, AsyncCleanup... workers) {
+    boolean restoreInterrupt = failure instanceof InterruptedException || Thread.interrupted();
     try {
-      forceAndVerify(process, descendants, isolation);
+      process.terminate();
     } catch (IOException | InterruptedException | RuntimeException cleanupFailure) {
       failure.addSuppressed(cleanupFailure);
       restoreInterrupt |= cleanupFailure instanceof InterruptedException;
+      Thread.interrupted();
     }
-    for (StreamDrain drain : drains) {
-      drain.close();
+    for (AsyncCleanup worker : workers) {
+      if (worker != null) {
+        try {
+          worker.close();
+        } catch (RuntimeException cleanupFailure) {
+          failure.addSuppressed(cleanupFailure);
+        }
+      }
     }
-    for (StreamDrain drain : drains) {
+    for (AsyncCleanup worker : workers) {
+      if (worker == null) {
+        continue;
+      }
       try {
-        drain.awaitCleanup();
-      } catch (IOException | InterruptedException cleanupFailure) {
+        worker.awaitCleanup();
+      } catch (IOException | InterruptedException | RuntimeException cleanupFailure) {
         failure.addSuppressed(cleanupFailure);
         restoreInterrupt |= cleanupFailure instanceof InterruptedException;
+        Thread.interrupted();
       }
     }
     restoreInterrupt |= Thread.interrupted();
     if (restoreInterrupt) {
       Thread.currentThread().interrupt();
     }
+  }
+
+  private interface AsyncCleanup {
+
+    void close();
+
+    void awaitCleanup() throws IOException, InterruptedException;
   }
 
   private static boolean awaitExit(
@@ -675,7 +1011,10 @@ public final class Subprocess {
 
   /** Package seam for checking that process-group signalling cannot become a shell command. */
   static List<String> groupSignalCommand(String signal, long groupId) {
-    if (!signal.equals("-0") && !signal.equals("-KILL")) {
+    if (!signal.equals("-0")
+        && !signal.equals("-INT")
+        && !signal.equals("-TERM")
+        && !signal.equals("-KILL")) {
       throw new IllegalArgumentException("unsupported process-group signal: " + signal);
     }
     if (groupId <= 0) {
@@ -690,13 +1029,23 @@ public final class Subprocess {
         "-" + groupId);
   }
 
-  private record Captured(String text, long totalBytes, boolean truncated, boolean incomplete) {}
+  /** Bounded text and completeness state from one fully drained process pipe. */
+  public record CapturedOutput(
+      String text, long totalBytes, boolean truncated, boolean incomplete) {}
 
   interface ProbeIsolation extends AutoCloseable {
 
     List<String> command();
 
     void capture(Process root) throws IOException;
+
+    default boolean ready() {
+      return true;
+    }
+
+    default boolean signal(String signal) throws IOException, InterruptedException {
+      return false;
+    }
 
     void destroyForcibly() throws IOException, InterruptedException;
 
@@ -853,18 +1202,32 @@ public final class Subprocess {
     }
 
     @Override
+    public boolean ready() {
+      return controlFile == null || groupId > 0 || unavailable;
+    }
+
+    @Override
     public void destroyForcibly() throws IOException, InterruptedException {
       if (groupId > 0) {
-        signal("-KILL");
+        sendSignal("-KILL");
       }
     }
 
     @Override
-    public boolean anyAlive() throws IOException, InterruptedException {
-      return groupId > 0 && signal("-0") == 0;
+    public boolean signal(String signal) throws IOException, InterruptedException {
+      if (groupId <= 0) {
+        return false;
+      }
+      sendSignal(signal);
+      return true;
     }
 
-    private int signal(String signal) throws IOException, InterruptedException {
+    @Override
+    public boolean anyAlive() throws IOException, InterruptedException {
+      return groupId > 0 && sendSignal("-0") == 0;
+    }
+
+    private int sendSignal(String signal) throws IOException, InterruptedException {
       Process sender =
           new ProcessBuilder(groupSignalCommand(signal, groupId))
               .redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -1043,8 +1406,182 @@ public final class Subprocess {
     }
   }
 
+  /** Writes optional input without letting a full child pipe block the lifecycle owner. */
+  private static final class InputFeed implements AsyncCleanup {
+
+    private final OutputStream stream;
+    private final Thread thread;
+    private volatile boolean ownerClosed;
+    private volatile IOException failure;
+
+    private InputFeed(OutputStream stream, byte[] input) {
+      this.stream = stream;
+      thread =
+          Thread.ofVirtual()
+              .name("subprocess-stdin")
+              .unstarted(
+                  () -> {
+                    try (stream) {
+                      if (input != null) {
+                        stream.write(input);
+                      }
+                    } catch (IOException writeFailure) {
+                      if (!ownerClosed) {
+                        failure = writeFailure;
+                      }
+                    }
+                  });
+    }
+
+    static InputFeed start(OutputStream stream, byte[] input) {
+      InputFeed feed = new InputFeed(stream, input);
+      feed.thread.start();
+      return feed;
+    }
+
+    IOException awaitFailure() throws IOException, InterruptedException {
+      thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
+      if (thread.isAlive()) {
+        close();
+        thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
+      }
+      if (thread.isAlive()) {
+        thread.interrupt();
+        throw new IOException("could not finish sending subprocess input");
+      }
+      return failure;
+    }
+
+    @Override
+    public void awaitCleanup() throws IOException, InterruptedException {
+      thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
+      if (thread.isAlive()) {
+        thread.interrupt();
+        thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
+      }
+      if (thread.isAlive()) {
+        throw new IOException("could not join subprocess input writer during cleanup");
+      }
+    }
+
+    @Override
+    public void close() {
+      ownerClosed = true;
+      try {
+        stream.close();
+      } catch (IOException ignored) {
+        // The process already closed its side.
+      }
+    }
+  }
+
+  /** Outcome of copying one process pipe to a file. */
+  public record FileDrainResult(long receivedBytes, boolean incomplete) {
+    public FileDrainResult {
+      if (receivedBytes < 0) {
+        throw new IllegalArgumentException("received byte count must not be negative");
+      }
+    }
+  }
+
+  /** Copies a process pipe to a file and requires EOF before reporting completion. */
+  public static final class FileDrain implements AsyncCleanup {
+
+    private final InputStream input;
+    private final Thread thread;
+    private volatile long receivedBytes;
+    private volatile boolean incomplete;
+    private volatile boolean ownerClosed;
+    private volatile IOException failure;
+
+    private FileDrain(InputStream input, Path destination) {
+      this.input = Objects.requireNonNull(input, "input");
+      Objects.requireNonNull(destination, "destination");
+      thread =
+          Thread.ofVirtual()
+              .name("subprocess-file-drain")
+              .unstarted(
+                  () -> {
+                    try (input;
+                        OutputStream output =
+                            Files.newOutputStream(
+                                destination,
+                                StandardOpenOption.CREATE,
+                                StandardOpenOption.TRUNCATE_EXISTING,
+                                StandardOpenOption.WRITE)) {
+                      byte[] buffer = new byte[16 * 1024];
+                      int read;
+                      while ((read = input.read(buffer)) >= 0) {
+                        if (read == 0) {
+                          continue;
+                        }
+                        receivedBytes = saturatedAdd(receivedBytes, read);
+                        output.write(buffer, 0, read);
+                      }
+                    } catch (IOException copyFailure) {
+                      if (!ownerClosed) {
+                        failure = copyFailure;
+                      }
+                    }
+                  });
+    }
+
+    public static FileDrain start(InputStream input, Path destination) {
+      FileDrain drain = new FileDrain(input, destination);
+      drain.thread.start();
+      return drain;
+    }
+
+    /** Waits boundedly for EOF; inherited writers make the result explicitly incomplete. */
+    public FileDrainResult await() throws IOException, InterruptedException {
+      thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
+      incomplete = thread.isAlive();
+      if (thread.isAlive()) {
+        close();
+        thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
+      }
+      if (thread.isAlive()) {
+        thread.interrupt();
+        throw new IOException("could not finish draining subprocess output to a file");
+      }
+      if (failure != null) {
+        throw new IOException("could not write subprocess output file", failure);
+      }
+      return new FileDrainResult(receivedBytes, incomplete);
+    }
+
+    @Override
+    public void awaitCleanup() throws IOException, InterruptedException {
+      thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
+      if (thread.isAlive()) {
+        thread.interrupt();
+        thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
+      }
+      if (thread.isAlive()) {
+        throw new IOException("could not join subprocess file drain during cleanup");
+      }
+      if (failure != null) {
+        throw new IOException("could not write subprocess output during cleanup", failure);
+      }
+    }
+
+    @Override
+    public void close() {
+      ownerClosed = true;
+      try {
+        input.close();
+      } catch (IOException ignored) {
+        // The process already closed its side.
+      }
+    }
+
+    private static long saturatedAdd(long left, int right) {
+      return left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
+    }
+  }
+
   /** Reads one stream to completion while retaining only a bounded prefix. */
-  private static final class StreamDrain {
+  public static final class BoundedDrain implements AsyncCleanup {
 
     private final InputStream stream;
     private final int limit;
@@ -1055,7 +1592,7 @@ public final class Subprocess {
     private volatile boolean ownerClosed;
     private volatile IOException failure;
 
-    private StreamDrain(InputStream stream, String name, int limit) {
+    private BoundedDrain(InputStream stream, String name, int limit) {
       this.stream = stream;
       this.limit = limit;
       this.retained = new ByteArrayOutputStream(Math.min(limit, 16 * 1024));
@@ -1088,13 +1625,14 @@ public final class Subprocess {
                   });
     }
 
-    static StreamDrain start(InputStream stream, String name, int limit) {
-      StreamDrain drain = new StreamDrain(stream, name, limit);
+    public static BoundedDrain start(InputStream stream, String name, int limit) {
+      requirePositiveLimit("output limit", limit);
+      BoundedDrain drain = new BoundedDrain(stream, name, limit);
       drain.thread.start();
       return drain;
     }
 
-    Captured await() throws IOException, InterruptedException {
+    public CapturedOutput await() throws IOException, InterruptedException {
       thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
       boolean incomplete = thread.isAlive();
       if (thread.isAlive()) {
@@ -1109,11 +1647,12 @@ public final class Subprocess {
       if (failure != null) {
         throw new IOException("could not drain subprocess output", failure);
       }
-      return new Captured(
+      return new CapturedOutput(
           retained.toString(StandardCharsets.UTF_8), totalBytes, truncated, incomplete);
     }
 
-    void awaitCleanup() throws IOException, InterruptedException {
+    @Override
+    public void awaitCleanup() throws IOException, InterruptedException {
       thread.join(OUTPUT_DRAIN_GRACE_MILLIS);
       if (thread.isAlive()) {
         thread.interrupt();
@@ -1127,7 +1666,8 @@ public final class Subprocess {
       }
     }
 
-    void close() {
+    @Override
+    public void close() {
       ownerClosed = true;
       try {
         stream.close();

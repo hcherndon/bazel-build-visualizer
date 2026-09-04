@@ -46,6 +46,8 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
   private final SshCommandExecutor commands;
   private final SftpClient transfers;
 
+  private record RemoteDownloadSnapshot(ExecutionPath payload, long bytes) {}
+
   SshExecutionFileSystem(
       String executionId,
       String defaultDirectory,
@@ -239,29 +241,30 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     if (!metadata.isDirectory()) {
       throw new IOException("not a remote directory: " + directory);
     }
-    String after = continuationToken.map(SshExecutionFileSystem::decodeKey).orElse("");
+    String revision = directoryRevision(canonical);
+    DirectoryCursor cursor =
+        continuationToken
+            .map(SshExecutionFileSystem::decodeKey)
+            .orElseGet(() -> new DirectoryCursor(revision, ""));
+    if (!cursor.revision().equals(revision)) {
+      throw new IOException("the remote directory changed while it was being paged; reload it");
+    }
+    String after = cursor.after();
+    if (!after.isEmpty() && !parentOf(after).equals(canonical.value())) {
+      throw new IllegalArgumentException("directory continuation token belongs to another path");
+    }
     int requested = Math.addExact(maxEntries, 1);
-    String pipeline =
-        "export LC_ALL=C; "
-            + "BBV_AFTER="
-            + PosixShell.quote(after)
-            + " /usr/bin/find "
-            + PosixShell.quote(canonical.value())
-            + " -mindepth 1 -maxdepth 1 -printf '%p\\037%y\\037%s\\037%T@\\0'"
-            + " | LC_ALL=C /usr/bin/sort -z | BBV_AFTER="
-            + PosixShell.quote(after)
-            + " /usr/bin/awk -v bbv_limit="
-            + requested
-            + " 'BEGIN { RS=\"\\0\"; ORS=\"\\0\"; bbv_after=ENVIRON[\"BBV_AFTER\"] }"
-            + " { bbv_separator=index($0, \"\\037\");"
-            + " bbv_name=substr($0, 1, bbv_separator-1);"
-            + " if ((bbv_after == \"\" || bbv_name > bbv_after) && bbv_count < bbv_limit)"
-            + " { print $0; bbv_count++; } }'";
-    String script = "/bin/bash -o pipefail -c " + PosixShell.quote(pipeline);
-    CommandResult result = run(List.of("/bin/sh", "-c", script));
+    CommandResult result =
+        run(
+            directoryListingCommand(
+                canonical.value(), after, requested, "/usr/bin/find", "/bin/bash"));
     if (!result.isSuccess()) {
       throw new IOException(
           "cannot list remote directory " + directory + ": " + result.failureDetail());
+    }
+    String afterRevision = directoryRevision(canonical);
+    if (!revision.equals(afterRevision)) {
+      throw new IOException("the remote directory changed while it was being listed; reload it");
     }
     List<FileMetadata> entries = parseDirectoryRecords(result.stdout());
     boolean hasMore = entries.size() > maxEntries;
@@ -269,7 +272,9 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
       entries = new ArrayList<>(entries.subList(0, maxEntries));
     }
     Optional<String> next =
-        hasMore ? Optional.of(encodeKey(entries.getLast().path().value())) : Optional.empty();
+        hasMore
+            ? Optional.of(encodeKey(revision, entries.getLast().path().value()))
+            : Optional.empty();
     DirectoryPage page = new DirectoryPage(canonical, entries, next, OptionalLong.empty());
     log.debug(
         "SSH filesystem operation completed operation=list execution={} entryCount={}"
@@ -279,6 +284,105 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
         hasMore,
         elapsedMillis(startedNanos));
     return page;
+  }
+
+  static List<String> directoryListingCommand(
+      String directory, String after, int limit, String find, String selectorShell) {
+    Objects.requireNonNull(directory, "directory");
+    Objects.requireNonNull(after, "after");
+    Objects.requireNonNull(find, "find");
+    Objects.requireNonNull(selectorShell, "selectorShell");
+    if (limit <= 0) {
+      throw new IllegalArgumentException("directory listing limit must be positive");
+    }
+    String program =
+        """
+        bbv_swap() {
+          local a=$1 b=$2 t
+          t=${bbv_key[$a]}; bbv_key[$a]=${bbv_key[$b]}; bbv_key[$b]=$t
+          t=${bbv_kind[$a]}; bbv_kind[$a]=${bbv_kind[$b]}; bbv_kind[$b]=$t
+          t=${bbv_size[$a]}; bbv_size[$a]=${bbv_size[$b]}; bbv_size[$b]=$t
+          t=${bbv_time[$a]}; bbv_time[$a]=${bbv_time[$b]}; bbv_time[$b]=$t
+        }
+        bbv_up() {
+          local i=$1 p
+          while (( i > 1 )); do
+            p=$((i / 2))
+            if [[ ${bbv_key[$p]} > ${bbv_key[$i]} || ${bbv_key[$p]} == ${bbv_key[$i]} ]]; then
+              break
+            fi
+            bbv_swap "$p" "$i"
+            i=$p
+          done
+        }
+        bbv_down() {
+          local i=$1 n=$2 left right largest
+          while :; do
+            left=$((i * 2)); right=$((left + 1)); largest=$i
+            if (( left <= n )) && [[ ${bbv_key[$left]} > ${bbv_key[$largest]} ]]; then
+              largest=$left
+            fi
+            if (( right <= n )) && [[ ${bbv_key[$right]} > ${bbv_key[$largest]} ]]; then
+              largest=$right
+            fi
+            if (( largest == i )); then
+              break
+            fi
+            bbv_swap "$i" "$largest"
+            i=$largest
+          done
+        }
+        bbv_add() {
+          local key=$1 kind=$2 size=$3 time=$4 index
+          if [[ -n $BBV_AFTER ]] && [[ $key < $BBV_AFTER || $key == $BBV_AFTER ]]; then
+            return
+          fi
+          if (( bbv_count < BBV_LIMIT )); then
+            bbv_count=$((bbv_count + 1)); index=$bbv_count
+            bbv_key[$index]=$key; bbv_kind[$index]=$kind
+            bbv_size[$index]=$size; bbv_time[$index]=$time
+            bbv_up "$index"
+          elif [[ $key < ${bbv_key[1]} ]]; then
+            bbv_key[1]=$key; bbv_kind[1]=$kind
+            bbv_size[1]=$size; bbv_time[1]=$time
+            bbv_down 1 "$bbv_count"
+          fi
+        }
+        declare -a bbv_key bbv_kind bbv_size bbv_time
+        bbv_count=0
+        while IFS= read -r -d '' bbv_candidate_key; do
+          IFS= read -r -d '' bbv_candidate_kind || exit 65
+          IFS= read -r -d '' bbv_candidate_size || exit 65
+          IFS= read -r -d '' bbv_candidate_time || exit 65
+          bbv_add "$bbv_candidate_key" "$bbv_candidate_kind" "$bbv_candidate_size" "$bbv_candidate_time"
+          bbv_candidate_key=
+        done
+        [[ -z $bbv_candidate_key ]] || exit 65
+        bbv_heap_size=$bbv_count
+        while (( bbv_heap_size > 1 )); do
+          bbv_swap 1 "$bbv_heap_size"
+          bbv_heap_size=$((bbv_heap_size - 1))
+          bbv_down 1 "$bbv_heap_size"
+        done
+        for ((bbv_index=1; bbv_index<=bbv_count; bbv_index++)); do
+          printf '%s\\0%s\\0%s\\0%s\\0' "${bbv_key[$bbv_index]}" "${bbv_kind[$bbv_index]}" "${bbv_size[$bbv_index]}" "${bbv_time[$bbv_index]}"
+        done
+        """;
+    String pipeline =
+        "export LC_ALL=C; "
+            + PosixShell.quote(find)
+            + " "
+            + PosixShell.quote(directory)
+            + " -mindepth 1 -maxdepth 1 -printf '%p\\0%y\\0%s\\0%T@\\0'"
+            + " | BBV_AFTER="
+            + PosixShell.quote(after)
+            + " BBV_LIMIT="
+            + limit
+            + " "
+            + PosixShell.quote(selectorShell)
+            + " -c "
+            + PosixShell.quote(program);
+    return List.of("/bin/sh", "-c", "/bin/bash -o pipefail -c " + PosixShell.quote(pipeline));
   }
 
   @Override
@@ -503,19 +607,112 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     if (declared > maxBytes) {
       throw tooLarge(source, declared, maxBytes);
     }
+    RemoteDownloadSnapshot snapshot = null;
+    Throwable operationFailure = null;
     try {
-      transfers.download(source.value(), temporary, maxBytes);
+      snapshot = createRemoteDownloadSnapshot(source, before, maxBytes);
+      transfers.download(snapshot.payload().value(), temporary, snapshot.bytes());
+      FileMetadata afterTransfer = requireRegular(source);
+      if (!sameSnapshot(before, afterTransfer)) {
+        throw new IOException("the remote file changed while it was being downloaded: " + source);
+      }
     } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
-      throw new IOException("interrupted while downloading " + source, interrupted);
+      IOException wrapped = new IOException("interrupted while downloading " + source, interrupted);
+      operationFailure = wrapped;
+      throw wrapped;
+    } catch (IOException failure) {
+      operationFailure = failure;
+      throw failure;
+    } catch (RuntimeException failure) {
+      operationFailure = failure;
+      throw failure;
+    } finally {
+      if (snapshot != null) {
+        boolean restoreInterrupt = Thread.interrupted();
+        try {
+          removeRemoteDownloadSnapshot(snapshot);
+        } catch (IOException | RuntimeException cleanupFailure) {
+          restoreInterrupt |= Thread.interrupted();
+          if (operationFailure != null) {
+            operationFailure.addSuppressed(cleanupFailure);
+          } else {
+            throw cleanupFailure instanceof IOException io
+                ? io
+                : new IOException(
+                    "cannot remove the bounded remote download snapshot", cleanupFailure);
+          }
+        } finally {
+          if (restoreInterrupt) {
+            Thread.currentThread().interrupt();
+          }
+        }
+      }
     }
-    long actual = Files.size(temporary);
-    if (actual > maxBytes) {
-      throw tooLarge(source, actual, maxBytes);
+  }
+
+  private RemoteDownloadSnapshot createRemoteDownloadSnapshot(
+      ExecutionPath source, FileMetadata before, long maxBytes) throws IOException {
+    ExecutionPath payload = owned("/tmp/.bbv-download-" + UUID.randomUUID());
+    RemoteDownloadSnapshot snapshot = new RemoteDownloadSnapshot(payload, 0);
+    IOException operationFailure = null;
+    try {
+      CommandResult copy =
+          run(
+              List.of(
+                  "/bin/sh",
+                  "-c",
+                  "umask 077; set -C; /usr/bin/head -c \"$1\" -- \"$2\" > \"$3\""
+                      + " && /bin/chmod 0400 -- \"$3\"",
+                  "bbv-download-snapshot",
+                  Long.toString(maxBytes),
+                  source.value(),
+                  payload.value()));
+      if (!copy.isSuccess()) {
+        throw new IOException(
+            "cannot create a bounded remote download snapshot: " + copy.failureDetail());
+      }
+      FileMetadata after = requireRegular(source);
+      FileMetadata staged = requireRegular(payload);
+      long sourceBytes = after.bytes().orElseThrow();
+      long stagedBytes = staged.bytes().orElseThrow();
+      if (sourceBytes > maxBytes) {
+        throw tooLarge(source, sourceBytes, maxBytes);
+      }
+      if (!sameSnapshot(before, after) || stagedBytes != sourceBytes) {
+        throw new IOException("the remote file changed while it was being downloaded: " + source);
+      }
+      if (stagedBytes > maxBytes) {
+        throw tooLarge(source, stagedBytes, maxBytes);
+      }
+      return new RemoteDownloadSnapshot(payload, stagedBytes);
+    } catch (IOException | RuntimeException failure) {
+      operationFailure =
+          failure instanceof IOException io
+              ? io
+              : new IOException("cannot create a bounded remote download snapshot", failure);
+      throw operationFailure;
+    } finally {
+      if (operationFailure != null) {
+        boolean restoreInterrupt = Thread.interrupted();
+        try {
+          removeRemoteDownloadSnapshot(snapshot);
+        } catch (IOException | RuntimeException cleanupFailure) {
+          restoreInterrupt |= Thread.interrupted();
+          operationFailure.addSuppressed(cleanupFailure);
+        } finally {
+          if (restoreInterrupt) {
+            Thread.currentThread().interrupt();
+          }
+        }
+      }
     }
-    FileMetadata after = requireRegular(source);
-    if (!sameSnapshot(before, after) || actual != after.bytes().orElseThrow()) {
-      throw new IOException("the remote file changed while it was being downloaded: " + source);
+  }
+
+  private void removeRemoteDownloadSnapshot(RemoteDownloadSnapshot snapshot) throws IOException {
+    CommandResult result = run(List.of("/bin/rm", "-f", "--", snapshot.payload().value()));
+    if (!result.isSuccess()) {
+      throw new IOException("cannot remove the bounded remote download snapshot");
     }
   }
 
@@ -541,6 +738,15 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     return run(List.of("/bin/sh", "-c", script));
   }
 
+  private String directoryRevision(ExecutionPath directory) throws IOException {
+    CommandResult result =
+        run(List.of("/usr/bin/stat", "--printf=%d:%i:%s:%y", "--", requireOwned(directory)));
+    if (!result.isSuccess()) {
+      throw new IOException("cannot read remote directory revision: " + result.failureDetail());
+    }
+    return RemoteText.singleLine(result.stdout(), "remote directory revision");
+  }
+
   private FileMetadata requireRegular(ExecutionPath path) throws IOException {
     FileMetadata metadata = stat(path);
     if (!metadata.isRegularFile()) {
@@ -553,10 +759,16 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
   }
 
   private void removeRemoteTemporary(String path) {
+    boolean restoreInterrupt = Thread.interrupted();
     try {
       run(List.of("/bin/rm", "-f", "--", path));
-    } catch (IOException ignored) {
+    } catch (IOException | RuntimeException ignored) {
       // A failed operation already has the useful error. This is cleanup only.
+      restoreInterrupt |= Thread.interrupted();
+    } finally {
+      if (restoreInterrupt) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 
@@ -573,27 +785,31 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     return normalizeAbsolute(path.value());
   }
 
-  private List<FileMetadata> parseDirectoryRecords(String output) throws IOException {
+  List<FileMetadata> parseDirectoryRecords(String output) throws IOException {
     List<FileMetadata> entries = new ArrayList<>();
-    for (String record : output.split(String.valueOf('\0'), -1)) {
-      if (record.isEmpty()) {
-        continue;
-      }
-      String[] fields = record.split(String.valueOf('\u001f'), -1);
-      if (fields.length != 4) {
-        throw new IOException("remote directory listing returned malformed metadata");
-      }
+    if (!output.isEmpty() && output.charAt(output.length() - 1) != '\0') {
+      throw new IOException("remote directory listing returned an incomplete record");
+    }
+    String[] fields = output.split(String.valueOf('\0'), -1);
+    int fieldCount = fields.length;
+    if (fieldCount > 0 && fields[fieldCount - 1].isEmpty()) {
+      fieldCount--;
+    }
+    if (fieldCount % 4 != 0) {
+      throw new IOException("remote directory listing returned malformed metadata");
+    }
+    for (int index = 0; index < fieldCount; index += 4) {
       try {
-        ExecutionPath path = owned(normalizeAbsolute(fields[0]));
+        ExecutionPath path = owned(normalizeAbsolute(fields[index]));
         FileMetadata.Kind kind =
-            switch (fields[1]) {
+            switch (fields[index + 1]) {
               case "f" -> FileMetadata.Kind.REGULAR_FILE;
               case "d" -> FileMetadata.Kind.DIRECTORY;
               case "l" -> FileMetadata.Kind.SYMBOLIC_LINK;
               default -> FileMetadata.Kind.OTHER;
             };
-        long bytes = Long.parseLong(fields[2]);
-        long modified = new BigDecimal(fields[3]).movePointRight(3).longValue();
+        long bytes = Long.parseLong(fields[index + 2]);
+        long modified = new BigDecimal(fields[index + 3]).movePointRight(3).longValue();
         entries.add(
             FileMetadata.present(
                 path,
@@ -725,19 +941,31 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
         && left.modifiedMillis().equals(right.modifiedMillis());
   }
 
-  static String encodeKey(String key) {
-    return Base64.getUrlEncoder()
-        .withoutPadding()
-        .encodeToString(key.getBytes(StandardCharsets.UTF_8));
+  record DirectoryCursor(String revision, String after) {
+    DirectoryCursor {
+      Objects.requireNonNull(revision, "revision");
+      Objects.requireNonNull(after, "after");
+    }
   }
 
-  static String decodeKey(String token) {
+  static String encodeKey(String revision, String key) {
+    Objects.requireNonNull(revision, "revision");
+    Objects.requireNonNull(key, "key");
+    return Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString((revision + '\0' + key).getBytes(StandardCharsets.UTF_8));
+  }
+
+  static DirectoryCursor decodeKey(String token) {
     try {
       String value = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8);
-      if (!value.startsWith("/")) {
-        throw new IllegalArgumentException("not an absolute path");
+      int separator = value.indexOf('\0');
+      if (separator <= 0
+          || separator != value.lastIndexOf('\0')
+          || !value.substring(separator + 1).startsWith("/")) {
+        throw new IllegalArgumentException("not a revision and absolute path");
       }
-      return value;
+      return new DirectoryCursor(value.substring(0, separator), value.substring(separator + 1));
     } catch (IllegalArgumentException invalid) {
       throw new IllegalArgumentException("invalid directory continuation token", invalid);
     }
@@ -772,7 +1000,7 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
       Files.move(
           source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     } catch (AtomicMoveNotSupportedException unsupported) {
-      Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+      throw new IOException("atomic download replacement is not supported", unsupported);
     }
   }
 }

@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,28 +34,24 @@ final class SftpClient {
     this.sessionOpen = Objects.requireNonNull(sessionOpen, "sessionOpen");
   }
 
-  void download(String remote, Path local, long expectedMaximumBytes)
+  void download(String remote, Path local, long expectedBytes)
       throws IOException, InterruptedException {
-    AtomicReference<IOException> monitorFailure = new AtomicReference<>();
     try {
       transfer(
           "download",
           "get " + quoteBatchPath(remote) + " " + quoteBatchPath(local.toString()),
-          expectedMaximumBytes,
-          () -> {
-            try {
-              return Files.exists(local) && Files.size(local) > expectedMaximumBytes;
-            } catch (IOException failure) {
-              monitorFailure.compareAndSet(null, failure);
-              return true;
-            }
-          });
-      IOException failure = monitorFailure.get();
-      if (failure != null) {
-        throw failure;
+          expectedBytes);
+      long actual = Files.size(local);
+      if (actual != expectedBytes) {
+        throw new IOException(
+            "SFTP downloaded " + actual + " bytes from an expected " + expectedBytes + " bytes");
       }
-    } catch (IOException | InterruptedException failure) {
-      Files.deleteIfExists(local);
+    } catch (IOException | InterruptedException | RuntimeException failure) {
+      try {
+        Files.deleteIfExists(local);
+      } catch (IOException | RuntimeException cleanupFailure) {
+        failure.addSuppressed(cleanupFailure);
+      }
       throw failure;
     }
   }
@@ -66,8 +61,7 @@ final class SftpClient {
     transfer(
         "upload",
         "put " + quoteBatchPath(local.toString()) + " " + quoteBatchPath(remote),
-        expectedMaximumBytes,
-        null);
+        expectedMaximumBytes);
   }
 
   void checkAvailable() throws IOException, InterruptedException {
@@ -92,8 +86,7 @@ final class SftpClient {
         elapsedMillis(startedNanos));
   }
 
-  private void transfer(
-      String operation, String instruction, long expectedMaximumBytes, BooleanSupplier abort)
+  private void transfer(String operation, String instruction, long expectedMaximumBytes)
       throws IOException, InterruptedException {
     if (!sessionOpen.getAsBoolean()) {
       throw new IOException("the SSH control session is closed");
@@ -109,11 +102,7 @@ final class SftpClient {
         OpenSshProcess.run(
             arguments(),
             transferTimeout(expectedMaximumBytes),
-            batch.getBytes(StandardCharsets.UTF_8),
-            abort);
-    if (abort != null && abort.getAsBoolean()) {
-      throw new IOException("SFTP transfer exceeded the " + expectedMaximumBytes + " byte limit");
-    }
+            batch.getBytes(StandardCharsets.UTF_8));
     if (!result.isSuccess()) {
       log.warn(
           "SFTP transfer failed operation={} target={} exitCode={} timedOut={}" + " durationMs={}",

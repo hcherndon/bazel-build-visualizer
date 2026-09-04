@@ -89,6 +89,17 @@ final class SubprocessTest {
   }
 
   @Test
+  @DisplayName("exact environments keep an option-looking executable behind env's boundary")
+  void exactEnvironmentKeepsOptionLookingExecutableAsArgv() throws Exception {
+    Subprocess.Result result =
+        Subprocess.runWithExactEnvironment(
+            List.of("-bbv-command-that-does-not-exist"), null, Map.of(), Duration.ofSeconds(5));
+
+    assertThat(result.exitCode()).isEqualTo(127);
+    assertThat(result.stderr()).contains("-bbv-command-that-does-not-exist");
+  }
+
+  @Test
   @DisplayName("a partial process-group control record is never accepted")
   void partialProcessGroupControlRecordIsPendingOrMalformed() throws Exception {
     byte[] partial = "READY 1".getBytes(StandardCharsets.US_ASCII);

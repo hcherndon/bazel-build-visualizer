@@ -40,8 +40,9 @@ public final class LocalCommandExecutor implements CommandExecutor {
   @Override
   public CommandResult run(CommandRequest request, Duration timeout)
       throws IOException, InterruptedException {
+    requireNonTty(request);
     Subprocess.Result result =
-        Subprocess.run(
+        Subprocess.runWithExactEnvironment(
             request.argv(),
             request.workingDirectory().map(Path::of).orElse(null),
             environment(request),
@@ -54,6 +55,7 @@ public final class LocalCommandExecutor implements CommandExecutor {
       CommandRequest request, Duration timeout, Path localOutputFile)
       throws IOException, InterruptedException {
     requireTimeout(timeout);
+    requireNonTty(request);
     Path destination = localOutputFile.toAbsolutePath().normalize();
     Path parent = destination.getParent();
     if (parent == null || !Files.isDirectory(parent)) {
@@ -63,7 +65,7 @@ public final class LocalCommandExecutor implements CommandExecutor {
     boolean moved = false;
     try {
       Subprocess.Result result =
-          Subprocess.runRedirectingStdout(
+          Subprocess.runRedirectingStdoutWithExactEnvironment(
               request.argv(),
               request.workingDirectory().map(Path::of).orElse(null),
               environment(request),
@@ -83,10 +85,28 @@ public final class LocalCommandExecutor implements CommandExecutor {
 
   @Override
   public RunningCommand start(CommandRequest request) throws IOException {
-    if (request.forceTty()) {
-      throw new IOException("the local command executor does not allocate a pseudo-terminal");
+    requireNonTty(request);
+    Subprocess.ManagedProcess process =
+        Subprocess.startManaged(
+            request.argv(),
+            request.workingDirectory().map(Path::of).orElse(null),
+            environment(request),
+            Subprocess.EnvironmentInheritance.REPLACE,
+            false);
+    try {
+      process.awaitIsolationReady(Duration.ofSeconds(5));
+      return new LocalRunningCommand(process);
+    } catch (IOException | InterruptedException | RuntimeException failure) {
+      cleanupManagedStart(process, failure);
+      if (failure instanceof InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new IOException("interrupted while starting the local command", interrupted);
+      }
+      if (failure instanceof IOException io) {
+        throw io;
+      }
+      throw (RuntimeException) failure;
     }
-    return new LocalRunningCommand(builder(request).start());
   }
 
   @Override
@@ -150,34 +170,45 @@ public final class LocalCommandExecutor implements CommandExecutor {
     }
   }
 
-  private static ProcessBuilder builder(CommandRequest request) throws IOException {
-    if (request.forceTty()) {
-      throw new IOException("the local command executor does not allocate a pseudo-terminal");
-    }
-    ProcessBuilder builder = new ProcessBuilder(request.argv());
-    if (request.workingDirectory().isPresent()) {
-      Path directory = Path.of(request.workingDirectory().get());
-      if (!Files.isDirectory(directory)) {
-        throw new IOException("the working directory does not exist: " + directory);
-      }
-      builder.directory(directory.toFile());
-    }
-    applyEnvironment(builder.environment(), request);
-    return builder;
-  }
-
   private static void moveReplacement(Path source, Path destination) throws IOException {
     try {
       Files.move(
           source, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
     } catch (AtomicMoveNotSupportedException unsupported) {
-      Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
+      throw new IOException("atomic command-output replacement is not supported", unsupported);
+    }
+  }
+
+  private static void requireNonTty(CommandRequest request) throws IOException {
+    Objects.requireNonNull(request, "request");
+    if (request.forceTty()) {
+      throw new IOException("the local command executor does not allocate a pseudo-terminal");
     }
   }
 
   private static void requireTimeout(Duration timeout) {
     if (timeout == null || timeout.isZero() || timeout.isNegative()) {
       throw new IllegalArgumentException("command timeout must be positive");
+    }
+  }
+
+  private static void cleanupManagedStart(
+      Subprocess.ManagedProcess process, Throwable originalFailure) {
+    boolean restoreInterrupt = Thread.interrupted();
+    try {
+      process.terminate();
+    } catch (IOException | InterruptedException | RuntimeException cleanupFailure) {
+      originalFailure.addSuppressed(cleanupFailure);
+      restoreInterrupt |= cleanupFailure instanceof InterruptedException;
+      Thread.interrupted();
+    }
+    try {
+      process.close();
+    } catch (IOException | RuntimeException cleanupFailure) {
+      originalFailure.addSuppressed(cleanupFailure);
+    }
+    if (restoreInterrupt) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -337,25 +368,25 @@ public final class LocalCommandExecutor implements CommandExecutor {
 
   private static final class LocalRunningCommand implements RunningCommand {
 
-    private final Process process;
+    private final Subprocess.ManagedProcess process;
 
-    private LocalRunningCommand(Process process) {
+    private LocalRunningCommand(Subprocess.ManagedProcess process) {
       this.process = process;
     }
 
     @Override
     public InputStream stdout() {
-      return process.getInputStream();
+      return process.stdout();
     }
 
     @Override
     public InputStream stderr() {
-      return process.getErrorStream();
+      return process.stderr();
     }
 
     @Override
     public OutputStream stdin() {
-      return process.getOutputStream();
+      return process.stdin();
     }
 
     @Override
@@ -380,12 +411,20 @@ public final class LocalCommandExecutor implements CommandExecutor {
 
     @Override
     public int waitFor() throws InterruptedException {
-      return process.waitFor();
+      try {
+        return process.waitForRoot();
+      } finally {
+        closeQuietly();
+      }
     }
 
     @Override
     public boolean waitFor(Duration timeout) throws InterruptedException {
-      return process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
+      boolean exited = process.waitForRoot(timeout);
+      if (exited) {
+        closeQuietly();
+      }
+      return exited;
     }
 
     @Override
@@ -395,30 +434,14 @@ public final class LocalCommandExecutor implements CommandExecutor {
 
     @Override
     public void signal(CancellationMode mode) throws IOException, InterruptedException {
-      switch (mode) {
-        case CANCEL -> interrupt(process);
-        case TERMINATE -> {
-          if (process.isAlive()) {
-            process.destroy();
-          }
-        }
-        case FORCE_KILL -> {
-          process.descendants().forEach(ProcessHandle::destroyForcibly);
-          process.destroyForcibly();
-        }
-      }
+      process.signal(mode);
     }
 
-    private static void interrupt(Process process) throws IOException, InterruptedException {
-      if (!process.isAlive()) {
-        return;
-      }
-      Process kill =
-          new ProcessBuilder("/bin/kill", "-INT", Long.toString(process.pid()))
-              .redirectErrorStream(true)
-              .start();
-      if (!kill.waitFor(5, TimeUnit.SECONDS) || kill.exitValue() != 0) {
-        process.destroy();
+    private void closeQuietly() {
+      try {
+        process.close();
+      } catch (IOException ignored) {
+        // The process has exited; this only removes its private control file.
       }
     }
   }

@@ -42,12 +42,18 @@ current commands.
   unverified hosts without the required POSIX permissions, `/bin/sh`, or Linux `setsid`, the fixed
   `ProcessHandle` tracker is a best-effort fallback; it cannot recover a child already reparented
   before Java observed it.
-- Remote SFTP downloads enforce their byte ceiling while the transfer is active and remove any
-  partial local result on overflow, timeout, interruption, or failure. SSH directory pages use
-  opaque absolute-path keyset continuation and a bounded streaming pipeline; pipeline failures,
-  mutation-safe continuation, and literal backslashes remain explicit rather than looking like a
-  complete page. Local and SSH redirected output is installed atomically only after successful,
-  fully drained execution.
+- Remote downloads create a private, client-named snapshot with `head -c` before SFTP starts, so
+  the retained remote source cannot exceed the requested byte ceiling. Exact snapshot and local
+  sizes plus source metadata are verified; growth, timeout, interruption, mismatch, or failure
+  removes both temporary files and leaves the destination unchanged. SSH directory pages fully
+  consume their producer but retain only a page-sized max-heap, use opaque revision-and-path keyset
+  continuations, and report totals as unknown. Producer/selector failure, mutation, literal
+  backslashes, newlines, and incomplete records fail explicitly. Local and SSH redirected output
+  is installed atomically only after successful, fully drained execution.
+- Bounded local commands, OpenSSH helpers, remote command transports, and the SSH control master
+  share `Subprocess` process-group isolation, persistent descendant tracking, and complete pipe
+  drains. The primary Bazel build still belongs to the capture coordinator's separate live-command
+  cancellation lifecycle; it is not described as a bounded probe.
 - The raw-byte gRPC marshaller reads at most the configured message limit plus one byte before
   returning `RESOURCE_EXHAUSTED`; an unknown stream length can no longer force an unbounded read.
 - Protobuf timestamps and durations pass through one range-, sign-, and overflow-checked boundary.
