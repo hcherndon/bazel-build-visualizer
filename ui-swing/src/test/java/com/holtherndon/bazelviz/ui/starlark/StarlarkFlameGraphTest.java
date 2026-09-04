@@ -3,8 +3,10 @@ package com.holtherndon.bazelviz.ui.starlark;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
+import java.awt.AWTKeyStroke;
 import java.awt.Dimension;
 import java.awt.GraphicsEnvironment;
+import java.awt.KeyboardFocusManager;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.event.ActionEvent;
@@ -215,6 +217,9 @@ final class StarlarkFlameGraphTest {
                   OptionalLong.empty(), 2, 0, OptionalLong.of(2_000), List.of(root, child)));
 
           assertThat(graph.isFocusable()).isTrue();
+          assertThat(graph.getBorder()).isNotNull();
+          assertThat(graph.getFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS))
+              .contains(AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_TAB, 0));
           assertThat(graph.getAccessibleContext().getAccessibleName())
               .isEqualTo("Starlark CPU flame graph");
           assertThat(graph.getAccessibleContext().getAccessibleDescription())

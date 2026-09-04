@@ -11,9 +11,11 @@ import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.ui.theme.AppTheme;
 import com.holtherndon.bazelviz.ui.theme.Themes;
+import java.awt.AWTKeyStroke;
 import java.awt.Color;
 import java.awt.FontMetrics;
 import java.awt.Graphics2D;
+import java.awt.KeyboardFocusManager;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
@@ -777,6 +779,9 @@ final class GraphCanvasTest {
     canvas.onFocusRequested(focused::set);
 
     assertThat(canvas.isFocusable()).isTrue();
+    assertThat(canvas.getBorder()).isNotNull();
+    assertThat(canvas.getFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS))
+        .contains(AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_TAB, 0));
     assertThat(canvas.getAccessibleContext().getAccessibleName())
         .isEqualTo("Dependency graph canvas");
     assertThat(canvas.getAccessibleContext().getAccessibleDescription())

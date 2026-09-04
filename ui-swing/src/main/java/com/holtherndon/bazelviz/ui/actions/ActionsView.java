@@ -40,6 +40,7 @@ import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -303,6 +304,7 @@ public final class ActionsView extends JPanel {
     }
     sortChoice.setSelectedItem(ActionSort.ARRIVAL);
     textFilter.setToolTipText("Substring of the primary output path");
+    descendingBox.getAccessibleContext().setAccessibleName("Descending sort order");
 
     mnemonicChoice.addActionListener(event -> reloadUnlessPopulating());
     outcomeChoice.addActionListener(event -> reloadUnlessPopulating());
@@ -329,16 +331,18 @@ public final class ActionsView extends JPanel {
               }
             });
 
+    bar.add(labelFor("Mnemonic", mnemonicChoice));
     bar.add(mnemonicChoice);
+    bar.add(labelFor("Outcome", outcomeChoice));
     bar.add(outcomeChoice);
-    bar.add(new JLabel("Output contains:"));
+    bar.add(labelFor("Output contains", textFilter));
     bar.add(textFilter);
     showAllButton.setEnabled(false);
     showAllButton.setToolTipText(
         PlainText.tooltip("Clear every action filter and return to the start of the table"));
     showAllButton.addActionListener(event -> showAllActions());
     bar.add(showAllButton);
-    bar.add(new JLabel("Sort:"));
+    bar.add(labelFor("Sort", sortChoice));
     bar.add(sortChoice);
     bar.add(descendingBox);
     // Plan 24's selected-action neighbourhood: the bridge from a row here
@@ -364,6 +368,13 @@ public final class ActionsView extends JPanel {
     labelChip.addActionListener(event -> clearLabelFilter());
     bar.add(labelChip);
     return bar;
+  }
+
+  private static JLabel labelFor(String text, JComponent target) {
+    JLabel label = PlainText.disableHtml(new JLabel(text + ":"));
+    label.setLabelFor(target);
+    target.getAccessibleContext().setAccessibleName(text);
+    return label;
   }
 
   /** The selected row, or null while none is or its page has not arrived. */

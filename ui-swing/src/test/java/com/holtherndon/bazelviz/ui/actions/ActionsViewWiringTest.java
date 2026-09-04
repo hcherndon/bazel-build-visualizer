@@ -13,6 +13,8 @@ import com.holtherndon.bazelviz.testsupport.bep.SyntheticBepStream;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.GraphicsEnvironment;
 import java.nio.file.Path;
 import java.util.List;
@@ -23,6 +25,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import javax.swing.JCheckBox;
+import javax.swing.JLabel;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -48,6 +52,26 @@ class ActionsViewWiringTest {
     assertThat(GraphicsEnvironment.isHeadless())
         .as("these tests must not depend on a display")
         .isTrue();
+  }
+
+  @Test
+  @DisplayName("every action toolbar filter has an explicit accessible label")
+  void toolbarFiltersHaveAccessibleLabels() {
+    ActionsView view = onEdt(ActionsView::new);
+
+    onEdt(
+        () -> {
+          for (String name : List.of("Mnemonic", "Outcome", "Output contains", "Sort")) {
+            JLabel label = labelWithText(view, name + ":");
+            assertThat(label.getLabelFor()).as(name + " label target").isNotNull();
+            assertThat(label.getLabelFor().getAccessibleContext().getAccessibleName())
+                .isEqualTo(name);
+          }
+          JCheckBox descending = component(view, JCheckBox.class, "Descending");
+          assertThat(descending.getAccessibleContext().getAccessibleName())
+              .isEqualTo("Descending sort order");
+          return null;
+        });
   }
 
   @Test
@@ -266,6 +290,43 @@ class ActionsViewWiringTest {
     // UTF-16 String.compareTo puts the surrogate pair first. SQLite's
     // BINARY collation compares UTF-8 bytes and puts the BMP value first.
     assertThat(ActionRowSource.compareSqliteText("\uE000", "\uD800\uDC00")).isNegative();
+  }
+
+  private static JLabel labelWithText(Container root, String text) {
+    return component(root, JLabel.class, text);
+  }
+
+  private static <T extends Component> T component(Container root, Class<T> type, String text) {
+    T found = findComponent(root, type, text);
+    if (found != null) {
+      return found;
+    }
+    throw new AssertionError(type.getSimpleName() + " with text " + text + " was not found");
+  }
+
+  private static <T extends Component> T findComponent(Container root, Class<T> type, String text) {
+    for (Component child : root.getComponents()) {
+      if (type.isInstance(child) && componentText(child).equals(text)) {
+        return type.cast(child);
+      }
+      if (child instanceof Container nested) {
+        T found = findComponent(nested, type, text);
+        if (found != null) {
+          return found;
+        }
+      }
+    }
+    return null;
+  }
+
+  private static String componentText(Component component) {
+    if (component instanceof JLabel label) {
+      return label.getText();
+    }
+    if (component instanceof JCheckBox checkBox) {
+      return checkBox.getText();
+    }
+    return "";
   }
 
   /** True once a cell holds a value rather than either placeholder. */

@@ -170,11 +170,14 @@ public final class TimelineView extends JPanel {
   private static final String INTERACTION_HINT =
       "Scroll: lanes  ·  Two-finger sideways: pan  ·  Ctrl/⌘+scroll or pinch: zoom"
           + "  ·  Drag: pan"
-          + "  ·  Shift+drag: select";
+          + "  ·  Shift+drag: select"
+          + "  ·  F1: keyboard help";
 
   private static final String KEYBOARD_HELP =
-      "Use Left and Right to move between visible actions, Up and Down to scroll lanes, "
-          + "Shift+Left or Shift+Right to pan time, plus or minus to zoom, and 0 to fit.";
+      "Use Left and Right to select visible actions, I and Shift+I to select in-flight targets, "
+          + "Up and Down to scroll lanes, Shift+Left and Shift+Right to pan time, plus or minus "
+          + "to zoom, 0 to fit, R to select the visible time range, Escape to clear that range, "
+          + "and F1 to show this keyboard help.";
   private final CardLayout cards = new CardLayout();
   private final JPanel deck = new JPanel(cards);
   private final JLabel empty = new JLabel("No timeline for this session.", SwingConstants.CENTER);
@@ -236,6 +239,11 @@ public final class TimelineView extends JPanel {
 
   /** Span under the pointer; paint-only and reset whenever the window changes. */
   private int hoveredSpan = -1;
+
+  /**
+   * In-flight target selected with the pointer or keyboard, retained by value across live updates.
+   */
+  private TimelineModel.LiveBand.InFlight selectedInFlight;
 
   /** Fractional trackpad movement that has not yet reached one device pixel. */
   private double verticalWheelRemainder;
@@ -529,6 +537,21 @@ public final class TimelineView extends JPanel {
     rangeChanged.rangeChanged(OptionalLong.empty(), OptionalLong.empty());
   }
 
+  /** Selects the currently visible time window through the same filter callback as a shift-drag. */
+  private void selectVisibleRange() {
+    if (viewport == null) {
+      return;
+    }
+    Optional<long[]> visible = visibleRange();
+    if (visible.isEmpty()) {
+      return;
+    }
+    long[] range = visible.orElseThrow();
+    viewport = viewport.withRange(range[0], range[1]);
+    repaintAll();
+    rangeChanged.rangeChanged(viewport.rangeFromMicros(), viewport.rangeToMicros());
+  }
+
   /** Called when the visible range or grouping changed and data must be refetched. */
   public void onViewportChanged(Runnable handler) {
     this.viewportChanged = handler;
@@ -559,6 +582,9 @@ public final class TimelineView extends JPanel {
     int scrolledTo = scrollPosition();
     this.model = next;
     hoveredSpan = -1;
+    if (selectedInFlight != null && !next.liveBand().inFlight().contains(selectedInFlight)) {
+      selectedInFlight = null;
+    }
     Map<String, Integer> rows = new HashMap<>();
     List<TimelineModel.Lane> lanes = next.lanes();
     for (int i = 0; i < lanes.size(); i++) {
@@ -595,7 +621,6 @@ public final class TimelineView extends JPanel {
     } else {
       liveTicker.stop();
     }
-    updateCanvasAccessibleDescription();
     repaintAll();
   }
 
@@ -628,6 +653,7 @@ public final class TimelineView extends JPanel {
           viewport.withWall(
               model.wallStartMicros(), liveWallEnd(model), Math.max(1, canvas.getWidth()));
     }
+    updateCanvasAccessibleDescription();
     canvas.repaint();
     header.repaint();
   }
@@ -644,7 +670,6 @@ public final class TimelineView extends JPanel {
     // there rather than left pointing past the end.
     relayoutLanes();
     scrollTo(scrolledTo);
-    updateCanvasAccessibleDescription();
     repaintAll();
   }
 
@@ -667,6 +692,7 @@ public final class TimelineView extends JPanel {
     window = SpanWindow.EMPTY;
     stacking = SpanStacking.EMPTY;
     hoveredSpan = -1;
+    selectedInFlight = null;
     laneRowByKey = Map.of();
     unmatchedSpans = 0;
     relayoutLanes();
@@ -698,6 +724,7 @@ public final class TimelineView extends JPanel {
     canvas.revalidate();
     laneLabels.revalidate();
     port.setViewPosition(new Point(0, Math.clamp(y, 0, limit)));
+    updateCanvasAccessibleDescription();
   }
 
   /**
@@ -853,9 +880,9 @@ public final class TimelineView extends JPanel {
    */
   public void select(long nodeId) {
     if (viewport != null) {
+      selectedInFlight = null;
       viewport = viewport.selecting(OptionalLong.of(nodeId));
       scrollSelectionIntoView();
-      updateCanvasAccessibleDescription();
       repaintAll();
     }
   }
@@ -975,6 +1002,7 @@ public final class TimelineView extends JPanel {
   }
 
   private void repaintAll() {
+    updateCanvasAccessibleDescription();
     canvas.repaint();
     header.repaint();
     laneLabels.repaint();
@@ -1309,6 +1337,22 @@ public final class TimelineView extends JPanel {
       }
     }
     return -1;
+  }
+
+  /** Whether one retained in-flight target has a painted extent in the current time window. */
+  private boolean bandTouchesCanvas(int index) {
+    if (model == null
+        || viewport == null
+        || !model.liveBand().live()
+        || index < 0
+        || index >= model.liveBand().inFlight().size()) {
+      return false;
+    }
+    TimelineModel.LiveBand.InFlight target = model.liveBand().inFlight().get(index);
+    TimelineTransform transform = viewport.transform();
+    double x0 = transform.xForMicros(target.startMicros());
+    double x1 = transform.xForMicros(Math.max(target.startMicros(), clock.getAsLong()));
+    return Math.max(x0, x1) >= 0 && Math.min(x0, x1) <= canvas.getWidth();
   }
 
   /**
@@ -1694,6 +1738,16 @@ public final class TimelineView extends JPanel {
           () -> scrollTo(scrollPosition() + VERTICAL_SCROLL_UNIT));
       CanvasAccessibility.bind(
           this,
+          "timeline-next-in-flight-target",
+          KeyStroke.getKeyStroke(KeyEvent.VK_I, 0),
+          () -> selectAdjacentBand(1));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-previous-in-flight-target",
+          KeyStroke.getKeyStroke(KeyEvent.VK_I, KeyEvent.SHIFT_DOWN_MASK),
+          () -> selectAdjacentBand(-1));
+      CanvasAccessibility.bind(
+          this,
           "timeline-pan-left",
           KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, KeyEvent.SHIFT_DOWN_MASK),
           () -> panFromKeyboard(80));
@@ -1727,6 +1781,21 @@ public final class TimelineView extends JPanel {
           "timeline-fit",
           KeyStroke.getKeyStroke(KeyEvent.VK_0, 0),
           TimelineView.this::fitBuild);
+      CanvasAccessibility.bind(
+          this,
+          "timeline-select-visible-range",
+          KeyStroke.getKeyStroke(KeyEvent.VK_R, 0),
+          TimelineView.this::selectVisibleRange);
+      CanvasAccessibility.bind(
+          this,
+          "timeline-clear-range",
+          KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+          TimelineView.this::clearRange);
+      CanvasAccessibility.bind(
+          this,
+          "timeline-keyboard-help",
+          KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0),
+          TimelineView.this::showKeyboardHelp);
     }
 
     double zoomAnchorX() {
@@ -1845,6 +1914,7 @@ public final class TimelineView extends JPanel {
       List<TimelineModel.LiveBand.InFlight> inFlight = model.liveBand().inFlight();
       long now = clock.getAsLong();
       int rows = bandRows();
+      int selected = -1;
       g2.setColor(TimelineColours.IN_FLIGHT);
       for (int i = 0; i < inFlight.size(); i++) {
         int row = Math.min(i, rows - 1);
@@ -1852,6 +1922,22 @@ public final class TimelineView extends JPanel {
         int x0 = (int) transform.xForMicros(start);
         int x1 = (int) transform.xForMicros(Math.max(start, now));
         g2.fillRect(x0, row * SUB_ROW_HEIGHT + 1, Math.max(1, x1 - x0), SUB_ROW_HEIGHT - 3);
+        if (inFlight.get(i).equals(selectedInFlight)) {
+          selected = i;
+        }
+      }
+      if (selected >= 0 && bandTouchesCanvas(selected)) {
+        int row = Math.min(selected, rows - 1);
+        long start = inFlight.get(selected).startMicros();
+        int x0 = (int) transform.xForMicros(start);
+        int x1 = (int) transform.xForMicros(Math.max(start, now));
+        Rectangle selectedBounds =
+            new Rectangle(
+                Math.min(x0, x1),
+                row * SUB_ROW_HEIGHT + 1,
+                Math.max(1, Math.abs(x1 - x0)),
+                SUB_ROW_HEIGHT - 3);
+        paintOutsideOutline(g2, selectedBounds, focusOutline(), true);
       }
       g2.setColor(themeForeground());
       g2.drawString(bandLabel(model.liveBand()), 4, Math.min(band - 5, 13));
@@ -2035,6 +2121,9 @@ public final class TimelineView extends JPanel {
   /** Shows the immediately available facts for one live-band target. */
   private void selectBand(int bandIndex) {
     TimelineModel.LiveBand.InFlight target = model.liveBand().inFlight().get(bandIndex);
+    selectedInFlight = target;
+    int row = Math.min(bandIndex, bandRows() - 1);
+    canvas.scrollRectToVisible(new Rectangle(0, row * SUB_ROW_HEIGHT, 1, SUB_ROW_HEIGHT));
     double intoBuild = (target.startMicros() - model.wallStartMicros()) / 1_000_000.0;
     showInspector(
         new SpanDetails(
@@ -2044,11 +2133,13 @@ public final class TimelineView extends JPanel {
                 String.format(
                     Locale.ROOT, "Configured %.2fs into the build (BEP receive time).", intoBuild)),
             List.of(new EntityRef.TargetLabel(target.label()))));
+    repaintAll();
   }
 
   /** Selects one exact action span and starts its asynchronous detail read. */
   private void selectSpan(int i) {
     long nodeId = window.nodeId(i);
+    selectedInFlight = null;
     viewport = viewport.selecting(OptionalLong.of(nodeId));
     long start = Math.max(0, window.startMicros(i) - model.wallStartMicros());
     long duration = Math.max(0, window.endMicros(i) - window.startMicros(i));
@@ -2065,7 +2156,6 @@ public final class TimelineView extends JPanel {
     // A lane the click only caught the edge of comes fully into view, so
     // the inspector beside it is describing something the user can see.
     scrollSelectionIntoView();
-    updateCanvasAccessibleDescription();
     selectionHandler.accept(nodeId);
     actionPickedHandler.accept(nodeId);
     repaintAll();
@@ -2098,6 +2188,28 @@ public final class TimelineView extends JPanel {
     }
   }
 
+  /** Moves through painted in-flight targets without requiring the pointer-sized live band. */
+  private void selectAdjacentBand(int delta) {
+    if (model == null
+        || viewport == null
+        || !model.liveBand().live()
+        || model.liveBand().inFlight().isEmpty()) {
+      return;
+    }
+    List<TimelineModel.LiveBand.InFlight> targets = model.liveBand().inFlight();
+    int current = selectedInFlight == null ? -1 : targets.indexOf(selectedInFlight);
+    if (current < 0 && delta < 0) {
+      current = 0;
+    }
+    for (int step = 1; step <= targets.size(); step++) {
+      int candidate = Math.floorMod(current + delta * step, targets.size());
+      if (bandTouchesCanvas(candidate)) {
+        selectBand(candidate);
+        return;
+      }
+    }
+  }
+
   /** Pans the time axis through the same clamped, refresh-coalesced path as a drag. */
   private void panFromKeyboard(int pixels) {
     if (viewport == null) {
@@ -2115,23 +2227,47 @@ public final class TimelineView extends JPanel {
   }
 
   private void updateCanvasAccessibleDescription() {
-    String state;
+    StringBuilder state = new StringBuilder();
     if (model == null || viewport == null) {
-      state = "No timeline is loaded. ";
-    } else if (viewport.selectedNode().isPresent()) {
-      state =
-          "Showing "
-              + window.size()
-              + " actions in the current exact window. Selected action "
-              + viewport.selectedNode().getAsLong()
-              + ". ";
-    } else if (drawingSpans()) {
-      state =
-          "Showing " + window.size() + " actions in the current exact window; none is selected. ";
+      state.append("No timeline is loaded. ");
     } else {
-      state = "Showing aggregate build activity at this zoom; individual actions are not shown. ";
+      boolean exact = drawingSpans();
+      if (!exact) {
+        state.append(
+            "Showing aggregate build activity at this zoom; individual action spans are not"
+                + " painted. ");
+      } else if (!windowCoversViewport()) {
+        state
+            .append("Showing ")
+            .append(window.size())
+            .append(" actions in the loaded exact portion; uncovered edges are updating. ");
+      } else {
+        state
+            .append("Showing ")
+            .append(window.size())
+            .append(" actions in the current exact window. ");
+      }
+      if (selectedInFlight != null) {
+        state.append("Selected in-flight target ").append(selectedInFlight.label()).append(". ");
+      } else if (viewport.selectedNode().isPresent()) {
+        state.append("Selected action ").append(viewport.selectedNode().getAsLong());
+        state.append(exact ? ". " : " is retained but is not painted at this zoom. ");
+      } else {
+        state.append("Nothing is selected. ");
+      }
+      viewport.describeRange().ifPresent(range -> state.append(range).append(". "));
+      visibleRange()
+          .ifPresent(
+              range ->
+                  state.append(
+                      String.format(
+                          Locale.ROOT,
+                          "Visible time range %.3f s to %.3f s into the build. ",
+                          (range[0] - model.wallStartMicros()) / 1_000_000.0,
+                          (range[1] - model.wallStartMicros()) / 1_000_000.0)));
     }
-    CanvasAccessibility.describe(canvas, state + KEYBOARD_HELP);
+    state.append(KEYBOARD_HELP);
+    CanvasAccessibility.describe(canvas, state.toString());
   }
 
   /**
@@ -2173,6 +2309,14 @@ public final class TimelineView extends JPanel {
   private void showInteractionHint() {
     hover.setText(INTERACTION_HINT);
     hover.setToolTipText(PlainText.tooltip(INTERACTION_HINT));
+  }
+
+  /**
+   * Places the complete keyboard map in the visible footer as well as the accessible description.
+   */
+  private void showKeyboardHelp() {
+    hover.setText(KEYBOARD_HELP);
+    hover.setToolTipText(PlainText.tooltip(KEYBOARD_HELP));
   }
 
   /** Exact local hover text for an individual span; no query is needed. */
@@ -2281,6 +2425,16 @@ public final class TimelineView extends JPanel {
   /** The coverage note, for tests. */
   String coverageText() {
     return coverage.getText();
+  }
+
+  /** Visible interaction/help text, for keyboard discoverability tests. */
+  String hoverTextForTest() {
+    return hover.getText();
+  }
+
+  /** The in-flight target selected through either input path, for focused keyboard tests. */
+  Optional<String> selectedInFlightTargetForTest() {
+    return Optional.ofNullable(selectedInFlight).map(TimelineModel.LiveBand.InFlight::label);
   }
 
   /** Pins the live clock, for tests. */

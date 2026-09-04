@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
+import java.awt.AWTKeyStroke;
 import java.awt.GraphicsEnvironment;
+import java.awt.KeyboardFocusManager;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
@@ -262,6 +264,9 @@ final class StarlarkCallGraphTest {
           canvas.setLayoutModel(StarlarkCallGraphLayout.layout(graph));
 
           assertThat(canvas.isFocusable()).isTrue();
+          assertThat(canvas.getBorder()).isNotNull();
+          assertThat(canvas.getFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS))
+              .contains(AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_TAB, 0));
           assertThat(canvas.getAccessibleContext().getAccessibleName())
               .isEqualTo("Starlark directed call graph");
           assertThat(canvas.getAccessibleContext().getAccessibleDescription())

@@ -1617,11 +1617,15 @@ public final class LauncherPanel extends JPanel {
   private static final class RecentCommandRenderer extends DefaultListCellRenderer {
     private static final long serialVersionUID = 1L;
 
+    RecentCommandRenderer() {
+      PlainText.disableHtml(this);
+    }
+
     @Override
     public Component getListCellRendererComponent(
         JList<?> list, Object value, int index, boolean selected, boolean focused) {
       JLabel label =
-          (JLabel) super.getListCellRendererComponent(list, value, index, selected, focused);
+          (JLabel) super.getListCellRendererComponent(list, "", index, selected, focused);
       PlainText.disableHtml(label);
       String command = value == null ? "" : value.toString();
       int cellWidth = list.getFixedCellWidth();

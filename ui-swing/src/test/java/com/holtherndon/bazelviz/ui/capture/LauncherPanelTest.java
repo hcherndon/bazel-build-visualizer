@@ -400,19 +400,22 @@ class LauncherPanelTest {
   @Test
   void recentCommandsRenderAsLiteralText() throws Exception {
     LauncherPanel panel = panel();
-    SwingUtilities.invokeAndWait(() -> panel.rememberCommand(HOSTILE_COMMAND));
     JList<String> commands = panel.recentCommandsListForTest();
-    commands.setFixedCellWidth(1_000);
-
-    JLabel rendered =
-        (JLabel)
-            commands
-                .getCellRenderer()
-                .getListCellRendererComponent(commands, HOSTILE_COMMAND, 0, false, false);
-    BasicHTML.updateRenderer(rendered, rendered.getText());
+    AtomicReference<JLabel> held = new AtomicReference<>();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          commands.setFixedCellWidth(1_000);
+          held.set(
+              (JLabel)
+                  commands
+                      .getCellRenderer()
+                      .getListCellRendererComponent(commands, HOSTILE_COMMAND, 0, false, false));
+        });
+    JLabel rendered = held.get();
 
     assertThat(rendered.getText()).isEqualTo(HOSTILE_COMMAND);
     assertThat(rendered.getClientProperty(BasicHTML.propertyKey)).isNull();
+    assertThat(rendered.getToolTipText()).isEqualTo(" " + HOSTILE_COMMAND);
     assertThat(BasicHTML.isHTMLString(rendered.getToolTipText())).isFalse();
   }
 
