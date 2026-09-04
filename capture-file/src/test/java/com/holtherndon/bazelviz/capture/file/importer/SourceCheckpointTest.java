@@ -106,6 +106,61 @@ class SourceCheckpointTest {
   }
 
   @Test
+  @DisplayName("a checkpoint format version cannot wrap through a narrowing conversion")
+  void refusesAnOverflowingFormatVersion(@TempDir Path temporary) throws Exception {
+    Path file = temporary.resolve(SourceCheckpointStore.FILE_NAME);
+    Files.writeString(
+        file,
+        """
+        {
+          "formatVersion": 4294967297,
+          "sourceOffset": 0,
+          "framesWritten": 0,
+          "format": "BEP_BINARY",
+          "preservation": "COPY_INTO_SESSION",
+          "originalPath": "/tmp/build.bep",
+          "sha256": "abc",
+          "byteSize": 10
+        }
+        """);
+
+    assertThatThrownBy(() -> new SourceCheckpointStore(temporary).read())
+        .isInstanceOf(ImportFormatException.class)
+        .hasMessageContaining("formatVersion")
+        .hasMessageContaining("32-bit integer");
+  }
+
+  @Test
+  @DisplayName("an ordinary unsupported checkpoint version is reported as an import format error")
+  void refusesAnUnsupportedFormatVersion(@TempDir Path temporary) throws Exception {
+    writeCheckpoint(temporary, 2, 0, 0, 10);
+
+    assertThatThrownBy(() -> new SourceCheckpointStore(temporary).read())
+        .isInstanceOf(ImportFormatException.class)
+        .hasMessageContaining("format version 2")
+        .hasMessageContaining("invalid value");
+  }
+
+  @Test
+  @DisplayName("negative checkpoint offsets, counts, and sizes are import format errors")
+  void refusesNegativePositionsAndSizes(@TempDir Path temporary) throws Exception {
+    writeCheckpoint(temporary, 1, -1, 0, 10);
+    assertThatThrownBy(() -> new SourceCheckpointStore(temporary).read())
+        .isInstanceOf(ImportFormatException.class)
+        .hasMessageContaining("sourceOffset");
+
+    writeCheckpoint(temporary, 1, 0, -1, 10);
+    assertThatThrownBy(() -> new SourceCheckpointStore(temporary).read())
+        .isInstanceOf(ImportFormatException.class)
+        .hasMessageContaining("framesWritten");
+
+    writeCheckpoint(temporary, 1, 0, 0, -1);
+    assertThatThrownBy(() -> new SourceCheckpointStore(temporary).read())
+        .isInstanceOf(ImportFormatException.class)
+        .hasMessageContaining("byteSize");
+  }
+
+  @Test
   @DisplayName("unreadable JSON is refused with the file named")
   void refusesMalformedJson(@TempDir Path temporary) throws Exception {
     Files.writeString(temporary.resolve(SourceCheckpointStore.FILE_NAME), "{ not json");
@@ -125,5 +180,25 @@ class SourceCheckpointTest {
         "/tmp/build.bep",
         "abc",
         4096);
+  }
+
+  private static void writeCheckpoint(
+      Path temporary, long version, long sourceOffset, long framesWritten, long byteSize)
+      throws Exception {
+    Files.writeString(
+        temporary.resolve(SourceCheckpointStore.FILE_NAME),
+        """
+        {
+          "formatVersion": %d,
+          "sourceOffset": %d,
+          "framesWritten": %d,
+          "format": "BEP_BINARY",
+          "preservation": "COPY_INTO_SESSION",
+          "originalPath": "/tmp/build.bep",
+          "sha256": "abc",
+          "byteSize": %d
+        }
+        """
+            .formatted(version, sourceOffset, framesWritten, byteSize));
   }
 }

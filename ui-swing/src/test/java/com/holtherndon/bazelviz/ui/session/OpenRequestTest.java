@@ -4,12 +4,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.format.portable.BvizFormatException;
+import com.holtherndon.bazelviz.format.portable.BvizIndex;
 import com.holtherndon.bazelviz.format.portable.BvizLimits;
 import com.holtherndon.bazelviz.format.portable.BvizWriter;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -25,6 +34,8 @@ import org.junit.jupiter.api.io.TempDir;
 final class OpenRequestTest {
 
   private static final long CREATED = 1_700_000_000_000_000L;
+  private static final String SESSION_ID = "0193f0aa-1111-7000-8000-000000000000";
+  private static final String OTHER_SESSION_ID = "0193f0aa-1111-7000-8000-000000000001";
 
   @TempDir Path tempDir;
 
@@ -34,7 +45,7 @@ final class OpenRequestTest {
   void buildSession() throws Exception {
     session = tempDir.resolve("sessions/session-0193f0aa-1111-7000-8000-000000000000");
     Files.createDirectories(session.resolve("raw"));
-    Files.writeString(session.resolve("manifest.json"), "{\"formatVersion\":1}");
+    Files.writeString(session.resolve("manifest.json"), manifest(SESSION_ID));
     Files.write(session.resolve("session.sqlite"), new byte[] {'S', 'Q', 'L'});
     Files.writeString(session.resolve("raw/bes-000001.journal"), "bytes".repeat(50));
   }
@@ -110,9 +121,9 @@ final class OpenRequestTest {
     ArchiveImport.Result result = ArchiveImport.into(archive(), library, BvizLimits.defaults());
 
     assertThat(result.sessionRoot())
-        .isEqualTo(library.resolve("session-0193f0aa-1111-7000-8000-000000000000"));
+        .isEqualTo(library.toRealPath().resolve("session-0193f0aa-1111-7000-8000-000000000000"));
     assertThat(Files.readString(result.sessionRoot().resolve("manifest.json")))
-        .isEqualTo("{\"formatVersion\":1}");
+        .isEqualTo(manifest(SESSION_ID));
     assertThat(result.redacted()).isFalse();
     // No staging directory is left behind.
     try (var entries = Files.list(library)) {
@@ -132,6 +143,76 @@ final class OpenRequestTest {
         .isInstanceOf(BvizFormatException.class)
         .hasMessageContaining("already in the library")
         .hasMessageContaining("session-0193f0aa");
+  }
+
+  @Test
+  @DisplayName("archive destinations are normalized and cannot escape the sessions root")
+  void archiveDestinationsStayInsideTheLibrary() throws Exception {
+    Path library = tempDir.resolve("nested/../library");
+
+    assertThat(ArchiveImport.destinationFor(library, "0193f0aa-1111-7000-8000-000000000000"))
+        .isEqualTo(
+            tempDir
+                .resolve("library/session-0193f0aa-1111-7000-8000-000000000000")
+                .toAbsolutePath()
+                .normalize());
+    assertThatThrownBy(() -> ArchiveImport.destinationFor(library, "../../outside"))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("canonical UUID")
+        .hasMessageContaining("no destination was created");
+  }
+
+  @Test
+  @DisplayName("a symlinked sessions root adopts into and returns the physical root")
+  void symlinkedSessionsRootUsesItsPhysicalDestination() throws Exception {
+    Path physicalRoot = tempDir.resolve("physical-library");
+    Files.createDirectories(physicalRoot);
+    Path linkedRoot = tempDir.resolve("linked-library");
+    try {
+      Files.createSymbolicLink(linkedRoot, physicalRoot);
+    } catch (IOException | UnsupportedOperationException unavailable) {
+      Assumptions.assumeTrue(false, "symbolic links are unavailable: " + unavailable.getMessage());
+      return;
+    }
+
+    ArchiveImport.Result result = ArchiveImport.into(archive(), linkedRoot, BvizLimits.defaults());
+
+    Path realRoot = physicalRoot.toRealPath();
+    assertThat(result.sessionRoot()).isEqualTo(realRoot.resolve("session-" + SESSION_ID));
+    assertThat(result.sessionRoot().toRealPath()).startsWith(realRoot);
+  }
+
+  @Test
+  @DisplayName("an extracted manifest cannot claim an identity different from archive.json")
+  void archiveManifestIdentityMustMatchItsIndex() throws Exception {
+    Path archive = tempDir.resolve("mismatched-manifest.bviz");
+    writeManifestOnlyArchive(archive, SESSION_ID, OTHER_SESSION_ID);
+    Path library = tempDir.resolve("mismatch-library");
+
+    assertThatThrownBy(() -> ArchiveImport.into(archive, library, BvizLimits.defaults()))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("extracted manifest identifies session")
+        .hasMessageContaining(OTHER_SESSION_ID)
+        .hasMessageContaining(SESSION_ID);
+    try (var files = Files.list(library)) {
+      assertThat(files).isEmpty();
+    }
+  }
+
+  @Test
+  @DisplayName("portable manifests cannot use an alias spelling of the indexed UUID")
+  void archiveManifestIdentityMustBeCanonical() throws Exception {
+    Path archive = tempDir.resolve("alias-manifest.bviz");
+    writeManifestOnlyArchive(archive, SESSION_ID, "0193F0AA-1111-7000-8000-000000000000");
+    Path library = tempDir.resolve("alias-library");
+
+    assertThatThrownBy(() -> ArchiveImport.into(archive, library, BvizLimits.defaults()))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("canonical UUID identity")
+        .hasMessageContaining("nothing was adopted");
+    try (var files = Files.list(library)) {
+      assertThat(files).isEmpty();
+    }
   }
 
   @Test
@@ -165,5 +246,43 @@ final class OpenRequestTest {
     assertThat(result.redacted()).isTrue();
     assertThat(result.describe()).contains("no raw capture").contains("cannot be re-run");
     assertThat(Files.exists(result.sessionRoot().resolve("raw"))).isFalse();
+  }
+
+  private static void writeManifestOnlyArchive(
+      Path archive, String indexSessionId, String manifestSessionId) throws Exception {
+    byte[] manifest = manifest(manifestSessionId).getBytes(StandardCharsets.UTF_8);
+    String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(manifest));
+    BvizIndex index =
+        new BvizIndex(
+            BvizIndex.FORMAT_VERSION,
+            "0.1.0",
+            indexSessionId,
+            CREATED,
+            false,
+            false,
+            "",
+            List.of(new BvizIndex.Entry("manifest.json", manifest.length, digest)));
+    try (OutputStream out = Files.newOutputStream(archive);
+        ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
+      zip.putNextEntry(new ZipEntry(BvizIndex.FILE_NAME));
+      zip.write(index.toJson().getBytes(StandardCharsets.UTF_8));
+      zip.closeEntry();
+      zip.putNextEntry(new ZipEntry("manifest.json"));
+      zip.write(manifest);
+      zip.closeEntry();
+    }
+  }
+
+  private static String manifest(String sessionId) {
+    return """
+    {
+      "formatVersion": 1,
+      "appVersion": "0.1.0",
+      "sessionId": "%s",
+      "createdMicros": %d,
+      "state": "READY"
+    }
+    """
+        .formatted(sessionId, CREATED);
   }
 }

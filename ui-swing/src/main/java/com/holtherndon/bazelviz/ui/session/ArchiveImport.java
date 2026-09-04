@@ -1,9 +1,13 @@
 package com.holtherndon.bazelviz.ui.session;
 
+import com.holtherndon.bazelviz.core.id.SessionId;
 import com.holtherndon.bazelviz.format.portable.BvizFormatException;
 import com.holtherndon.bazelviz.format.portable.BvizIndex;
 import com.holtherndon.bazelviz.format.portable.BvizLimits;
 import com.holtherndon.bazelviz.format.portable.BvizReader;
+import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
+import com.holtherndon.bazelviz.format.session.SessionManifest;
+import com.holtherndon.bazelviz.format.session.SessionManifestCodec;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -85,8 +89,10 @@ public final class ArchiveImport {
     Objects.requireNonNull(validation, "validation");
     Objects.requireNonNull(sessionsRoot, "sessionsRoot");
     Objects.requireNonNull(limits, "limits");
-    String uuid = validation.index().sessionId();
-    Path destination = sessionsRoot.resolve("session-" + uuid);
+    Path requestedRoot = sessionsRoot.toAbsolutePath().normalize();
+    Files.createDirectories(requestedRoot);
+    Path realRoot = requestedRoot.toRealPath();
+    Path destination = destinationFor(realRoot, validation.index().sessionId());
     if (Files.exists(destination)) {
       throw new BvizFormatException(
           "this session is already in the library, at "
@@ -95,15 +101,22 @@ public final class ArchiveImport {
               + " directories claiming the same session would have manifests that"
               + " agree and names that do not.");
     }
-    Files.createDirectories(sessionsRoot);
     // A unique staging directory is defence in depth around the process coordinator. A
     // caller that bypasses it still cannot delete another import's partially extracted data.
     // Keep the prefix outside "session-*" too, so a crash residue can never look like a
     // managed session to catalog reconciliation.
-    Path staging = Files.createTempDirectory(sessionsRoot, ".incoming-session-" + uuid + "-");
+    Path staging =
+        requireBeneath(
+            realRoot,
+            Files.createTempDirectory(
+                realRoot, ".incoming-session-" + validation.index().sessionId() + "-"),
+            "archive staging directory");
     boolean ok = false;
+    BvizReader.Validation extracted;
     try {
-      BvizReader.extract(validation.archive(), staging, limits);
+      extracted = BvizReader.extract(validation.archive(), staging, limits);
+      requireUnchangedIndex(validation, extracted);
+      requireMatchingManifest(staging, extracted.index());
       Files.move(staging, destination);
       ok = true;
     } finally {
@@ -111,8 +124,69 @@ public final class ArchiveImport {
         deleteRecursively(staging);
       }
     }
-    return new Result(
-        destination, validation.index(), validation.isRedacted(), validation.warnings());
+    return new Result(destination, extracted.index(), extracted.isRedacted(), extracted.warnings());
+  }
+
+  private static void requireUnchangedIndex(
+      BvizReader.Validation first, BvizReader.Validation extracted) throws BvizFormatException {
+    if (!first.index().sessionId().equals(extracted.index().sessionId())) {
+      throw new BvizFormatException(
+          "the archive's session identity changed between validation and extraction;"
+              + " nothing was adopted");
+    }
+    if (!first.index().equals(extracted.index())) {
+      throw new BvizFormatException(
+          "the archive index changed between validation and extraction; nothing was adopted");
+    }
+  }
+
+  private static void requireMatchingManifest(Path staging, BvizIndex index) throws IOException {
+    SessionManifest manifest;
+    try {
+      manifest =
+          SessionManifestCodec.standard().readForPortableArchive(staging.resolve("manifest.json"));
+    } catch (IOException malformed) {
+      throw new BvizFormatException(
+          "the extracted archive does not contain a readable session manifest with a canonical"
+              + " UUID identity; nothing was adopted",
+          malformed);
+    }
+    String manifestSessionId = manifest.sessionId().toString();
+    if (!manifestSessionId.equals(index.sessionId())) {
+      throw new BvizFormatException(
+          "the extracted manifest identifies session "
+              + manifestSessionId
+              + " but archive.json identifies "
+              + index.sessionId()
+              + "; nothing was adopted");
+    }
+  }
+
+  /** Resolves one archive destination without trusting the archive's session-id text as a path. */
+  static Path destinationFor(Path sessionsRoot, String sessionId) throws BvizFormatException {
+    Objects.requireNonNull(sessionsRoot, "sessionsRoot");
+    SessionId checked;
+    try {
+      checked = SessionId.parseCanonical(sessionId);
+    } catch (IllegalArgumentException malformed) {
+      throw new BvizFormatException(
+          "archive sessionId must be a canonical UUID; no destination was created", malformed);
+    }
+    Path root = sessionsRoot.toAbsolutePath().normalize();
+    return requireBeneath(
+        root, ManagedSessionLayout.forSession(root, checked).root(), "archive destination");
+  }
+
+  private static Path requireBeneath(Path root, Path candidate, String description)
+      throws BvizFormatException {
+    Path normalizedRoot = root.toAbsolutePath().normalize();
+    Path normalizedCandidate = candidate.toAbsolutePath().normalize();
+    if (normalizedCandidate.equals(normalizedRoot)
+        || !normalizedCandidate.startsWith(normalizedRoot)) {
+      throw new BvizFormatException(
+          description + " escapes the managed sessions root; nothing was written");
+    }
+    return normalizedCandidate;
   }
 
   private static void deleteRecursively(Path directory) throws IOException {

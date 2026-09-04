@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
@@ -195,26 +196,37 @@ class BepImporterImportTest {
   }
 
   @Test
-  @DisplayName("reference preservation indexes in place and records a verified reference")
-  void referencesTheOriginalWhenAsked(@TempDir Path temporary) throws Exception {
+  @DisplayName("reference preservation is refused instead of trusting size and modification time")
+  void referencePreservationCannotHideSameMetadataMutation(@TempDir Path temporary)
+      throws Exception {
     SyntheticBepStream stream = SyntheticBepStream.of(50);
     Path source = temporary.resolve("build.bep");
     BepBinaryWriter.write(source, stream);
+    long originalSize = Files.size(source);
+    FileTime originalModified = Files.getLastModifiedTime(source);
+    String originalDigest = sha256(source);
 
-    SessionManager sessions = ImportTestSupport.sessionManager(temporary.resolve("sessions"));
+    byte[] changed = Files.readAllBytes(source);
+    changed[changed.length - 1] ^= 1;
+    Files.write(source, changed);
+    Files.setLastModifiedTime(source, originalModified);
+    assertThat(Files.size(source)).isEqualTo(originalSize);
+    assertThat(Files.getLastModifiedTime(source).toMillis()).isEqualTo(originalModified.toMillis());
+    assertThat(sha256(source)).isNotEqualTo(originalDigest);
+
+    Path sessionsRoot = temporary.resolve("sessions");
+    SessionManager sessions = ImportTestSupport.sessionManager(sessionsRoot);
     BepImporter importer =
         new BepImporter(
             sessions,
             ImportTestSupport.deterministicOptions()
                 .withPreservation(SourcePreservation.REFERENCE_ORIGINAL));
-    ImportResult result = importer.importFile(source);
 
-    assertThat(result.outcome()).isEqualTo(ImportOutcome.COMPLETE);
-    assertThat(result.source().storedPath()).isEmpty();
-    assertThat(result.sessionRoot().resolve("raw").resolve(BepImporter.IMPORTED_SOURCE_NAME))
-        .doesNotExist();
-    assertThat(result.source().sha256()).isEqualTo(sha256(source));
-    assertThat(ImportTestSupport.readEvents(result.sessionRoot())).hasSize(50);
+    assertThatThrownBy(() -> importer.importFile(source))
+        .isInstanceOf(ImportFormatException.class)
+        .hasMessageContaining("REFERENCE_ORIGINAL is unavailable")
+        .hasMessageContaining("COPY_INTO_SESSION");
+    assertThat(sessionsRoot).doesNotExist();
   }
 
   @Test

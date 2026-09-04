@@ -245,6 +245,26 @@ class SessionManagerTest {
   }
 
   @Test
+  void recoveringToResumeAcceptsALegacyUuidAliasInTheLocalManifest() throws Exception {
+    SessionId id = SessionId.parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    Path root = crashDuringCapture(id);
+    Path manifest = ManagedSessionLayout.at(root).manifestFile();
+    Files.writeString(
+        manifest,
+        Files.readString(manifest)
+            .replace(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"));
+
+    SessionManager.Recovered recovered =
+        newManager().recover(root, SessionManager.RecoveryDecision.RESUME);
+
+    try (ManagedSession session = recovered.session().orElseThrow()) {
+      assertThat(session.id()).isEqualTo(id);
+      assertThat(session.state()).isEqualTo(SessionState.CAPTURING);
+    }
+  }
+
+  @Test
   void aSessionInterruptedBeforeCapturingIsMarkedFailedToStartNotIncomplete() throws Exception {
     SessionManager manager = newManager();
     Path root;
@@ -354,9 +374,13 @@ class SessionManagerTest {
    * CAPTURING} on disk and a lock file naming a pid that is no longer running.
    */
   private Path crashDuringCapture() throws IOException {
+    return crashDuringCapture(SessionId.random());
+  }
+
+  private Path crashDuringCapture(SessionId id) throws IOException {
     SessionManager manager = newManager();
     Path root;
-    try (ManagedSession session = manager.create(SessionId.random())) {
+    try (ManagedSession session = manager.create(id)) {
       root = session.root();
       session.transitionTo(SessionState.PREFLIGHT);
       session.transitionTo(SessionState.CAPTURING);

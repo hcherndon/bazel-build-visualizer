@@ -51,7 +51,6 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -79,9 +78,10 @@ import org.slf4j.LoggerFactory;
  *       never its name (plan 5.2). {@link DetectedFormat#UNKNOWN} is refused with the detector's
  *       own reason attached, before a session directory exists.
  *   <li><b>Preserve the source.</b> Path, size and SHA-256 are recorded in the manifest and in
- *       {@code capture_sources} before anything is parsed, and — by default — the file is copied
- *       into {@code raw/imported-source.bep} and the copy is what gets indexed. See {@link
- *       SourcePreservation} for the alternative and for what each mode costs.
+ *       {@code capture_sources} before anything is parsed, then the file is copied into {@code
+ *       raw/imported-source.bep} and that copy is indexed. This is the only mode that proves the
+ *       parsed bytes have the recorded digest; {@link SourcePreservation#REFERENCE_ORIGINAL} is
+ *       retained only as a refused legacy checkpoint value.
  *   <li><b>Journal first, then normalize</b> (ADR-004). Every record's payload bytes go to the
  *       {@link JournalWriter} verbatim before anything decodes them, and the {@link
  *       JournalLocation} that comes back is what {@code
@@ -190,6 +190,7 @@ public final class BepImporter {
     Objects.requireNonNull(sessionId, "sessionId");
     Objects.requireNonNull(listener, "listener");
     Objects.requireNonNull(cancelRequested, "cancelRequested");
+    requireSafePreservation(options.preservation());
 
     long startedNanos = System.nanoTime();
     Path absoluteSource = source.toAbsolutePath().normalize();
@@ -285,6 +286,7 @@ public final class BepImporter {
                             + SourceCheckpointStore.FILE_NAME
                             + "); it was interrupted before the first checkpoint and must"
                             + " be imported again"));
+    requireSafePreservation(sourceCheckpoint.preservation());
 
     SessionManager.Recovered recovered =
         sessions.recover(sessionRoot, SessionManager.RecoveryDecision.RESUME);
@@ -496,8 +498,7 @@ public final class BepImporter {
                   ? Optional.of(layout.rawDirectory().resolve(IMPORTED_SOURCE_NAME))
                   : Optional.empty(),
               sourceCheckpoint.sha256(),
-              sourceCheckpoint.byteSize(),
-              0);
+              sourceCheckpoint.byteSize());
       totalBytes = preserved.byteSize();
 
       openDatabase();
@@ -603,7 +604,6 @@ public final class BepImporter {
     // ------------------------------------------------------------- preserve
 
     private PreservedSource preserve(Path source) throws IOException {
-      long lastModified = Files.getLastModifiedTime(source).toMillis();
       return switch (options.preservation()) {
         case COPY_INTO_SESSION -> {
           Path target = layout.rawDirectory().resolve(IMPORTED_SOURCE_NAME);
@@ -613,19 +613,11 @@ public final class BepImporter {
               source,
               Optional.of(target),
               result.sha256(),
-              result.byteSize(),
-              lastModified);
+              result.byteSize());
         }
-        case REFERENCE_ORIGINAL -> {
-          SourceDigest.Result result = SourceDigest.hash(source);
-          yield new PreservedSource(
-              SourcePreservation.REFERENCE_ORIGINAL,
-              source,
-              Optional.empty(),
-              result.sha256(),
-              result.byteSize(),
-              lastModified);
-        }
+        case REFERENCE_ORIGINAL ->
+            throw new ImportFormatException(
+                "REFERENCE_ORIGINAL passed the import safety boundary unexpectedly");
       };
     }
 
@@ -888,7 +880,6 @@ public final class BepImporter {
             recordsSkipped,
             layout.root());
       }
-      checkReferenceSourceUnchanged();
       return outcome;
     }
 
@@ -1534,56 +1525,6 @@ public final class BepImporter {
           OptionalLong.empty());
     }
 
-    /**
-     * After reading a source that was left where it was, checks that it is still the file whose
-     * digest was recorded.
-     *
-     * <p>Skipped on a resume, and not for lack of care: a resume has already re-hashed the source
-     * in {@link #verifyPreservedSource()}, which is the stronger check. The size-and-timestamp
-     * comparison exists only because re-hashing a large file at the end of every first import would
-     * double the bytes read for a weaker guarantee than the one a resume needs.
-     */
-    private void checkReferenceSourceUnchanged() throws IOException {
-      if (preserved.preservation() != SourcePreservation.REFERENCE_ORIGINAL || resumed) {
-        return;
-      }
-      Path original = preserved.originalPath();
-      try {
-        long size = Files.size(original);
-        long modified = Files.getLastModifiedTime(original).toMillis();
-        if (size != preserved.byteSize() || modified != preserved.lastModifiedMillis()) {
-          recordDiagnostic(
-              DiagnosticSeverity.WARNING,
-              ImportDiagnosticCodes.SOURCE_CHANGED,
-              "the referenced source "
-                  + original
-                  + " changed while it was being read"
-                  + " (was "
-                  + preserved.byteSize()
-                  + " bytes modified at "
-                  + preserved.lastModifiedMillis()
-                  + ", now "
-                  + size
-                  + " bytes at "
-                  + modified
-                  + "); the recorded digest no longer describes the file"
-                  + " on disk",
-              OptionalLong.empty());
-          warnings.add("the referenced source changed while it was being read");
-        }
-      } catch (NoSuchFileException gone) {
-        recordDiagnostic(
-            DiagnosticSeverity.WARNING,
-            ImportDiagnosticCodes.SOURCE_CHANGED,
-            "the referenced source "
-                + original
-                + " disappeared while it was being read;"
-                + " every record already journaled is still intact",
-            OptionalLong.empty());
-        warnings.add("the referenced source disappeared while it was being read");
-      }
-    }
-
     // ---------------------------------------------------------------- finish
 
     private ImportResult finish(ImportOutcome outcome) throws IOException {
@@ -1900,6 +1841,17 @@ public final class BepImporter {
     @FunctionalInterface
     private interface IoStep {
       void run() throws IOException;
+    }
+  }
+
+  private static void requireSafePreservation(SourcePreservation preservation)
+      throws ImportFormatException {
+    if (preservation == SourcePreservation.REFERENCE_ORIGINAL) {
+      throw new ImportFormatException(
+          "REFERENCE_ORIGINAL is unavailable because a mutable source can change between"
+              + " hashing and parsing while keeping the same size and modification time. Use"
+              + " COPY_INTO_SESSION so the bytes parsed are exactly the bytes whose digest is"
+              + " recorded.");
     }
   }
 }
