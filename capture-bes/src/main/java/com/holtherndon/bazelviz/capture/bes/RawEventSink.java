@@ -45,8 +45,32 @@ public interface RawEventSink {
    *     or been shut down. The event was not accepted, and the caller must fail the RPC rather than
    *     continue
    */
-  void submit(RawBesEvent event, Runnable onJournaled)
+  void submit(RawBesEvent event, SubmissionCallback callback)
       throws InterruptedException, CaptureRejectedException;
+
+  /** Compatibility convenience for sinks whose caller only needs successful journal notice. */
+  default void submit(RawBesEvent event, Runnable onJournaled)
+      throws InterruptedException, CaptureRejectedException {
+    submit(
+        event,
+        new SubmissionCallback() {
+          @Override
+          public void onJournaled() {
+            onJournaled.run();
+          }
+
+          @Override
+          public void onRejected(Throwable failure) {}
+        });
+  }
+
+  /** Completion of an accepted submission, exactly once in either direction. */
+  interface SubmissionCallback {
+
+    void onJournaled();
+
+    void onRejected(Throwable failure);
+  }
 
   /**
    * Reports that a stream ended. Called exactly once per stream, including when it ended badly, so

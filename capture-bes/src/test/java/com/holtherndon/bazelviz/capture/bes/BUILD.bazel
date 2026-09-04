@@ -6,12 +6,16 @@ java_library(
     name = "tests_lib",
     srcs = [
         "BesServerTest.java",
+        "BesResourcesTest.java",
         "BesStreamTrackerTest.java",
         "RawBytesMarshallerTest.java",
+        "PublishBuildEventServiceTest.java",
         "RecordingSink.java",
+        "RetainedPayloadBudgetTest.java",
     ],
     deps = JUNIT_DEPS + [
         "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
         "//proto:proto",
         "@maven//:com_google_protobuf_protobuf_java",
         "@maven//:io_grpc_grpc_api",
@@ -19,6 +23,70 @@ java_library(
         "@maven//:io_grpc_grpc_stub",
     ],
     testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "PublishBuildEventServiceTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.bes.PublishBuildEventServiceTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "LiveCapturePipelineOwnershipTest",
+    srcs = ["LiveCapturePipelineOwnershipTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/normalize:normalize",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal:journal",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities:entities",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.bes.LiveCapturePipelineOwnershipTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BesConstrainedHeapTest",
+    srcs = ["BesConstrainedHeapTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "@maven//:io_grpc_grpc_api",
+    ],
+    jvm_flags = TEST_JVM_FLAGS + ["-Xmx128m"],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "medium",
+    test_class = "com.holtherndon.bazelviz.capture.bes.BesConstrainedHeapTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BesResourcesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.bes.BesResourcesTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "RetainedPayloadBudgetTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.bes.RetainedPayloadBudgetTest",
     visibility = ["//visibility:public"],
 )
 
@@ -74,9 +142,14 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":BesConstrainedHeapTest",
         ":BesServerTest",
+        ":BesResourcesTest",
         ":BesStreamTrackerTest",
+        ":LiveCapturePipelineOwnershipTest",
+        ":PublishBuildEventServiceTest",
         ":RawBytesMarshallerTest",
+        ":RetainedPayloadBudgetTest",
     ],
     visibility = ["//visibility:public"],
 )

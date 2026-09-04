@@ -51,11 +51,16 @@ public record CaptureResult(
    * a BES backend is also configured and broken. So an exit of 38 says something about the
    * transport and nothing reliable about the build.
    */
-  public static final int BES_TRANSPORT_FAILURE_EXIT = 38;
+  public static final int BES_TRANSPORT_FAILURE_EXIT = BuildOutcome.BES_TRANSPORT_FAILURE_EXIT;
+
+  /** The conservative build-result classification used by every presentation surface. */
+  public BuildOutcome buildOutcome() {
+    return BuildOutcome.classify(process, capture);
+  }
 
   /** True when Bazel reported success. Says nothing about the capture. */
   public boolean buildSucceeded() {
-    return buildOutcomeKnown() && process.map(ProcessOutcome::isSuccess).orElse(false);
+    return buildOutcome() == BuildOutcome.SUCCEEDED;
   }
 
   /**
@@ -67,9 +72,7 @@ public record CaptureResult(
    * stream, where later phases read it from {@code BuildFinished}.
    */
   public boolean buildOutcomeKnown() {
-    return process
-        .map(outcome -> outcome.exitCode().orElse(0) != BES_TRANSPORT_FAILURE_EXIT)
-        .orElse(false);
+    return buildOutcome().isKnown();
   }
 
   /** True when everything Bazel sent was kept. Says nothing about the build. */
@@ -79,6 +82,6 @@ public record CaptureResult(
 
   /** True when the user stopped the build. */
   public boolean wasCancelled() {
-    return state == SessionState.CANCELLED;
+    return buildOutcome() == BuildOutcome.CANCELLED;
   }
 }

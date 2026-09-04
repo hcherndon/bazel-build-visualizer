@@ -594,7 +594,16 @@ public final class CaptureCoordinator implements AutoCloseable {
             outcome.wasCancelled(),
             outcome.failure().isPresent(),
             outcome.duration().toMillis());
-        awaitStreamsToSettle(outcome);
+        if (!awaitStreamsToSettle(outcome)) {
+          String detail =
+              "the BES transport did not become quiescent after the Bazel process exited";
+          warnings.add(detail);
+          pipeline.markTransportFailure(new IllegalStateException(detail));
+        }
+        // No client process remains and quiescence has either been observed or timed out. Stop the
+        // listener while the sink is still attached so every live connection records its real
+        // terminal state before the pipeline is finalized.
+        closeBesServer(pipeline, warnings);
       }
 
       if (request.isRemote()) {
@@ -657,12 +666,16 @@ public final class CaptureCoordinator implements AutoCloseable {
         remoteOutputsToPreserve.addAll(transferRemoteOutputs(executedPlan, layout, warnings));
       }
       closeReverseForward();
+      closeBesServer(pipeline, warnings);
       sink.detach();
       // Closed in the order that preserves the most: the pipeline first
       // so its threads stop feeding the journal, then the journal, then
       // the database. Closing the database first would leave rows the
       // journal had already promised.
       summary = finishQuietly(pipeline, summary, warnings);
+      // finish/close preserve any new interrupt, but the dependent FileChannel and SQLite cleanup
+      // below must run with it cleared. Restore every observed request after all resources close.
+      interrupted |= Thread.interrupted();
       if (console != null) {
         consoleWriteFailed = console.hasWriteFailure();
       }
@@ -709,10 +722,11 @@ public final class CaptureCoordinator implements AutoCloseable {
             Optional.ofNullable(summary),
             warnings);
     log.info(
-        "capture {} finished: state={}, buildOutcomeKnown={}, buildSucceeded={},"
+        "capture {} finished: state={}, buildOutcome={}, buildOutcomeKnown={}, buildSucceeded={},"
             + " captureComplete={}, warnings={}, elapsed={} ms",
         sessionId,
         terminal,
+        result.buildOutcome(),
         result.buildOutcomeKnown(),
         result.buildSucceeded(),
         result.captureComplete(),
@@ -1372,9 +1386,9 @@ public final class CaptureCoordinator implements AutoCloseable {
    * moment the user is trying to look at what was captured. Whatever arrived is already journaled
    * either way.
    */
-  private void awaitStreamsToSettle(ProcessOutcome outcome) throws InterruptedException {
+  private boolean awaitStreamsToSettle(ProcessOutcome outcome) throws InterruptedException {
     if (server == null) {
-      return;
+      return true;
     }
     // Longer after a force-kill, because that is the case where the server
     // is known to still be working. A clean exit means Bazel already
@@ -1384,15 +1398,39 @@ public final class CaptureCoordinator implements AutoCloseable {
                 && outcome.terminatedBy().filter(CancellationMode.FORCE_KILL::equals).isPresent()
             ? Duration.ofSeconds(15)
             : Duration.ofSeconds(5);
-    long deadline = System.nanoTime() + budget.toNanos();
-    while (server.openStreamCount() > 0 && System.nanoTime() < deadline) {
-      Thread.sleep(25);
-    }
-    if (server.openStreamCount() > 0) {
+    if (!server.awaitQuiescence(budget)) {
+      int activeRpcs = server.resourceSnapshot().activeRpcs();
       log.info(
-          "{} BES stream(s) were still open {} after the build exited; finalizing anyway",
-          server.openStreamCount(),
+          "{} BES RPC(s) did not remain quiescent for {} after the build exited;"
+              + " finalizing anyway",
+          activeRpcs,
           budget);
+      return false;
+    }
+    return true;
+  }
+
+  private void closeBesServer(LiveCapturePipeline pipeline, List<String> warnings) {
+    if (server == null) {
+      return;
+    }
+    boolean terminated = false;
+    try {
+      terminated = server.shutdownAndAwait();
+    } catch (RuntimeException failure) {
+      log.error("embedded BES shutdown failed", failure);
+    } finally {
+      server = null;
+    }
+    if (!terminated) {
+      String detail =
+          "the BES server did not finish all connection callbacks before its shutdown deadline";
+      if (!warnings.contains(detail)) {
+        warnings.add(detail);
+      }
+      if (pipeline != null) {
+        pipeline.markTransportFailure(new IllegalStateException(detail));
+      }
     }
   }
 
@@ -2199,7 +2237,9 @@ public final class CaptureCoordinator implements AutoCloseable {
       return;
     }
     try {
-      if (outcome != null && outcome.wasCancelled()) {
+      BuildOutcome buildOutcome =
+          BuildOutcome.classify(Optional.ofNullable(outcome), Optional.ofNullable(summary));
+      if (buildOutcome == BuildOutcome.CANCELLED) {
         events.recordDiagnostic(
             ImportDiagnostic.general(
                 DiagnosticSeverity.WARNING,
@@ -2210,8 +2250,7 @@ public final class CaptureCoordinator implements AutoCloseable {
                     + outcome.duration().toSeconds()
                     + "s",
                 nowMicros()));
-      } else if (outcome != null
-          && outcome.exitCode().orElse(0) == CaptureResult.BES_TRANSPORT_FAILURE_EXIT) {
+      } else if (buildOutcome == BuildOutcome.UNKNOWN_BES_TRANSPORT) {
         // Bazel reports 38 when the event-stream upload failed, whatever
         // the build itself did. Recorded as a capture problem, not as a
         // failed build: blaming the user's build for our transport would
@@ -2220,14 +2259,18 @@ public final class CaptureCoordinator implements AutoCloseable {
             ImportDiagnostic.general(
                 DiagnosticSeverity.ERROR,
                 CaptureDiagnosticCodes.STREAM_FAILED,
-                "bazel exited 38: the build event upload failed. The build's own outcome"
-                    + " cannot be read from the exit code and must come from the event"
-                    + " stream.",
+                "the BES transport or capture drain failed; the build's own outcome is unknown",
                 nowMicros()));
-        warnings.add(
-            "bazel exited 38 (build event upload failed); the build's own result"
-                + " is not knowable from its exit code");
-      } else if (outcome != null && !outcome.isSuccess()) {
+        warnings.add("the build's result is unknown because the BES transport or drain failed");
+      } else if (buildOutcome == BuildOutcome.UNKNOWN_PROCESS) {
+        events.recordDiagnostic(
+            ImportDiagnostic.general(
+                DiagnosticSeverity.ERROR,
+                CaptureDiagnosticCodes.STREAM_FAILED,
+                "the Bazel process did not return a trustworthy exit; the build outcome is unknown",
+                nowMicros()));
+        warnings.add("the Bazel process did not return a trustworthy build result");
+      } else if (buildOutcome == BuildOutcome.FAILED) {
         events.recordDiagnostic(
             ImportDiagnostic.general(
                 DiagnosticSeverity.INFO,

@@ -19,7 +19,16 @@ import java.time.Duration;
  *     loopback, and a GOAWAY sent to Bazel mid-build would look to the user like the capture broke
  */
 public record BesServerConfig(
-    int port, int maxMessageBytes, Duration shutdownGrace, Duration permitKeepAliveEvery) {
+    int port,
+    int maxMessageBytes,
+    Duration shutdownGrace,
+    Duration permitKeepAliveEvery,
+    BesResourceLimits resourceLimits) {
+
+  public BesServerConfig(
+      int port, int maxMessageBytes, Duration shutdownGrace, Duration permitKeepAliveEvery) {
+    this(port, maxMessageBytes, shutdownGrace, permitKeepAliveEvery, BesResourceLimits.defaults());
+  }
 
   public BesServerConfig {
     if (port < 0 || port > 65535) {
@@ -32,18 +41,34 @@ public record BesServerConfig(
     if (shutdownGrace.isNegative()) {
       throw new IllegalArgumentException("shutdownGrace must not be negative: " + shutdownGrace);
     }
+    if (permitKeepAliveEvery.isNegative()) {
+      throw new IllegalArgumentException(
+          "permitKeepAliveEvery must not be negative: " + permitKeepAliveEvery);
+    }
+    if (resourceLimits == null) {
+      throw new NullPointerException("resourceLimits");
+    }
   }
 
   public static BesServerConfig defaults() {
     return new BesServerConfig(
-        0, JournalFormat.DEFAULT_MAX_PAYLOAD_BYTES, Duration.ofSeconds(10), Duration.ofSeconds(10));
+        0,
+        JournalFormat.DEFAULT_MAX_PAYLOAD_BYTES,
+        Duration.ofSeconds(10),
+        Duration.ofSeconds(10),
+        BesResourceLimits.defaults());
   }
 
   public BesServerConfig withPort(int value) {
-    return new BesServerConfig(value, maxMessageBytes, shutdownGrace, permitKeepAliveEvery);
+    return new BesServerConfig(
+        value, maxMessageBytes, shutdownGrace, permitKeepAliveEvery, resourceLimits);
   }
 
   public BesServerConfig withMaxMessageBytes(int value) {
-    return new BesServerConfig(port, value, shutdownGrace, permitKeepAliveEvery);
+    return new BesServerConfig(port, value, shutdownGrace, permitKeepAliveEvery, resourceLimits);
+  }
+
+  public BesServerConfig withResourceLimits(BesResourceLimits value) {
+    return new BesServerConfig(port, maxMessageBytes, shutdownGrace, permitKeepAliveEvery, value);
   }
 }

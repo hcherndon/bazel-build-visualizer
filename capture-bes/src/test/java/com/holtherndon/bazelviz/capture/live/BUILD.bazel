@@ -5,13 +5,25 @@ load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "REAL
 java_library(
     name = "tests_lib",
     srcs = [
+        "BuildOutcomeTest.java",
         "CaptureSummaryTest.java",
     ],
     deps = JUNIT_DEPS + [
         "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
         "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc:proc",
     ],
     testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "BuildOutcomeTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.live.BuildOutcomeTest",
     visibility = ["//visibility:public"],
 )
 
@@ -22,6 +34,27 @@ java_junit5_test(
         ":tests_lib",
     ] + JUNIT_RUNTIME_DEPS,
     test_class = "com.holtherndon.bazelviz.capture.live.CaptureSummaryTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "LiveCapturePipelineInterruptionTest",
+    srcs = ["LiveCapturePipelineInterruptionTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes:bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
+        "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/normalize:normalize",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",
+        "//proto:proto",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/journal:journal",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities:entities",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.live.LiveCapturePipelineInterruptionTest",
     visibility = ["//visibility:public"],
 )
 
@@ -224,10 +257,12 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":BuildOutcomeTest",
         ":BazelVersionMatrixSelectionTest",
         ":CaptureCoordinatorRemoteTransferTest",
         ":CaptureRequestTest",
         ":CaptureSummaryTest",
+        ":LiveCapturePipelineInterruptionTest",
         ":PreflightTest",
     ],
     visibility = ["//visibility:public"],

@@ -4226,11 +4226,16 @@ public final class MainWindow extends JFrame {
           .ifPresent(
               process ->
                   text.append(
-                          process.wasCancelled()
-                              ? "build cancelled"
-                              : !result.buildOutcomeKnown()
-                                  ? "build outcome unknown (event upload failed)"
-                                  : process.isSuccess() ? "build succeeded" : "build failed")
+                          switch (result.buildOutcome()) {
+                            case NOT_STARTED -> "build not started";
+                            case CANCELLED -> "build cancelled";
+                            case UNKNOWN_PROCESS ->
+                                "build outcome unknown (process did not finish)";
+                            case UNKNOWN_BES_TRANSPORT ->
+                                "build outcome unknown (event transport or drain failed)";
+                            case SUCCEEDED -> "build succeeded";
+                            case FAILED -> "build failed";
+                          })
                       .append(" · "));
       result
           .capture()

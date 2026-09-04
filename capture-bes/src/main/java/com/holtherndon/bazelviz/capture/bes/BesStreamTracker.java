@@ -1,71 +1,76 @@
 package com.holtherndon.bazelviz.capture.bes;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.NavigableSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * The mutable half of {@link BesStreamState}: one stream's sequence bookkeeping.
- *
- * <h2>Two watermarks, moved by two different events</h2>
- *
- * <p>{@link #accept} moves the <em>received</em> watermark, and it happens on the gRPC thread as
- * bytes arrive. {@link #journaled} moves the <em>contiguous</em> watermark, and it happens on the
- * pipeline thread once the frame is durable enough to acknowledge. Keeping them apart is the whole
- * point: an event that has arrived is not an event we can promise Bazel we have, and collapsing the
- * two into one counter is exactly how a capture ends up acknowledging data it later loses.
- *
- * <h2>Threading</h2>
- *
- * <p>Every method is synchronized on this object. The contention is negligible — two threads, a few
- * field updates — and the alternative, reasoning about which of the two watermarks may be read
- * while the other is being written, is how a gap gets reported that never existed.
- */
+/** Mutable sequence and connection bookkeeping for one logical BES stream. */
 final class BesStreamTracker {
 
-  /**
-   * How many events may sit above an unfilled gap before the stream is treated as broken (plan 9.2,
-   * "buffer only a bounded number of out-of-order events").
-   *
-   * <p>This counts <em>disorder</em>, not depth. An event that has been accepted and is on its way
-   * to the journal is not out of order — it is in a bounded queue, being processed in the order it
-   * arrived, which is what backpressure looks like when it is working. Only an event journaled
-   * <em>above</em> a sequence that never arrived is genuinely being held.
-   *
-   * <p>Counting depth instead was a real bug, and a well-hidden one: with a single message in
-   * flight the two are indistinguishable, so it only appeared under load, where it aborted the
-   * capture with {@code FAILED_PRECONDITION} at precisely the moment backpressure was doing its
-   * job.
-   */
   static final int DEFAULT_MAX_OUT_OF_ORDER = 1024;
 
-  /** What the tracker decided about an arriving sequence number. */
   enum Decision {
-    /** Not seen before; journal it. */
     ACCEPTED,
-    /**
-     * Seen before. Acknowledge it again and do not journal it: Bazel retransmits after a reconnect,
-     * and a retransmission is a normal event, not an error (plan 9.2, "accept duplicate
-     * retransmissions idempotently").
-     */
-    DUPLICATE,
-    /** So far ahead of the watermark that buffering it would be unbounded. */
+    DUPLICATE_ACK_NOW,
+    DUPLICATE_WAIT,
     TOO_FAR_AHEAD,
-    /** Not a legal BES sequence number. */
     INVALID
+  }
+
+  /** One RPC connection to this stream. Generations are never reused. */
+  record Connection(BesStreamKey key, long generation) {}
+
+  /** An acknowledgement owed to the connection that delivered this original or replay. */
+  record PendingAck(Connection connection, long sequence, boolean replenishCredit) {
+
+    PendingAck(Connection connection, long sequence) {
+      this(connection, sequence, true);
+    }
+  }
+
+  /** Work that became safe only after a frame reached the journal and closed any earlier gap. */
+  record JournalResult(
+      AckRange contiguousRange,
+      List<PendingAck> readyAcks,
+      Optional<BesStreamState> terminalState) {
+
+    JournalResult {
+      readyAcks = List.copyOf(readyAcks);
+      terminalState = Objects.requireNonNull(terminalState, "terminalState");
+    }
+  }
+
+  /** Connections whose pending duplicate must be failed when the original cannot be journaled. */
+  record RejectedResult(
+      List<Connection> waitingConnections, Optional<BesStreamState> terminalState) {
+
+    RejectedResult {
+      waitingConnections = List.copyOf(waitingConnections);
+      terminalState = Objects.requireNonNull(terminalState, "terminalState");
+    }
   }
 
   private final BesStreamKey key;
   private final int maxOutOfOrder;
-
-  /** Sequences journaled but sitting above the contiguous watermark. */
   private final NavigableSet<Long> journaledAhead = new TreeSet<>();
-
-  /** Sequences accepted from the wire but not yet journaled. */
   private final NavigableSet<Long> inFlight = new TreeSet<>();
+  private final NavigableSet<Long> acknowledgedAhead = new TreeSet<>();
+  private final Map<Long, Connection> originalConnections = new HashMap<>();
+  // This is a list, not a set: gRPC can replay the same sequence more than once on one
+  // connection. Every delivery increments that connection's outstanding count and therefore
+  // needs its own acknowledgement/decrement when the original becomes durable.
+  private final Map<Long, List<Connection>> pendingDuplicateAcks = new HashMap<>();
+  private final Set<Connection> activeConnections = new HashSet<>();
 
+  private long nextGeneration;
   private long highestReceived;
   private long highestContiguous;
   private long highestAcknowledged;
@@ -74,7 +79,11 @@ final class BesStreamTracker {
   private long firstReceiveMicros = -1;
   private long lastReceiveMicros = -1;
   private BesStreamState.Completion completion = BesStreamState.Completion.OPEN;
+  private BesStreamState.Completion epochEnding;
   private String error;
+  private String epochError;
+  private boolean epochTerminalEmitted;
+  private boolean epochTerminalPublished;
 
   BesStreamTracker(BesStreamKey key) {
     this(key, DEFAULT_MAX_OUT_OF_ORDER);
@@ -92,27 +101,55 @@ final class BesStreamTracker {
     return key;
   }
 
-  /**
-   * Records an arriving sequence number and says what to do with it.
-   *
-   * <p>A sequence at or below the contiguous watermark is a duplicate. So is one already in flight
-   * or already journaled ahead of the watermark — a reconnecting client can resend an event we are
-   * still writing, and treating that as new would put the same event in the journal twice.
-   */
-  synchronized Decision accept(long sequence, long receiveMicros) {
+  /** Admits a new RPC generation and begins a new epoch if the last one was quiescent. */
+  synchronized Connection openConnection() {
+    if (epochTerminalEmitted && !epochTerminalPublished) {
+      throw new IllegalStateException("the preceding BES epoch is still being published");
+    }
+    return openConnectionLocked();
+  }
+
+  /** Waits until the preceding epoch's terminal callback is visible before opening another. */
+  synchronized Connection openConnectionInterruptibly() throws InterruptedException {
+    while (epochTerminalEmitted && !epochTerminalPublished) {
+      wait();
+    }
+    return openConnectionLocked();
+  }
+
+  private Connection openConnectionLocked() {
+    if (activeConnections.isEmpty() && epochTerminalEmitted) {
+      completion = BesStreamState.Completion.OPEN;
+      error = null;
+      epochEnding = null;
+      epochError = null;
+      epochTerminalEmitted = false;
+      epochTerminalPublished = false;
+    }
+    Connection connection = new Connection(key, ++nextGeneration);
+    activeConnections.add(connection);
+    return connection;
+  }
+
+  synchronized Decision accept(Connection connection, long sequence, long receiveMicros) {
+    requireActive(connection);
     if (sequence < BesStreamState.FIRST_SEQUENCE) {
       return Decision.INVALID;
     }
-    if (sequence <= highestContiguous
-        || inFlight.contains(sequence)
-        || journaledAhead.contains(sequence)) {
+    if (sequence <= highestContiguous) {
       duplicateCount++;
-      return Decision.DUPLICATE;
+      return Decision.DUPLICATE_ACK_NOW;
     }
-    if (journaledAhead.size() >= maxOutOfOrder) {
+    if (inFlight.contains(sequence) || journaledAhead.contains(sequence)) {
+      duplicateCount++;
+      pendingDuplicateAcks.computeIfAbsent(sequence, ignored -> new ArrayList<>()).add(connection);
+      return Decision.DUPLICATE_WAIT;
+    }
+    if (inFlight.size() + journaledAhead.size() >= maxOutOfOrder) {
       return Decision.TOO_FAR_AHEAD;
     }
     inFlight.add(sequence);
+    originalConnections.put(sequence, connection);
     eventsAccepted++;
     highestReceived = Math.max(highestReceived, sequence);
     if (firstReceiveMicros < 0) {
@@ -122,65 +159,104 @@ final class BesStreamTracker {
     return Decision.ACCEPTED;
   }
 
-  /**
-   * Records that a sequence's frame is in the journal, and returns every sequence that may now be
-   * acknowledged.
-   *
-   * <p>The returned range is contiguous and starts just after the last acknowledgement, so
-   * acknowledgements are emitted in order and never skip a gap. When a gap exists the range is
-   * empty: the events above it stay unacknowledged until the missing one arrives, which is what
-   * makes a lost event visible to Bazel instead of silently absent from our session.
-   */
-  synchronized AckRange journaled(long sequence) {
+  synchronized JournalResult journaled(long sequence) {
     inFlight.remove(sequence);
-    if (sequence <= highestContiguous) {
-      // A duplicate that reached the journal anyway, or a replay. Nothing
-      // new to acknowledge, and nothing to correct.
-      return AckRange.empty();
+    if (sequence > highestContiguous) {
+      journaledAhead.add(sequence);
+      while (journaledAhead.remove(highestContiguous + 1)) {
+        highestContiguous++;
+      }
     }
-    journaledAhead.add(sequence);
-    while (journaledAhead.remove(highestContiguous + 1)) {
-      highestContiguous++;
+
+    AckRange range =
+        highestContiguous <= highestAcknowledged
+            ? AckRange.empty()
+            : new AckRange(highestAcknowledged + 1, highestContiguous);
+    List<PendingAck> readyAcks = new ArrayList<>();
+    for (long readySequence = range.from(); readySequence <= range.to(); readySequence++) {
+      Connection original = originalConnections.remove(readySequence);
+      if (original != null && activeConnections.contains(original)) {
+        readyAcks.add(new PendingAck(original, readySequence, false));
+      }
     }
-    if (highestContiguous <= highestAcknowledged) {
-      return AckRange.empty();
+    var ready = new ArrayList<>(pendingDuplicateAcks.keySet());
+    ready.sort(Long::compare);
+    for (long readySequence : ready) {
+      if (readySequence > highestContiguous) {
+        break;
+      }
+      List<Connection> connections = pendingDuplicateAcks.remove(readySequence);
+      if (connections != null) {
+        for (Connection connection : connections) {
+          if (activeConnections.contains(connection)) {
+            readyAcks.add(new PendingAck(connection, readySequence));
+          }
+        }
+      }
     }
-    AckRange range = new AckRange(highestAcknowledged + 1, highestContiguous);
-    highestAcknowledged = highestContiguous;
-    return range;
+    return new JournalResult(range, readyAcks, terminalIfQuiescent());
   }
 
-  /**
-   * Reopens a stream that a previous connection left ended.
-   *
-   * <p>Bazel's uploader survives the client process. If this application is restarted while an
-   * upload is in flight, the uploader reconnects — to a new port if it can find one — and
-   * <em>replays the stream from the beginning</em>. The replay carries the same {@code StreamId},
-   * so it is the same stream, and reusing its tracker is what makes the replayed events
-   * recognisable as duplicates instead of being journaled a second time.
-   *
-   * <p>The watermarks and counters are deliberately kept: they are what the duplicate detection is
-   * made of.
-   */
-  synchronized void reopen() {
-    completion = BesStreamState.Completion.OPEN;
-    error = null;
-  }
-
-  /** Marks how the stream ended. The first ending wins; a later one is noise. */
-  synchronized void end(BesStreamState.Completion how, String detail) {
-    if (completion.isTerminal()) {
+  /** Records an acknowledgement only after the response observer accepted it. */
+  synchronized void acknowledged(long sequence) {
+    if (sequence <= highestAcknowledged || sequence > highestContiguous) {
       return;
     }
-    completion = Objects.requireNonNull(how, "how");
-    error = detail;
+    acknowledgedAhead.add(sequence);
+    while (acknowledgedAhead.remove(highestAcknowledged + 1)) {
+      highestAcknowledged++;
+    }
   }
 
-  synchronized boolean hasEnded() {
-    return completion.isTerminal();
+  /** Removes a failed original and returns every duplicate connection waiting for it. */
+  synchronized RejectedResult rejected(long sequence, String detail) {
+    inFlight.remove(sequence);
+    originalConnections.remove(sequence);
+    List<Connection> waiting = pendingDuplicateAcks.remove(sequence);
+    recordEpochEnding(BesStreamState.Completion.FAILED, detail);
+    return new RejectedResult(
+        waiting == null ? List.of() : List.copyOf(waiting), terminalIfQuiescent());
+  }
+
+  /**
+   * Ends one connection. A terminal state is emitted only after every generation in this epoch has
+   * ended, using FAILED &gt; FINISHED &gt; ABORTED precedence.
+   */
+  synchronized Optional<BesStreamState> end(
+      Connection connection, BesStreamState.Completion how, String detail) {
+    if (!activeConnections.remove(connection)) {
+      return Optional.empty();
+    }
+    pendingDuplicateAcks.values().forEach(connections -> connections.removeIf(connection::equals));
+    pendingDuplicateAcks.values().removeIf(List::isEmpty);
+    originalConnections.values().removeIf(connection::equals);
+    recordEpochEnding(how, detail);
+    return terminalIfQuiescent();
+  }
+
+  /** Upgrades an ending epoch when a late durability callback exposes a transport failure. */
+  synchronized Optional<BesStreamState> failEpoch(String detail) {
+    recordEpochEnding(BesStreamState.Completion.FAILED, detail);
+    return terminalIfQuiescent();
+  }
+
+  /** Releases a reconnect only after the sink has observed the preceding terminal snapshot. */
+  synchronized void terminalPublished() {
+    if (epochTerminalEmitted) {
+      epochTerminalPublished = true;
+      notifyAll();
+    }
+  }
+
+  synchronized int activeConnectionCount() {
+    return activeConnections.size();
   }
 
   synchronized BesStreamState snapshot() {
+    return snapshotLocked();
+  }
+
+  private BesStreamState snapshotLocked() {
     return new BesStreamState(
         key,
         highestReceived,
@@ -195,12 +271,47 @@ final class BesStreamTracker {
         Optional.ofNullable(error));
   }
 
-  /**
-   * A closed range of sequences to acknowledge, or an empty one.
-   *
-   * <p>{@code from > to} is the empty encoding rather than a null or an {@link Optional}: the
-   * caller loops over it, and an empty loop is the correct behavior with no branch needed.
-   */
+  /** Returns an epoch's one terminal snapshot only after every accepted append has resolved. */
+  private Optional<BesStreamState> terminalIfQuiescent() {
+    if (epochTerminalEmitted
+        || !activeConnections.isEmpty()
+        || !inFlight.isEmpty()
+        || epochEnding == null) {
+      return Optional.empty();
+    }
+    completion = epochEnding;
+    error = epochError;
+    epochTerminalEmitted = true;
+    return Optional.of(snapshotLocked());
+  }
+
+  private void recordEpochEnding(BesStreamState.Completion how, String detail) {
+    Objects.requireNonNull(how, "how");
+    if (epochTerminalEmitted) {
+      return;
+    }
+    if (epochEnding == null || precedence(how) > precedence(epochEnding)) {
+      epochEnding = how;
+      epochError = detail;
+    }
+  }
+
+  private void requireActive(Connection connection) {
+    if (!activeConnections.contains(connection)) {
+      throw new IllegalStateException(
+          "BES connection generation is no longer active: " + connection);
+    }
+  }
+
+  private static int precedence(BesStreamState.Completion completion) {
+    return switch (completion) {
+      case FAILED -> 3;
+      case FINISHED -> 2;
+      case ABORTED -> 1;
+      case OPEN -> throw new IllegalArgumentException("OPEN is not a connection ending");
+    };
+  }
+
   record AckRange(long from, long to) {
 
     static AckRange empty() {

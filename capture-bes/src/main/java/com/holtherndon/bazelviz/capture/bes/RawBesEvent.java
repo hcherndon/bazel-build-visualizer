@@ -27,21 +27,82 @@ import java.util.Objects;
  *     distinct from any timestamp inside the payload (plan 11.5)
  * @param payload the serialized request, verbatim
  */
-public record RawBesEvent(
-    SourceKind sourceKind, BesStreamKey stream, long sequence, long receiveMicros, byte[] payload) {
+public final class RawBesEvent implements AutoCloseable {
 
-  public RawBesEvent {
-    Objects.requireNonNull(sourceKind, "sourceKind");
-    Objects.requireNonNull(stream, "stream");
-    Objects.requireNonNull(payload, "payload");
-    if (sourceKind != SourceKind.BES_ENVELOPE && sourceKind != SourceKind.BES_LIFECYCLE) {
-      throw new IllegalArgumentException(
-          "a BES event carries a BES source kind, got " + sourceKind);
+  private final SourceKind sourceKind;
+  private final BesStreamKey stream;
+  private final long sequence;
+  private final long receiveMicros;
+  private final RawPayloadLease payload;
+
+  /** Creates an unbudgeted event for direct imports and tests. */
+  public RawBesEvent(
+      SourceKind sourceKind,
+      BesStreamKey stream,
+      long sequence,
+      long receiveMicros,
+      byte[] payload) {
+    this(
+        sourceKind,
+        stream,
+        sequence,
+        receiveMicros,
+        RawPayloadLease.unbudgeted(Objects.requireNonNull(payload, "payload")));
+  }
+
+  /** Takes ownership of the transport's sole retained-payload lease without copying its bytes. */
+  RawBesEvent(
+      SourceKind sourceKind,
+      BesStreamKey stream,
+      long sequence,
+      long receiveMicros,
+      RawPayloadLease payload) {
+    RawPayloadLease ownedPayload = Objects.requireNonNull(payload, "payload");
+    try {
+      this.sourceKind = Objects.requireNonNull(sourceKind, "sourceKind");
+      this.stream = Objects.requireNonNull(stream, "stream");
+      if (sourceKind != SourceKind.BES_ENVELOPE && sourceKind != SourceKind.BES_LIFECYCLE) {
+        throw new IllegalArgumentException(
+            "a BES event carries a BES source kind, got " + sourceKind);
+      }
+    } catch (RuntimeException invalid) {
+      ownedPayload.close();
+      throw invalid;
     }
+    this.payload = ownedPayload;
+    this.sequence = sequence;
+    this.receiveMicros = receiveMicros;
+  }
+
+  public SourceKind sourceKind() {
+    return sourceKind;
+  }
+
+  public BesStreamKey stream() {
+    return stream;
+  }
+
+  public long sequence() {
+    return sequence;
+  }
+
+  public long receiveMicros() {
+    return receiveMicros;
+  }
+
+  /** The original serialized request. The receiver must not mutate this array. */
+  public byte[] payload() {
+    return payload.bytes();
   }
 
   public int payloadLength() {
-    return payload.length;
+    return payload.length();
+  }
+
+  /** Releases this payload's aggregate budget reservation. Idempotent. */
+  @Override
+  public void close() {
+    payload.close();
   }
 
   /**
@@ -69,7 +130,7 @@ public record RawBesEvent(
         + " #"
         + sequence
         + " "
-        + payload.length
+        + payload.length()
         + "B]";
   }
 }

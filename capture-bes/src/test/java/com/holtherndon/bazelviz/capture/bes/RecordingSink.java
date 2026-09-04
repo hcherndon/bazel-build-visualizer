@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -21,12 +22,18 @@ final class RecordingSink implements RawEventSink {
   private final List<RawBesEvent> events = new ArrayList<>();
   private final List<BesStreamKey> opened = new ArrayList<>();
   private final List<BesStreamState> ended = new ArrayList<>();
-  private final BlockingQueue<Runnable> journalWork;
+  private final BlockingQueue<JournalWork> journalWork;
   private final Thread journalThread;
 
   private volatile boolean rejecting;
   private volatile long journalDelayMillis;
   private volatile boolean running = true;
+  private volatile CountDownLatch journalGate = new CountDownLatch(0);
+  private volatile CountDownLatch streamEndGate = new CountDownLatch(0);
+  private volatile CountDownLatch streamEndEntered = new CountDownLatch(1);
+  private volatile Throwable journalFailure;
+
+  private record JournalWork(RawBesEvent event, SubmissionCallback callback) {}
 
   RecordingSink() {
     this(1024);
@@ -40,7 +47,7 @@ final class RecordingSink implements RawEventSink {
   }
 
   @Override
-  public void submit(RawBesEvent event, Runnable onJournaled)
+  public void submit(RawBesEvent event, SubmissionCallback callback)
       throws InterruptedException, CaptureRejectedException {
     if (rejecting) {
       throw new CaptureRejectedException("this sink was told to reject");
@@ -48,7 +55,7 @@ final class RecordingSink implements RawEventSink {
     synchronized (events) {
       events.add(event);
     }
-    journalWork.put(onJournaled);
+    journalWork.put(new JournalWork(event, callback));
   }
 
   @Override
@@ -60,6 +67,8 @@ final class RecordingSink implements RawEventSink {
 
   @Override
   public void streamEnded(BesStreamState finalState) {
+    streamEndEntered.countDown();
+    awaitUninterruptibly(streamEndGate);
     synchronized (ended) {
       ended.add(finalState);
     }
@@ -67,8 +76,9 @@ final class RecordingSink implements RawEventSink {
 
   private void drain() {
     while (running) {
+      JournalWork work = null;
       try {
-        Runnable work = journalWork.poll(50, TimeUnit.MILLISECONDS);
+        work = journalWork.poll(50, TimeUnit.MILLISECONDS);
         if (work == null) {
           continue;
         }
@@ -76,8 +86,22 @@ final class RecordingSink implements RawEventSink {
         if (delay > 0) {
           Thread.sleep(delay);
         }
-        work.run();
+        journalGate.await();
+        try {
+          Throwable failure = journalFailure;
+          if (failure == null) {
+            work.callback().onJournaled();
+          } else {
+            work.callback().onRejected(failure);
+          }
+        } finally {
+          work.event().close();
+        }
       } catch (InterruptedException interrupted) {
+        if (work != null) {
+          work.callback().onRejected(new IllegalStateException("recording sink stopped"));
+          work.event().close();
+        }
         Thread.currentThread().interrupt();
         return;
       }
@@ -94,9 +118,42 @@ final class RecordingSink implements RawEventSink {
     this.journalDelayMillis = millis;
   }
 
+  void blockJournaling() {
+    journalGate = new CountDownLatch(1);
+  }
+
+  void releaseJournaling() {
+    journalGate.countDown();
+  }
+
+  void failJournaling(Throwable failure) {
+    journalFailure = failure;
+    releaseJournaling();
+  }
+
+  void blockStreamEnd() {
+    streamEndEntered = new CountDownLatch(1);
+    streamEndGate = new CountDownLatch(1);
+  }
+
+  boolean awaitStreamEndCallback(long timeoutMillis) throws InterruptedException {
+    return streamEndEntered.await(timeoutMillis, TimeUnit.MILLISECONDS);
+  }
+
+  void releaseStreamEnd() {
+    streamEndGate.countDown();
+  }
+
   void stop() {
     running = false;
+    releaseJournaling();
+    releaseStreamEnd();
     journalThread.interrupt();
+    JournalWork abandoned;
+    while ((abandoned = journalWork.poll()) != null) {
+      abandoned.callback().onRejected(new IllegalStateException("recording sink stopped"));
+      abandoned.event().close();
+    }
   }
 
   List<RawBesEvent> events() {
@@ -140,13 +197,32 @@ final class RecordingSink implements RawEventSink {
 
   /** Waits until a stream has been reported as ended. */
   boolean awaitStreamEnd(long timeoutMillis) throws InterruptedException {
+    return awaitStreamEnds(1, timeoutMillis);
+  }
+
+  boolean awaitStreamEnds(int count, long timeoutMillis) throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
     while (System.nanoTime() < deadline) {
-      if (!ended().isEmpty()) {
+      if (ended().size() >= count) {
         return true;
       }
       Thread.sleep(10);
     }
-    return !ended().isEmpty();
+    return ended().size() >= count;
+  }
+
+  private static void awaitUninterruptibly(CountDownLatch latch) {
+    boolean interrupted = false;
+    while (true) {
+      try {
+        latch.await();
+        break;
+      } catch (InterruptedException retry) {
+        interrupted = true;
+      }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
+    }
   }
 }

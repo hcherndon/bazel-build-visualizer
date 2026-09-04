@@ -91,10 +91,45 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
    */
   private static final Duration SENTINEL_HANDOVER = Duration.ofSeconds(5);
 
+  /** Maximum graceful or forced wait for both pipeline workers to stop. */
+  static final Duration WORKER_TERMINATION_TIMEOUT = Duration.ofSeconds(15);
+
   /** Queue sentinel meaning "no more work is coming". */
   private static final Submission END_OF_STREAM = new Submission(null, null);
 
-  private record Submission(RawBesEvent event, Runnable onJournaled) {}
+  private static final class Submission {
+
+    private final RawBesEvent event;
+    private final SubmissionCallback callback;
+    private final AtomicBoolean completed = new AtomicBoolean();
+
+    Submission(RawBesEvent event, SubmissionCallback callback) {
+      this.event = event;
+      this.callback = callback;
+    }
+
+    RawBesEvent event() {
+      return event;
+    }
+
+    void journaled() {
+      if (completed.compareAndSet(false, true)) {
+        callback.onJournaled();
+      }
+    }
+
+    void rejected(Throwable failure) {
+      if (completed.compareAndSet(false, true)) {
+        try {
+          callback.onRejected(failure);
+        } finally {
+          event.close();
+        }
+      } else {
+        event.close();
+      }
+    }
+  }
 
   private record Journaled(RawBesEvent event, JournalLocation location) {}
 
@@ -147,6 +182,9 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
 
   private final BlockingQueue<Submission> receiveQueue;
   private final BlockingQueue<Journaled> normalizeQueue;
+  private final Object admissionLock = new Object();
+  private final Object normalizeAdmissionLock = new Object();
+  private boolean normalizeAccepting = true;
 
   /** Journal stream ordinals, assigned on the receive thread as streams appear. */
   private final Map<BesStreamKey, Integer> streamOrdinals = new ConcurrentHashMap<>();
@@ -172,11 +210,12 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
   private long fileStreamRowId = -1;
 
   private volatile Throwable failure;
+  private volatile Throwable transportFailure;
   private volatile long lastProgressMillis;
 
   private Thread journalThread;
   private Thread storeThread;
-  private boolean closed;
+  private final AtomicBoolean closed = new AtomicBoolean();
 
   public LiveCapturePipeline(
       JournalWriter journal,
@@ -238,36 +277,42 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
   // ------------------------------------------------------------------ sink
 
   @Override
-  public void submit(RawBesEvent event, Runnable onJournaled)
+  public void submit(RawBesEvent event, SubmissionCallback callback)
       throws InterruptedException, CaptureRejectedException {
     Objects.requireNonNull(event, "event");
-    Objects.requireNonNull(onJournaled, "onJournaled");
-    rejectIfUnusable();
-    if (event.payloadLength() > options.maxMessageBytes()) {
-      throw new CaptureRejectedException(
-          "event "
-              + event.sequence()
-              + " is "
-              + event.payloadLength()
-              + " bytes, above the "
-              + options.maxMessageBytes()
-              + "-byte limit this capture accepts");
-    }
-    streamOrdinals.computeIfAbsent(event.stream(), key -> nextStreamOrdinal.getAndIncrement());
-    received.incrementAndGet();
+    Objects.requireNonNull(callback, "callback");
+    boolean handedOff = false;
+    try {
+      if (event.payloadLength() > options.maxMessageBytes()) {
+        throw new CaptureRejectedException(
+            "event "
+                + event.sequence()
+                + " is "
+                + event.payloadLength()
+                + " bytes, above the "
+                + options.maxMessageBytes()
+                + "-byte limit this capture accepts");
+      }
+      streamOrdinals.computeIfAbsent(event.stream(), key -> nextStreamOrdinal.getAndIncrement());
 
-    Submission submission = new Submission(event, onJournaled);
-    if (!receiveQueue.offer(submission)) {
-      // The queue is full: this is the backpressure. Recorded before
-      // blocking so the lag indicator lights up while the user is
-      // waiting, not afterwards when it no longer matters.
-      noteLag();
-      receiveQueue.put(submission);
+      Submission submission = new Submission(event, callback);
+      while (!handedOff) {
+        synchronized (admissionLock) {
+          rejectIfUnusable();
+          if (receiveQueue.offer(submission)) {
+            handedOff = true;
+            received.incrementAndGet();
+            break;
+          }
+          admissionLock.wait(25L);
+        }
+        noteLag();
+      }
+    } finally {
+      if (!handedOff) {
+        event.close();
+      }
     }
-    // Re-checked after the wait: the pipeline may have failed while this
-    // event sat in the queue, and reporting success for an event that will
-    // never be journaled is exactly the silent drop the contract forbids.
-    rejectIfUnusable();
   }
 
   @Override
@@ -303,32 +348,47 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
           }
           continue;
         }
+        signalAdmissionRoom();
         if (submission == END_OF_STREAM) {
           journal.flush();
           break;
         }
         RawBesEvent event = submission.event();
-        JournalLocation location =
-            journal.append(
-                event.sourceKind(),
-                streamOrdinals.get(event.stream()),
-                event.sequence(),
-                event.receiveMicros(),
-                event.payload());
-        journaledCount.incrementAndGet();
-        bytesJournaled.addAndGet(event.payloadLength());
-        framesSinceFlush++;
+        boolean handedToNormalizer = false;
+        try {
+          JournalLocation location =
+              journal.append(
+                  event.sourceKind(),
+                  streamOrdinals.get(event.stream()),
+                  event.sequence(),
+                  event.receiveMicros(),
+                  event.payload(),
+                  0,
+                  event.payloadLength());
+          journaledCount.incrementAndGet();
+          bytesJournaled.addAndGet(event.payloadLength());
+          framesSinceFlush++;
 
-        // Acknowledge first. The frame is durable enough to promise
-        // (plan 9.3), and delaying the ack behind a full normalize
-        // queue would slow Bazel down for a backlog that cannot lose
-        // anything.
-        submission.onJournaled().run();
+          // Acknowledge first. The frame is durable enough to promise
+          // (plan 9.3), and delaying the ack behind a full normalize
+          // queue would slow Bazel down for a backlog that cannot lose
+          // anything.
+          submission.journaled();
 
-        Journaled journaled = new Journaled(event, location);
-        if (!normalizeQueue.offer(journaled)) {
-          noteLag();
-          normalizeQueue.put(journaled);
+          Journaled journaled = new Journaled(event, location);
+          if (!handToNormalizer(journaled)) {
+            Throwable cause = failure;
+            throw new IllegalStateException(
+                "the normalization stage stopped before accepting a journaled event", cause);
+          }
+          handedToNormalizer = true;
+        } catch (InterruptedException | IOException | RuntimeException failure) {
+          submission.rejected(failure);
+          throw failure;
+        } finally {
+          if (!handedToNormalizer) {
+            event.close();
+          }
         }
         if (shouldFlush(framesSinceFlush, lastFlushMillis)) {
           journal.flush();
@@ -342,12 +402,23 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     } catch (IOException | RuntimeException problem) {
       fail(problem);
     } finally {
-      // Whatever happened, the store thread must be told to stop, or
-      // close() waits forever for a thread with no work coming.
-      try {
-        normalizeQueue.put(NORMALIZE_END);
-      } catch (InterruptedException interrupted) {
-        Thread.currentThread().interrupt();
+      if (failure != null || closed.get()) {
+        drainReceiveSubmissions(
+            new CaptureRejectedException("the journal stage stopped before this event"));
+      }
+      // Never block forever handing a sentinel to a store thread that has already failed. The same
+      // failure-aware bounded handoff used for data either reaches the live consumer or closes and
+      // drains everything it can no longer consume.
+      boolean handedOver = false;
+      if (!closed.get() && failure == null) {
+        try {
+          handedOver = handToNormalizer(NORMALIZE_END);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+        }
+      }
+      if (!handedOver) {
+        stopNormalizingAndDrain();
       }
     }
   }
@@ -384,11 +455,15 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
           drainEntities();
           break;
         }
-        if (store(journaled)) {
-          normalizedCount.incrementAndGet();
-          pending++;
+        try {
+          if (store(journaled)) {
+            normalizedCount.incrementAndGet();
+            pending++;
+          }
+          sinceCheckpoint++;
+        } finally {
+          journaled.event().close();
         }
-        sinceCheckpoint++;
 
         if (pending >= options.batchSize()
             || pendingEntityCommands >= MAX_PENDING_ENTITY_COMMANDS
@@ -408,6 +483,8 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
       Thread.currentThread().interrupt();
     } catch (SQLException | RuntimeException problem) {
       fail(problem);
+    } finally {
+      stopNormalizingAndDrain();
     }
   }
 
@@ -659,35 +736,61 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
    * @return what the capture ended up containing
    */
   public CaptureSummary finish() throws IOException, SQLException, InterruptedException {
-    accepting.set(false);
-    signalEndOfStream();
-    joinQuietly(journalThread);
-    joinQuietly(storeThread);
+    boolean interrupted = Thread.interrupted();
+    try {
+      stopAccepting();
+      signalEndOfStream();
+      // signalEndOfStream preserves interruption so its caller does not lose cancellation. Clear it
+      // again while draining: an interrupted join would otherwise let this method return while a
+      // worker can still write to the journal or database that its caller closes next.
+      interrupted |= Thread.interrupted();
+      WorkerTermination graceful = awaitWorkerTermination(false);
+      interrupted |= graceful.interrupted();
+      if (!graceful.terminated()) {
+        fail(
+            new IllegalStateException(
+                "the live capture workers did not stop within "
+                    + WORKER_TERMINATION_TIMEOUT
+                    + "; forcing their shutdown"));
+        WorkerTermination forced = awaitWorkerTermination(true);
+        interrupted |= forced.interrupted();
+        requireWorkersTerminated(forced);
+      }
+      if (interrupted) {
+        markTransportFailure(
+            new InterruptedException(
+                "waiting for the live capture pipeline to drain was interrupted"));
+      }
 
-    persistStreamStates();
-    events.flush();
-    writeCheckpoint();
-    // Skipped when the journal has already failed: force() throws
-    // IllegalStateException on a failed writer, and that unchecked
-    // exception escaping here aborted the caller's entire cleanup — the
-    // session was left non-terminal with its lock still on disk. There is
-    // nothing to force in that state anyway; the writer dropped its staged
-    // bytes when it failed, and said so.
-    if (!journal.isFailed()) {
-      journal.force();
+      persistStreamStates();
+      events.flush();
+      writeCheckpoint();
+      // Skipped when the journal has already failed: force() throws
+      // IllegalStateException on a failed writer, and that unchecked
+      // exception escaping here aborted the caller's entire cleanup — the
+      // session was left non-terminal with its lock still on disk. There is
+      // nothing to force in that state anyway; the writer dropped its staged
+      // bytes when it failed, and said so.
+      if (!journal.isFailed()) {
+        journal.force();
+      }
+      publishProgress(true);
+
+      return new CaptureSummary(
+          received.get(),
+          journaledCount.get(),
+          normalizedCount.get(),
+          nonEventEnvelopes.get(),
+          decodeFailures.get(),
+          bytesJournaled.get(),
+          List.copyOf(finalStates.values()),
+          lagged.get(),
+          Optional.ofNullable(captureFailure()));
+    } finally {
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
     }
-    publishProgress(true);
-
-    return new CaptureSummary(
-        received.get(),
-        journaledCount.get(),
-        normalizedCount.get(),
-        nonEventEnvelopes.get(),
-        decodeFailures.get(),
-        bytesJournaled.get(),
-        List.copyOf(finalStates.values()),
-        lagged.get(),
-        Optional.ofNullable(failure));
   }
 
   /**
@@ -724,8 +827,9 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
       // accepted and will never be journaled, which the counters already
       // report as received != journaled; clearing the queue is what lets
       // this method return at all.
-      int abandoned = receiveQueue.size();
-      receiveQueue.clear();
+      int abandoned =
+          drainRetainedPayloads(
+              new CaptureRejectedException("the journal writer stopped before this event"));
       if (abandoned > 0) {
         log.error(
             "{} accepted event(s) were never journaled: the journal writer stopped", abandoned);
@@ -813,11 +917,19 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
 
   /** True once a journal or storage failure has made the capture unreliable. */
   public boolean hasFailed() {
-    return failure != null;
+    return captureFailure() != null;
   }
 
   public Optional<Throwable> failure() {
-    return Optional.ofNullable(failure);
+    return Optional.ofNullable(captureFailure());
+  }
+
+  /** Records that the BES transport did not quiesce, without discarding already accepted work. */
+  void markTransportFailure(Throwable problem) {
+    Objects.requireNonNull(problem, "problem");
+    if (transportFailure == null) {
+      transportFailure = problem;
+    }
   }
 
   public CaptureProgress progress() {
@@ -837,12 +949,15 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
   }
 
   @Override
-  public synchronized void close() {
-    if (closed) {
+  public void close() {
+    if (!closed.compareAndSet(false, true)) {
       return;
     }
-    closed = true;
-    accepting.set(false);
+    stopAccepting();
+    synchronized (normalizeAdmissionLock) {
+      normalizeAccepting = false;
+      normalizeAdmissionLock.notifyAll();
+    }
     // Interrupting is deliberate here and not in finish(): close() is the
     // abandon path. JournalWriter documents that interrupting its thread
     // ends the journal early, so the orderly shutdown goes through
@@ -852,6 +967,15 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     }
     if (storeThread != null) {
       storeThread.interrupt();
+    }
+    drainRetainedPayloads(new CaptureRejectedException("the live capture pipeline was closed"));
+    WorkerTermination terminated = awaitWorkerTermination(true);
+    try {
+      requireWorkersTerminated(terminated);
+    } finally {
+      if (terminated.interrupted()) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 
@@ -869,11 +993,105 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
   }
 
   private void fail(Throwable problem) {
-    if (failure == null) {
-      failure = problem;
-      log.error("live capture failed; no further events will be accepted", problem);
+    synchronized (admissionLock) {
+      if (failure == null) {
+        failure = problem;
+        log.error("live capture failed; no further events will be accepted", problem);
+      }
+      accepting.set(false);
+      admissionLock.notifyAll();
     }
-    accepting.set(false);
+    Thread current = Thread.currentThread();
+    if (journalThread != null && journalThread != current) {
+      journalThread.interrupt();
+    }
+    if (storeThread != null && storeThread != current) {
+      storeThread.interrupt();
+    }
+  }
+
+  /** Releases payload ownership for work that no live pipeline thread can consume. */
+  private int drainRetainedPayloads(Throwable failure) {
+    int abandoned = drainReceiveSubmissions(failure);
+    List<Journaled> normalizeAbandoned = new ArrayList<>();
+    synchronized (normalizeAdmissionLock) {
+      Journaled journaled;
+      while ((journaled = normalizeQueue.poll()) != null) {
+        if (journaled != NORMALIZE_END) {
+          normalizeAbandoned.add(journaled);
+        }
+      }
+    }
+    for (Journaled journaled : normalizeAbandoned) {
+      journaled.event().close();
+      abandoned++;
+    }
+    return abandoned;
+  }
+
+  private int drainReceiveSubmissions(Throwable failure) {
+    List<Submission> receiveAbandoned = new ArrayList<>();
+    synchronized (admissionLock) {
+      Submission submission;
+      while ((submission = receiveQueue.poll()) != null) {
+        if (submission != END_OF_STREAM) {
+          receiveAbandoned.add(submission);
+        }
+      }
+    }
+    int abandoned = 0;
+    for (Submission submission : receiveAbandoned) {
+      submission.rejected(failure);
+      abandoned++;
+    }
+    return abandoned;
+  }
+
+  private boolean handToNormalizer(Journaled value) throws InterruptedException {
+    while (true) {
+      synchronized (normalizeAdmissionLock) {
+        if (!normalizeAccepting || failure != null || closed.get()) {
+          return false;
+        }
+        if (normalizeQueue.offer(value)) {
+          return true;
+        }
+        normalizeAdmissionLock.wait(25L);
+      }
+      noteLag();
+    }
+  }
+
+  private void stopNormalizingAndDrain() {
+    List<Journaled> abandoned = new ArrayList<>();
+    synchronized (normalizeAdmissionLock) {
+      normalizeAccepting = false;
+      Journaled journaled;
+      while ((journaled = normalizeQueue.poll()) != null) {
+        if (journaled != NORMALIZE_END) {
+          abandoned.add(journaled);
+        }
+      }
+      normalizeAdmissionLock.notifyAll();
+    }
+    abandoned.forEach(journaled -> journaled.event().close());
+  }
+
+  private Throwable captureFailure() {
+    return failure != null ? failure : transportFailure;
+  }
+
+  private void stopAccepting() {
+    synchronized (admissionLock) {
+      accepting.set(false);
+      admissionLock.notifyAll();
+    }
+  }
+
+  private void signalAdmissionRoom() {
+    synchronized (admissionLock) {
+      admissionLock.notifyAll();
+    }
   }
 
   private void noteLag() {
@@ -931,9 +1149,57 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
     return clock.instant().getEpochSecond() * 1_000_000L + clock.instant().getNano() / 1_000L;
   }
 
-  private static void joinQuietly(Thread thread) throws InterruptedException {
-    if (thread != null) {
-      thread.join();
+  /** True only when neither worker can touch its journal or database dependencies again. */
+  boolean workersTerminated() {
+    return stopped(journalThread) && stopped(storeThread);
+  }
+
+  private WorkerTermination awaitWorkerTermination(boolean interruptWorkers) {
+    if (interruptWorkers) {
+      interruptWorker(journalThread);
+      interruptWorker(storeThread);
+    }
+    boolean interrupted = Thread.interrupted();
+    long deadline = System.nanoTime() + WORKER_TERMINATION_TIMEOUT.toNanos();
+    for (Thread worker : new Thread[] {journalThread, storeThread}) {
+      if (worker == null || worker == Thread.currentThread()) {
+        continue;
+      }
+      while (worker.isAlive()) {
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) {
+          return new WorkerTermination(false, interrupted);
+        }
+        try {
+          long millis = remaining / 1_000_000L;
+          int nanos = (int) (remaining % 1_000_000L);
+          worker.join(millis, nanos);
+        } catch (InterruptedException retry) {
+          interrupted = true;
+        }
+      }
+    }
+    return new WorkerTermination(workersTerminated(), interrupted);
+  }
+
+  private void requireWorkersTerminated(WorkerTermination result) {
+    if (!result.terminated()) {
+      throw new IllegalStateException(
+          "the live capture workers did not terminate within "
+              + WORKER_TERMINATION_TIMEOUT
+              + "; their journal and database must remain open");
     }
   }
+
+  private static boolean stopped(Thread worker) {
+    return worker == null || !worker.isAlive();
+  }
+
+  private static void interruptWorker(Thread worker) {
+    if (worker != null && worker != Thread.currentThread()) {
+      worker.interrupt();
+    }
+  }
+
+  private record WorkerTermination(boolean terminated, boolean interrupted) {}
 }
