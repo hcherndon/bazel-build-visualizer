@@ -27,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
@@ -165,6 +166,20 @@ public final class SessionManifestCodec {
    */
   public SessionManifest readForPortableArchive(Path file) throws IOException {
     return read(file, true);
+  }
+
+  /** Reads a portable manifest from a caller-owned, already secured stream. */
+  public SessionManifest readForPortableArchive(Reader reader, String location) throws IOException {
+    Objects.requireNonNull(reader, "reader");
+    Objects.requireNonNull(location, "location");
+    JsonValue document;
+    try {
+      document = JsonReader.parse(reader);
+    } catch (JsonException e) {
+      throw new SessionFormatException(
+          "manifest at " + location + " is not valid JSON: " + e.getMessage(), e);
+    }
+    return fromJson(document, location, true);
   }
 
   private SessionManifest read(Path file, boolean requireCanonicalSessionId) throws IOException {

@@ -1,10 +1,14 @@
 package com.holtherndon.bazelviz.storage.redact;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.core.redact.RedactionPolicy;
+import com.holtherndon.bazelviz.core.redact.Redactor;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -138,6 +142,65 @@ final class SessionRedactionTest {
       // build and stays exactly as captured.
       assertThat(rows.getString(1)).isEqualTo("/Users/someone/x");
     }
+  }
+
+  @Test
+  @DisplayName("a linked source is rejected without creating a redacted destination")
+  void linkedSourcesAreRejected() throws Exception {
+    Path original = tempDir.resolve("outside.sqlite");
+    try (SessionDatabase ignored = open("outside.sqlite")) {
+      // A valid SQLite source exists outside the path supplied to the redactor.
+    }
+    Path linked = tempDir.resolve("linked.sqlite");
+    Files.createSymbolicLink(linked, original.getFileName());
+    Path target = tempDir.resolve("should-not-exist.sqlite");
+
+    assertThatThrownBy(
+            () -> SessionRedaction.copyRedacted(linked, target, RedactionPolicy.forExport()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("no-follow");
+    assertThat(target).doesNotExist();
+  }
+
+  @Test
+  @DisplayName("post-copy policy failures clean the owner-only database snapshot")
+  void factoryFailuresCleanTheSnapshot() throws Exception {
+    Path original = tempDir.resolve("source.sqlite");
+    try (SessionDatabase ignored = open("source.sqlite")) {
+      // Schema setup is enough for a valid source.
+    }
+    Path target = tempDir.resolve("failed.sqlite");
+
+    assertThatThrownBy(
+            () ->
+                SessionRedaction.copyRedacted(
+                    original,
+                    target,
+                    copied -> {
+                      assertThat(copied).exists();
+                      throw new IOException("policy failed");
+                    }))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("policy failed");
+    assertThat(target).doesNotExist();
+  }
+
+  @Test
+  @DisplayName("the supplied Redactor instance owns the database pseudonyms")
+  void callerRedactorIsReused() throws Exception {
+    Path original = tempDir.resolve("shared-source.sqlite");
+    try (SessionDatabase database = open("shared-source.sqlite")) {
+      exec(
+          database.writerConnection(),
+          "INSERT INTO strings (id, value) VALUES (1, 'Bearer shared-secret-value')");
+    }
+    Redactor shared = new Redactor(RedactionPolicy.forExport());
+
+    SessionRedaction.copyRedacted(original, tempDir.resolve("shared-copy.sqlite"), shared);
+    String elsewhere = shared.text("Bearer shared-secret-value", "manifest.warning");
+
+    assertThat(elsewhere).startsWith("Bearer [redacted:");
+    assertThat(shared.report().byField()).containsKeys("strings.value", "manifest.warning");
   }
 
   @Test

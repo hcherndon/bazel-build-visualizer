@@ -182,17 +182,34 @@ public final class Redactor {
       return path;
     }
     report.countInspected();
+    String current = redactValue(path, field);
     for (Map.Entry<String, String> prefix : prefixes) {
-      if (path.startsWith(prefix.getKey())) {
+      if (current.startsWith(prefix.getKey())) {
         report.record("path-prefix", field, prefix.getValue(), "a known absolute prefix");
-        return prefix.getValue() + path.substring(prefix.getKey().length());
+        return prefix.getValue() + current.substring(prefix.getKey().length());
       }
     }
-    String masked = maskUserComponent(path);
-    if (!masked.equals(path)) {
+    String masked = maskUserComponent(current);
+    if (!masked.equals(current)) {
       report.record("home-directory", field, "[user]", "the account name in a home-directory path");
     }
     return masked;
+  }
+
+  /**
+   * Replaces a value even when it does not match a pattern.
+   *
+   * <p>Some provenance is identifying by definition rather than by shape. An SSH destination must
+   * not survive merely because it did not look like a token.
+   */
+  public String pseudonymize(String value, String field, String description) {
+    if (value == null) {
+      return null;
+    }
+    Objects.requireNonNull(field, "field");
+    Objects.requireNonNull(description, "description");
+    report.countInspected();
+    return pseudonymFor(value, "forced-pseudonym", description, field);
   }
 
   /**
@@ -299,13 +316,17 @@ public final class Redactor {
 
   /** The stable pseudonym for one value, minting one on first sight. */
   private String pseudonymFor(String value, SecretPattern rule, String field) {
+    return pseudonymFor(value, rule.displayName(), rule.description(), field);
+  }
+
+  private String pseudonymFor(String value, String rule, String description, String field) {
     String existing = pseudonyms.get(value);
     if (existing == null) {
       existing = mint(value);
       pseudonyms.put(value, existing);
       report.countDistinctSecret();
     }
-    report.record(rule.displayName(), field, existing, rule.description());
+    report.record(rule, field, existing, description);
     return existing;
   }
 

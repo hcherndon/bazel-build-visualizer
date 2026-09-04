@@ -11,6 +11,7 @@ java_library(
     deps = JUNIT_DEPS + [
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/redact",
         "//session-format/src/main/java/com/holtherndon/bazelviz/format/portable",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/catalog",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/export",
@@ -23,6 +24,13 @@ java_library(
 )
 
 java_junit5_test(
+    name = "ExportControllerTest",
+    test_class = "com.holtherndon.bazelviz.ui.export.ExportControllerTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
     name = "Phase9ExitCriteriaTest",
     data = ["//app:src/main/packaging/bviz.properties"],
     test_class = "com.holtherndon.bazelviz.ui.export.Phase9ExitCriteriaTest",
@@ -32,5 +40,8 @@ java_junit5_test(
 
 test_suite(
     name = "tests",
-    tests = [":Phase9ExitCriteriaTest"],
+    tests = [
+        ":ExportControllerTest",
+        ":Phase9ExitCriteriaTest",
+    ],
 )

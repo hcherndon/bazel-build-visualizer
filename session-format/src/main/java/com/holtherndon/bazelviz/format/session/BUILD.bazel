@@ -6,6 +6,7 @@ java_library(
     deps = [
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/redact",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
         "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json",

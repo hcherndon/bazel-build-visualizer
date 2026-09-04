@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
@@ -114,13 +115,38 @@ final class BvizArchiveTest {
                     session, archive, BvizWriter.Options.complete("n"), "0.1.0", CREATED))
         .isInstanceOf(IOException.class);
     assertThat(Files.exists(archive.resolveSibling("atomic.bviz.partial"))).isFalse();
+    assertNoWriterScratch();
+  }
+
+  @Test
+  @DisplayName("a failed export preserves an existing archive and legacy scratch-name sentinels")
+  void failedExportPreservesExistingPaths() throws Exception {
+    Path archive = tempDir.resolve("existing.bviz");
+    Path legacyPartial = tempDir.resolve("existing.bviz.partial");
+    Path legacySnapshot = tempDir.resolve(".bviz-manifest-user-data.json");
+    Files.writeString(archive, "existing archive bytes");
+    Files.writeString(legacyPartial, "user partial");
+    Files.writeString(legacySnapshot, "user snapshot");
+    Files.writeString(session.resolve("manifest.json"), "not a manifest");
+
+    assertThatThrownBy(
+            () ->
+                BvizWriter.write(
+                    session, archive, BvizWriter.Options.complete("failure"), "0.1.0", CREATED))
+        .isInstanceOf(BvizFormatException.class);
+
+    assertThat(Files.readString(archive)).isEqualTo("existing archive bytes");
+    assertThat(Files.readString(legacyPartial)).isEqualTo("user partial");
+    assertThat(Files.readString(legacySnapshot)).isEqualTo("user snapshot");
+    assertNoWriterScratch();
   }
 
   @Test
   @DisplayName("the space estimate is an upper bound, not a guess")
   void spaceEstimate() throws Exception {
     BvizWriter.SpaceEstimate estimate =
-        BvizWriter.estimate(session, tempDir.resolve("x.bviz"), BvizWriter.Options.complete("n"));
+        BvizWriter.estimate(
+            session, tempDir.resolve("x.bviz"), BvizWriter.Options.complete("n"), "0.1.0", CREATED);
 
     long sourceBytes =
         Files.size(session.resolve("manifest.json"))
@@ -128,10 +154,71 @@ final class BvizArchiveTest {
             + Files.size(session.resolve("raw/bes-000001.journal"))
             + Files.size(session.resolve("indexes/action-forward.csr"));
     assertThat(estimate.sourceBytes()).isEqualTo(sourceBytes);
-    assertThat(estimate.entryCount()).isEqualTo(4);
-    // Compression can only help, so the source size bounds the archive.
+    assertThat(estimate.entryCount()).isEqualTo(5);
     Path archive = exportComplete();
-    assertThat(Files.size(archive)).isLessThanOrEqualTo(estimate.sourceBytes() + 4096);
+    assertThat(Files.size(archive)).isLessThanOrEqualTo(estimate.archiveBytesUpperBound());
+    assertThat(estimate.requiredBytes())
+        .isEqualTo(estimate.sourceBytes() + estimate.archiveBytesUpperBound());
+  }
+
+  @Test
+  @DisplayName("the generated index consumes one entry at the exact archive cap")
+  void generatedIndexCountsTowardEntryLimit() throws Exception {
+    BvizLimits defaults = BvizLimits.defaults();
+    BvizLimits exact =
+        new BvizLimits(
+            defaults.maxExpandedBytes(),
+            5,
+            defaults.maxEntryBytes(),
+            defaults.maxCompressionRatio());
+    Path exactArchive = tempDir.resolve("exact-cap.bviz");
+
+    BvizWriter.write(
+        session, exactArchive, BvizWriter.Options.complete("exact"), "0.1.0", CREATED, exact);
+    assertThat(exactArchive).exists();
+
+    BvizLimits oneTooFew =
+        new BvizLimits(
+            defaults.maxExpandedBytes(),
+            4,
+            defaults.maxEntryBytes(),
+            defaults.maxCompressionRatio());
+    Path refused = tempDir.resolve("cap-plus-one.bviz");
+    assertThatThrownBy(
+            () ->
+                BvizWriter.write(
+                    session,
+                    refused,
+                    BvizWriter.Options.complete("refused"),
+                    "0.1.0",
+                    CREATED,
+                    oneTooFew))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("entry limit");
+    assertThat(refused).doesNotExist();
+    assertNoWriterScratch();
+  }
+
+  @Test
+  @DisplayName("ZIP admission bounds incompressible content, long names, and arithmetic overflow")
+  void zipEstimateIsConservativeAndSaturating() throws Exception {
+    byte[] incompressible = new byte[256 * 1024];
+    for (int index = 0; index < incompressible.length; index++) {
+      incompressible[index] = (byte) (index * 131 + index / 251);
+    }
+    String longName = "n".repeat(200) + ".journal";
+    Files.write(session.resolve("raw").resolve(longName), incompressible);
+    Path archive = tempDir.resolve("estimate-long.bviz");
+    BvizWriter.SpaceEstimate estimate =
+        BvizWriter.estimate(
+            session, archive, BvizWriter.Options.complete("long"), "0.1.0", CREATED);
+
+    BvizWriter.write(session, archive, BvizWriter.Options.complete("long"), "0.1.0", CREATED);
+
+    assertThat(Files.size(archive)).isLessThanOrEqualTo(estimate.archiveBytesUpperBound());
+    assertThat(BvizWriter.conservativeZipEntryBytes(Long.MAX_VALUE, Integer.MAX_VALUE))
+        .isEqualTo(Long.MAX_VALUE);
+    assertThat(BvizWriter.saturatingAdd(Long.MAX_VALUE - 1, 2)).isEqualTo(Long.MAX_VALUE);
   }
 
   @Test
@@ -154,15 +241,24 @@ final class BvizArchiveTest {
   @Test
   @DisplayName("a replacement manifest determines the identity written to the archive")
   void replacementManifestDeterminesExportIdentity() throws Exception {
-    Path replacement = tempDir.resolve("redacted-manifest.json");
+    Path replacementRoot = tempDir.resolve("replacement-staging");
+    Files.createDirectory(replacementRoot);
+    Path replacement = replacementRoot.resolve("manifest.json");
     Files.writeString(replacement, manifest(OTHER_SESSION_ID));
+    Path replacementDatabase = replacementRoot.resolve("session.sqlite");
+    Files.write(replacementDatabase, new byte[] {'r'});
     Path archive = tempDir.resolve("replacement-manifest.bviz");
 
     BvizWriter.Result result =
         BvizWriter.write(
             session,
             archive,
-            BvizWriter.Options.redacted("shared", Map.of("manifest.json", replacement)),
+            BvizWriter.Options.redacted(
+                "shared",
+                replacementRoot,
+                Map.of(
+                    "manifest.json", replacement,
+                    "session.sqlite", replacementDatabase)),
             "0.1.0",
             CREATED);
 
@@ -199,7 +295,15 @@ final class BvizArchiveTest {
   @Test
   @DisplayName("a redacted archive carries no raw capture, and says so")
   void redactedArchivesDropTheRawCapture() throws Exception {
-    Path redactedDatabase = tempDir.resolve("redacted.sqlite");
+    Files.writeString(session.resolve("instrumentation-plan.json"), "Bearer plan-secret");
+    Files.createDirectories(session.resolve("checkpoints"));
+    Files.writeString(session.resolve("checkpoints/import.ckpt"), "Bearer checkpoint-secret");
+    Files.writeString(session.resolve("indexes/opaque.sidecar"), "Bearer sidecar-secret");
+    Path replacementRoot = tempDir.resolve("redacted-staging");
+    Files.createDirectory(replacementRoot);
+    Path redactedManifest = replacementRoot.resolve("manifest.json");
+    Files.copy(session.resolve("manifest.json"), redactedManifest);
+    Path redactedDatabase = replacementRoot.resolve("session.sqlite");
     Files.write(redactedDatabase, new byte[] {'r', 'e', 'd'});
     Path archive = tempDir.resolve("redacted.bviz");
 
@@ -207,7 +311,12 @@ final class BvizArchiveTest {
         BvizWriter.write(
             session,
             archive,
-            BvizWriter.Options.redacted("shared", Map.of("session.sqlite", redactedDatabase)),
+            BvizWriter.Options.redacted(
+                "shared",
+                replacementRoot,
+                Map.of(
+                    "manifest.json", redactedManifest,
+                    "session.sqlite", redactedDatabase)),
             "0.1.0",
             CREATED);
 
@@ -215,8 +324,7 @@ final class BvizArchiveTest {
     // beside a redacted database would undo the redaction entirely.
     assertThat(result.index().entries())
         .extracting(BvizIndex.Entry::path)
-        .doesNotContain("raw/bes-000001.journal")
-        .contains("session.sqlite");
+        .containsExactlyInAnyOrder("manifest.json", "session.sqlite");
     assertThat(result.index().redacted()).isTrue();
     assertThat(result.index().includesRawSources()).isFalse();
     assertThat(result.describe()).contains("cannot be re-derived");
@@ -225,6 +333,140 @@ final class BvizArchiveTest {
     BvizReader.extract(archive, restored, BvizLimits.defaults());
     assertThat(Files.readAllBytes(restored.resolve("session.sqlite")))
         .isEqualTo(new byte[] {'r', 'e', 'd'});
+    assertThat(restored.resolve("instrumentation-plan.json")).doesNotExist();
+    assertThat(restored.resolve("checkpoints")).doesNotExist();
+    assertThat(restored.resolve("raw")).doesNotExist();
+    assertThat(restored.resolve("indexes")).doesNotExist();
+  }
+
+  @Test
+  @DisplayName("writer discovery rejects source and replacement links before target creation")
+  void writerRejectsLinkedInputs() throws Exception {
+    Path outside = tempDir.resolve("outside.journal");
+    Files.writeString(outside, "outside-secret");
+    Path linked = session.resolve("raw/linked.journal");
+    Files.createSymbolicLink(linked, outside);
+    Path target = tempDir.resolve("linked-source.bviz");
+
+    assertThatThrownBy(
+            () ->
+                BvizWriter.write(
+                    session, target, BvizWriter.Options.complete("linked"), "0.1.0", CREATED))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("symbolic link");
+    assertThat(target).doesNotExist();
+    Files.delete(linked);
+
+    Path staging = tempDir.resolve("linked-staging");
+    Files.createDirectory(staging);
+    Path externalManifest = tempDir.resolve("external-manifest.json");
+    Files.writeString(externalManifest, manifest(SESSION_ID));
+    Files.createSymbolicLink(staging.resolve("manifest.json"), externalManifest);
+    Files.write(staging.resolve("session.sqlite"), new byte[] {'r'});
+    Path replacementTarget = tempDir.resolve("linked-replacement.bviz");
+    assertThatThrownBy(
+            () ->
+                BvizWriter.write(
+                    session,
+                    replacementTarget,
+                    BvizWriter.Options.redacted(
+                        "linked",
+                        staging,
+                        Map.of(
+                            "manifest.json",
+                            staging.resolve("manifest.json"),
+                            "session.sqlite",
+                            staging.resolve("session.sqlite"))),
+                    "0.1.0",
+                    CREATED))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("no-follow");
+    assertThat(replacementTarget).doesNotExist();
+    assertThat(Files.readString(outside)).isEqualTo("outside-secret");
+    assertNoWriterScratch();
+  }
+
+  @Test
+  @DisplayName("the session root itself cannot be a symbolic link")
+  void linkedSessionRootsAreRejected() throws Exception {
+    Path linkedRoot = tempDir.resolve("linked-session-root");
+    Files.createSymbolicLink(linkedRoot, session);
+    Path target = tempDir.resolve("linked-root.bviz");
+
+    assertThatThrownBy(
+            () ->
+                BvizWriter.write(
+                    linkedRoot,
+                    target,
+                    BvizWriter.Options.complete("linked-root"),
+                    "0.1.0",
+                    CREATED))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("no-follow session directory");
+    assertThat(target).doesNotExist();
+  }
+
+  @Test
+  @DisplayName("writer scratch directories are owner-only where POSIX modes exist")
+  void writerScratchIsOwnerOnly() throws Exception {
+    Path scratch = BvizWriter.createOwnerOnlyTempDirectory(tempDir, ".bviz-export-test-");
+    try {
+      if (Files.getFileStore(scratch).supportsFileAttributeView("posix")) {
+        assertThat(Files.getPosixFilePermissions(scratch))
+            .isEqualTo(PosixFilePermissions.fromString("rwx------"));
+      }
+    } finally {
+      BvizWriter.deleteTree(scratch);
+    }
+  }
+
+  @Test
+  @DisplayName("redacted replacements must have exact safe names under one trusted root")
+  void redactedReplacementNamesAndContainmentAreExact() throws Exception {
+    Path staging = tempDir.resolve("exact-staging");
+    Files.createDirectory(staging);
+    Files.writeString(staging.resolve("manifest.json"), manifest(SESSION_ID));
+    Files.write(staging.resolve("session.sqlite"), new byte[] {'r'});
+    Path external = tempDir.resolve("external.sqlite");
+    Files.write(external, new byte[] {'x'});
+
+    assertThatThrownBy(
+            () ->
+                BvizWriter.estimate(
+                    session,
+                    tempDir.resolve("wrong-name.bviz"),
+                    BvizWriter.Options.redacted(
+                        "bad",
+                        staging,
+                        Map.of(
+                            "manifest.json",
+                            staging.resolve("manifest.json"),
+                            "session.sqlite",
+                            external)),
+                    "0.1.0",
+                    CREATED))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("archive name");
+
+    assertThatThrownBy(
+            () ->
+                BvizWriter.estimate(
+                    session,
+                    tempDir.resolve("extra-name.bviz"),
+                    BvizWriter.Options.redacted(
+                        "bad",
+                        staging,
+                        Map.of(
+                            "manifest.json",
+                            staging.resolve("manifest.json"),
+                            "session.sqlite",
+                            staging.resolve("session.sqlite"),
+                            "raw/secret",
+                            external)),
+                    "0.1.0",
+                    CREATED))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("exactly manifest.json and session.sqlite");
   }
 
   @Test
@@ -528,6 +770,13 @@ final class BvizArchiveTest {
     }
     """
         .formatted(sessionId, CREATED);
+  }
+
+  private void assertNoWriterScratch() throws IOException {
+    try (var files = Files.list(tempDir)) {
+      assertThat(files.map(path -> path.getFileName().toString()))
+          .noneMatch(name -> name.startsWith(".bviz-export-"));
+    }
   }
 
   /** An archive whose index is valid and whose entry name is not. */

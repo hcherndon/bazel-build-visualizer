@@ -5,8 +5,11 @@ import com.holtherndon.bazelviz.core.redact.RedactionReport;
 import com.holtherndon.bazelviz.core.redact.Redactor;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -294,24 +297,135 @@ public final class SessionRedaction {
    */
   public static Result copyRedacted(Path source, Path target, RedactionPolicy policy)
       throws IOException, SQLException {
+    Redactor redactor = new Redactor(Objects.requireNonNull(policy, "policy"));
+    return copyRedacted(source, target, ignored -> redactor);
+  }
+
+  /** Copies and redacts with the caller's export-scoped redactor. */
+  public static Result copyRedacted(Path source, Path target, Redactor redactor)
+      throws IOException, SQLException {
+    Objects.requireNonNull(redactor, "redactor");
+    return copyRedacted(source, target, ignored -> redactor);
+  }
+
+  /** Creates an export redactor after the no-follow database snapshot is safely staged. */
+  @FunctionalInterface
+  public interface RedactorFactory {
+    Redactor create(Path copiedDatabase) throws IOException, SQLException;
+  }
+
+  /** Copies safely, then creates one redactor from the stable copied database and applies it. */
+  public static Result copyRedacted(Path source, Path target, RedactorFactory redactorFactory)
+      throws IOException, SQLException {
     Objects.requireNonNull(source, "source");
     Objects.requireNonNull(target, "target");
-    Objects.requireNonNull(policy, "policy");
-    Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
-    Redactor redactor = new Redactor(policy);
-    try (Connection connection =
-        DriverManager.getConnection("jdbc:sqlite:" + target.toAbsolutePath())) {
-      connection.setAutoCommit(false);
-      RedactionReport report = redact(connection, redactor);
-      connection.commit();
-      connection.setAutoCommit(true);
-      try (Statement statement = connection.createStatement()) {
-        // Rewrites the file, so the pages that held the original text
-        // are not left in the free list of a database about to be
-        // mailed to somebody.
-        statement.execute("VACUUM");
+    Objects.requireNonNull(redactorFactory, "redactorFactory");
+    boolean complete = false;
+    Throwable operationFailure = null;
+    try {
+      copyStableNoFollow(source, target);
+      Redactor redactor =
+          Objects.requireNonNull(redactorFactory.create(target), "redactorFactory result");
+      RedactionReport report;
+      try (Connection connection =
+          DriverManager.getConnection("jdbc:sqlite:" + target.toAbsolutePath())) {
+        connection.setAutoCommit(false);
+        report = redact(connection, redactor);
+        connection.commit();
+        connection.setAutoCommit(true);
+        try (Statement statement = connection.createStatement()) {
+          // Rewrites the file, so the pages that held the original text
+          // are not left in the free list of a database about to be
+          // mailed to somebody.
+          statement.execute("VACUUM");
+        }
       }
-      return new Result(target, report, Files.size(target));
+      Result result = new Result(target, report, Files.size(target));
+      complete = true;
+      return result;
+    } catch (IOException | SQLException | RuntimeException failure) {
+      operationFailure = failure;
+      throw failure;
+    } finally {
+      if (!complete) {
+        try {
+          Files.deleteIfExists(target);
+        } catch (IOException | RuntimeException cleanupFailure) {
+          if (operationFailure != null) {
+            operationFailure.addSuppressed(cleanupFailure);
+          } else if (cleanupFailure instanceof IOException io) {
+            throw io;
+          } else {
+            throw cleanupFailure;
+          }
+        }
+      }
+    }
+  }
+
+  private static void copyStableNoFollow(Path source, Path target) throws IOException {
+    Path normalized = source.toAbsolutePath().normalize();
+    BasicFileAttributes before =
+        Files.readAttributes(normalized, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (before.isSymbolicLink() || !before.isRegularFile()) {
+      throw new IOException("redaction source is not a regular no-follow file: " + source);
+    }
+    if (!isDirectRealFile(normalized)) {
+      throw new IOException("redaction source passes through a symbolic link: " + source);
+    }
+    createOwnerOnlyFile(target);
+    byte[] buffer = new byte[64 * 1024];
+    long remaining = before.size();
+    try (var input =
+            Files.newInputStream(normalized, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+        var output = Files.newOutputStream(target, StandardOpenOption.WRITE)) {
+      while (remaining > 0) {
+        int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+        if (read < 0) {
+          throw new IOException("redaction source shrank while it was copied: " + source);
+        }
+        if (read == 0) {
+          continue;
+        }
+        output.write(buffer, 0, read);
+        remaining -= read;
+      }
+      if (input.read() >= 0) {
+        throw new IOException("redaction source grew while it was copied: " + source);
+      }
+    }
+    BasicFileAttributes after =
+        Files.readAttributes(normalized, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (!sameFile(before, after) || !isDirectRealFile(normalized)) {
+      throw new IOException("redaction source changed while it was copied: " + source);
+    }
+  }
+
+  private static boolean isDirectRealFile(Path file) throws IOException {
+    Path parent = file.getParent();
+    Path name = file.getFileName();
+    return parent != null
+        && name != null
+        && file.toRealPath().equals(parent.toRealPath().resolve(name));
+  }
+
+  private static boolean sameFile(BasicFileAttributes left, BasicFileAttributes right) {
+    return !right.isSymbolicLink()
+        && right.isRegularFile()
+        && left.size() == right.size()
+        && left.lastModifiedTime().equals(right.lastModifiedTime())
+        && (left.fileKey() == null
+            || right.fileKey() == null
+            || left.fileKey().equals(right.fileKey()));
+  }
+
+  private static void createOwnerOnlyFile(Path target) throws IOException {
+    try {
+      Files.createFile(
+          target,
+          PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+    } catch (UnsupportedOperationException unsupported) {
+      Files.createFile(target);
     }
   }
 

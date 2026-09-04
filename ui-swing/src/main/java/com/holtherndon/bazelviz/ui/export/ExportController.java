@@ -6,11 +6,24 @@ import com.holtherndon.bazelviz.core.redact.RedactionReport;
 import com.holtherndon.bazelviz.core.redact.Redactor;
 import com.holtherndon.bazelviz.format.portable.BvizWriter;
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
+import com.holtherndon.bazelviz.format.session.SessionManifest;
+import com.holtherndon.bazelviz.format.session.SessionManifestCodec;
+import com.holtherndon.bazelviz.format.session.SessionManifestRedaction;
 import com.holtherndon.bazelviz.storage.export.TableExport;
 import com.holtherndon.bazelviz.storage.redact.SessionRedaction;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -21,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
@@ -37,11 +51,12 @@ import java.util.function.Consumer;
  * session it touched". That requires redaction to run <em>first</em>, into a temporary file, with
  * the archive built only after somebody has read the report and said yes.
  *
- * <h2>The temporary redacted database is the dangerous artifact</h2>
+ * <h2>Redacted staging is isolated and short lived</h2>
  *
- * <p>Between the copy and the redaction it holds the unredacted session, so it is written into the
- * session's own directory — inside the same permissions the session already has — and deleted
- * whether the export succeeds, fails or is declined.
+ * <p>The database copy briefly contains original pages before its rewrite completes. Each export
+ * therefore gets a new owner-only directory outside the source session. Only the redacted manifest
+ * and database survive to confirmation, both are made owner-read-only, and the directory is removed
+ * before either completion callback runs.
  *
  * <h2>Path prefixes come from the session</h2>
  *
@@ -52,12 +67,24 @@ import java.util.function.Consumer;
  */
 public final class ExportController {
 
+  private static final FileAttribute<Set<PosixFilePermission>> OWNER_DIRECTORY =
+      PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"));
+
+  private static final Set<PosixFilePermission> OWNER_READ_ONLY =
+      PosixFilePermissions.fromString("r--------");
+
   private final ExecutorService worker;
   private final Consumer<Runnable> onEventThread;
+  private final Path scratchParent;
 
   public ExportController(ExecutorService worker, Consumer<Runnable> onEventThread) {
+    this(worker, onEventThread, Path.of(System.getProperty("java.io.tmpdir")));
+  }
+
+  ExportController(ExecutorService worker, Consumer<Runnable> onEventThread, Path scratchParent) {
     this.worker = Objects.requireNonNull(worker, "worker");
     this.onEventThread = Objects.requireNonNull(onEventThread, "onEventThread");
+    this.scratchParent = Objects.requireNonNull(scratchParent, "scratchParent");
   }
 
   /**
@@ -110,45 +137,93 @@ public final class ExportController {
       Consumer<Throwable> onError) {
     worker.execute(
         () -> {
-          Path temporary = null;
+          Path scratch = null;
+          BvizWriter.Result completed = null;
+          Throwable failure = null;
+          boolean declined = false;
           try {
+            long createdMicros = nowMicros();
             BvizWriter.Options options;
             if (redacted) {
-              ManagedSessionLayout layout = ManagedSessionLayout.at(sessionRoot);
-              temporary = sessionRoot.resolve("redacted-export.sqlite");
-              SessionRedaction.Result result =
-                  SessionRedaction.copyRedacted(
-                      layout.databaseFile(),
-                      temporary,
-                      redactionOptions.applyTo(policyFor(layout.databaseFile())));
-              Path pending = temporary;
-              if (!confirmOnEventThread(confirmer, result.report())) {
-                Files.deleteIfExists(pending);
-                return;
+              Path trustedRoot = requireNoFollowDirectory(sessionRoot, "session");
+              ManagedSessionLayout layout = ManagedSessionLayout.at(trustedRoot);
+              Path sourceManifest =
+                  requireContainedRegularFile(
+                      trustedRoot, layout.manifestFile(), "session manifest");
+              Path sourceDatabase =
+                  requireContainedRegularFile(
+                      trustedRoot, layout.databaseFile(), "session database");
+              scratch = createOwnerOnlyTempDirectory(scratchParent, ".bbv-redacted-export-");
+              Path stagedDatabase = scratch.resolve(ManagedSessionLayout.DATABASE_FILE_NAME);
+              Redactor[] exportRedactor = new Redactor[1];
+              SessionRedaction.copyRedacted(
+                  sourceDatabase,
+                  stagedDatabase,
+                  copiedDatabase -> {
+                    Redactor value =
+                        new Redactor(redactionOptions.applyTo(policyFor(copiedDatabase)));
+                    exportRedactor[0] = value;
+                    return value;
+                  });
+              Redactor shared = Objects.requireNonNull(exportRedactor[0], "export redactor");
+              SessionManifest source = readManifestNoFollow(sourceManifest);
+              Path stagedManifest = scratch.resolve(ManagedSessionLayout.MANIFEST_FILE_NAME);
+              SessionManifestCodec.standard()
+                  .write(stagedManifest, SessionManifestRedaction.redact(source, shared));
+              makeOwnerReadOnly(stagedManifest);
+              makeOwnerReadOnly(stagedDatabase);
+              if (!confirmOnEventThread(confirmer, shared.report())) {
+                declined = true;
+              } else {
+                options =
+                    BvizWriter.Options.redacted(
+                        "redacted export",
+                        scratch,
+                        Map.of(
+                            ManagedSessionLayout.MANIFEST_FILE_NAME,
+                            stagedManifest,
+                            ManagedSessionLayout.DATABASE_FILE_NAME,
+                            stagedDatabase));
+                BvizWriter.SpaceEstimate estimate =
+                    BvizWriter.estimate(trustedRoot, target, options, appVersion, createdMicros);
+                if (!estimate.fits()) {
+                  throw new IOException(
+                      "not enough room at " + target.getParent() + ": " + estimate.describe());
+                }
+                completed =
+                    BvizWriter.write(trustedRoot, target, options, appVersion, createdMicros);
               }
-              options =
-                  BvizWriter.Options.redacted(
-                      "redacted export", Map.of("session.sqlite", temporary));
             } else {
               options = BvizWriter.Options.complete("complete export");
+              BvizWriter.SpaceEstimate estimate =
+                  BvizWriter.estimate(sessionRoot, target, options, appVersion, createdMicros);
+              if (!estimate.fits()) {
+                throw new IOException(
+                    "not enough room at " + target.getParent() + ": " + estimate.describe());
+              }
+              completed = BvizWriter.write(sessionRoot, target, options, appVersion, createdMicros);
             }
-            // Plan 10.4: estimate the space before exporting. The source
-            // size is an exact upper bound on the archive, so a target
-            // filesystem that cannot hold it certainly cannot hold the
-            // export -- and finding that out after twenty minutes of
-            // writing is the failure this avoids.
-            BvizWriter.SpaceEstimate estimate = BvizWriter.estimate(sessionRoot, target, options);
-            if (!estimate.fits()) {
-              throw new IOException(
-                  "not enough room at " + target.getParent() + ": " + estimate.describe());
+          } catch (Exception caught) {
+            if (caught instanceof InterruptedException) {
+              Thread.currentThread().interrupt();
             }
-            BvizWriter.Result result =
-                BvizWriter.write(sessionRoot, target, options, appVersion, nowMicros());
+            failure = caught;
+          }
+          try {
+            deleteTree(scratch);
+          } catch (IOException | RuntimeException cleanupFailure) {
+            if (failure != null) {
+              failure.addSuppressed(cleanupFailure);
+            } else {
+              failure = cleanupFailure;
+            }
+          }
+          if (failure != null) {
+            Throwable reported = failure;
+            onEventThread.accept(() -> onError.accept(reported));
+          } else if (!declined) {
+            BvizWriter.Result result = Objects.requireNonNull(completed, "completed export");
             onEventThread.accept(() -> onDone.accept(result));
-          } catch (Exception failure) {
-            onEventThread.accept(() -> onError.accept(failure));
-          } finally {
-            deleteQuietly(temporary);
           }
         });
   }
@@ -257,37 +332,125 @@ public final class ExportController {
     return List.of();
   }
 
-  private boolean confirmOnEventThread(Confirmer confirmer, RedactionReport report) {
+  private boolean confirmOnEventThread(Confirmer confirmer, RedactionReport report)
+      throws InterruptedException {
     boolean[] answer = {false};
+    RuntimeException[] failure = {null};
     CountDownLatch decided = new CountDownLatch(1);
     onEventThread.accept(
         () -> {
           try {
             answer[0] = confirmer.confirm(report);
+          } catch (RuntimeException callbackFailure) {
+            failure[0] = callbackFailure;
           } finally {
             decided.countDown();
           }
         });
-    try {
-      decided.await();
-    } catch (InterruptedException interrupted) {
-      Thread.currentThread().interrupt();
-      return false;
+    decided.await();
+    if (failure[0] != null) {
+      throw failure[0];
     }
     return answer[0];
   }
 
-  private static void deleteQuietly(Path path) {
-    if (path == null) {
-      return;
+  private static Path requireNoFollowDirectory(Path directory, String description)
+      throws IOException {
+    BasicFileAttributes attributes =
+        Files.readAttributes(directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (attributes.isSymbolicLink() || !attributes.isDirectory()) {
+      throw new IOException(description + " is not a no-follow directory: " + directory);
+    }
+    return directory.toRealPath();
+  }
+
+  private static Path requireContainedRegularFile(Path root, Path file, String description)
+      throws IOException {
+    Path normalized = file.toAbsolutePath().normalize();
+    BasicFileAttributes attributes =
+        Files.readAttributes(normalized, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (attributes.isSymbolicLink() || !attributes.isRegularFile()) {
+      throw new IOException(description + " is not a regular no-follow file: " + file);
+    }
+    Path real = normalized.toRealPath();
+    if (!real.startsWith(root) || !real.equals(normalized)) {
+      throw new IOException(description + " escapes or links outside the session: " + file);
+    }
+    return normalized;
+  }
+
+  private static SessionManifest readManifestNoFollow(Path manifest) throws IOException {
+    BasicFileAttributes before =
+        Files.readAttributes(manifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    SessionManifest value;
+    try (var input =
+            Files.newInputStream(manifest, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+        var reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+      value = SessionManifestCodec.standard().readForPortableArchive(reader, manifest.toString());
+    }
+    BasicFileAttributes after =
+        Files.readAttributes(manifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (!sameFile(before, after) || !manifest.equals(manifest.toRealPath())) {
+      throw new IOException("session manifest changed while it was read: " + manifest);
+    }
+    return value;
+  }
+
+  private static boolean sameFile(BasicFileAttributes left, BasicFileAttributes right) {
+    return !right.isSymbolicLink()
+        && right.isRegularFile()
+        && left.size() == right.size()
+        && left.lastModifiedTime().equals(right.lastModifiedTime())
+        && (left.fileKey() == null
+            || right.fileKey() == null
+            || left.fileKey().equals(right.fileKey()));
+  }
+
+  private static Path createOwnerOnlyTempDirectory(Path parent, String prefix) throws IOException {
+    BasicFileAttributes attributes =
+        Files.readAttributes(parent, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (attributes.isSymbolicLink() || !attributes.isDirectory()) {
+      throw new IOException("export scratch parent is not a no-follow directory: " + parent);
     }
     try {
-      Files.deleteIfExists(path);
-    } catch (IOException ignored) {
-      // A temporary file that will not delete is not a reason to fail an
-      // export that has already succeeded; it is inside the session
-      // directory, which the user owns.
+      return Files.createTempDirectory(parent, prefix, OWNER_DIRECTORY);
+    } catch (UnsupportedOperationException unsupported) {
+      return Files.createTempDirectory(parent, prefix);
     }
+  }
+
+  private static void makeOwnerReadOnly(Path file) throws IOException {
+    try {
+      Files.setPosixFilePermissions(file, OWNER_READ_ONLY);
+    } catch (UnsupportedOperationException unsupported) {
+      // The owner-only directory remains the access boundary on non-POSIX filesystems.
+    }
+  }
+
+  private static void deleteTree(Path path) throws IOException {
+    if (path == null || !Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+      return;
+    }
+    Files.walkFileTree(
+        path,
+        new SimpleFileVisitor<>() {
+          @Override
+          public FileVisitResult visitFile(Path file, BasicFileAttributes attributes)
+              throws IOException {
+            Files.delete(file);
+            return FileVisitResult.CONTINUE;
+          }
+
+          @Override
+          public FileVisitResult postVisitDirectory(Path directory, IOException failure)
+              throws IOException {
+            if (failure != null) {
+              throw failure;
+            }
+            Files.delete(directory);
+            return FileVisitResult.CONTINUE;
+          }
+        });
   }
 
   private static long nowMicros() {

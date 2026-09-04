@@ -182,6 +182,19 @@ final class RedactorTest {
     assertThat(one).isNotEqualTo(two);
   }
 
+  @Test
+  @DisplayName("forced pseudonyms stay stable within one export without relying on token shape")
+  void forcedPseudonymsAreExportScoped() {
+    Redactor redactor = exporting();
+
+    String first = redactor.pseudonymize("builder@internal", "ssh.display", "an SSH identity");
+    String again =
+        redactor.pseudonymize("builder@internal", "ssh.destination", "an SSH destination");
+
+    assertThat(first).startsWith("[redacted:").isEqualTo(again);
+    assertThat(redactor.report().byField()).containsKeys("ssh.display", "ssh.destination");
+  }
+
   // --- paths -------------------------------------------------------------
 
   @Test
@@ -233,6 +246,18 @@ final class RedactorTest {
   void relativePathsSurvive() {
     assertThat(exporting().path("bazel-out/darwin-fastbuild/bin/a.o", "path"))
         .isEqualTo("bazel-out/darwin-fastbuild/bin/a.o");
+  }
+
+  @Test
+  @DisplayName("credentials embedded in a path-like URL are removed before path mapping")
+  void pathUrlsLoseCredentials() {
+    String redacted =
+        exporting().path("https://ci-user:verysecretpassword@cache.example/build", "source.path");
+
+    assertThat(redacted)
+        .contains("ci-user")
+        .contains("cache.example")
+        .doesNotContain("verysecretpassword");
   }
 
   @Test
