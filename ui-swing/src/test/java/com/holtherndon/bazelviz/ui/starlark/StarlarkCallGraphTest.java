@@ -4,7 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
+import java.awt.AWTKeyStroke;
 import java.awt.GraphicsEnvironment;
+import java.awt.KeyboardFocusManager;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
@@ -17,6 +21,9 @@ import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import javax.swing.Action;
+import javax.swing.JComponent;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -244,6 +251,45 @@ final class StarlarkCallGraphTest {
   }
 
   @Test
+  void keyboardNavigationSelectsFunctionsAndOpensTheirSource() throws Exception {
+    StarlarkProfileReader.DirectedCallGraph graph =
+        graph(List.of(node(1, "caller"), node(2, "callee")), List.of(edge(1, 2)));
+    AtomicReference<StarlarkProfileReader.SourceLocation> opened = new AtomicReference<>();
+
+    SwingUtilities.invokeAndWait(
+        () -> {
+          StarlarkCallGraph canvas = new StarlarkCallGraph();
+          canvas.setSize(900, 600);
+          canvas.onOpenSource(opened::set);
+          canvas.setLayoutModel(StarlarkCallGraphLayout.layout(graph));
+
+          assertThat(canvas.isFocusable()).isTrue();
+          assertThat(canvas.getBorder()).isNotNull();
+          assertThat(canvas.getFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS))
+              .contains(AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_TAB, 0));
+          assertThat(canvas.getAccessibleContext().getAccessibleName())
+              .isEqualTo("Starlark directed call graph");
+          assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+              .contains("Showing 2 functions")
+              .contains("arrow keys")
+              .contains("O to open source");
+
+          long first = canvas.layoutForTest().nodes().getFirst().node().functionId();
+          long second = canvas.layoutForTest().nodes().get(1).node().functionId();
+          invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+          assertThat(canvas.selectedFunctionIdForTest()).isEqualTo(first);
+          invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+          assertThat(canvas.selectedFunctionIdForTest()).isEqualTo(second);
+          invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_O, 0));
+          assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+              .contains(canvas.layoutForTest().nodes().get(1).node().function());
+        });
+
+    assertThat(opened.get()).isNotNull();
+    assertThat(opened.get().path()).endsWith(".bzl");
+  }
+
+  @Test
   void rejectsAnArrowWhoseEndpointIsOutsideTheVisibleProjection() {
     assertThatThrownBy(
             () ->
@@ -286,5 +332,14 @@ final class StarlarkCallGraphTest {
   private static StarlarkProfileReader.DirectedCallEdge edge(long caller, long callee) {
     return new StarlarkProfileReader.DirectedCallEdge(
         caller, callee, OptionalLong.of(1_000), OptionalLong.of(1));
+  }
+
+  private static void invokeKey(JComponent component, KeyStroke stroke) {
+    Object key = component.getInputMap(JComponent.WHEN_FOCUSED).get(stroke);
+    assertThat(key).as("action bound to %s", stroke).isNotNull();
+    Action action = component.getActionMap().get(key);
+    assertThat(action).as("action installed for %s", stroke).isNotNull();
+    action.actionPerformed(
+        new ActionEvent(component, ActionEvent.ACTION_PERFORMED, String.valueOf(key)));
   }
 }

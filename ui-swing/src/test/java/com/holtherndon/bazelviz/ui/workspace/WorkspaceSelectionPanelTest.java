@@ -11,11 +11,16 @@ import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.SwingUtilities;
+import javax.swing.plaf.basic.BasicHTML;
 import org.junit.jupiter.api.Test;
 
 final class WorkspaceSelectionPanelTest {
+
+  private static final String HOSTILE =
+      "<html><img src=\"http://example.invalid/workspace.png\">Repository";
 
   @Test
   void recentListIsSortedAndOpeningIsAlwaysAnExplicitAction() throws Exception {
@@ -52,6 +57,24 @@ final class WorkspaceSelectionPanelTest {
     SwingUtilities.invokeAndWait(panel.openForTest()::doClick);
     assertThat(opened).hasValue(recent);
     assertThat(calls).hasValue(1);
+  }
+
+  @Test
+  void workspaceRowsRenderRepositoryTextLiterally() throws Exception {
+    WorkspaceSelectionPanel panel = panel();
+    WorkspaceProfile workspace =
+        WorkspaceProfile.local("id", HOSTILE, "/repo", "bazel", OptionalLong.empty());
+    SwingUtilities.invokeAndWait(() -> panel.setWorkspaces(List.of(workspace)));
+
+    Component row =
+        panel
+            .workspaceListForTest()
+            .getCellRenderer()
+            .getListCellRendererComponent(panel.workspaceListForTest(), workspace, 0, false, false);
+    JComponent rendered = (JComponent) row;
+    BasicHTML.updateRenderer(rendered, ((JLabel) rendered).getText());
+    assertThat(rendered.getClientProperty(BasicHTML.propertyKey)).isNull();
+    assertThat(((JLabel) rendered).getText()).startsWith(HOSTILE);
   }
 
   @Test

@@ -18,6 +18,13 @@ java_library(
 )
 
 java_junit5_test(
+    name = "CanvasAccessibilityTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.CanvasAccessibilityTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
     name = "EmptyStatePanelTest",
     test_class = "com.holtherndon.bazelviz.ui.theme.EmptyStatePanelTest",
     jvm_flags = HEADLESS_TEST_JVM_FLAGS,
@@ -69,6 +76,7 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":CanvasAccessibilityTest",
         ":EmptyStatePanelTest",
         ":PlainTextTest",
         ":ResponsiveGridLayoutTest",

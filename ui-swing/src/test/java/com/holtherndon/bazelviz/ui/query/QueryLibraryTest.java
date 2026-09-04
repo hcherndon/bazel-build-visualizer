@@ -3,13 +3,20 @@ package com.holtherndon.bazelviz.ui.query;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.awt.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.stream.IntStream;
+import javax.swing.JComponent;
+import javax.swing.JList;
+import javax.swing.ListCellRenderer;
+import javax.swing.SwingUtilities;
+import javax.swing.plaf.basic.BasicHTML;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -17,11 +24,15 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * The saved-query store as files a person can edit.
  *
- * <p>No Swing and no database: this is a directory of {@code .sql} files with a JSON index, and the
- * property that matters is that a human with a text editor and this class always agree about what
- * is saved.
+ * <p>The storage checks need no database: this is a directory of {@code .sql} files with a JSON
+ * index, and the property that matters is that a human with a text editor and this class always
+ * agree about what is saved. The final focused Swing check protects those saved names at the point
+ * where the library panel renders them.
  */
 final class QueryLibraryTest {
+
+  private static final String HOSTILE =
+      "<html><img src=\"http://example.invalid/query.png\">saved query";
 
   @TempDir Path temporary;
 
@@ -168,5 +179,30 @@ final class QueryLibraryTest {
             IntStream.range(0, saveCount)
                 .mapToObj(index -> "query-" + index)
                 .toArray(String[]::new));
+  }
+
+  @Test
+  @DisplayName("saved query and view names are rendered as literal text")
+  void savedNamesDoNotEnableSwingHtml() throws Exception {
+    SwingUtilities.invokeAndWait(
+        () -> {
+          QueryLibraryPanel panel = new QueryLibraryPanel(null);
+          panel.showQueries(List.of(new QueryLibrary.SavedQuery(HOSTILE, "SELECT 1")));
+          panel.showViews(List.of(new QueryLibrary.SavedView(HOSTILE, "SELECT 1")));
+
+          assertLiteralRow(panel.queryListForTest());
+          assertLiteralRow(panel.viewListForTest());
+        });
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static void assertLiteralRow(JList<String> list) {
+    Object value = list.getModel().getElementAt(0);
+    ListCellRenderer renderer = list.getCellRenderer();
+    Component row = renderer.getListCellRendererComponent(list, value, 0, false, false);
+    assertThat(row).isInstanceOf(JComponent.class);
+    JComponent rendered = (JComponent) row;
+    BasicHTML.updateRenderer(rendered, HOSTILE);
+    assertThat(rendered.getClientProperty(BasicHTML.propertyKey)).isNull();
   }
 }

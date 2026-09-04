@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.starlark;
 
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
+import com.holtherndon.bazelviz.ui.theme.CanvasAccessibility;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -13,6 +14,7 @@ import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.Shape;
 import java.awt.event.HierarchyEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Rectangle2D;
@@ -34,6 +36,7 @@ import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 import javax.swing.JToolTip;
 import javax.swing.JViewport;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.event.ChangeListener;
@@ -67,10 +70,16 @@ public final class StarlarkFlameGraph extends JComponent {
   private long hoveredNodeId = -1;
   private JViewport hoverViewport;
 
+  private static final String KEYBOARD_HELP =
+      "Use the arrow keys to move between visible call contexts, Enter to focus, "
+          + "O to open source, and Escape to clear the selection.";
+
   public StarlarkFlameGraph() {
     setOpaque(true);
     setLayout(null);
-    getAccessibleContext().setAccessibleName("Starlark CPU flame graph");
+    CanvasAccessibility.configure(
+        this, "Starlark CPU flame graph", "No call contexts are shown. " + KEYBOARD_HELP);
+    installKeyboardActions();
     PlainText.disableHtml(hoverToolTip);
     hoverToolTip.setComponent(this);
     hoverToolTip.setVisible(false);
@@ -79,6 +88,7 @@ public final class StarlarkFlameGraph extends JComponent {
         new MouseAdapter() {
           @Override
           public void mousePressed(MouseEvent event) {
+            requestFocusInWindow();
             hideHoverToolTip();
             handlePopup(event);
           }
@@ -97,6 +107,7 @@ public final class StarlarkFlameGraph extends JComponent {
                 .ifPresent(
                     node -> {
                       selected = node;
+                      updateAccessibleDescription();
                       repaint();
                       if (event.getClickCount() == 2) {
                         focusListener.accept(node.id());
@@ -156,6 +167,7 @@ public final class StarlarkFlameGraph extends JComponent {
     hoveredNodeId = -1;
     hideHoverToolTip();
     updatePreferredHeight();
+    updateAccessibleDescription();
     revalidate();
     repaint();
   }
@@ -275,6 +287,7 @@ public final class StarlarkFlameGraph extends JComponent {
       return;
     }
     selected = hit.orElseThrow();
+    updateAccessibleDescription();
     repaint();
     JPopupMenu menu = new JPopupMenu();
     JMenuItem focus = new JMenuItem("Focus call context");
@@ -285,6 +298,105 @@ public final class StarlarkFlameGraph extends JComponent {
     source.addActionListener(ignored -> selected.source().ifPresent(sourceListener));
     menu.add(source);
     menu.show(this, event.getX(), event.getY());
+  }
+
+  private void installKeyboardActions() {
+    CanvasAccessibility.bind(
+        this,
+        "starlark-flame-previous",
+        KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0),
+        () -> moveKeyboardSelection(-1));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-flame-previous-up",
+        KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0),
+        () -> moveKeyboardSelection(-1));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-flame-next",
+        KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0),
+        () -> moveKeyboardSelection(1));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-flame-next-down",
+        KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0),
+        () -> moveKeyboardSelection(1));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-flame-focus",
+        KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0),
+        this::focusKeyboardSelection);
+    CanvasAccessibility.bind(
+        this,
+        "starlark-flame-open-source",
+        KeyStroke.getKeyStroke(KeyEvent.VK_O, 0),
+        this::openKeyboardSelection);
+    CanvasAccessibility.bind(
+        this,
+        "starlark-flame-clear",
+        KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+        this::clearKeyboardSelection);
+  }
+
+  private void moveKeyboardSelection(int delta) {
+    List<NodeCell> visible = layout(Math.max(1, getWidth())).nodes();
+    if (visible.isEmpty()) {
+      return;
+    }
+    int current = -1;
+    if (selected != null) {
+      for (int index = 0; index < visible.size(); index++) {
+        if (visible.get(index).node().id() == selected.id()) {
+          current = index;
+          break;
+        }
+      }
+    }
+    if (current < 0 && delta < 0) {
+      current = 0;
+    }
+    NodeCell next = visible.get(Math.floorMod(current + delta, visible.size()));
+    selected = next.node();
+    scrollRectToVisible(next.bounds().getBounds());
+    updateAccessibleDescription();
+    repaint();
+  }
+
+  private void focusKeyboardSelection() {
+    if (selected != null) {
+      focusListener.accept(selected.id());
+    }
+  }
+
+  private void openKeyboardSelection() {
+    if (selected != null) {
+      selected.source().ifPresent(sourceListener);
+    }
+  }
+
+  private void clearKeyboardSelection() {
+    if (selected != null) {
+      selected = null;
+      updateAccessibleDescription();
+      repaint();
+    }
+  }
+
+  private void updateAccessibleDescription() {
+    String state;
+    if (slice.nodes().isEmpty()) {
+      state = "No call contexts are shown. ";
+    } else if (selected != null) {
+      state =
+          "Showing "
+              + slice.nodes().size()
+              + " call contexts. Selected "
+              + selected.function()
+              + ". ";
+    } else {
+      state = "Showing " + slice.nodes().size() + " call contexts; none is selected. ";
+    }
+    CanvasAccessibility.describe(this, state + KEYBOARD_HELP);
   }
 
   @Override
@@ -649,6 +761,10 @@ public final class StarlarkFlameGraph extends JComponent {
 
   long hoveredNodeIdForTest() {
     return hoveredNodeId;
+  }
+
+  long selectedNodeIdForTest() {
+    return selected == null ? -1 : selected.id();
   }
 
   private String loadedNotice() {

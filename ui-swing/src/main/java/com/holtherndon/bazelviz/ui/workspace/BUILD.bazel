@@ -10,6 +10,7 @@ java_library(
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/ssh",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
         "@maven//:org_slf4j_slf4j_api",
     ],
 )

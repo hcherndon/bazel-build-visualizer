@@ -12,6 +12,7 @@ import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
+import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
@@ -41,7 +42,6 @@ import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTable;
 import javax.swing.ListSelectionModel;
-import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.event.TableModelEvent;
 import javax.swing.table.DefaultTableModel;
@@ -114,7 +114,7 @@ public final class EventsView extends JPanel {
 
   private final CardLayout cards = new CardLayout();
   private final JPanel deck = new JPanel(cards);
-  private final JLabel emptyLabel = new JLabel(" ", SwingConstants.CENTER);
+  private final EmptyStatePanel emptyState = new EmptyStatePanel(" ");
   private final ImportProgressPanel progressPanel = new ImportProgressPanel();
   private final EventInspectorPanel inspector = new EventInspectorPanel();
   private final JTable table = new JTable();
@@ -193,15 +193,10 @@ public final class EventsView extends JPanel {
     super(new BorderLayout());
     this.liveRefreshIntervalMicros = liveRefreshIntervalMicros;
 
-    JPanel empty = new JPanel(new BorderLayout());
-    emptyLabel.setEnabled(false);
-    empty.add(emptyLabel, BorderLayout.CENTER);
-
     // The event table shows identifiers and display strings taken from the
     // stream, so it is exposed exactly as the Phase 3 tables are.
     PlainText.install(table);
     PlainText.disableHtml(statusLabel);
-    PlainText.disableHtml(emptyLabel);
     table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
     table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
     table.setFillsViewportHeight(true);
@@ -259,7 +254,7 @@ public final class EventsView extends JPanel {
     session.add(status, BorderLayout.NORTH);
     session.add(split, BorderLayout.CENTER);
 
-    deck.add(empty, CARD_EMPTY);
+    deck.add(emptyState, CARD_EMPTY);
     deck.add(progressPanel, CARD_IMPORT);
     deck.add(session, CARD_SESSION);
     add(deck, BorderLayout.CENTER);
@@ -329,7 +324,7 @@ public final class EventsView extends JPanel {
 
   /** Shows an explanatory message in place of any session. */
   public void showEmpty(String message) {
-    emptyLabel.setText(Objects.requireNonNull(message, "message"));
+    emptyState.setText(Objects.requireNonNull(message, "message"));
     cards.show(deck, CARD_EMPTY);
   }
 

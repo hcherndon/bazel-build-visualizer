@@ -53,6 +53,8 @@ public final class QueryLibraryPanel extends JPanel {
     this.host = host;
 
     PlainText.disableHtml(notice);
+    PlainText.install(queryList);
+    PlainText.install(viewList);
     queryList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
     viewList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
     queryList.addMouseListener(
@@ -253,6 +255,11 @@ public final class QueryLibraryPanel extends JPanel {
     return names;
   }
 
+  /** Visible for testing: the list renderer used for saved query names. */
+  JList<String> queryListForTest() {
+    return queryList;
+  }
+
   /** Visible for testing: the listed view names. */
   public List<String> viewNamesForTest() {
     List<String> names = new ArrayList<>();
@@ -260,6 +267,11 @@ public final class QueryLibraryPanel extends JPanel {
       names.add(viewNames.get(i));
     }
     return names;
+  }
+
+  /** Visible for testing: the list renderer used for saved view names. */
+  JList<String> viewListForTest() {
+    return viewList;
   }
 
   /** Visible for testing: the notice line. */

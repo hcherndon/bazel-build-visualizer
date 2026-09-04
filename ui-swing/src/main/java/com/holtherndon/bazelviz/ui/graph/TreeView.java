@@ -8,6 +8,7 @@ import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
+import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Component;
@@ -39,6 +40,7 @@ import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
+import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.JTree;
 import javax.swing.SwingConstants;
@@ -90,14 +92,14 @@ public final class TreeView extends JPanel {
   static final long PATH_BUDGET = 200_000;
 
   private final JComboBox<GraphQueries.GraphSource> sourceChoice = new JComboBox<>();
-  private final JLabel sourceDetail = new JLabel(" ");
-  private final JLabel warning = new JLabel(" ");
+  private final JTextArea sourceDetail = WrappingLabel.create(" ");
+  private final JTextArea warning = WrappingLabel.create(" ");
   private final JTextField search = new JTextField(24);
   private final JTree dependencies = new JTree(new DefaultMutableTreeNode("Dependencies"));
   private final JTree dependents = new JTree(new DefaultMutableTreeNode("Reverse dependencies"));
   private final JTextField pathFrom = new JTextField(18);
   private final JTextField pathTo = new JTextField(18);
-  private final JLabel pathResult = new JLabel(" ");
+  private final JTextArea pathResult = WrappingLabel.create(" ");
   private final JLabel empty =
       new JLabel("No dependency graph has been imported.", SwingConstants.CENTER);
 
@@ -136,23 +138,27 @@ public final class TreeView extends JPanel {
     super(new BorderLayout());
     PlainText.install(dependencies);
     PlainText.install(dependents);
-    PlainText.disableHtml(sourceDetail);
-    PlainText.disableHtml(warning);
-    PlainText.disableHtml(pathResult);
     PlainText.disableHtml(empty);
     empty.setEnabled(false);
 
     warning.setFont(warning.getFont().deriveFont(Font.BOLD));
+    sourceDetail.getAccessibleContext().setAccessibleName("Graph source details");
+    warning.getAccessibleContext().setAccessibleName("Graph source warning");
+    pathResult.getAccessibleContext().setAccessibleName("Path result");
     sourceChoice.setRenderer(new SourceRenderer());
     sourceChoice.addActionListener(event -> sourceChanged());
 
     JPanel top = new JPanel();
     top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
     top.setBorder(BorderFactory.createEmptyBorder(8, 8, 4, 8));
-    top.add(row(new JLabel("Graph:"), sourceChoice));
+    top.add(row(labelFor("Graph", sourceChoice, "tree.graphLabel"), sourceChoice));
     top.add(sourceDetail);
     top.add(warning);
-    top.add(row(new JLabel("Find:"), search, button("Show", this::showSearched)));
+    top.add(
+        row(
+            labelFor("Find", search, "tree.findLabel"),
+            search,
+            button("Show", this::showSearched)));
 
     JScrollPane forward = new JScrollPane(dependencies);
     forward.setBorder(BorderFactory.createTitledBorder("Depends on"));
@@ -166,9 +172,9 @@ public final class TreeView extends JPanel {
     pathPanel.setBorder(pathBorder);
     pathPanel.add(
         row(
-            new JLabel("From:"),
+            labelFor("From", pathFrom, "tree.pathFromLabel"),
             pathFrom,
-            new JLabel("To:"),
+            labelFor("To", pathTo, "tree.pathToLabel"),
             pathTo,
             button("Find path", this::findPath)));
     pathPanel.add(pathResult);
@@ -693,6 +699,14 @@ public final class TreeView extends JPanel {
     return button;
   }
 
+  private static JLabel labelFor(String text, JComponent target, String name) {
+    JLabel label = PlainText.disableHtml(new JLabel(text + ":"));
+    label.setLabelFor(target);
+    label.setName(name);
+    target.getAccessibleContext().setAccessibleName(text);
+    return label;
+  }
+
   /** Renders a source with its trust state, never as a bare enum name. */
   private static final class SourceRenderer extends DefaultListCellRenderer {
 
@@ -733,11 +747,11 @@ public final class TreeView extends JPanel {
     return dependents;
   }
 
-  JLabel warningLabel() {
+  JTextArea warningLabel() {
     return warning;
   }
 
-  JLabel detailLabel() {
+  JTextArea detailLabel() {
     return sourceDetail;
   }
 

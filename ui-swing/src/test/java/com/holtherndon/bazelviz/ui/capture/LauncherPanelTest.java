@@ -30,10 +30,14 @@ import javax.swing.SwingUtilities;
 import javax.swing.ToolTipManager;
 import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
+import javax.swing.plaf.basic.BasicHTML;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 class LauncherPanelTest {
+
+  private static final String HOSTILE_COMMAND =
+      "<html><img src=\"http://example.invalid/command.png\">test //pkg:all";
 
   @Test
   void compactFormHasExplicitLabelsAndLeftAlignedInlineLaunchOptions() throws Exception {
@@ -391,6 +395,28 @@ class LauncherPanelTest {
                 .getListCellRendererComponent(commands, fullCommand, 0, false, false);
     assertThat(rendered.getText()).endsWith("…").isNotEqualTo(fullCommand);
     assertThat(rendered.getToolTipText()).contains(fullCommand);
+  }
+
+  @Test
+  void recentCommandsRenderAsLiteralText() throws Exception {
+    LauncherPanel panel = panel();
+    JList<String> commands = panel.recentCommandsListForTest();
+    AtomicReference<JLabel> held = new AtomicReference<>();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          commands.setFixedCellWidth(1_000);
+          held.set(
+              (JLabel)
+                  commands
+                      .getCellRenderer()
+                      .getListCellRendererComponent(commands, HOSTILE_COMMAND, 0, false, false));
+        });
+    JLabel rendered = held.get();
+
+    assertThat(rendered.getText()).isEqualTo(HOSTILE_COMMAND);
+    assertThat(rendered.getClientProperty(BasicHTML.propertyKey)).isNull();
+    assertThat(rendered.getToolTipText()).isEqualTo(" " + HOSTILE_COMMAND);
+    assertThat(BasicHTML.isHTMLString(rendered.getToolTipText())).isFalse();
   }
 
   @Test

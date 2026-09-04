@@ -8,9 +8,14 @@ import com.holtherndon.bazelviz.storage.entities.ActionRow.Execution;
 import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
+import java.awt.AWTKeyStroke;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.GraphicsEnvironment;
+import java.awt.KeyboardFocusManager;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
+import java.awt.geom.Rectangle2D;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -18,11 +23,17 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import javax.swing.Action;
 import javax.swing.JButton;
+import javax.swing.JComponent;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 import javax.swing.JSplitPane;
+import javax.swing.JTextArea;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
+import javax.swing.text.BadLocationException;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -58,6 +69,10 @@ final class TimelineInspectorTest {
   }
 
   private static TimelineModel aModel() {
+    return aModel(TimelineModel.LiveBand.EMPTY);
+  }
+
+  private static TimelineModel aModel(TimelineModel.LiveBand liveBand) {
     TimelineLodIndex index =
         TimelineLodIndex.build(
             new SpanSource() {
@@ -80,7 +95,8 @@ final class TimelineInspectorTest {
         Map.of(),
         0,
         0,
-        0);
+        0,
+        liveBand);
   }
 
   /** The buttons a user could actually press, invisible ones excluded. */
@@ -103,6 +119,47 @@ final class TimelineInspectorTest {
       found.add((JMenuItem) menu.getComponent(i));
     }
     return found;
+  }
+
+  private static void invokeKey(JComponent component, KeyStroke stroke) {
+    Object key = actionKey(component, stroke);
+    Action action = component.getActionMap().get(key);
+    assertThat(action).as("action installed for %s", stroke).isNotNull();
+    action.actionPerformed(
+        new ActionEvent(component, ActionEvent.ACTION_PERFORMED, String.valueOf(key)));
+  }
+
+  private static Object actionKey(JComponent component, KeyStroke stroke) {
+    Object key = component.getInputMap(JComponent.WHEN_FOCUSED).get(stroke);
+    assertThat(key).as("action bound to %s", stroke).isNotNull();
+    return key;
+  }
+
+  /** Runs enough headless layout passes for width-sensitive text to settle. */
+  private static void layoutTree(Container root, int width, int height) {
+    root.setSize(width, height);
+    for (int pass = 0; pass < 4; pass++) {
+      invalidateTree(root);
+      layoutChildren(root);
+    }
+  }
+
+  private static void invalidateTree(Container root) {
+    root.invalidate();
+    for (Component child : root.getComponents()) {
+      if (child instanceof Container nested) {
+        invalidateTree(nested);
+      }
+    }
+  }
+
+  private static void layoutChildren(Container root) {
+    root.doLayout();
+    for (Component child : root.getComponents()) {
+      if (child instanceof Container nested) {
+        layoutChildren(nested);
+      }
+    }
   }
 
   @Test
@@ -130,6 +187,230 @@ final class TimelineInspectorTest {
     assertThat(selected).containsExactly(42L);
     assertThat(picked).containsExactly(42L);
     assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(42);
+  }
+
+  @Test
+  @DisplayName("the timeline exposes its state and exact spans to keyboard users")
+  void keyboardNavigationSelectsVisibleSpans() {
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setModel(aModel());
+    SpanWindow.Builder window = SpanWindow.builder(0, 10_000_000);
+    window.add(0, 2_000_000, 0, 42, "");
+    window.add(3_000_000, 5_000_000, 0, 43, "");
+    view.setWindow(window.build());
+
+    assertThat(canvas.isFocusable()).isTrue();
+    assertThat(canvas.getBorder()).isNotNull();
+    assertThat(canvas.getFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS))
+        .contains(AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_TAB, 0));
+    assertThat(canvas.getAccessibleContext().getAccessibleName())
+        .isEqualTo("Build execution timeline");
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .contains("Showing 2 actions")
+        .contains("Left and Right")
+        .contains("plus or minus");
+
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+    assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(42);
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+    assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(43);
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .contains("Selected action 43");
+
+    double beforeZoom = view.viewport().orElseThrow().transform().pixelsPerMicro();
+    String beforeZoomDescription = canvas.getAccessibleContext().getAccessibleDescription();
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, KeyEvent.SHIFT_DOWN_MASK));
+    assertThat(view.viewport().orElseThrow().transform().pixelsPerMicro())
+        .isGreaterThan(beforeZoom);
+    String zoomedDescription = canvas.getAccessibleContext().getAccessibleDescription();
+    assertThat(zoomedDescription)
+        .isNotEqualTo(beforeZoomDescription)
+        .contains("Visible time range 1.000 s to 9.000 s");
+
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, KeyEvent.SHIFT_DOWN_MASK));
+    String pannedDescription = canvas.getAccessibleContext().getAccessibleDescription();
+    assertThat(pannedDescription).isNotEqualTo(zoomedDescription);
+
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_0, 0));
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .contains("Visible time range 0.000 s to 10.000 s");
+  }
+
+  @Test
+  @DisplayName("keyboard users can apply and clear the visible time range filter")
+  void keyboardSelectsAndClearsVisibleRange() {
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setModel(aModel());
+    view.setWindow(SpanWindow.builder(0, 10_000_000).build());
+    long[] visible = view.visibleRange().orElseThrow();
+    AtomicReference<OptionalLong> reportedFrom = new AtomicReference<>(OptionalLong.empty());
+    AtomicReference<OptionalLong> reportedTo = new AtomicReference<>(OptionalLong.empty());
+    view.onRangeChanged(
+        (from, to) -> {
+          reportedFrom.set(from);
+          reportedTo.set(to);
+        });
+
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_R, 0));
+
+    assertThat(view.viewport().orElseThrow().rangeFromMicros()).hasValue(visible[0]);
+    assertThat(view.viewport().orElseThrow().rangeToMicros()).hasValue(visible[1]);
+    assertThat(reportedFrom.get()).hasValue(visible[0]);
+    assertThat(reportedTo.get()).hasValue(visible[1]);
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .contains("10.000 s selected")
+        .contains("Escape to clear that range");
+
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0));
+
+    assertThat(view.viewport().orElseThrow().hasRange()).isFalse();
+    assertThat(reportedFrom.get()).isEmpty();
+    assertThat(reportedTo.get()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("keyboard users can cycle the visible in-flight targets and show shortcut help")
+  void keyboardCyclesInFlightTargets() {
+    TimelineModel.LiveBand band =
+        new TimelineModel.LiveBand(
+            true,
+            List.of(
+                new TimelineModel.LiveBand.InFlight("//pkg:a", 1_000_000),
+                new TimelineModel.LiveBand.InFlight("//pkg:b", 2_000_000)),
+            2,
+            0);
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setClockForTest(() -> 10_000_000);
+    view.setModel(aModel(band));
+    view.setWindow(SpanWindow.builder(0, 10_000_000).build());
+
+    try {
+      invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_I, 0));
+      assertThat(view.selectedInFlightTargetForTest()).contains("//pkg:a");
+      assertThat(view.inspectorTitleForTest()).isEqualTo("//pkg:a");
+
+      invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_I, 0));
+      assertThat(view.selectedInFlightTargetForTest()).contains("//pkg:b");
+      assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+          .contains("Selected in-flight target //pkg:b")
+          .contains("I and Shift+I")
+          .contains("F1");
+
+      invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_I, KeyEvent.SHIFT_DOWN_MASK));
+      assertThat(view.selectedInFlightTargetForTest()).contains("//pkg:a");
+
+      List<Object> keyboardActions =
+          List.of(
+              actionKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_I, 0)),
+              actionKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_I, KeyEvent.SHIFT_DOWN_MASK)),
+              actionKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_R, 0)),
+              actionKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0)),
+              actionKey(
+                  canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, KeyEvent.SHIFT_DOWN_MASK)));
+      assertThat(keyboardActions).doesNotHaveDuplicates();
+    } finally {
+      view.showEmpty("done");
+    }
+  }
+
+  @Test
+  @DisplayName("selecting an in-flight target replaces a prior action selection")
+  void inFlightSelectionClearsSelectedAction() {
+    TimelineModel.LiveBand band =
+        new TimelineModel.LiveBand(
+            true, List.of(new TimelineModel.LiveBand.InFlight("//pkg:live", 1_000_000)), 1, 0);
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setClockForTest(() -> 10_000_000);
+    view.setModel(aModel(band));
+    SpanWindow.Builder window = SpanWindow.builder(0, 10_000_000);
+    window.add(0, 5_000_000, 0, 42, "");
+    view.setWindow(window.build());
+
+    try {
+      invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+      assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(42);
+
+      invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_I, 0));
+
+      assertThat(view.selectedInFlightTargetForTest()).contains("//pkg:live");
+      assertThat(view.viewport().orElseThrow().selectedNode()).isEmpty();
+      assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+          .contains("Selected in-flight target //pkg:live")
+          .doesNotContain("Selected action 42");
+    } finally {
+      view.showEmpty("done");
+    }
+  }
+
+  @Test
+  @DisplayName("F1 help wraps its final shortcuts into visible rows at a constrained width")
+  void keyboardHelpWrapsAtConstrainedWidth() throws Exception {
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setModel(aModel());
+
+    SwingUtilities.invokeAndWait(
+        () -> {
+          layoutTree(view, 900, 600);
+          invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0));
+          layoutTree(view, 900, 600);
+        });
+
+    JTextArea help = view.interactionTextForTest();
+    int lineHeight = help.getFontMetrics(help.getFont()).getHeight();
+    int rIndex = help.getText().indexOf("R to select");
+    int escapeIndex = help.getText().indexOf("Escape to clear");
+    assertThat(rIndex).isNotNegative();
+    assertThat(escapeIndex).isNotNegative();
+
+    AtomicReference<Rectangle2D> rBounds = new AtomicReference<>();
+    AtomicReference<Rectangle2D> escapeBounds = new AtomicReference<>();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          try {
+            rBounds.set(help.modelToView2D(rIndex));
+            escapeBounds.set(help.modelToView2D(escapeIndex));
+          } catch (BadLocationException e) {
+            throw new AssertionError(e);
+          }
+        });
+
+    assertThat(help.getWidth())
+        .isLessThan(help.getFontMetrics(help.getFont()).stringWidth(help.getText()));
+    assertThat(help.getHeight()).isGreaterThan(lineHeight);
+    assertThat(rBounds.get().getY()).isGreaterThan(0);
+    assertThat(rBounds.get().getMaxY()).isLessThanOrEqualTo(help.getHeight());
+    assertThat(escapeBounds.get().getY()).isGreaterThan(0);
+    assertThat(escapeBounds.get().getMaxY()).isLessThanOrEqualTo(help.getHeight());
+  }
+
+  @Test
+  @DisplayName("aggregate accessibility leads with what is painted before a retained selection")
+  void aggregateDescriptionPrecedesStaleSelection() {
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setModel(aModel());
+    view.setWindow(SpanWindow.builder(0, 10_000_000).build());
+    view.select(42);
+    assertThat(view.drawingSpansForTest()).isTrue();
+
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, KeyEvent.SHIFT_DOWN_MASK));
+
+    assertThat(view.drawingSpansForTest()).isFalse();
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .startsWith("Showing aggregate build activity")
+        .contains("Selected action 42 is retained but is not painted at this zoom")
+        .doesNotContain("current exact window");
   }
 
   @Test

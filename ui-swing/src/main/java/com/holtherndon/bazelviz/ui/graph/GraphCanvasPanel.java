@@ -46,7 +46,6 @@ import javax.swing.JTextArea;
 import javax.swing.JToggleButton;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
-import javax.swing.UIManager;
 
 /**
  * The graph canvas with the controls that decide what it draws.
@@ -205,6 +204,11 @@ public final class GraphCanvasPanel extends JPanel {
     PlainText.disableHtml(description);
     PlainText.disableHtml(omission);
     PlainText.disableHtml(selected);
+    description.getAccessibleContext().setAccessibleName("Graph summary");
+    omission.getAccessibleContext().setAccessibleName("Hidden graph detail");
+    selected.getAccessibleContext().setAccessibleName("Graph selection details");
+    scopeExplanation.getAccessibleContext().setAccessibleName("Graph scope explanation");
+    appearanceExplanation.getAccessibleContext().setAccessibleName("Graph appearance explanation");
     omission.setFont(omission.getFont().deriveFont(Font.ITALIC));
 
     // PATH and CRITICAL_PATH are in the list so a found path can be shown
@@ -1595,15 +1599,10 @@ public final class GraphCanvasPanel extends JPanel {
   }
 
   private static JTextArea explanationArea() {
-    JTextArea area = new JTextArea(1, 20);
-    area.setEditable(false);
-    area.setFocusable(true);
-    area.setOpaque(false);
+    JTextArea area = WrappingLabel.create(" ");
+    area.setRows(1);
+    area.setColumns(20);
     area.setBorder(BorderFactory.createEmptyBorder(1, 8, 3, 8));
-    area.setLineWrap(true);
-    area.setWrapStyleWord(true);
-    area.setFont(UIManager.getFont("Label.font"));
-    area.setForeground(UIManager.getColor("Label.foreground"));
     return area;
   }
 

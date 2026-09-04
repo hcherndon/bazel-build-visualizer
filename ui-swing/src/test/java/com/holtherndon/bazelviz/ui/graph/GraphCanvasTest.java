@@ -11,15 +11,23 @@ import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.ui.theme.AppTheme;
 import com.holtherndon.bazelviz.ui.theme.Themes;
+import java.awt.AWTKeyStroke;
 import java.awt.Color;
 import java.awt.FontMetrics;
 import java.awt.Graphics2D;
+import java.awt.KeyboardFocusManager;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import javax.swing.Action;
+import javax.swing.JComponent;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import org.assertj.core.api.InstanceOfAssertFactories;
@@ -761,6 +769,42 @@ final class GraphCanvasTest {
         .contains("capped at half the window");
   }
 
+  @Test
+  @DisplayName("the graph exposes its state and core navigation without a pointer")
+  void keyboardNavigationIsAccessible() {
+    GraphCanvas canvas = new GraphCanvas();
+    canvas.setSize(800, 600);
+    canvas.setModel(modelOf(3, allTimed(3)));
+    AtomicInteger focused = new AtomicInteger(-1);
+    canvas.onFocusRequested(focused::set);
+
+    assertThat(canvas.isFocusable()).isTrue();
+    assertThat(canvas.getBorder()).isNotNull();
+    assertThat(canvas.getFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS))
+        .contains(AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_TAB, 0));
+    assertThat(canvas.getAccessibleContext().getAccessibleName())
+        .isEqualTo("Dependency graph canvas");
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .contains("Showing 3 graph nodes")
+        .contains("arrow keys")
+        .contains("Enter");
+
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+    assertThat(canvas.selectedPositions()).containsExactly(0);
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+    assertThat(canvas.selectedPositions()).containsExactly(1);
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0));
+    assertThat(focused).hasValue(1);
+
+    double beforeZoom = canvas.transform().scale();
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, KeyEvent.SHIFT_DOWN_MASK));
+    assertThat(canvas.transform().scale()).isGreaterThan(beforeZoom);
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0));
+    assertThat(canvas.selectedPositions()).isEmpty();
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .contains("none is selected");
+  }
+
   // --------------------------------------------------------- node dragging
 
   @Test
@@ -930,5 +974,14 @@ final class GraphCanvasTest {
   private static double channel(int value) {
     double normalized = value / 255.0;
     return normalized <= 0.03928 ? normalized / 12.92 : Math.pow((normalized + 0.055) / 1.055, 2.4);
+  }
+
+  private static void invokeKey(JComponent component, KeyStroke stroke) {
+    Object key = component.getInputMap(JComponent.WHEN_FOCUSED).get(stroke);
+    assertThat(key).as("action bound to %s", stroke).isNotNull();
+    Action action = component.getActionMap().get(key);
+    assertThat(action).as("action installed for %s", stroke).isNotNull();
+    action.actionPerformed(
+        new ActionEvent(component, ActionEvent.ACTION_PERFORMED, String.valueOf(key)));
   }
 }

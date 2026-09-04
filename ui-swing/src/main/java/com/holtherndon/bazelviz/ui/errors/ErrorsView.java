@@ -16,6 +16,7 @@ import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
+import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
@@ -46,7 +47,6 @@ import javax.swing.JTable;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowSorter;
 import javax.swing.SortOrder;
-import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.TableColumn;
@@ -119,7 +119,7 @@ public final class ErrorsView extends JPanel {
 
   private final CardLayout cards = new CardLayout();
   private final JPanel deck = new JPanel(cards);
-  private final JLabel emptyLabel = new JLabel(" ", SwingConstants.CENTER);
+  private final EmptyStatePanel emptyState = new EmptyStatePanel(" ");
   private final ErrorTableModel tableModel = new ErrorTableModel();
   private final JTable table = new JTable(tableModel);
 
@@ -167,14 +167,9 @@ public final class ErrorsView extends JPanel {
   public ErrorsView() {
     super(new BorderLayout());
 
-    emptyLabel.setEnabled(false);
-    JPanel empty = new JPanel(new BorderLayout());
-    empty.add(emptyLabel, BorderLayout.CENTER);
-
     PlainText.install(table);
     PlainText.disableHtml(statusLabel);
     PlainText.disableHtml(abortSummary);
-    PlainText.disableHtml(emptyLabel);
     table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
     table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
     table.setFillsViewportHeight(true);
@@ -247,7 +242,7 @@ public final class ErrorsView extends JPanel {
     session.add(split, BorderLayout.CENTER);
     session.add(status, BorderLayout.SOUTH);
 
-    deck.add(empty, CARD_EMPTY);
+    deck.add(emptyState, CARD_EMPTY);
     deck.add(session, CARD_TABLE);
     add(deck, BorderLayout.CENTER);
     showEmpty("No session is open.");
@@ -329,7 +324,7 @@ public final class ErrorsView extends JPanel {
   }
 
   public void showEmpty(String message) {
-    emptyLabel.setText(Objects.requireNonNull(message, "message"));
+    emptyState.setText(Objects.requireNonNull(message, "message"));
     cards.show(deck, CARD_EMPTY);
   }
 
