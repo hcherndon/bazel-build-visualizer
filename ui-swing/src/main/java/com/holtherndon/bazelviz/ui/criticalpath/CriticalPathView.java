@@ -20,6 +20,8 @@ import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.ColumnSpec;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.ResponsiveGridLayout;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
@@ -82,7 +84,7 @@ import org.slf4j.LoggerFactory;
  * page cache, and an unmatched graph node remains a row marked "not executed or not matched" rather
  * than disappearing from the path.
  */
-public final class CriticalPathView extends JPanel {
+public final class CriticalPathView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
   private static final Logger log = LoggerFactory.getLogger(CriticalPathView.class);
@@ -100,6 +102,8 @@ public final class CriticalPathView extends JPanel {
   private final JScrollPane summaryScroll = new JScrollPane(summaryBody);
   private final JButton openGraph = new JButton("Open dependency chain in Graph");
   private final JToggleButton showDetails = new JToggleButton("Show details");
+  private final JPanel localHeader = new JPanel(new BorderLayout(12, 0));
+  private final JPanel content = new JPanel(new BorderLayout());
 
   private final BazelPathTableModel inlineBazelModel = new BazelPathTableModel();
   private final JTable bazelTable = new JTable(inlineBazelModel);
@@ -129,6 +133,7 @@ public final class CriticalPathView extends JPanel {
   private CriticalPaths.ObservedActionLowerBound observedFallback;
   private Map<Long, ActionMetrics> contributorByAction = Map.of();
   private long generation;
+  private PageToolbar pageToolbar;
 
   public CriticalPathView() {
     super(new BorderLayout());
@@ -190,18 +195,17 @@ public final class CriticalPathView extends JPanel {
           showSelectedPathStep();
         });
 
-    JPanel header = new JPanel(new BorderLayout(12, 0));
-    header.setBorder(BorderFactory.createEmptyBorder(10, 12, 8, 12));
+    localHeader.setBorder(BorderFactory.createEmptyBorder(10, 12, 8, 12));
     JLabel title = PlainText.disableHtml(new JLabel("Critical path analysis"));
     title.setFont(title.getFont().deriveFont(Font.BOLD, title.getFont().getSize() + 4f));
     title.setToolTipText(
         "Bazel's observed schedule and the visualizer's dependency-only lower bound are"
             + " different measurements.");
-    header.add(title, BorderLayout.CENTER);
+    localHeader.add(title, BorderLayout.CENTER);
     JPanel headerActions = new JPanel(new FlowLayout(FlowLayout.TRAILING, 6, 0));
     headerActions.add(showDetails);
     headerActions.add(openGraph);
-    header.add(headerActions, BorderLayout.EAST);
+    localHeader.add(headerActions, BorderLayout.EAST);
     openGraph.addActionListener(event -> onOpenGraph.run());
     openGraph.setEnabled(false);
     showDetails.addActionListener(
@@ -239,14 +243,29 @@ public final class CriticalPathView extends JPanel {
     analysis.setResizeWeight(0.0);
     analysis.setContinuousLayout(true);
 
-    JPanel content = new JPanel(new BorderLayout());
-    content.add(header, BorderLayout.NORTH);
+    content.add(localHeader, BorderLayout.NORTH);
     content.add(analysis, BorderLayout.CENTER);
 
     deck.add(emptyState, CARD_EMPTY);
     deck.add(content, CARD_CONTENT);
     add(deck, BorderLayout.CENTER);
     showEmpty("No session is open.");
+  }
+
+  /** Moves page-level actions into the window's shared chrome. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = toolbar;
+    content.remove(localHeader);
+    toolbar.addAction(showDetails);
+    toolbar.addAction(openGraph);
+    syncPageMetadata("", "");
+    content.revalidate();
+    content.repaint();
   }
 
   /** Opens only this view's graph-detail reader. Metric collection remains shared. */
@@ -430,6 +449,25 @@ public final class CriticalPathView extends JPanel {
                         (first, ignored) -> first,
                         LinkedHashMap::new)));
     CriticalPaths paths = next.metrics().invocation().criticalPaths();
+    String bazel =
+        paths
+            .bazelReportedMicros()
+            .value()
+            .map(MetricFormat::duration)
+            .orElse(EntityFormat.UNKNOWN);
+    String dependency =
+        paths
+            .derived()
+            .filter(path -> path.outcome() == CriticalPath.Outcome.COMPUTED)
+            .map(path -> MetricFormat.duration(path.makespanMicros()))
+            .orElse(EntityFormat.UNKNOWN);
+    syncPageMetadata(
+        "Bazel " + bazel + " · Dependency " + dependency,
+        "Bazel-reported critical path: "
+            + bazel
+            + ". Visualizer-computed dependency critical path: "
+            + dependency
+            + ".");
     renderSummary(next, paths);
     installBazelPath(paths);
     installDependencyPath(paths.derived(), paths.observedActionLowerBound());
@@ -1364,6 +1402,13 @@ public final class CriticalPathView extends JPanel {
   private void showEmpty(String message) {
     emptyState.setText(message);
     cards.show(deck, CARD_EMPTY);
+    syncPageMetadata(message.startsWith("No session") ? "" : message, message);
+  }
+
+  private void syncPageMetadata(String concise, String detail) {
+    if (pageToolbar != null) {
+      pageToolbar.setMetadata(concise, detail);
+    }
   }
 
   private static ExecutorService singleThreadExecutor() {

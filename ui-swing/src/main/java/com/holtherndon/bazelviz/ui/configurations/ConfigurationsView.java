@@ -8,6 +8,8 @@ import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.ColumnSpec;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import com.holtherndon.bazelviz.ui.theme.SelectableLabel;
@@ -45,7 +47,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** Explores captured build configurations and compares their effective options. */
-public final class ConfigurationsView extends JPanel {
+public final class ConfigurationsView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
   private static final Logger log = LoggerFactory.getLogger(ConfigurationsView.class);
@@ -66,6 +68,12 @@ public final class ConfigurationsView extends JPanel {
   private final JTextField candidateLabel = SelectableLabel.create("Not selected");
   private final JButton setBaseline = new JButton("Use selected as baseline");
   private final JButton clearBaseline = new JButton("Clear baseline");
+  private final JTextArea introduction =
+      WrappingLabel.create(
+          "Inspect each configuration checksum, where it was used, and the effective"
+              + " options cquery reported. Set one configuration as a baseline, then"
+              + " select another to compare them.");
+  private final JPanel content = new JPanel(new BorderLayout(0, 6));
 
   private SessionSource source;
   private EntityReader reader;
@@ -83,6 +91,7 @@ public final class ConfigurationsView extends JPanel {
   private long comparisonGeneration;
   private long revealGeneration;
   private String pendingChecksum;
+  private PageToolbar pageToolbar;
 
   public ConfigurationsView() {
     super(new BorderLayout());
@@ -107,11 +116,6 @@ public final class ConfigurationsView extends JPanel {
   }
 
   private void buildUi() {
-    JTextArea introduction =
-        WrappingLabel.create(
-            "Inspect each configuration checksum, where it was used, and the effective"
-                + " options cquery reported. Set one configuration as a baseline, then"
-                + " select another to compare them.");
     introduction.setName("configurations.introduction");
 
     JScrollPane configurationScroll = new JScrollPane(configurations);
@@ -137,7 +141,6 @@ public final class ConfigurationsView extends JPanel {
             new SectionPane("Configuration details", detailTabs));
     split.setResizeWeight(0.45);
 
-    JPanel content = new JPanel(new BorderLayout(0, 6));
     content.setBorder(BorderFactory.createEmptyBorder(6, 8, 4, 8));
     content.add(introduction, BorderLayout.NORTH);
     content.add(split, BorderLayout.CENTER);
@@ -150,6 +153,26 @@ public final class ConfigurationsView extends JPanel {
     deck.add(content, CARD_CONTENT);
     add(deck, BorderLayout.CENTER);
     cards.show(deck, CARD_EMPTY);
+  }
+
+  /** Moves the page introduction into the shared window chrome. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = toolbar;
+    content.remove(introduction);
+    syncPageMetadata("Inspect and compare build configurations", introduction.getText());
+    content.revalidate();
+    content.repaint();
+  }
+
+  private void syncPageMetadata(String concise, String detail) {
+    if (pageToolbar != null) {
+      pageToolbar.setMetadata(concise, detail);
+    }
   }
 
   private JPanel comparisonPanel() {

@@ -14,6 +14,7 @@ import com.holtherndon.bazelviz.ui.session.QueryReader;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.awt.Component;
 import java.awt.Container;
 import java.nio.file.Path;
@@ -130,8 +131,13 @@ final class TreeViewSourceTest {
   @Test
   @DisplayName("the trustworthy action graph is what a user who chooses nothing reads")
   void actionGraphIsPreferred() {
+    PageToolbar toolbar = new PageToolbar("Tree");
+    view.installPageToolbar(toolbar);
+
     assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.DECLARED_ACTIONS);
     assertThat(view.detailLabel().getText()).contains("A node is one declared action");
+    assertThat(toolbar.actionCount()).isEqualTo(5);
+    assertThat(toolbar.metadata()).containsIgnoringCase("action");
   }
 
   @Test

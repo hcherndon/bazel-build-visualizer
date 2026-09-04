@@ -9,6 +9,7 @@ import com.holtherndon.bazelviz.runner.files.FileContents;
 import com.holtherndon.bazelviz.runner.files.FileMetadata;
 import com.holtherndon.bazelviz.runner.files.FileVersion;
 import com.holtherndon.bazelviz.runner.files.UploadMode;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -55,9 +56,11 @@ final class RepositoryBrowserViewTest {
                 OptionalLong.of(7))));
     AtomicReference<ExecutionPath> opened = new AtomicReference<>();
     RepositoryBrowserView view = onEdt(RepositoryBrowserView::new);
+    PageToolbar toolbar = onEdt(() -> new PageToolbar("Browse Repository"));
 
     onEdt(
         () -> {
+          view.installPageToolbar(toolbar);
           view.onOpenFile(opened::set);
           view.openRepository("builder.example", files, root);
           return null;
@@ -67,6 +70,8 @@ final class RepositoryBrowserViewTest {
     assertThat(files.calls(root)).isEqualTo(1);
     assertThat(files.calls(directory)).isZero();
     assertThat(files.edtCall).isFalse();
+    assertThat(onEdt(toolbar::actionCount)).isOne();
+    assertThat(onEdt(toolbar::metadata)).isEqualTo("/workspace");
     assertThat(onEdt(view::locationForTest)).isEqualTo("builder.example · /workspace");
     assertThat(onEdt(view::rootChildrenForTest))
         .containsExactly("lib/", "BUILD.bazel · 42 bytes", "vendor · symbolic link");

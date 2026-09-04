@@ -16,6 +16,7 @@ java_library(
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/workspace",
     ],
     visibility = ["//visibility:private"],

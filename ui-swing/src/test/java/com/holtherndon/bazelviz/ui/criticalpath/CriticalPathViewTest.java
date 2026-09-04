@@ -17,6 +17,7 @@ import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries.GraphSource;
 import com.holtherndon.bazelviz.storage.metrics.SessionMetrics;
 import com.holtherndon.bazelviz.ui.metrics.MetricsService;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.GraphicsEnvironment;
@@ -54,8 +55,10 @@ final class CriticalPathViewTest {
   @DisplayName("Bazel and dependency paths stay visibly separate")
   void pathNamesDoNotCollapseIntoOneCriticalPath() throws Exception {
     CriticalPathView view = onEdt(CriticalPathView::new);
+    PageToolbar toolbar = onEdt(() -> new PageToolbar("Critical Path"));
     onEdt(
         () -> {
+          view.installPageToolbar(toolbar);
           view.installGraphSourceForTest(graphSource(ConfigurationMatch.EXACT, null));
           view.show(metrics(paths(8_000, Optional.of(path(5_000)), List.of())));
           return null;
@@ -74,6 +77,8 @@ final class CriticalPathViewTest {
     assertThat(onEdt(view::statusTextForTest))
         .contains("reported the critical-path total")
         .contains("component breakdown is unavailable");
+    assertThat(onEdt(toolbar::actionCount)).isEqualTo(2);
+    assertThat(onEdt(toolbar::metadata)).contains("Bazel", "Dependency");
   }
 
   @Test

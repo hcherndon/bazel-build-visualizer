@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.capture;
 
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.ui.capture.LauncherStateStore.ExecutionHost;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.Component;
 import java.awt.Dimension;
@@ -149,6 +150,7 @@ public final class LauncherPanel extends JPanel {
   private String remoteWorkspaceDraft = "";
   private String remoteBazelDraft = "bazel";
   private boolean managedWorkspace;
+  private boolean pageToolbarInstalled;
   private boolean immediatePresetTooltipsActive;
   private ManagedWorkspace managedWorkspaceSelection;
   private String lastCommittedManagedBazel = "";
@@ -404,8 +406,8 @@ public final class LauncherPanel extends JPanel {
     workspace.setVisible(!managedWorkspace);
     bazelLabel.setVisible(true);
     bazelExecutable.setVisible(true);
-    selectedWorkspaceLabel.setVisible(managedWorkspace);
-    selectedWorkspace.setVisible(managedWorkspace);
+    selectedWorkspaceLabel.setVisible(managedWorkspace && !pageToolbarInstalled);
+    selectedWorkspace.setVisible(managedWorkspace && !pageToolbarInstalled);
     changeWorkspace.setVisible(managedWorkspace);
     sshOptions.setVisible(!managedWorkspace && remote);
     chooseWorkspace.setVisible(!managedWorkspace && !remote);
@@ -423,6 +425,18 @@ public final class LauncherPanel extends JPanel {
                     + " executable on this computer."));
     revalidate();
     repaint();
+  }
+
+  /** Moves the managed-workspace action into the Console page chrome and removes duplicate copy. */
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbarInstalled) {
+      throw new IllegalStateException("the Console page toolbar is already installed");
+    }
+    pageToolbarInstalled = true;
+    setBorder(BorderFactory.createEmptyBorder(2, 0, 2, 0));
+    toolbar.addAction(changeWorkspace);
+    updateHostControls();
   }
 
   private void selectSshProfile() {

@@ -32,6 +32,13 @@ java_junit5_test(
 )
 
 java_junit5_test(
+    name = "PageToolbarTest",
+    test_class = "com.holtherndon.bazelviz.ui.theme.PageToolbarTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
     name = "PlainTextTest",
     test_class = "com.holtherndon.bazelviz.ui.theme.PlainTextTest",
     jvm_flags = HEADLESS_TEST_JVM_FLAGS,
@@ -78,6 +85,7 @@ test_suite(
     tests = [
         ":CanvasAccessibilityTest",
         ":EmptyStatePanelTest",
+        ":PageToolbarTest",
         ":PlainTextTest",
         ":ResponsiveGridLayoutTest",
         ":SyntaxTextThemeTest",

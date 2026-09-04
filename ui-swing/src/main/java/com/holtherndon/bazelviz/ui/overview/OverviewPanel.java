@@ -11,6 +11,8 @@ import com.holtherndon.bazelviz.ui.nav.NavEntry;
 import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.ViewClose;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.ResponsiveGridLayout;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
@@ -76,7 +78,7 @@ import org.slf4j.LoggerFactory;
  * differs from Bazel's internal wall time by up to a second — so both are shown under their own
  * names rather than reconciled into one figure that is true of neither.
  */
-public final class OverviewPanel extends JPanel {
+public final class OverviewPanel extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
 
@@ -89,6 +91,7 @@ public final class OverviewPanel extends JPanel {
 
   private final JTextArea headline = WrappingLabel.create(" ");
   private final JTextArea subhead = WrappingLabel.create(" ");
+  private final JPanel localHeader = new JPanel();
 
   /** One responsive summary grid, regardless of which of its two reads supplied a card. */
   private final JPanel tiles = new JPanel(new ResponsiveGridLayout(4, 210, 12, 12));
@@ -131,6 +134,7 @@ public final class OverviewPanel extends JPanel {
   private final CardLayout contentLayout = new CardLayout();
   private final JPanel content = new JPanel(contentLayout);
   private final JPanel emptyState = new JPanel(new BorderLayout());
+  private PageToolbar pageToolbar;
 
   public OverviewPanel() {
     this(REFRESH_INTERVAL);
@@ -149,25 +153,24 @@ public final class OverviewPanel extends JPanel {
     headline.setFont(headline.getFont().deriveFont(Font.BOLD, headline.getFont().getSize() + 4f));
     subhead.setEnabled(false);
 
-    JPanel header = new JPanel();
-    header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
-    header.setBorder(BorderFactory.createEmptyBorder(12, 12, 8, 12));
+    localHeader.setLayout(new BoxLayout(localHeader, BoxLayout.Y_AXIS));
+    localHeader.setBorder(BorderFactory.createEmptyBorder(12, 12, 8, 12));
     headline.setAlignmentX(LEFT_ALIGNMENT);
     subhead.setAlignmentX(LEFT_ALIGNMENT);
-    header.add(headline);
-    header.add(subhead);
+    localHeader.add(headline);
+    localHeader.add(subhead);
 
     tiles.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
     details.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
 
     dashboard.setLayout(new BoxLayout(dashboard, BoxLayout.Y_AXIS));
-    header.setAlignmentX(LEFT_ALIGNMENT);
+    localHeader.setAlignmentX(LEFT_ALIGNMENT);
     tiles.setAlignmentX(LEFT_ALIGNMENT);
     details.setAlignmentX(LEFT_ALIGNMENT);
-    header.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
+    localHeader.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
     tiles.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
     details.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
-    dashboard.add(header);
+    dashboard.add(localHeader);
     dashboard.add(tiles);
     dashboard.add(details);
 
@@ -186,6 +189,19 @@ public final class OverviewPanel extends JPanel {
     content.add(emptyState, "empty");
     add(content, BorderLayout.CENTER);
     showEmpty();
+  }
+
+  /** Moves the invocation headline out of the scrolled dashboard into the common page toolbar. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      throw new IllegalStateException("the Overview page toolbar is already installed");
+    }
+    pageToolbar = toolbar;
+    dashboard.remove(localHeader);
+    syncPageMetadata();
+    dashboard.revalidate();
   }
 
   /**
@@ -311,6 +327,7 @@ public final class OverviewPanel extends JPanel {
     closeSession();
     headline.setText("Reading…");
     subhead.setText(" ");
+    syncPageMetadata();
     showDashboard();
 
     long mine = generation.incrementAndGet();
@@ -367,6 +384,7 @@ public final class OverviewPanel extends JPanel {
           () -> {
             if (owns(context)) {
               headline.setText(failure.getMessage());
+              syncPageMetadata();
             }
           });
     }
@@ -468,6 +486,7 @@ public final class OverviewPanel extends JPanel {
     showDashboard();
     headline.setText(headlineFor(snapshot));
     subhead.setText(subheadFor(snapshot));
+    syncPageMetadata();
     snapshotListener.accept(snapshot);
 
     snapshotTiles.clear();
@@ -515,6 +534,7 @@ public final class OverviewPanel extends JPanel {
   private void showEmpty() {
     headline.setText(" ");
     subhead.setText(" ");
+    syncPageMetadata();
     snapshotTiles.clear();
     metricTileCards.clear();
     tiles.removeAll();
@@ -580,6 +600,7 @@ public final class OverviewPanel extends JPanel {
               if (owns(context) && !context.everRendered) {
                 headline.setText("The overview could not be read.");
                 subhead.setText(failure.getMessage());
+                syncPageMetadata();
               }
             });
       }
@@ -630,6 +651,16 @@ public final class OverviewPanel extends JPanel {
       parts.add("stream did not reach its end marker");
     }
     return parts.isEmpty() ? " " : String.join("  ·  ", parts);
+  }
+
+  private void syncPageMetadata() {
+    if (pageToolbar == null) {
+      return;
+    }
+    String primary = headline.getText() == null ? "" : headline.getText().strip();
+    String secondary = subhead.getText() == null ? "" : subhead.getText().strip();
+    pageToolbar.setMetadata(
+        primary + (primary.isEmpty() || secondary.isEmpty() ? "" : " · ") + secondary);
   }
 
   private List<String[]> sessionRows(OverviewSnapshot snapshot) {

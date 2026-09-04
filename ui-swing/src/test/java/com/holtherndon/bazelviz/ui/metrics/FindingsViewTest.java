@@ -18,6 +18,7 @@ import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
 import com.holtherndon.bazelviz.storage.metrics.SessionMetrics;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
 import java.awt.Component;
 import java.awt.Container;
@@ -63,6 +64,8 @@ final class FindingsViewTest {
   @DisplayName("the no-session message replaces and fills the whole Findings pane")
   void emptyStateFillsThePane() {
     FindingsView view = new FindingsView();
+    PageToolbar toolbar = new PageToolbar("Findings");
+    view.installPageToolbar(toolbar);
     view.setSize(960, 600);
     layoutTree(view);
 
@@ -75,11 +78,14 @@ final class FindingsViewTest {
             metrics(bothPaths(), List.of()), List.of(), FindingThresholds.defaults()));
     layoutTree(view);
     assertThat(view.emptyStateForTest().isVisible()).isFalse();
+    assertThat(toolbar.actionCount()).isOne();
+    assertThat(toolbar.metadata()).startsWith("No findings");
 
     view.detach();
     layoutTree(view);
     assertThat(view.emptyStateForTest().isVisible()).isTrue();
     assertThat(view.emptyStateForTest().getSize()).isEqualTo(view.getSize());
+    assertThat(toolbar.metadata()).isEmpty();
   }
 
   @Test

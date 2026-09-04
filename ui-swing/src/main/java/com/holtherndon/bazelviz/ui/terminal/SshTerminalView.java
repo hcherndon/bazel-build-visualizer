@@ -3,6 +3,8 @@ package com.holtherndon.bazelviz.ui.terminal;
 import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
 import com.holtherndon.bazelviz.runner.runtime.InteractiveChannel;
 import com.holtherndon.bazelviz.runner.runtime.TerminalSize;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SelectableLabel;
 import com.jediterm.core.util.TermSize;
@@ -49,7 +51,7 @@ import javax.swing.UIManager;
  * TerminalView}, which exposes the same transport-neutral behavior without implying that the
  * executor is necessarily remote.
  */
-public class SshTerminalView extends JPanel implements AutoCloseable {
+public class SshTerminalView extends JPanel implements AutoCloseable, PageChrome {
 
   private static final long serialVersionUID = 1L;
   private static final String CARD_EMPTY = "empty";
@@ -72,12 +74,14 @@ public class SshTerminalView extends JPanel implements AutoCloseable {
   private final JButton connect = new JButton("Connect");
   private final JButton disconnect = new JButton("Disconnect");
   private final JButton reconnect = new JButton("Reconnect");
+  private final JPanel localHeader = new JPanel(new BorderLayout(12, 0));
   private final CardLayout terminalCards = new CardLayout();
   private final JPanel terminalDeck = new JPanel(terminalCards);
   private final JLabel emptyTerminal =
       new JLabel("Select a workspace to use the terminal.", SwingConstants.CENTER);
 
   private Binding binding;
+  private PageToolbar pageToolbar;
   private ActiveTerminal active;
   private ConnectionState state = ConnectionState.UNAVAILABLE;
   private volatile long generation;
@@ -128,20 +132,35 @@ public class SshTerminalView extends JPanel implements AutoCloseable {
     statePanel.add(disconnect);
     statePanel.add(reconnect);
 
-    JPanel header = new JPanel(new BorderLayout(12, 0));
-    header.setBorder(BorderFactory.createEmptyBorder(6, 8, 0, 8));
-    header.add(target, BorderLayout.CENTER);
-    header.add(statePanel, BorderLayout.EAST);
+    localHeader.setBorder(BorderFactory.createEmptyBorder(6, 8, 0, 8));
+    localHeader.add(target, BorderLayout.CENTER);
+    localHeader.add(statePanel, BorderLayout.EAST);
 
     PlainText.disableHtml(emptyTerminal);
     emptyTerminal.setEnabled(false);
     emptyTerminal.getAccessibleContext().setAccessibleName("Terminal state");
     terminalDeck.add(emptyTerminal, CARD_EMPTY);
 
-    add(header, BorderLayout.NORTH);
+    add(localHeader, BorderLayout.NORTH);
     add(terminalDeck, BorderLayout.CENTER);
     showEmpty("Select a workspace to use the terminal.");
     updateControls();
+  }
+
+  /** Moves connection state and actions into the common window page toolbar. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      throw new IllegalStateException("the Terminal page toolbar is already installed");
+    }
+    remove(localHeader);
+    pageToolbar = toolbar;
+    toolbar.addAction(connect);
+    toolbar.addAction(disconnect);
+    toolbar.addAction(reconnect);
+    syncPageMetadata();
+    revalidate();
   }
 
   /** Selects the execution used by future activation or Connect actions. */
@@ -166,6 +185,7 @@ public class SshTerminalView extends JPanel implements AutoCloseable {
     binding = replacement;
     location.setText(replacement.workspaceDescription + " · " + replacement.workingDirectory);
     location.setToolTipText(PlainText.tooltip(location.getText()));
+    syncPageMetadata();
     setState(ConnectionState.DISCONNECTED, "Disconnected");
     showEmpty("Open the Terminal tab to start the shell.");
     closeOffEdt(old, wanted, null);
@@ -600,7 +620,23 @@ public class SshTerminalView extends JPanel implements AutoCloseable {
     state = newState;
     connectionStatus.setText(detail);
     connectionStatus.setToolTipText(PlainText.tooltip(detail));
+    syncPageMetadata();
     updateControls();
+  }
+
+  private void syncPageMetadata() {
+    if (pageToolbar == null || binding == null) {
+      if (pageToolbar != null) {
+        pageToolbar.setMetadata("");
+      }
+      return;
+    }
+    String workingDirectory = binding.workingDirectory;
+    String stateText = connectionStatus.getText();
+    String conciseState =
+        stateText.length() <= 100 ? stateText : stateText.substring(0, 97).stripTrailing() + "…";
+    pageToolbar.setMetadata(
+        workingDirectory + " · " + conciseState, workingDirectory + " · " + stateText);
   }
 
   private void updateControls() {

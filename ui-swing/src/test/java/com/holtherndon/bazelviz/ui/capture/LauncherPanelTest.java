@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.ui.capture.LauncherStateStore.ExecutionHost;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
@@ -38,6 +39,35 @@ class LauncherPanelTest {
 
   private static final String HOSTILE_COMMAND =
       "<html><img src=\"http://example.invalid/command.png\">test //pkg:all";
+
+  @Test
+  void sharedConsoleChromeOwnsTheManagedWorkspaceActionAndIdentity() throws Exception {
+    AtomicInteger chooseCalls = new AtomicInteger();
+    AtomicReference<LauncherPanel> panelReference = new AtomicReference<>();
+    AtomicReference<PageToolbar> toolbarReference = new AtomicReference<>();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          LauncherPanel panel = new LauncherPanel(() -> {}, chooseCalls::incrementAndGet);
+          PageToolbar toolbar = new PageToolbar("Console");
+          panel.useManagedWorkspace(
+              "Compiler checkout",
+              ExecutionHost.SSH,
+              "/srv/compiler",
+              "bazelisk",
+              "builder@example.internal",
+              "2222");
+          panel.installPageToolbar(toolbar);
+          panel.changeWorkspaceForTest().doClick();
+          panelReference.set(panel);
+          toolbarReference.set(toolbar);
+        });
+
+    LauncherPanel panel = panelReference.get();
+    assertThat(toolbarReference.get().actionCount()).isOne();
+    assertThat(panel.selectedWorkspaceForTest().isVisible()).isFalse();
+    assertThat(panel.changeWorkspaceForTest().getParent()).isNotSameAs(panel);
+    assertThat(chooseCalls).hasValue(1);
+  }
 
   @Test
   void compactFormHasExplicitLabelsAndLeftAlignedInlineLaunchOptions() throws Exception {
