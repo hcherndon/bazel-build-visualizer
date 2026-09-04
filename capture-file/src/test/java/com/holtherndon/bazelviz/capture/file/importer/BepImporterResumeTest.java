@@ -178,6 +178,39 @@ class BepImporterResumeTest {
   }
 
   @Test
+  @DisplayName("a legacy reference checkpoint is refused before session recovery")
+  void refusesToResumeLegacyReferenceCheckpoint(@TempDir Path temporary) throws Exception {
+    Path source = temporary.resolve("build.bep");
+    BepBinaryWriter.write(source, SyntheticBepStream.of(EVENT_COUNT));
+
+    SessionManager sessions = ImportTestSupport.sessionManager(temporary.resolve("sessions"));
+    BepImporter importer = new BepImporter(sessions, ImportTestSupport.deterministicOptions());
+    ImportResult cancelled =
+        importer.importFile(
+            source, SessionId.random(), ImportProgressListener.NONE, cancelAfter(STOP_AFTER));
+    SourceCheckpointStore store =
+        new SourceCheckpointStore(cancelled.sessionRoot().resolve("checkpoints"));
+    SourceCheckpoint checkpoint = store.read().orElseThrow();
+    store.write(
+        new SourceCheckpoint(
+            checkpoint.formatVersion(),
+            checkpoint.sourceOffset(),
+            checkpoint.framesWritten(),
+            checkpoint.format(),
+            SourcePreservation.REFERENCE_ORIGINAL,
+            checkpoint.originalPath(),
+            checkpoint.sha256(),
+            checkpoint.byteSize()));
+
+    assertThatThrownBy(() -> importer.resume(cancelled.sessionRoot()))
+        .isInstanceOf(ImportFormatException.class)
+        .hasMessageContaining("REFERENCE_ORIGINAL is unavailable")
+        .hasMessageContaining("COPY_INTO_SESSION");
+    assertThat(sessions.readManifest(cancelled.sessionRoot()).state())
+        .isEqualTo(SessionState.CAPTURING);
+  }
+
+  @Test
   @DisplayName("a finished session has nothing to resume, and says so")
   void refusesToResumeAFinishedSession(@TempDir Path temporary) throws Exception {
     Path source = temporary.resolve("build.bep");

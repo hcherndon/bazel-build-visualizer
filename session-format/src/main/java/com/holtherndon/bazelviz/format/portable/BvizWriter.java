@@ -368,11 +368,15 @@ public final class BvizWriter {
     return List.copyOf(sources);
   }
 
-  private static String sessionIdOf(Path sessionRoot) {
+  private static String sessionIdOf(Path sessionRoot) throws BvizFormatException {
     return ManagedSessionLayout.sessionIdFromDirectoryName(sessionRoot)
         .map(Object::toString)
-        .orElse(
-            sessionRoot.getFileName() == null ? "unknown" : sessionRoot.getFileName().toString());
+        .orElseThrow(
+            () ->
+                new BvizFormatException(
+                    "cannot export "
+                        + sessionRoot
+                        + ": its directory name does not contain a canonical session UUID"));
   }
 
   static MessageDigest sha256() {

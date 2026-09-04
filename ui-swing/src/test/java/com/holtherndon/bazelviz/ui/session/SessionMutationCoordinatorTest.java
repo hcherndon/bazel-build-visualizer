@@ -26,6 +26,10 @@ import org.junit.jupiter.api.io.TempDir;
 final class SessionMutationCoordinatorTest {
 
   private static final long CREATED = 1_700_000_000_000_000L;
+  private static final String ACTIVE = "0193f0aa-1111-7000-8000-000000000001";
+  private static final String RECENT = "0193f0aa-1111-7000-8000-000000000002";
+  private static final String LATE_ACTIVE = "0193f0aa-1111-7000-8000-000000000003";
+  private static final String LATE_RECENT = "0193f0aa-1111-7000-8000-000000000004";
 
   @TempDir Path tempDir;
 
@@ -33,18 +37,18 @@ final class SessionMutationCoordinatorTest {
   @DisplayName("cleanup in one window keeps a session active in another")
   void cleanupKeepsAnotherWindowsActiveSession() throws Exception {
     Path catalogDirectory = tempDir.resolve("catalog-active");
-    Path activeDirectory = sessionDirectory("active");
-    Path recentDirectory = sessionDirectory("recent");
+    Path activeDirectory = sessionDirectory(ACTIVE);
+    Path recentDirectory = sessionDirectory(RECENT);
     SessionMutationCoordinator coordinator = new SessionMutationCoordinator();
     RetentionPolicy.Plan plan;
     try (SessionMutationCoordinator.ActiveSession firstWindow =
-            coordinator.activate("active", activeDirectory);
+            coordinator.activate(ACTIVE, activeDirectory);
         SessionMutationCoordinator.ActiveSession secondWindow =
-            coordinator.activate("active", activeDirectory)) {
+            coordinator.activate(ACTIVE, activeDirectory)) {
       firstWindow.close();
       try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
-        catalog.record(entry("active", activeDirectory, 1));
-        catalog.record(entry("recent", recentDirectory, 2));
+        catalog.record(entry(ACTIVE, activeDirectory, 1));
+        catalog.record(entry(RECENT, recentDirectory, 2));
         plan = catalog.plan(RetentionPolicy.keepEverything().withMaxSessions(1), 10);
       }
       SessionCatalog.SweepResult result = coordinator.applyCleanup(catalogDirectory, plan);
@@ -64,18 +68,18 @@ final class SessionMutationCoordinatorTest {
   @DisplayName("cleanup rechecks activation after its plan was created")
   void activationAfterPlanningIsRechecked() throws Exception {
     Path catalogDirectory = tempDir.resolve("catalog-stale-plan");
-    Path activeDirectory = sessionDirectory("late-active");
-    Path recentDirectory = sessionDirectory("late-recent");
+    Path activeDirectory = sessionDirectory(LATE_ACTIVE);
+    Path recentDirectory = sessionDirectory(LATE_RECENT);
     RetentionPolicy.Plan stalePlan;
     try (SessionCatalog catalog = SessionCatalog.open(catalogDirectory)) {
-      catalog.record(entry("late-active", activeDirectory, 1));
-      catalog.record(entry("late-recent", recentDirectory, 2));
+      catalog.record(entry(LATE_ACTIVE, activeDirectory, 1));
+      catalog.record(entry(LATE_RECENT, recentDirectory, 2));
       stalePlan = catalog.plan(RetentionPolicy.keepEverything().withMaxSessions(1), 10);
     }
 
     SessionMutationCoordinator coordinator = new SessionMutationCoordinator();
     SessionMutationCoordinator.ActiveSession openedAfterPlan =
-        coordinator.activate("late-active", activeDirectory);
+        coordinator.activate(LATE_ACTIVE, activeDirectory);
     try {
       SessionCatalog.SweepResult result = coordinator.applyCleanup(catalogDirectory, stalePlan);
 
@@ -84,6 +88,19 @@ final class SessionMutationCoordinatorTest {
     } finally {
       openedAfterPlan.close();
     }
+  }
+
+  @Test
+  @DisplayName("session mutation keys must be canonical UUIDs")
+  void mutationKeysRejectAliasesAndPathText() {
+    SessionMutationCoordinator coordinator = new SessionMutationCoordinator();
+
+    assertThatThrownBy(() -> coordinator.activate("../../outside", tempDir))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("canonical UUID");
+    assertThatThrownBy(() -> coordinator.activate(ACTIVE.toUpperCase(), tempDir))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("canonical UUID");
   }
 
   @Test

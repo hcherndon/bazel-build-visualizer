@@ -3032,3 +3032,13 @@ it is a different tab and was not reported.
   tests cover persistence, migration, layout, capture explanations, wrap,
   modifier rejection, Terminal-like focus, and multi-window isolation. No
   dependency, schema, or new named limit was added.
+
+- **Portable archive adoption and file-import source integrity are hardened**
+  (2026-09-04). Archive indexes and process-wide mutation locks accept one
+  canonical UUID spelling. Adoption normalizes the managed sessions root and
+  proves both staging and final destinations stay beneath it before writing.
+  Format versions use exact-width conversion rather than a narrowing cast.
+  File import continues to hash while copying and parse the session-owned copy;
+  unsafe import-by-reference is explicitly refused for new imports and resume,
+  including the same-size, preserved-mtime mutation case. Focused archive,
+  coordinator, checkpoint, and importer regressions cover the seams.

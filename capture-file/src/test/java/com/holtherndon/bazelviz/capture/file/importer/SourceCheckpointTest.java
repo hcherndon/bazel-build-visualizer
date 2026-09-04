@@ -106,6 +106,31 @@ class SourceCheckpointTest {
   }
 
   @Test
+  @DisplayName("a checkpoint format version cannot wrap through a narrowing conversion")
+  void refusesAnOverflowingFormatVersion(@TempDir Path temporary) throws Exception {
+    Path file = temporary.resolve(SourceCheckpointStore.FILE_NAME);
+    Files.writeString(
+        file,
+        """
+        {
+          "formatVersion": 4294967297,
+          "sourceOffset": 0,
+          "framesWritten": 0,
+          "format": "BEP_BINARY",
+          "preservation": "COPY_INTO_SESSION",
+          "originalPath": "/tmp/build.bep",
+          "sha256": "abc",
+          "byteSize": 10
+        }
+        """);
+
+    assertThatThrownBy(() -> new SourceCheckpointStore(temporary).read())
+        .isInstanceOf(ImportFormatException.class)
+        .hasMessageContaining("formatVersion")
+        .hasMessageContaining("32-bit integer");
+  }
+
+  @Test
   @DisplayName("unreadable JSON is refused with the file named")
   void refusesMalformedJson(@TempDir Path temporary) throws Exception {
     Files.writeString(temporary.resolve(SourceCheckpointStore.FILE_NAME), "{ not json");

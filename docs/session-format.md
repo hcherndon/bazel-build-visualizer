@@ -12,6 +12,13 @@ The exception: the importer names `raw/imported-source.bep` and
 concerns, but the claim above is "owned exclusively" and this is where it
 does not hold today.
 
+File import copies the source into `raw/imported-source.bep`, hashing the bytes
+as they are written, and parses that immutable session-owned copy. The older
+`REFERENCE_ORIGINAL` checkpoint value remains readable only so the application
+can refuse it with a useful remedy. New and resumed imports do not use it: a
+mutable file can change between hashing and parsing while retaining its size
+and modification time, so it cannot meet the recorded-digest integrity claim.
+
 ## Managed session directory layout (plan 10.2)
 
 This is the layout `ManagedSessionLayout` creates. It is the plan's section
@@ -150,6 +157,7 @@ calls the file is not under this application's control.
 | bytes that do not match their SHA-256 | and the partial file is deleted rather than left behind |
 | more than the entry, size or expansion-ratio limits | counted from bytes the decompressor produced, never from the size an entry declares |
 | an archive claiming to be both redacted and complete | the raw capture *is* the unredacted bytes |
+| a session id that is not a canonical UUID | archive text cannot become a path component or acquire an alias spelling |
 | a format version this build does not know | refused rather than misread |
 
 Extraction into a directory that already holds files is refused too, and an

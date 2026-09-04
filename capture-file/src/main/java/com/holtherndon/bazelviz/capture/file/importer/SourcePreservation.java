@@ -27,19 +27,13 @@ public enum SourcePreservation {
   COPY_INTO_SESSION,
 
   /**
-   * Leave the source where it is and index it in place, recording a verified reference: absolute
-   * path, byte size, last-modified time and SHA-256.
+   * Reserved persisted value for sessions created by an earlier build; new imports refuse it.
    *
-   * <p>The digest is taken in a streaming pass before parsing, and size and modification time are
-   * re-checked after parsing; a change between the two is recorded as a diagnostic and the source's
-   * completeness becomes {@link com.holtherndon.bazelviz.core.source.Completeness#UNKNOWN}, because
-   * an import that read a file while it changed cannot honestly claim to have read all of it.
-   *
-   * <p>Failure mode: if the original moves, the reference dangles — the session keeps every event
-   * and every raw payload in its journal, so it stays fully inspectable, but it can no longer
-   * re-verify the digest or re-import from source. If the original is edited in place, the next
-   * verification reports a digest mismatch: the session cannot repair itself, but it says so rather
-   * than silently indexing different bytes.
+   * <p>A mutable file can change between a hashing pass and a parsing pass while retaining its size
+   * and modification time. That makes it impossible to prove that the recorded digest describes the
+   * parsed bytes. {@link BepImporter} therefore refuses this mode before creating or recovering a
+   * session. The enum value remains so an old checkpoint is decoded and refused with an explicit
+   * remedy rather than reported as an unknown future format.
    */
   REFERENCE_ORIGINAL
 }

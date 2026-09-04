@@ -4,6 +4,7 @@ java_library(
     name = "portable",
     srcs = glob(["*.java"]),
     deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
         "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
         "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json",
     ],

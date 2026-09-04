@@ -167,8 +167,8 @@ not select or reconnect a Workspace.
 
 ## 22.4 Archive and parser safety
 
-Every clause here is enforced by `BvizReader` and `BvizPaths`, and each has a
-test in `BvizArchiveTest` that builds a hostile archive by hand.
+The archive clauses are enforced by `BvizIndex`, `BvizReader`, `BvizPaths`, and
+`ArchiveImport`; hostile-format and adoption tests exercise each boundary.
 
 | Requirement | Status | How |
 |---|---|---|
@@ -177,6 +177,7 @@ test in `BvizArchiveTest` that builds a hostile archive by hand.
 | Limit entry count | Met | `BvizLimits.maxEntries`, 50,000. |
 | Reject duplicate manifest entries | Met | A path listed twice in the index, or present twice in the Zip, is refused: nothing says which copy a reader would get. |
 | Validate checksums | Met | SHA-256 per entry in `archive.json`, checked against the bytes actually decompressed. A Zip CRC-32 detects accidents and nothing else. |
+| Keep archive adoption beneath the sessions root | Met | `archive.json` accepts only the canonical UUID spelling; adoption normalizes the real managed root and independently proves both its destination and unique staging directory remain descendants before extraction or move. The process mutation coordinator applies the same UUID rule to leases and cleanup locks. |
 | Treat imported SQLite as untrusted | **Partially met — see below** | The schema version is validated on open and a mismatch is refused with the remedy. |
 | Never load native code from a session archive | Met | Not by refusing to load it: by never writing it. A `.dylib` is not a session file, so the allow-list refuses the entry. |
 
@@ -220,6 +221,15 @@ Every parser that reads somebody else's bytes is bounded, and the bounds are in
 `docs/limits.md`: BEP message size, JSON record size, JSON nesting depth,
 manifest size, journal payload size, and the archive limits above. Each refuses
 rather than truncating, and each records the refusal where the user can see it.
+Numeric format versions are read with exact-width conversions, so a value such
+as `2^32 + 1` cannot narrow to supported version 1.
+
+File import's default `COPY_INTO_SESSION` mode hashes bytes during the copy and
+parses that exact copy. The former `REFERENCE_ORIGINAL` mode is unavailable for
+new imports and resume: hashing and then reopening a mutable file cannot prove
+which bytes were parsed, and size plus modification time do not close that
+race. Its checkpoint enum value remains readable only to provide this explicit
+refusal and safe re-import remedy.
 
 ---
 

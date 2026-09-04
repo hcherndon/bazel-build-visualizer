@@ -5,11 +5,26 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /** What each identifier does and does not promise. */
 class IdentityTest {
+
+  @Test
+  @DisplayName("session ids have one canonical persisted spelling")
+  void sessionIdsRequireCanonicalSpellingAtBoundaries() {
+    String canonical = "0193f0aa-1111-7000-8000-000000000000";
+
+    assertThat(SessionId.parseCanonical(canonical).value()).isEqualTo(UUID.fromString(canonical));
+    assertThatThrownBy(() -> SessionId.parseCanonical("193f0aa-1111-7000-8000-000000000000"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("canonical UUID");
+    assertThatThrownBy(() -> SessionId.parseCanonical(canonical.toUpperCase()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("canonical UUID");
+  }
 
   @Test
   @DisplayName("one label in two configurations is two targets")

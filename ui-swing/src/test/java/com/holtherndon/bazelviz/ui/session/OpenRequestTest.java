@@ -135,6 +135,23 @@ final class OpenRequestTest {
   }
 
   @Test
+  @DisplayName("archive destinations are normalized and cannot escape the sessions root")
+  void archiveDestinationsStayInsideTheLibrary() throws Exception {
+    Path library = tempDir.resolve("nested/../library");
+
+    assertThat(ArchiveImport.destinationFor(library, "0193f0aa-1111-7000-8000-000000000000"))
+        .isEqualTo(
+            tempDir
+                .resolve("library/session-0193f0aa-1111-7000-8000-000000000000")
+                .toAbsolutePath()
+                .normalize());
+    assertThatThrownBy(() -> ArchiveImport.destinationFor(library, "../../outside"))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("canonical UUID")
+        .hasMessageContaining("no destination was created");
+  }
+
+  @Test
   @DisplayName("a rejected archive leaves nothing in the library")
   void aRejectedArchiveLeavesNothing() throws Exception {
     Path library = tempDir.resolve("library");

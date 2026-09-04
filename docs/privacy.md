@@ -22,6 +22,9 @@ user identity. The tool is local-first and treats captured data accordingly
   private mode-0700 remote staging directory, then SFTP copies them into the
   local session's `raw/` directory before they are parsed. Cleanup is limited
   to the exact generated file names and staging directory.
+- A file import likewise hashes while copying into the managed session and
+  parses that session-owned copy. Import-by-reference is unavailable because a
+  mutable source cannot make the same integrity promise.
 
 SSH host keys, agent use, jump hosts, authentication and connection policy come
 from the user's normal OpenSSH configuration. The application forces batch

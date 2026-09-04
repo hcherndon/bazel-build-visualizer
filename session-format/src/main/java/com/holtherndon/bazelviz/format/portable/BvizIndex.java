@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.format.portable;
 
+import com.holtherndon.bazelviz.core.id.SessionId;
 import com.holtherndon.bazelviz.format.session.json.JsonReader;
 import com.holtherndon.bazelviz.format.session.json.JsonValue;
 import com.holtherndon.bazelviz.format.session.json.JsonWriter;
@@ -51,7 +52,7 @@ public record BvizIndex(
 
   public BvizIndex {
     Objects.requireNonNull(appVersion, "appVersion");
-    Objects.requireNonNull(sessionId, "sessionId");
+    sessionId = canonicalSessionId(sessionId);
     Objects.requireNonNull(note, "note");
     entries = List.copyOf(entries);
   }
@@ -114,43 +115,64 @@ public record BvizIndex(
     if (!(parsed instanceof JsonValue.JsonObject object)) {
       throw new BvizFormatException(FILE_NAME + " must be a JSON object");
     }
-    int version = (int) number(object, "formatVersion");
-    if (version != FORMAT_VERSION) {
-      throw new BvizFormatException(
-          "this archive declares format version "
-              + version
-              + " and this application"
-              + " reads version "
-              + FORMAT_VERSION
-              + ". Opening it would mean guessing at a layout that has changed.");
-    }
-    List<Entry> entries = new ArrayList<>();
-    JsonValue list =
-        object
-            .member("entries")
-            .orElseThrow(() -> new BvizFormatException(FILE_NAME + " lists no entries"));
-    if (!(list instanceof JsonValue.JsonArray array)) {
-      throw new BvizFormatException(FILE_NAME + ": entries must be an array");
-    }
-    for (JsonValue element : array.elements()) {
-      if (!(element instanceof JsonValue.JsonObject entry)) {
-        throw new BvizFormatException(FILE_NAME + ": every entry must be an object");
+    try {
+      int version = integer(object, "formatVersion");
+      if (version != FORMAT_VERSION) {
+        throw new BvizFormatException(
+            "this archive declares format version "
+                + version
+                + " and this application"
+                + " reads version "
+                + FORMAT_VERSION
+                + ". Opening it would mean guessing at a layout that has changed.");
       }
-      entries.add(new Entry(text(entry, "path"), number(entry, "bytes"), text(entry, "sha256")));
+      List<Entry> entries = new ArrayList<>();
+      JsonValue list =
+          object
+              .member("entries")
+              .orElseThrow(() -> new BvizFormatException(FILE_NAME + " lists no entries"));
+      if (!(list instanceof JsonValue.JsonArray array)) {
+        throw new BvizFormatException(FILE_NAME + ": entries must be an array");
+      }
+      for (JsonValue element : array.elements()) {
+        if (!(element instanceof JsonValue.JsonObject entry)) {
+          throw new BvizFormatException(FILE_NAME + ": every entry must be an object");
+        }
+        long bytes = number(entry, "bytes");
+        if (bytes < 0) {
+          throw new BvizFormatException(FILE_NAME + ": an entry has a negative byte length");
+        }
+        entries.add(new Entry(text(entry, "path"), bytes, text(entry, "sha256")));
+      }
+      String sessionId = canonicalSessionIdValue(text(object, "sessionId"));
+      return new BvizIndex(
+          version,
+          text(object, "appVersion"),
+          sessionId,
+          number(object, "createdMicros"),
+          bool(object, "redacted"),
+          bool(object, "includesRawSources"),
+          object
+              .member("note")
+              .filter(JsonValue.JsonString.class::isInstance)
+              .map(value -> ((JsonValue.JsonString) value).value())
+              .orElse(""),
+          entries);
+    } catch (BvizFormatException malformed) {
+      throw malformed;
+    } catch (RuntimeException malformed) {
+      throw new BvizFormatException(FILE_NAME + " contains an invalid value", malformed);
     }
-    return new BvizIndex(
-        version,
-        text(object, "appVersion"),
-        text(object, "sessionId"),
-        number(object, "createdMicros"),
-        bool(object, "redacted"),
-        bool(object, "includesRawSources"),
-        object
-            .member("note")
-            .filter(JsonValue.JsonString.class::isInstance)
-            .map(value -> ((JsonValue.JsonString) value).value())
-            .orElse(""),
-        entries);
+  }
+
+  private static int integer(JsonValue.JsonObject object, String key) throws BvizFormatException {
+    JsonValue.JsonNumber number = numberValue(object, key);
+    try {
+      return number.asInt();
+    } catch (RuntimeException malformed) {
+      throw new BvizFormatException(
+          FILE_NAME + " number \"" + key + "\" must be an exact 32-bit integer", malformed);
+    }
   }
 
   private static String text(JsonValue.JsonObject object, String key) throws BvizFormatException {
@@ -163,10 +185,21 @@ public record BvizIndex(
   }
 
   private static long number(JsonValue.JsonObject object, String key) throws BvizFormatException {
+    JsonValue.JsonNumber number = numberValue(object, key);
+    try {
+      return number.asLong();
+    } catch (RuntimeException malformed) {
+      throw new BvizFormatException(
+          FILE_NAME + " number \"" + key + "\" must be an exact 64-bit integer", malformed);
+    }
+  }
+
+  private static JsonValue.JsonNumber numberValue(JsonValue.JsonObject object, String key)
+      throws BvizFormatException {
     return object
         .member(key)
         .filter(JsonValue.JsonNumber.class::isInstance)
-        .map(value -> ((JsonValue.JsonNumber) value).asLong())
+        .map(JsonValue.JsonNumber.class::cast)
         .orElseThrow(
             () -> new BvizFormatException(FILE_NAME + " is missing the number \"" + key + "\""));
   }
@@ -178,5 +211,22 @@ public record BvizIndex(
         .map(value -> ((JsonValue.JsonBool) value).value())
         .orElseThrow(
             () -> new BvizFormatException(FILE_NAME + " is missing the boolean \"" + key + "\""));
+  }
+
+  private static String canonicalSessionId(String value) {
+    try {
+      return SessionId.parseCanonical(value).toString();
+    } catch (IllegalArgumentException malformed) {
+      throw new IllegalArgumentException("sessionId must be a canonical UUID", malformed);
+    }
+  }
+
+  private static String canonicalSessionIdValue(String value) throws BvizFormatException {
+    try {
+      return canonicalSessionId(value);
+    } catch (IllegalArgumentException malformed) {
+      throw new BvizFormatException(
+          FILE_NAME + " string \"sessionId\" must be a canonical UUID", malformed);
+    }
   }
 }

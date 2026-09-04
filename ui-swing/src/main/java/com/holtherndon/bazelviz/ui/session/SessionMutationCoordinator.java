@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.session;
 
+import com.holtherndon.bazelviz.core.id.SessionId;
 import com.holtherndon.bazelviz.format.portable.BvizFormatException;
 import com.holtherndon.bazelviz.format.portable.BvizLimits;
 import com.holtherndon.bazelviz.format.portable.BvizReader;
@@ -230,10 +231,11 @@ public final class SessionMutationCoordinator {
 
   private static String requireUuid(String sessionUuid) {
     Objects.requireNonNull(sessionUuid, "sessionUuid");
-    if (sessionUuid.isBlank()) {
-      throw new IllegalArgumentException("sessionUuid must not be blank");
+    try {
+      return SessionId.parseCanonical(sessionUuid).toString();
+    } catch (IllegalArgumentException malformed) {
+      throw new IllegalArgumentException("sessionUuid must be a canonical UUID", malformed);
     }
-    return sessionUuid;
   }
 
   private static Path normalize(Path path) {

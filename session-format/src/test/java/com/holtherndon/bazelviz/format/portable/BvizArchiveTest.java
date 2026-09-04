@@ -28,6 +28,7 @@ import org.junit.jupiter.api.io.TempDir;
 final class BvizArchiveTest {
 
   private static final long CREATED = 1_700_000_000_000_000L;
+  private static final String SESSION_ID = "0193f0aa-1111-7000-8000-000000000000";
 
   @TempDir Path tempDir;
 
@@ -173,7 +174,7 @@ final class BvizArchiveTest {
         new BvizIndex(
             BvizIndex.FORMAT_VERSION,
             "0.1.0",
-            "s",
+            SESSION_ID,
             CREATED,
             /* redacted= */ true,
             /* includesRawSources= */ true,
@@ -235,7 +236,8 @@ final class BvizArchiveTest {
   void unlistedEntriesAreRefused() throws Exception {
     Path archive = tempDir.resolve("extra.bviz");
     BvizIndex index =
-        new BvizIndex(BvizIndex.FORMAT_VERSION, "0.1.0", "s", CREATED, false, false, "", List.of());
+        new BvizIndex(
+            BvizIndex.FORMAT_VERSION, "0.1.0", SESSION_ID, CREATED, false, false, "", List.of());
     writeRawArchive(archive, index, Map.of("manifest.json", "{}"));
 
     assertThatThrownBy(() -> BvizReader.validate(archive, BvizLimits.defaults()))
@@ -251,7 +253,7 @@ final class BvizArchiveTest {
         new BvizIndex(
             BvizIndex.FORMAT_VERSION,
             "0.1.0",
-            "s",
+            SESSION_ID,
             CREATED,
             false,
             false,
@@ -276,7 +278,7 @@ final class BvizArchiveTest {
         new BvizIndex(
             BvizIndex.FORMAT_VERSION,
             "0.1.0",
-            "s",
+            SESSION_ID,
             CREATED,
             false,
             false,
@@ -311,21 +313,49 @@ final class BvizArchiveTest {
   @DisplayName("a future format version is refused rather than misread")
   void futureVersionsAreRefused() throws Exception {
     Path archive = tempDir.resolve("future.bviz");
-    String json =
-        """
-        {"formatVersion":99,"appVersion":"9","sessionId":"s","createdMicros":1,
-         "redacted":false,"includesRawSources":false,"note":"","entries":[]}\
-        """;
-    try (OutputStream out = Files.newOutputStream(archive);
-        ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
-      zip.putNextEntry(new ZipEntry(BvizIndex.FILE_NAME));
-      zip.write(json.getBytes(StandardCharsets.UTF_8));
-      zip.closeEntry();
-    }
+    writeIndexOnly(archive, indexJson("99", SESSION_ID));
 
     assertThatThrownBy(() -> BvizReader.validate(archive, BvizLimits.defaults()))
         .isInstanceOf(BvizFormatException.class)
         .hasMessageContaining("format version 99");
+  }
+
+  @Test
+  @DisplayName("a format version cannot wrap through a narrowing integer conversion")
+  void overflowingFormatVersionsAreRefused() throws Exception {
+    Path archive = tempDir.resolve("overflow-version.bviz");
+    // 2^32 + 1 became 1 when cast to int, which made a hostile future format look supported.
+    writeIndexOnly(archive, indexJson("4294967297", SESSION_ID));
+
+    assertThatThrownBy(() -> BvizReader.validate(archive, BvizLimits.defaults()))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("formatVersion")
+        .hasMessageContaining("32-bit integer");
+  }
+
+  @Test
+  @DisplayName("archive session ids have one canonical UUID spelling")
+  void archiveSessionIdsMustBeCanonical() throws Exception {
+    assertThatThrownBy(
+            () ->
+                new BvizIndex(
+                    BvizIndex.FORMAT_VERSION,
+                    "0.1.0",
+                    "../outside",
+                    CREATED,
+                    false,
+                    false,
+                    "",
+                    List.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("canonical UUID");
+
+    Path archive = tempDir.resolve("hostile-session-id.bviz");
+    writeIndexOnly(archive, indexJson("1", "../../outside"));
+    assertThatThrownBy(() -> BvizReader.validate(archive, BvizLimits.defaults()))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("sessionId")
+        .hasMessageContaining("canonical UUID");
   }
 
   @Test
@@ -338,7 +368,7 @@ final class BvizArchiveTest {
         new BvizIndex(
             BvizIndex.FORMAT_VERSION,
             "0.1.0",
-            "s",
+            SESSION_ID,
             CREATED,
             false,
             false,
@@ -409,6 +439,23 @@ final class BvizArchiveTest {
     }
   }
 
+  private static void writeIndexOnly(Path archive, String json) throws Exception {
+    try (OutputStream out = Files.newOutputStream(archive);
+        ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
+      zip.putNextEntry(new ZipEntry(BvizIndex.FILE_NAME));
+      zip.write(json.getBytes(StandardCharsets.UTF_8));
+      zip.closeEntry();
+    }
+  }
+
+  private static String indexJson(String formatVersion, String sessionId) {
+    return """
+    {"formatVersion":%s,"appVersion":"0.1.0","sessionId":"%s","createdMicros":1,
+     "redacted":false,"includesRawSources":false,"note":"","entries":[]}
+    """
+        .formatted(formatVersion, sessionId);
+  }
+
   /** An archive whose index is valid and whose entry name is not. */
   private static void writeHostileArchive(Path archive, String name, String content)
       throws Exception {
@@ -417,7 +464,7 @@ final class BvizArchiveTest {
         new BvizIndex(
             BvizIndex.FORMAT_VERSION,
             "0.1.0",
-            "s",
+            SESSION_ID,
             CREATED,
             false,
             false,

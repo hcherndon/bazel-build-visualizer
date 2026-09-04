@@ -122,7 +122,7 @@ public record SourceCheckpoint(
       throw new ImportFormatException("source checkpoint is not a JSON object");
     }
     return new SourceCheckpoint(
-        (int) number(object, KEY_FORMAT_VERSION),
+        integer(object, KEY_FORMAT_VERSION),
         number(object, KEY_SOURCE_OFFSET),
         number(object, KEY_FRAMES_WRITTEN),
         enumValue(object, KEY_FORMAT, DetectedFormat.class),
@@ -132,16 +132,37 @@ public record SourceCheckpoint(
         number(object, KEY_BYTE_SIZE));
   }
 
+  private static int integer(JsonObject object, String key) throws ImportFormatException {
+    JsonValue member = numberMember(object, key);
+    try {
+      return ((JsonValue.JsonNumber) member).asInt();
+    } catch (RuntimeException malformed) {
+      throw new ImportFormatException(
+          "source checkpoint field \"" + key + "\" is not a 32-bit integer", malformed);
+    }
+  }
+
   private static long number(JsonObject object, String key) throws ImportFormatException {
+    JsonValue member = numberMember(object, key);
+    try {
+      return ((JsonValue.JsonNumber) member).asLong();
+    } catch (RuntimeException malformed) {
+      throw new ImportFormatException(
+          "source checkpoint field \"" + key + "\" is not a 64-bit integer", malformed);
+    }
+  }
+
+  private static JsonValue numberMember(JsonObject object, String key)
+      throws ImportFormatException {
     JsonValue member =
         object
             .member(key)
             .orElseThrow(
                 () -> new ImportFormatException("source checkpoint is missing \"" + key + "\""));
-    if (!(member instanceof JsonValue.JsonNumber n)) {
+    if (!(member instanceof JsonValue.JsonNumber number)) {
       throw new ImportFormatException("source checkpoint field \"" + key + "\" is not a number");
     }
-    return n.asLong();
+    return number;
   }
 
   private static String text(JsonObject object, String key) throws ImportFormatException {

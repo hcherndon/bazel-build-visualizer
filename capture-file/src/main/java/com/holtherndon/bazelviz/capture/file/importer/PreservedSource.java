@@ -8,9 +8,9 @@ import java.util.Optional;
  * The record of the original capture file that the session keeps, written before a single byte is
  * decoded (Phase 1 exit criterion "the original source is preserved").
  *
- * <p>The digest is the proof obligation: whichever {@link SourcePreservation} mode was used, {@link
- * #sha256} is the digest of the exact byte stream the importer went on to parse, so the session can
- * afterwards demonstrate that what it indexed is what it read.
+ * <p>The digest is the proof obligation: {@link #sha256} is computed while copying the source and
+ * is the digest of the exact session-owned byte stream the importer went on to parse. The session
+ * can therefore demonstrate that what it indexed is what it read.
  *
  * @param preservation which mode produced this record
  * @param originalPath absolute path the file was read from
@@ -18,16 +18,13 @@ import java.util.Optional;
  *     SourcePreservation#COPY_INTO_SESSION}
  * @param sha256 lower-case hex digest of the source bytes
  * @param byteSize size of the source in bytes
- * @param lastModifiedMillis last-modified time of the original when it was read, used to notice a
- *     reference source changing underneath
  */
 public record PreservedSource(
     SourcePreservation preservation,
     Path originalPath,
     Optional<Path> storedPath,
     String sha256,
-    long byteSize,
-    long lastModifiedMillis) {
+    long byteSize) {
 
   public PreservedSource {
     Objects.requireNonNull(preservation, "preservation");
