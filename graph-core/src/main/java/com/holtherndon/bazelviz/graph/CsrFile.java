@@ -68,8 +68,7 @@ public final class CsrFile {
 
     CRC32C crc = new CRC32C();
     ByteBuffer body =
-        ByteBuffer.allocate(
-                Math.toIntExact((nodeCount + 1) * Long.BYTES + edgeCount * Integer.BYTES))
+        ByteBuffer.allocate(checkedBodyBytes(file, nodeCount, edgeCount))
             .order(ByteOrder.LITTLE_ENDIAN);
     for (long node = 0; node <= nodeCount; node++) {
       body.putLong(node == nodeCount ? edgeCount : graph.neighborsBegin((int) node));
@@ -96,7 +95,9 @@ public final class CsrFile {
             StandardOpenOption.CREATE,
             StandardOpenOption.TRUNCATE_EXISTING,
             StandardOpenOption.WRITE)) {
-      channel.write(new ByteBuffer[] {header, body});
+      while (header.hasRemaining() || body.hasRemaining()) {
+        channel.write(new ByteBuffer[] {header, body});
+      }
       // Forced before the rename: an atomic rename of unflushed bytes is
       // an atomic rename of nothing.
       channel.force(true);
@@ -114,41 +115,10 @@ public final class CsrFile {
    */
   public static CsrGraph read(Path file) throws IOException {
     try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
-      long size = channel.size();
-      if (size < HEADER_BYTES) {
-        throw new CsrFormatException(file, "shorter than a header");
-      }
-      ByteBuffer header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-      channel.read(header);
-      header.flip();
-
-      byte[] magic = new byte[MAGIC.length];
-      header.get(magic);
-      if (!Arrays.equals(magic, MAGIC)) {
-        throw new CsrFormatException(file, "not a CSR index");
-      }
-      int version = header.getInt();
-      if (version != FORMAT_VERSION) {
-        // Refused rather than guessed at. An index whose layout this
-        // build does not know is rebuilt, which is cheap; reading it
-        // wrongly produces a graph that answers.
-        throw new CsrFormatException(
-            file, "format version " + version + ", and this build reads " + FORMAT_VERSION);
-      }
-      header.getInt();
-      long nodeCount = header.getLong();
-      long edgeCount = header.getLong();
-      long expected = header.getLong();
-
-      long bodyBytes = (nodeCount + 1) * Long.BYTES + edgeCount * Integer.BYTES;
-      if (size - HEADER_BYTES != bodyBytes) {
-        throw new CsrFormatException(
-            file,
-            "header promises "
-                + bodyBytes
-                + " bytes of graph and the file holds "
-                + (size - HEADER_BYTES));
-      }
+      ValidatedHeader header = readHeader(channel, file);
+      long nodeCount = header.nodeCount();
+      long edgeCount = header.edgeCount();
+      int bodyBytes = header.bodyBytes();
 
       ByteBuffer body =
           channel
@@ -156,7 +126,7 @@ public final class CsrFile {
               .order(ByteOrder.LITTLE_ENDIAN);
       CRC32C crc = new CRC32C();
       crc.update(body.duplicate());
-      if (crc.getValue() != expected) {
+      if (crc.getValue() != header.checksum()) {
         throw new CsrFormatException(file, "checksum does not match its contents");
       }
 
@@ -172,19 +142,87 @@ public final class CsrFile {
   /** The node and edge counts in a file's header, without reading its body. */
   public static Header headerOf(Path file) throws IOException {
     try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
-      ByteBuffer header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-      channel.read(header);
-      header.flip();
-      byte[] magic = new byte[MAGIC.length];
-      header.get(magic);
-      if (!Arrays.equals(magic, MAGIC)) {
-        throw new CsrFormatException(file, "not a CSR index");
-      }
-      int version = header.getInt();
-      header.getInt();
-      return new Header(version, header.getLong(), header.getLong(), header.getLong());
+      ValidatedHeader header = readHeader(channel, file);
+      return new Header(
+          header.formatVersion(), header.nodeCount(), header.edgeCount(), header.checksum());
     }
   }
+
+  private static ValidatedHeader readHeader(FileChannel channel, Path file) throws IOException {
+    long size = channel.size();
+    if (size < HEADER_BYTES) {
+      throw new CsrFormatException(file, "shorter than a header");
+    }
+    ByteBuffer bytes = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+    while (bytes.hasRemaining()) {
+      if (channel.read(bytes) < 0) {
+        throw new CsrFormatException(file, "shorter than a header");
+      }
+    }
+    bytes.flip();
+
+    byte[] magic = new byte[MAGIC.length];
+    bytes.get(magic);
+    if (!Arrays.equals(magic, MAGIC)) {
+      throw new CsrFormatException(file, "not a CSR index");
+    }
+    int version = bytes.getInt();
+    if (version != FORMAT_VERSION) {
+      // Refused rather than guessed at. An index whose layout this build does not know is rebuilt,
+      // which is cheap; reading it wrongly produces a graph that answers.
+      throw new CsrFormatException(
+          file, "format version " + version + ", and this build reads " + FORMAT_VERSION);
+    }
+    int flags = bytes.getInt();
+    if (flags != 0) {
+      throw new CsrFormatException(file, "unsupported flags " + flags);
+    }
+    long nodeCount = bytes.getLong();
+    long edgeCount = bytes.getLong();
+    long checksum = bytes.getLong();
+    int bodyBytes = checkedBodyBytes(file, nodeCount, edgeCount);
+    long actualBodyBytes = size - HEADER_BYTES;
+    if (actualBodyBytes != bodyBytes) {
+      throw new CsrFormatException(
+          file,
+          "header promises " + bodyBytes + " bytes of graph and the file holds " + actualBodyBytes);
+    }
+    return new ValidatedHeader(version, nodeCount, edgeCount, checksum, bodyBytes);
+  }
+
+  private static int checkedBodyBytes(Path file, long nodeCount, long edgeCount)
+      throws CsrFormatException {
+    if (nodeCount < 0) {
+      throw new CsrFormatException(file, "negative node count " + nodeCount);
+    }
+    if (edgeCount < 0) {
+      throw new CsrFormatException(file, "negative edge count " + edgeCount);
+    }
+    if (nodeCount > Integer.MAX_VALUE - 1L) {
+      throw new CsrFormatException(
+          file, "node count " + nodeCount + " does not fit the in-memory graph format");
+    }
+    if (edgeCount > Integer.MAX_VALUE) {
+      throw new CsrFormatException(
+          file, "edge count " + edgeCount + " does not fit the in-memory graph format");
+    }
+    long bodyBytes;
+    try {
+      long offsetBytes = Math.multiplyExact(Math.addExact(nodeCount, 1L), Long.BYTES);
+      long targetBytes = Math.multiplyExact(edgeCount, Integer.BYTES);
+      bodyBytes = Math.addExact(offsetBytes, targetBytes);
+    } catch (ArithmeticException overflow) {
+      throw new CsrFormatException(file, "node and edge counts overflow the body size");
+    }
+    if (bodyBytes > Integer.MAX_VALUE) {
+      throw new CsrFormatException(
+          file, "graph body of " + bodyBytes + " bytes is too large for one memory-mapped buffer");
+    }
+    return (int) bodyBytes;
+  }
+
+  private record ValidatedHeader(
+      int formatVersion, long nodeCount, long edgeCount, long checksum, int bodyBytes) {}
 
   /** What a file's header says about it. */
   public record Header(int formatVersion, long nodeCount, long edgeCount, long checksum) {}

@@ -3,7 +3,7 @@ package com.holtherndon.bazelviz.enrich.execlog;
 import com.google.devtools.build.lib.exec.Protos.ExecLogEntry;
 import com.google.devtools.build.lib.exec.Protos.SpawnMetrics;
 import com.google.protobuf.Duration;
-import com.google.protobuf.Timestamp;
+import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentCommand;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentCommand.Digest;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentCommand.EnvVar;
@@ -151,7 +151,7 @@ public final class CompactExecLogParser {
         OptionalInt.of(spawn.getExitCode()),
         spawn.getStatus().isEmpty() ? Optional.empty() : Optional.of(spawn.getStatus()),
         timing,
-        timing.startMicros().isEmpty() ? Optional.of(NO_START_REASON) : Optional.empty(),
+        startUnknownReason(spawn, timing),
         outputs,
         environment,
         spawn.getInputSetId() == 0 ? OptionalLong.empty() : OptionalLong.of(spawn.getInputSetId()),
@@ -174,6 +174,19 @@ public final class CompactExecLogParser {
    */
   private static final String NO_START_REASON = "this spawn's record carries no start time";
 
+  private static final String INVALID_START_REASON =
+      "this spawn's record carries a malformed or out-of-range start time";
+
+  private static Optional<String> startUnknownReason(ExecLogEntry.Spawn spawn, SpawnTiming timing) {
+    if (timing.startMicros().isPresent()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        spawn.hasMetrics() && spawn.getMetrics().hasStartTime()
+            ? INVALID_START_REASON
+            : NO_START_REASON);
+  }
+
   /**
    * A duration or timestamp is meaningful only when the submessage is present. {@code hasX()} is
    * what distinguishes "zero" from "absent", and a zero-length duration is treated as unknown for
@@ -183,7 +196,7 @@ public final class CompactExecLogParser {
   private static SpawnTiming timingOf(SpawnMetrics metrics) {
     return new SpawnTiming(
         metrics.hasStartTime()
-            ? OptionalLong.of(micros(metrics.getStartTime()))
+            ? ProtoTimes.timestampMicros(metrics.getStartTime())
             : OptionalLong.empty(),
         duration(metrics.hasTotalTime(), metrics.getTotalTime()),
         duration(metrics.hasExecutionWallTime(), metrics.getExecutionWallTime()),
@@ -205,12 +218,8 @@ public final class CompactExecLogParser {
     if (!present) {
       return OptionalLong.empty();
     }
-    long micros = duration.getSeconds() * 1_000_000L + duration.getNanos() / 1_000L;
-    return micros == 0 ? OptionalLong.empty() : OptionalLong.of(micros);
-  }
-
-  private static long micros(Timestamp timestamp) {
-    return timestamp.getSeconds() * 1_000_000L + timestamp.getNanos() / 1_000L;
+    OptionalLong micros = ProtoTimes.durationMicros(duration);
+    return micros.isPresent() && micros.getAsLong() > 0 ? micros : OptionalLong.empty();
   }
 
   /**

@@ -103,6 +103,60 @@ final class GraphExtractTest {
   }
 
   @Test
+  @DisplayName("a traversal bounds dependencies separately from nodes")
+  void edgeBudgetExhaustionIsReported() {
+    CsrGraph dense =
+        CsrBuilder.build(
+            6,
+            visitor -> {
+              for (int from = 0; from < 6; from++) {
+                for (int to = 0; to < 6; to++) {
+                  if (from != to) {
+                    visitor.edge(from, to);
+                  }
+                }
+              }
+            });
+
+    GraphExtract.Result limited = GraphExtract.dependents(dense, 0, 2, 6, 4);
+
+    assertThat(limited.nodes()).hasSize(6);
+    assertThat(limited.edges()).hasSize(4);
+    assertThat(limited.hitNodeLimit()).isFalse();
+    assertThat(limited.hitEdgeLimit()).isTrue();
+    assertThat(limited.isComplete()).isFalse();
+    assertThat(limited.describe()).contains("4-dependency budget");
+  }
+
+  @Test
+  @DisplayName("finishing exactly at both budgets is still complete")
+  void exactBudgetsAreNotReportedAsExhausted() {
+    GraphExtract.Result exact = GraphExtract.dependents(chain(5), 0, 10, 5, 4);
+
+    assertThat(exact.nodes()).hasSize(5);
+    assertThat(exact.edges()).hasSize(4);
+    assertThat(exact.hitNodeLimit()).isFalse();
+    assertThat(exact.hitEdgeLimit()).isFalse();
+    assertThat(exact.isComplete()).isTrue();
+  }
+
+  @Test
+  @DisplayName("a neighbourhood applies one budget to the merged result")
+  void neighbourhoodHonoursMergedBudgets() {
+    CsrGraph forward = chain(9);
+
+    GraphExtract.Result around =
+        GraphExtract.neighbourhood(forward, reverseOf(forward), 4, 8, 5, 3);
+
+    assertThat(around.nodes()).hasSize(5);
+    assertThat(around.edges()).hasSizeLessThanOrEqualTo(3);
+    assertThat(around.hitNodeLimit()).isTrue();
+    assertThat(around.hitEdgeLimit()).isTrue();
+    assertThat(around.edges())
+        .allSatisfy(edge -> assertThat(around.nodes()).contains(edge.from(), edge.to()));
+  }
+
+  @Test
   @DisplayName("a traversal that finished does not claim it was truncated")
   void completeTraversalsSayNothingAlarming() {
     GraphExtract.Result whole = GraphExtract.dependencies(chain(4), 0, 10, 100);

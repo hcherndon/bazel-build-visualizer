@@ -5,6 +5,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.UnknownFieldSet;
+import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -81,8 +82,8 @@ final class LegacySpawnFields {
     }
     try {
       Duration duration = Duration.parseFrom(values.getFirst());
-      long micros = duration.getSeconds() * 1_000_000L + duration.getNanos() / 1_000L;
-      return micros == 0 ? OptionalLong.empty() : OptionalLong.of(micros);
+      OptionalLong micros = ProtoTimes.durationMicros(duration);
+      return micros.isPresent() && micros.getAsLong() > 0 ? micros : OptionalLong.empty();
     } catch (InvalidProtocolBufferException notADuration) {
       // Field 17 held something else. Treating it as a duration anyway
       // would put an invented number on the row.

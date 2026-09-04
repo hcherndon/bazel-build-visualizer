@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.bepcodec.entity;
 
 import com.google.protobuf.Duration;
 import com.google.protobuf.Timestamp;
+import java.util.Objects;
 import java.util.OptionalLong;
 
 /**
@@ -24,14 +25,60 @@ public final class ProtoTimes {
 
   private ProtoTimes() {}
 
-  /** Epoch micros for a timestamp the caller has already confirmed is present. */
+  /** Epoch micros for a valid timestamp the caller has already confirmed is present. */
   public static long micros(Timestamp timestamp) {
-    return timestamp.getSeconds() * 1_000_000L + timestamp.getNanos() / 1_000L;
+    return timestampMicros(timestamp)
+        .orElseThrow(() -> new IllegalArgumentException("timestamp is outside protobuf's range"));
   }
 
-  /** Micros for a duration the caller has already confirmed is present. */
+  /** Micros for a valid duration the caller has already confirmed is present. */
   public static long micros(Duration duration) {
-    return duration.getSeconds() * 1_000_000L + duration.getNanos() / 1_000L;
+    return durationMicros(duration)
+        .orElseThrow(() -> new IllegalArgumentException("duration is outside protobuf's range"));
+  }
+
+  /** Epoch micros, or unavailable when the protobuf timestamp is malformed. */
+  public static OptionalLong timestampMicros(Timestamp timestamp) {
+    Objects.requireNonNull(timestamp, "timestamp");
+    long seconds = timestamp.getSeconds();
+    int nanos = timestamp.getNanos();
+    // google.protobuf.Timestamp is restricted to years 0001 through 9999, inclusive.
+    if (seconds < -62_135_596_800L
+        || seconds > 253_402_300_799L
+        || nanos < 0
+        || nanos > 999_999_999) {
+      return OptionalLong.empty();
+    }
+    return exactMicros(seconds, nanos);
+  }
+
+  /** Micros, or unavailable when the protobuf duration is malformed. */
+  public static OptionalLong durationMicros(Duration duration) {
+    Objects.requireNonNull(duration, "duration");
+    long seconds = duration.getSeconds();
+    int nanos = duration.getNanos();
+    // google.protobuf.Duration spans +/-10,000 years. Seconds and nanos must carry the same sign.
+    if (seconds < -315_576_000_000L
+        || seconds > 315_576_000_000L
+        || nanos < -999_999_999
+        || nanos > 999_999_999
+        || (seconds < 0 && nanos > 0)
+        || (seconds > 0 && nanos < 0)) {
+      return OptionalLong.empty();
+    }
+    return exactMicros(seconds, nanos);
+  }
+
+  /** Micros for a legacy millisecond field, or unavailable when multiplication would overflow. */
+  public static OptionalLong millisMicros(long millis) {
+    if (millis == 0L) {
+      return OptionalLong.empty();
+    }
+    try {
+      return OptionalLong.of(Math.multiplyExact(millis, 1_000L));
+    } catch (ArithmeticException overflow) {
+      return OptionalLong.empty();
+    }
   }
 
   /**
@@ -43,9 +90,9 @@ public final class ProtoTimes {
    */
   public static OptionalLong micros(boolean present, Timestamp timestamp, long millis) {
     if (present) {
-      return OptionalLong.of(micros(timestamp));
+      return timestampMicros(timestamp);
     }
-    return millis == 0L ? OptionalLong.empty() : OptionalLong.of(millis * 1_000L);
+    return millisMicros(millis);
   }
 
   /**
@@ -58,8 +105,19 @@ public final class ProtoTimes {
    */
   public static OptionalLong micros(boolean present, Duration duration, long millis) {
     if (present) {
-      return OptionalLong.of(micros(duration));
+      return durationMicros(duration);
     }
-    return millis == 0L ? OptionalLong.empty() : OptionalLong.of(millis * 1_000L);
+    return millisMicros(millis);
+  }
+
+  private static OptionalLong exactMicros(long seconds, int nanos) {
+    try {
+      return OptionalLong.of(
+          Math.addExact(Math.multiplyExact(seconds, 1_000_000L), nanos / 1_000L));
+    } catch (ArithmeticException overflow) {
+      // The documented protobuf ranges fit in a long at microsecond precision. Keep this guard at
+      // the conversion boundary so a future range change cannot silently wrap.
+      return OptionalLong.empty();
+    }
   }
 }

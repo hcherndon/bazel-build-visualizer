@@ -8,6 +8,7 @@ java_library(
     ],
     deps = [
         "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec:bepcodec",
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec/entity:entity",
         "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/json:json",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",

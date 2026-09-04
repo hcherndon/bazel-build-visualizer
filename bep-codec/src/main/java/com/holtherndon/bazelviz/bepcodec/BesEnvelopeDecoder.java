@@ -8,6 +8,7 @@ import com.google.devtools.build.v1.StreamId;
 import com.google.protobuf.CodedInputStream;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
+import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import java.io.IOException;
 import java.util.Objects;
@@ -179,7 +180,7 @@ public final class BesEnvelopeDecoder {
     if (time.getSeconds() == 0 && time.getNanos() == 0) {
       return OptionalLong.empty();
     }
-    return OptionalLong.of(time.getSeconds() * 1_000_000L + time.getNanos() / 1_000L);
+    return ProtoTimes.timestampMicros(time);
   }
 
   private static Optional<String> nonEmpty(String value) {

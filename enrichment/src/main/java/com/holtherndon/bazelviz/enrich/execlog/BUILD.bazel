@@ -12,6 +12,7 @@ java_library(
         "UnknownExecLogFormatException.java",
     ],
     deps = [
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec/entity:entity",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich:enrich",
         "//proto:proto",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich:enrich",

@@ -215,7 +215,7 @@ public final class EntityTranslator {
         span(hasTiming, timing.getExecutionPhaseTimeInMs()),
         span(hasTiming, timing.getActionsExecutionStartInMs()),
         timing.hasCriticalPathTime()
-            ? OptionalLong.of(ProtoTimes.micros(timing.getCriticalPathTime()))
+            ? ProtoTimes.durationMicros(timing.getCriticalPathTime())
             : OptionalLong.empty(),
         mnemonics,
         runners,
@@ -390,6 +390,17 @@ public final class EntityTranslator {
       return List.of();
     }
     ActionExecuted payload = event.getAction();
+    OptionalLong startMicros =
+        payload.hasStartTime()
+            ? ProtoTimes.timestampMicros(payload.getStartTime())
+            : OptionalLong.empty();
+    OptionalLong endMicros =
+        payload.hasEndTime()
+            ? ProtoTimes.timestampMicros(payload.getEndTime())
+            : OptionalLong.empty();
+    boolean invalidTime =
+        (payload.hasStartTime() && startMicros.isEmpty())
+            || (payload.hasEndTime() && endMicros.isEmpty());
     return List.of(
         new EntityCommand.ActionCompleted(
             primaryOutput,
@@ -404,13 +415,7 @@ public final class EntityTranslator {
             // omits it and a stored 0 would look like a reported result.
             payload.getSuccess() ? OptionalInt.empty() : OptionalInt.of(payload.getExitCode()),
             FailureDetailReader.read(payload.getFailureDetail()),
-            ActionTiming.of(
-                payload.hasStartTime()
-                    ? OptionalLong.of(ProtoTimes.micros(payload.getStartTime()))
-                    : OptionalLong.empty(),
-                payload.hasEndTime()
-                    ? OptionalLong.of(ProtoTimes.micros(payload.getEndTime()))
-                    : OptionalLong.empty()),
+            ActionTiming.ofValidated(startMicros, endMicros, invalidTime),
             payload.getCommandLineList(),
             uriOf(payload.hasStdout(), payload.getStdout()),
             uriOf(payload.hasStderr(), payload.getStderr())));

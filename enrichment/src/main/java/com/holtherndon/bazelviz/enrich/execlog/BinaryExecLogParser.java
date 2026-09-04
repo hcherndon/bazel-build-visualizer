@@ -4,7 +4,7 @@ import com.google.devtools.build.lib.exec.Protos.File;
 import com.google.devtools.build.lib.exec.Protos.SpawnExec;
 import com.google.devtools.build.lib.exec.Protos.SpawnMetrics;
 import com.google.protobuf.Duration;
-import com.google.protobuf.Timestamp;
+import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentCommand;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentCommand.Digest;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentCommand.EnvVar;
@@ -110,9 +110,11 @@ public final class BinaryExecLogParser {
     Optional<String> noStart =
         timing.startMicros().isEmpty()
             ? Optional.of(
-                LegacySpawnFields.looksLegacy(spawn)
-                    ? LegacySpawnFields.noStartReason()
-                    : "this spawn's record carries no start time")
+                spawn.hasMetrics() && spawn.getMetrics().hasStartTime()
+                    ? "this spawn's record carries a malformed or out-of-range start time"
+                    : LegacySpawnFields.looksLegacy(spawn)
+                        ? LegacySpawnFields.noStartReason()
+                        : "this spawn's record carries no start time")
             : Optional.empty();
 
     return new EnrichmentCommand.SpawnObserved(
@@ -151,7 +153,7 @@ public final class BinaryExecLogParser {
       SpawnMetrics metrics = spawn.getMetrics();
       return new SpawnTiming(
           metrics.hasStartTime()
-              ? OptionalLong.of(micros(metrics.getStartTime()))
+              ? ProtoTimes.timestampMicros(metrics.getStartTime())
               : OptionalLong.empty(),
           duration(metrics.hasTotalTime(), metrics.getTotalTime()),
           duration(metrics.hasExecutionWallTime(), metrics.getExecutionWallTime()),
@@ -176,12 +178,8 @@ public final class BinaryExecLogParser {
     if (!present) {
       return OptionalLong.empty();
     }
-    long micros = duration.getSeconds() * 1_000_000L + duration.getNanos() / 1_000L;
-    return micros == 0 ? OptionalLong.empty() : OptionalLong.of(micros);
-  }
-
-  private static long micros(Timestamp timestamp) {
-    return timestamp.getSeconds() * 1_000_000L + timestamp.getNanos() / 1_000L;
+    OptionalLong micros = ProtoTimes.durationMicros(duration);
+    return micros.isPresent() && micros.getAsLong() > 0 ? micros : OptionalLong.empty();
   }
 
   private static OptionalLong positive(long value) {

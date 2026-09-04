@@ -5,15 +5,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.ActionExecuted;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildStarted;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.NamedSetOfFiles;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.OutputGroup;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.TargetComplete;
+import com.google.protobuf.Timestamp;
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
 import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.events.DiagnosticCodes;
 import com.holtherndon.bazelviz.storage.events.DiagnosticEntry;
 import com.holtherndon.bazelviz.storage.events.EventQueries;
+import com.holtherndon.bazelviz.storage.events.EventSummary;
 import com.holtherndon.bazelviz.testsupport.bep.BepBinaryWriter;
 import java.nio.file.Path;
 import java.util.List;
@@ -95,6 +98,26 @@ class NormalizationAnomalyTest {
                     || entry.diagnostic().code().equals(DiagnosticCodes.UNDEFINED_FILE_SET));
   }
 
+  @Test
+  @DisplayName("an invalid event timestamp remains unavailable instead of wrapping")
+  void invalidEventTimestampIsUnavailable(@TempDir Path temporary) throws Exception {
+    Path source = temporary.resolve("invalid-time.bep");
+    BuildEvent event =
+        BuildEvent.newBuilder()
+            .setId(
+                BuildEventId.newBuilder()
+                    .setStarted(BuildEventId.BuildStartedId.getDefaultInstance()))
+            .setStarted(
+                BuildStarted.newBuilder()
+                    .setStartTime(Timestamp.newBuilder().setSeconds(Long.MAX_VALUE)))
+            .build();
+    BepBinaryWriter.write(source, List.of(event).iterator());
+
+    EventSummary stored = importAndReadFirstEvent(temporary, source);
+
+    assertThat(stored.eventMicros()).isEmpty();
+  }
+
   private static List<DiagnosticEntry> importAndReadDiagnostics(Path temporary, Path source)
       throws Exception {
     SessionManager sessions = new SessionManager(temporary.resolve("sessions"), "0.1.0-test");
@@ -103,6 +126,17 @@ class NormalizationAnomalyTest {
     try (SessionDatabase opened = SessionDatabase.open(database);
         EventQueries queries = new EventQueries(opened.newReadConnection())) {
       return queries.diagnosticsPage(OptionalLong.empty(), 200);
+    }
+  }
+
+  private static EventSummary importAndReadFirstEvent(Path temporary, Path source)
+      throws Exception {
+    SessionManager sessions = new SessionManager(temporary.resolve("sessions"), "0.1.0-test");
+    ImportResult imported = new BepImporter(sessions).importFile(source);
+    Path database = ManagedSessionLayout.at(imported.sessionRoot()).databaseFile();
+    try (SessionDatabase opened = SessionDatabase.open(database);
+        EventQueries queries = new EventQueries(opened.newReadConnection())) {
+      return queries.pageForward(OptionalLong.empty(), 1).events().getFirst();
     }
   }
 

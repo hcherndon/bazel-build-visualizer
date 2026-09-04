@@ -127,6 +127,57 @@ final class CsrFileTest {
   }
 
   @Test
+  @DisplayName("negative header counts are format errors")
+  void negativeCountsAreRefusedBeforeArithmetic() throws Exception {
+    Path negativeNodes = headerOnly("negative-nodes.csr", -1, 0);
+    Path negativeEdges = headerOnly("negative-edges.csr", 0, -1);
+
+    assertThatThrownBy(() -> CsrFile.read(negativeNodes))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("negative node count");
+    assertThatThrownBy(() -> CsrFile.headerOf(negativeEdges))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("negative edge count");
+  }
+
+  @Test
+  @DisplayName("header counts must fit Java arrays before allocation")
+  void countsOutsideArrayRangeAreRefused() throws Exception {
+    Path tooManyNodes = headerOnly("too-many-nodes.csr", Integer.MAX_VALUE, 0);
+    Path tooManyEdges = headerOnly("too-many-edges.csr", 0, (long) Integer.MAX_VALUE + 1L);
+
+    assertThatThrownBy(() -> CsrFile.read(tooManyNodes))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("node count")
+        .hasMessageContaining("does not fit");
+    assertThatThrownBy(() -> CsrFile.read(tooManyEdges))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("edge count")
+        .hasMessageContaining("does not fit");
+  }
+
+  @Test
+  @DisplayName("a body too large for one mapped buffer is refused before mapping")
+  void oversizedBodyIsRefusedBeforeMapping() throws Exception {
+    Path file = headerOnly("oversized-body.csr", Integer.MAX_VALUE - 1L, 0);
+
+    assertThatThrownBy(() -> CsrFile.read(file))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("too large for one memory-mapped buffer");
+  }
+
+  @Test
+  @DisplayName("header-only reads normalize short input to a format error")
+  void shortHeaderMetadataIsRefusedCleanly() throws Exception {
+    Path file = tempDir.resolve("short-header.csr");
+    Files.write(file, new byte[12]);
+
+    assertThatThrownBy(() -> CsrFile.headerOf(file))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("shorter than a header");
+  }
+
+  @Test
   @DisplayName("something that is not an index at all is refused")
   void foreignFileIsRefused() throws Exception {
     Path file = tempDir.resolve("notanindex.csr");
@@ -171,5 +222,18 @@ final class CsrFileTest {
     List<Integer> out = new ArrayList<>();
     graph.forEachNeighbor(node, out::add);
     return out;
+  }
+
+  private Path headerOnly(String name, long nodeCount, long edgeCount) throws Exception {
+    ByteBuffer header = ByteBuffer.allocate(CsrFile.HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+    header.put(CsrFile.MAGIC);
+    header.putInt(CsrFile.FORMAT_VERSION);
+    header.putInt(0);
+    header.putLong(nodeCount);
+    header.putLong(edgeCount);
+    header.putLong(0);
+    Path file = tempDir.resolve(name);
+    Files.write(file, header.array());
+    return file;
   }
 }

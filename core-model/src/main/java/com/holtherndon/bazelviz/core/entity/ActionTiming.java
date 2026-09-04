@@ -22,12 +22,12 @@ import java.util.OptionalLong;
  * </ul>
  *
  * <p>So a duration is derivable in a minority of cases, and the majority must be reported as
- * unknown rather than as zero (plan 11.4). {@link #unknownReason} says which of the three
- * situations produced the unknown, so a view can explain itself — "Bazel 7 does not report action
- * timings" is useful where a blank cell is not.
+ * unknown rather than as zero (plan 11.4). {@link #unknownReason} says which situations produced
+ * the unknown, so a view can explain itself — "Bazel 7 does not report action timings" is useful
+ * where a blank cell is not.
  *
- * <p>Both raw timestamps are kept even when the duration is unusable. They are what Bazel said, and
- * discarding them would make the 8.4.1 defect invisible to anyone re-reading the session later.
+ * <p>Both valid timestamps are kept even when the duration is unusable. An invalid value remains in
+ * the raw journal and is marked unavailable here, so it cannot wrap into a plausible time.
  *
  * @param startMicros epoch micros, empty when not reported
  * @param endMicros epoch micros, empty when not reported
@@ -51,6 +51,9 @@ public record ActionTiming(
 
   /** The end precedes the start. Stored, and refused as a duration. */
   public static final String END_BEFORE_START = "END_BEFORE_START";
+
+  /** At least one timestamp was present but outside protobuf's valid range. */
+  public static final String INVALID_REPORTED_VALUE = "INVALID_REPORTED_VALUE";
 
   public static final ActionTiming NONE =
       new ActionTiming(OptionalLong.empty(), OptionalLong.empty(), Optional.of(NOT_REPORTED));
@@ -84,6 +87,20 @@ public record ActionTiming(
       return new ActionTiming(start, end, Optional.of(ZERO_LENGTH_SPAN));
     }
     return new ActionTiming(start, end, Optional.empty());
+  }
+
+  /**
+   * Classifies range-checked timestamps while preserving that an unavailable value was reported.
+   *
+   * <p>The raw protobuf remains in the journal. This reason prevents a malformed timestamp from
+   * being described later as absent or as a legitimate zero.
+   */
+  public static ActionTiming ofValidated(
+      OptionalLong start, OptionalLong end, boolean hasInvalidReportedValue) {
+    if (hasInvalidReportedValue) {
+      return new ActionTiming(start, end, Optional.of(INVALID_REPORTED_VALUE));
+    }
+    return of(start, end);
   }
 
   /** The duration, present only when both ends are trustworthy. */

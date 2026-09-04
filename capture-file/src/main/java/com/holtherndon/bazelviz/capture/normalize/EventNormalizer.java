@@ -11,6 +11,7 @@ import com.holtherndon.bazelviz.bepcodec.BesEnvelopeDecoder;
 import com.holtherndon.bazelviz.bepcodec.DecodeResult;
 import com.holtherndon.bazelviz.bepcodec.EventIdDisplay;
 import com.holtherndon.bazelviz.bepcodec.EventIdKey;
+import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
 import com.holtherndon.bazelviz.capture.file.json.JsonBuildEventDecoder;
 import com.holtherndon.bazelviz.capture.file.json.JsonDecodeResult;
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
@@ -278,9 +279,9 @@ public final class EventNormalizer {
    */
   private static OptionalLong micros(Timestamp timestamp, long fallbackMillis) {
     if (timestamp != null && (timestamp.getSeconds() != 0 || timestamp.getNanos() != 0)) {
-      return OptionalLong.of(timestamp.getSeconds() * 1_000_000L + timestamp.getNanos() / 1_000L);
+      return ProtoTimes.timestampMicros(timestamp);
     }
-    return fallbackMillis != 0 ? OptionalLong.of(fallbackMillis * 1_000L) : OptionalLong.empty();
+    return ProtoTimes.millisMicros(fallbackMillis);
   }
 
   /** The invocation id, which only the {@code BuildStarted} event carries. */
