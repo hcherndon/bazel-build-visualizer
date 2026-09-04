@@ -4,6 +4,7 @@ java_library(
     name = "bepcodec",
     srcs = glob(["*.java"]),
     deps = [
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec/entity:entity",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",
         "//proto",

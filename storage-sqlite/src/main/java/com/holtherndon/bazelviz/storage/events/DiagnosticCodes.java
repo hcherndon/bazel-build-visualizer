@@ -27,6 +27,9 @@ public final class DiagnosticCodes {
   /** A payload decoded but carried fields unknown to this build. */
   public static final String UNKNOWN_FIELDS = "UNKNOWN_FIELDS";
 
+  /** A present protobuf time was malformed or could not fit the normalized representation. */
+  public static final String INVALID_TIME_VALUE = "INVALID_TIME_VALUE";
+
   /** The same (stream, sequence) arrived more than once; the repeat was ignored. */
   public static final String DUPLICATE_SEQUENCE = "DUPLICATE_SEQUENCE";
 

@@ -4,6 +4,7 @@ import io.grpc.KnownLength;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -52,33 +53,43 @@ final class RawBytesMarshaller implements MethodDescriptor.Marshaller<byte[]> {
       if (stream instanceof KnownLength) {
         int available = stream.available();
         if (available > maxMessageBytes) {
-          throw Status.RESOURCE_EXHAUSTED
-              .withDescription(
-                  "BES message of "
-                      + available
-                      + " bytes exceeds the "
-                      + maxMessageBytes
-                      + "-byte limit this capture accepts")
-              .asRuntimeException();
+          throw tooLarge(available + " bytes");
         }
       }
-      byte[] bytes = stream.readAllBytes();
-      if (bytes.length > maxMessageBytes) {
-        throw Status.RESOURCE_EXHAUSTED
-            .withDescription(
-                "BES message of "
-                    + bytes.length
-                    + " bytes exceeds the "
-                    + maxMessageBytes
-                    + "-byte limit this capture accepts")
-            .asRuntimeException();
+
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream(Math.min(maxMessageBytes, 16 * 1024));
+      byte[] buffer = new byte[16 * 1024];
+      while (true) {
+        int remaining = maxMessageBytes - bytes.size();
+        int requested = (int) Math.min(buffer.length, (long) remaining + 1L);
+        int read = stream.read(buffer, 0, requested);
+        if (read < 0) {
+          return bytes.toByteArray();
+        }
+        if (read == 0) {
+          continue;
+        }
+        if (read > remaining) {
+          throw tooLarge("at least " + ((long) maxMessageBytes + 1L) + " bytes");
+        }
+        bytes.write(buffer, 0, read);
       }
-      return bytes;
     } catch (IOException failure) {
       throw Status.INTERNAL
           .withDescription("could not read a BES message off the wire")
           .withCause(failure)
           .asRuntimeException();
     }
+  }
+
+  private RuntimeException tooLarge(String observedSize) {
+    return Status.RESOURCE_EXHAUSTED
+        .withDescription(
+            "BES message of "
+                + observedSize
+                + " exceeds the "
+                + maxMessageBytes
+                + "-byte limit this capture accepts")
+        .asRuntimeException();
   }
 }

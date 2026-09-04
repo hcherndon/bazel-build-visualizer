@@ -147,6 +147,21 @@ final class GraphLayoutServiceTest {
   }
 
   @Test
+  @DisplayName("rooted graph requests pass their edge budget to extraction")
+  void rootedEdgeBudgetIsApplied() throws Exception {
+    GraphLayoutService.Request request =
+        GraphLayoutService.Request.around(
+                GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 2, 6)
+            .withLimits(100, 2);
+
+    GraphLayoutService.Rendered rendered = await(request);
+
+    assertThat(rendered.extract().edges()).hasSize(2);
+    assertThat(rendered.extract().hitEdgeLimit()).isTrue();
+    assertThat(rendered.description()).contains("2-dependency budget");
+  }
+
+  @Test
   @DisplayName("model preparation runs off EDT and returns to EDT")
   void preparationKeepsLinearModelWorkOffTheEventThread() throws Exception {
     AtomicBoolean workWasEdt = new AtomicBoolean(true);

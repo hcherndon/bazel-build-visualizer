@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.bepcodec;
 
 import com.google.protobuf.ByteString;
+import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -34,6 +35,7 @@ import java.util.OptionalLong;
  * @param bazelEventBytes the inner BEP event, present only for {@link Kind#BAZEL_EVENT}
  * @param eventTimeMicros the envelope's {@code event_time}, which is Bazel's clock rather than ours
  *     and is therefore kept apart from receive time (plan 11.5)
+ * @param eventTimeState whether that time was absent, validly present, or malformed
  */
 public record BesEnvelope(
     Kind kind,
@@ -42,7 +44,8 @@ public record BesEnvelope(
     Optional<String> component,
     long sequence,
     Optional<ByteString> bazelEventBytes,
-    OptionalLong eventTimeMicros) {
+    OptionalLong eventTimeMicros,
+    ProtoTimes.State eventTimeState) {
 
   /** Which arm of {@code google.devtools.build.v1.BuildEvent}'s oneof was set. */
   public enum Kind {
@@ -74,9 +77,33 @@ public record BesEnvelope(
     component = Objects.requireNonNull(component, "component");
     bazelEventBytes = Objects.requireNonNull(bazelEventBytes, "bazelEventBytes");
     eventTimeMicros = Objects.requireNonNull(eventTimeMicros, "eventTimeMicros");
+    eventTimeState = Objects.requireNonNull(eventTimeState, "eventTimeState");
     if (kind.carriesBuildEvent() != bazelEventBytes.isPresent()) {
       throw new IllegalArgumentException(
           "envelope kind " + kind + " and the presence of inner event bytes disagree");
     }
+    if ((eventTimeState == ProtoTimes.State.PRESENT) != eventTimeMicros.isPresent()) {
+      throw new IllegalArgumentException("event time state disagrees with its value");
+    }
+  }
+
+  /** Compatibility constructor for callers predating explicit malformed-time state. */
+  public BesEnvelope(
+      Kind kind,
+      Optional<String> buildId,
+      Optional<String> invocationId,
+      Optional<String> component,
+      long sequence,
+      Optional<ByteString> bazelEventBytes,
+      OptionalLong eventTimeMicros) {
+    this(
+        kind,
+        buildId,
+        invocationId,
+        component,
+        sequence,
+        bazelEventBytes,
+        eventTimeMicros,
+        eventTimeMicros.isPresent() ? ProtoTimes.State.PRESENT : ProtoTimes.State.ABSENT);
   }
 }

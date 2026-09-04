@@ -1,8 +1,8 @@
 package com.holtherndon.bazelviz.analysis;
 
-import com.holtherndon.bazelviz.graph.Bfs;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -15,9 +15,9 @@ import java.util.List;
  * clause is why {@link Result} carries the totals it drew from alongside what it returned — a
  * caller cannot render this without having been handed the number it is not showing.
  *
- * <p>Plan 13.3 forbids computing a transitive closure, so every traversal here takes a node budget
- * and reports whether it hit it. A neighbourhood that ran out of budget is not a neighbourhood that
- * ended.
+ * <p>Plan 13.3 forbids computing a transitive closure, so every traversal here takes node and edge
+ * budgets and reports which one it hit. A neighbourhood that ran out of either budget is not a
+ * neighbourhood that ended.
  */
 public final class GraphExtract {
 
@@ -32,6 +32,7 @@ public final class GraphExtract {
    */
   public static final int DEFAULT_NODE_LIMIT = 50_000;
 
+  /** Default maximum dependency count for a detailed extraction. */
   public static final int DEFAULT_EDGE_LIMIT = 200_000;
 
   /**
@@ -44,7 +45,14 @@ public final class GraphExtract {
    * the rooted canvas modes.
    */
   public static Result dependencies(CsrGraph reverse, int source, int maxDepth, int nodeLimit) {
-    return traverse(reverse, source, maxDepth, nodeLimit, Direction.REVERSE, Mode.DEPENDENCIES);
+    return dependencies(reverse, source, maxDepth, nodeLimit, DEFAULT_EDGE_LIMIT);
+  }
+
+  /** {@link #dependencies(CsrGraph, int, int, int)}, with an explicit edge budget. */
+  public static Result dependencies(
+      CsrGraph reverse, int source, int maxDepth, int nodeLimit, int edgeLimit) {
+    return traverse(
+        reverse, source, maxDepth, nodeLimit, edgeLimit, Direction.REVERSE, Mode.DEPENDENCIES);
   }
 
   /**
@@ -52,7 +60,14 @@ public final class GraphExtract {
    * Plan 13.5's "reverse dependencies" mode.
    */
   public static Result dependents(CsrGraph forward, int source, int maxDepth, int nodeLimit) {
-    return traverse(forward, source, maxDepth, nodeLimit, Direction.FORWARD, Mode.DEPENDENTS);
+    return dependents(forward, source, maxDepth, nodeLimit, DEFAULT_EDGE_LIMIT);
+  }
+
+  /** {@link #dependents(CsrGraph, int, int, int)}, with an explicit edge budget. */
+  public static Result dependents(
+      CsrGraph forward, int source, int maxDepth, int nodeLimit, int edgeLimit) {
+    return traverse(
+        forward, source, maxDepth, nodeLimit, edgeLimit, Direction.FORWARD, Mode.DEPENDENTS);
   }
 
   /**
@@ -63,30 +78,60 @@ public final class GraphExtract {
    */
   public static Result neighbourhood(
       CsrGraph forward, CsrGraph reverse, int source, int maxDepth, int nodeLimit) {
-    Result out = traverse(forward, source, maxDepth, nodeLimit, Direction.FORWARD, Mode.DEPENDENTS);
-    Result back =
-        traverse(reverse, source, maxDepth, nodeLimit, Direction.REVERSE, Mode.DEPENDENCIES);
+    return neighbourhood(forward, reverse, source, maxDepth, nodeLimit, DEFAULT_EDGE_LIMIT);
+  }
 
-    List<Integer> merged = new ArrayList<>(out.nodes());
-    for (int node : back.nodes()) {
-      if (!merged.contains(node)) {
-        merged.add(node);
+  /** {@link #neighbourhood(CsrGraph, CsrGraph, int, int, int)}, with an edge budget. */
+  public static Result neighbourhood(
+      CsrGraph forward, CsrGraph reverse, int source, int maxDepth, int nodeLimit, int edgeLimit) {
+    Result out =
+        traverse(
+            forward, source, maxDepth, nodeLimit, edgeLimit, Direction.FORWARD, Mode.DEPENDENTS);
+    Result back =
+        traverse(
+            reverse, source, maxDepth, nodeLimit, edgeLimit, Direction.REVERSE, Mode.DEPENDENCIES);
+
+    LinkedHashSet<Integer> mergedNodes = new LinkedHashSet<>();
+    boolean hitNodeLimit = out.hitNodeLimit() || back.hitNodeLimit();
+    for (List<Integer> side : List.of(out.nodes(), back.nodes())) {
+      for (int node : side) {
+        if (mergedNodes.contains(node)) {
+          continue;
+        }
+        if (mergedNodes.size() >= nodeLimit) {
+          hitNodeLimit = true;
+          break;
+        }
+        mergedNodes.add(node);
       }
     }
-    List<Edge> edges = new ArrayList<>(out.edges());
-    for (Edge edge : back.edges()) {
-      if (!edges.contains(edge)) {
-        edges.add(edge);
+
+    LinkedHashSet<Edge> mergedEdges = new LinkedHashSet<>();
+    boolean hitEdgeLimit = out.hitEdgeLimit() || back.hitEdgeLimit();
+    for (List<Edge> side : List.of(out.edges(), back.edges())) {
+      for (Edge edge : side) {
+        if (!mergedNodes.contains(edge.from())
+            || !mergedNodes.contains(edge.to())
+            || mergedEdges.contains(edge)) {
+          continue;
+        }
+        if (mergedEdges.size() >= edgeLimit) {
+          hitEdgeLimit = true;
+          break;
+        }
+        mergedEdges.add(edge);
       }
     }
     return new Result(
         Mode.NEIGHBOURHOOD,
-        merged,
-        edges,
+        List.copyOf(mergedNodes),
+        List.copyOf(mergedEdges),
         out.totalNodes(),
         out.totalEdges(),
-        out.hitLimit() || back.hitLimit(),
-        nodeLimit);
+        nodeLimit,
+        edgeLimit,
+        hitNodeLimit,
+        hitEdgeLimit);
   }
 
   /**
@@ -119,8 +164,10 @@ public final class GraphExtract {
         edges,
         forward.nodeCount(),
         forward.edgeCount(),
+        nodeLimit,
+        edgeLimit,
         false,
-        nodes.size());
+        false);
   }
 
   /** Validates an explicit path before any node or edge list is copied. */
@@ -157,10 +204,22 @@ public final class GraphExtract {
    * most misleading view in the application.
    */
   public static Result whole(CsrGraph forward, int nodeLimit, int edgeLimit) {
+    requireTraversalLimits(nodeLimit, edgeLimit);
     long nodes = forward.nodeCount();
     long edges = forward.edgeCount();
-    if (nodes > nodeLimit || edges > edgeLimit) {
-      return new Result(Mode.WHOLE, List.of(), List.of(), nodes, edges, true, nodeLimit);
+    boolean hitNodeLimit = nodes > nodeLimit;
+    boolean hitEdgeLimit = edges > edgeLimit;
+    if (hitNodeLimit || hitEdgeLimit) {
+      return new Result(
+          Mode.WHOLE,
+          List.of(),
+          List.of(),
+          nodes,
+          edges,
+          nodeLimit,
+          edgeLimit,
+          hitNodeLimit,
+          hitEdgeLimit);
     }
     List<Integer> all = new ArrayList<>((int) nodes);
     List<Edge> allEdges = new ArrayList<>((int) edges);
@@ -169,7 +228,7 @@ public final class GraphExtract {
       int from = node;
       forward.forEachNeighbor(node, to -> allEdges.add(new Edge(from, to)));
     }
-    return new Result(Mode.WHOLE, all, allEdges, nodes, edges, false, nodeLimit);
+    return new Result(Mode.WHOLE, all, allEdges, nodes, edges, nodeLimit, edgeLimit, false, false);
   }
 
   private enum Direction {
@@ -178,36 +237,150 @@ public final class GraphExtract {
   }
 
   private static Result traverse(
-      CsrGraph graph, int source, int maxDepth, int nodeLimit, Direction direction, Mode mode) {
+      CsrGraph graph,
+      int source,
+      int maxDepth,
+      int nodeLimit,
+      int edgeLimit,
+      Direction direction,
+      Mode mode) {
+    requireTraversalLimits(nodeLimit, edgeLimit);
+    if (maxDepth < 0) {
+      throw new IllegalArgumentException("maxDepth must not be negative: " + maxDepth);
+    }
     int nodeCount = Math.toIntExact(graph.nodeCount());
     if (source < 0 || source >= nodeCount) {
       throw new IndexOutOfBoundsException("node " + source + " is outside a graph of " + nodeCount);
     }
-    List<Integer> visited = new ArrayList<>();
-    // Bfs already enforces both budgets; this collects what it visited.
-    long reached = new Bfs(graph).run(source, nodeLimit, maxDepth, visited::add);
 
-    boolean[] inside = new boolean[nodeCount];
-    for (int node : visited) {
-      inside[node] = true;
+    int boundedNodes = Math.min(nodeCount, nodeLimit);
+    List<Integer> visited = new ArrayList<>(Math.min(boundedNodes, 1_024));
+    VisitedNodes inside = new VisitedNodes();
+    visited.add(source);
+    inside.add(source);
+
+    boolean hitNodeLimit = false;
+    int levelStart = 0;
+    int levelEnd = 1;
+    int depth = 0;
+    traversal:
+    while (levelStart < levelEnd && depth < maxDepth) {
+      for (int at = levelStart; at < levelEnd; at++) {
+        int node = visited.get(at);
+        long neighborEnd = graph.neighborsEnd(node);
+        for (long edge = graph.neighborsBegin(node); edge < neighborEnd; edge++) {
+          int target = graph.neighborAt(edge);
+          if (inside.contains(target)) {
+            continue;
+          }
+          if (visited.size() >= boundedNodes) {
+            hitNodeLimit = true;
+            break traversal;
+          }
+          inside.add(target);
+          visited.add(target);
+        }
+      }
+      levelStart = levelEnd;
+      levelEnd = visited.size();
+      depth++;
     }
-    List<Edge> edges = new ArrayList<>();
-    for (int node : visited) {
-      int from = node;
-      graph.forEachNeighbor(
-          node,
-          to -> {
-            if (inside[to]) {
-              // Reversed back to producer-to-consumer, so a subgraph
-              // drawn from a reverse traversal has its arrows the right
-              // way round.
-              edges.add(direction == Direction.FORWARD ? new Edge(from, to) : new Edge(to, from));
-            }
-          });
+
+    List<Edge> edges = new ArrayList<>(Math.min(edgeLimit, 1_024));
+    boolean hitEdgeLimit = false;
+    edgeCollection:
+    for (int from : visited) {
+      long neighborEnd = graph.neighborsEnd(from);
+      for (long edge = graph.neighborsBegin(from); edge < neighborEnd; edge++) {
+        int to = graph.neighborAt(edge);
+        if (!inside.contains(to)) {
+          continue;
+        }
+        if (edges.size() >= edgeLimit) {
+          hitEdgeLimit = true;
+          break edgeCollection;
+        }
+        // Reversed back to producer-to-consumer, so a subgraph drawn from a reverse traversal has
+        // its arrows the right way round.
+        edges.add(direction == Direction.FORWARD ? new Edge(from, to) : new Edge(to, from));
+      }
     }
-    boolean hitLimit = reached >= nodeLimit;
     return new Result(
-        mode, visited, edges, graph.nodeCount(), graph.edgeCount(), hitLimit, nodeLimit);
+        mode,
+        visited,
+        edges,
+        graph.nodeCount(),
+        graph.edgeCount(),
+        nodeLimit,
+        edgeLimit,
+        hitNodeLimit,
+        hitEdgeLimit);
+  }
+
+  private static void requireTraversalLimits(int nodeLimit, int edgeLimit) {
+    if (nodeLimit <= 0) {
+      throw new IllegalArgumentException("nodeLimit must be positive: " + nodeLimit);
+    }
+    if (edgeLimit < 0) {
+      throw new IllegalArgumentException("edgeLimit must not be negative: " + edgeLimit);
+    }
+  }
+
+  /** A primitive, dynamically growing membership set whose memory follows visited nodes. */
+  private static final class VisitedNodes {
+
+    private int[] table = new int[16];
+    private int size;
+
+    boolean add(int node) {
+      if ((size + 1L) * 2L > table.length) {
+        grow();
+      }
+      return insert(table, node);
+    }
+
+    boolean contains(int node) {
+      int encoded = node + 1;
+      int at = slot(node, table.length);
+      while (table[at] != 0) {
+        if (table[at] == encoded) {
+          return true;
+        }
+        at = (at + 1) & (table.length - 1);
+      }
+      return false;
+    }
+
+    private boolean insert(int[] into, int node) {
+      int encoded = node + 1;
+      int at = slot(node, into.length);
+      while (into[at] != 0) {
+        if (into[at] == encoded) {
+          return false;
+        }
+        at = (at + 1) & (into.length - 1);
+      }
+      into[at] = encoded;
+      size++;
+      return true;
+    }
+
+    private void grow() {
+      int[] previous = table;
+      table = new int[Math.multiplyExact(previous.length, 2)];
+      size = 0;
+      for (int encoded : previous) {
+        if (encoded != 0) {
+          insert(table, encoded - 1);
+        }
+      }
+    }
+
+    private static int slot(int node, int capacity) {
+      int hash = node * 0x9e3779b9;
+      hash ^= hash >>> 16;
+      return hash & (capacity - 1);
+    }
   }
 
   /** Which of plan 13.5's display modes produced an extraction. */
@@ -273,8 +446,11 @@ public final class GraphExtract {
    *
    * @param totalNodes the whole graph's node count, whatever this extraction shows. Plan 13.6:
    *     exact totals remain visible.
-   * @param hitLimit whether the traversal stopped because it ran out of budget rather than because
-   *     it ran out of graph
+   * @param totalEdges the whole graph's edge count, including dependencies outside this extraction
+   * @param nodeLimit the node budget active for this extraction
+   * @param edgeLimit the edge budget active for this extraction
+   * @param hitNodeLimit whether node discovery stopped because it ran out of node budget
+   * @param hitEdgeLimit whether dependency collection stopped because it ran out of edge budget
    */
   public record Result(
       Mode mode,
@@ -282,17 +458,54 @@ public final class GraphExtract {
       List<Edge> edges,
       long totalNodes,
       long totalEdges,
-      boolean hitLimit,
-      int nodeLimit) {
+      int nodeLimit,
+      int edgeLimit,
+      boolean hitNodeLimit,
+      boolean hitEdgeLimit) {
+
+    /**
+     * Source-compatible constructor for callers that predate the separate edge-limit status.
+     *
+     * <p>The old API exposed only {@code nodeLimit}, so its flag remains a node-limit hit. New
+     * callers that can omit edges must use the canonical constructor and state both causes.
+     */
+    @Deprecated
+    public Result(
+        Mode mode,
+        List<Integer> nodes,
+        List<Edge> edges,
+        long totalNodes,
+        long totalEdges,
+        boolean hitLimit,
+        int nodeLimit) {
+      this(
+          mode,
+          nodes,
+          edges,
+          totalNodes,
+          totalEdges,
+          nodeLimit,
+          DEFAULT_EDGE_LIMIT,
+          hitLimit,
+          false);
+    }
 
     public Result {
       nodes = List.copyOf(nodes);
       edges = List.copyOf(edges);
+      if (nodeLimit < 0 || edgeLimit < 0) {
+        throw new IllegalArgumentException("result budgets must not be negative");
+      }
+    }
+
+    /** True when either output budget omitted part of what the query asked for. */
+    public boolean hitLimit() {
+      return hitNodeLimit || hitEdgeLimit;
     }
 
     /** True when this is the whole of what the query asked for. */
     public boolean isComplete() {
-      return !hitLimit;
+      return !hitLimit();
     }
 
     /**
@@ -317,19 +530,21 @@ public final class GraphExtract {
      * @param noun what one node is — {@code "action"} or {@code "target"}
      */
     public String describe(String noun) {
-      if (mode == Mode.WHOLE && hitLimit) {
+      if (mode == Mode.WHOLE && hitLimit()) {
         return "This build has "
             + totalNodes
             + " "
             + noun
             + "s and "
             + totalEdges
-            + " dependencies, which is more than the "
+            + " dependencies, which exceeds the detailed drawing budget of "
             + nodeLimit
             + "-"
             + noun
-            + " limit for a detailed drawing. Nothing is hidden — raise"
-            + " the limit, narrow the filter, or switch to the cluster view.";
+            + "s and "
+            + edgeLimit
+            + " dependencies. Nothing is hidden — nothing was drawn; raise the relevant limit,"
+            + " narrow the filter, or switch to the cluster view.";
       }
       StringBuilder text = new StringBuilder();
       text.append(mode.displayName(noun))
@@ -339,13 +554,25 @@ public final class GraphExtract {
           .append(" and ")
           .append(edges.size())
           .append(edges.size() == 1 ? " dependency" : " dependencies");
-      text.append(", from a graph of ").append(totalNodes).append('.');
-      if (hitLimit) {
-        text.append(" The search stopped at its ")
-            .append(nodeLimit)
-            .append("-")
-            .append(noun)
-            .append(" budget, so there is more beyond what is drawn.");
+      text.append(", from a graph of ")
+          .append(totalNodes)
+          .append(' ')
+          .append(noun)
+          .append("s and ")
+          .append(totalEdges)
+          .append(" dependencies.");
+      if (hitLimit()) {
+        text.append(" The search stopped at its ");
+        if (hitNodeLimit) {
+          text.append(nodeLimit).append('-').append(noun).append(" budget");
+        }
+        if (hitNodeLimit && hitEdgeLimit) {
+          text.append(" and its ");
+        }
+        if (hitEdgeLimit) {
+          text.append(edgeLimit).append("-dependency budget");
+        }
+        text.append(", so there is more beyond what is drawn.");
       }
       return text.toString();
     }

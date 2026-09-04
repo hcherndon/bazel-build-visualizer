@@ -12,9 +12,11 @@ java_library(
     deps = JUNIT_DEPS + [
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich:enrich",
         "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/execlog:execlog",
+        "//proto:proto",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich:enrich",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+        "@maven//:com_google_protobuf_protobuf_java",
     ],
     resources = ["//enrichment/src/test/resources:resources"],
     testonly = True,

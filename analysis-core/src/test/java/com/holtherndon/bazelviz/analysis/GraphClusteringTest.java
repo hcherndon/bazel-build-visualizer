@@ -175,6 +175,10 @@ final class GraphClusteringTest {
         .contains("6 groups")
         .contains("Nothing is hidden")
         .contains("coarser");
+    GraphExtract.Result extract = result.asExtract();
+    assertThat(extract.hitNodeLimit()).isTrue();
+    assertThat(extract.hitEdgeLimit()).isFalse();
+    assertThat(extract.nodeLimit()).isEqualTo(3);
   }
 
   @Test
@@ -203,6 +207,7 @@ final class GraphClusteringTest {
     GraphExtract.Result extract = result.asExtract();
     assertThat(extract.mode()).isEqualTo(GraphExtract.Mode.CLUSTERS);
     assertThat(extract.nodes()).containsExactly(0, 1);
+    assertThat(extract.edgeLimit()).isGreaterThanOrEqualTo(extract.edges().size());
     // And the totals it carries are the real graph's, not the cluster
     // count -- plan 13.6's "exact totals remain visible" survives the
     // aggregation.

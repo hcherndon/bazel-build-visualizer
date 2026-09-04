@@ -5,6 +5,8 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.UnknownFieldSet;
+import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
+import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -69,24 +71,38 @@ final class LegacySpawnFields {
   /**
    * The wall time, from field 17, in microseconds.
    *
-   * <p>The field holds a {@code Duration} submessage, so its bytes are parsed as one. A zero-length
-   * duration reads as unknown rather than as an instantaneous spawn — a spawn that took no
-   * measurable time did not take zero time.
+   * <p>The field holds a {@code Duration} submessage, so its bytes are parsed as one. Presence
+   * distinguishes a reported zero from an absent field. Malformed and negative values fail the
+   * enrichment explicitly instead of being stored as either state.
    */
-  static OptionalLong walltimeMicros(SpawnExec spawn) {
-    List<ByteString> values =
-        spawn.getUnknownFields().getField(WALLTIME_FIELD).getLengthDelimitedList();
+  static OptionalLong walltimeMicros(SpawnExec spawn) throws IOException {
+    UnknownFieldSet.Field field = spawn.getUnknownFields().getField(WALLTIME_FIELD);
+    if (!field.getVarintList().isEmpty()
+        || !field.getFixed32List().isEmpty()
+        || !field.getFixed64List().isEmpty()
+        || !field.getGroupList().isEmpty()) {
+      throw new IOException(
+          "legacy execution-log walltime uses a wire type other than length-delimited Duration");
+    }
+    List<ByteString> values = field.getLengthDelimitedList();
     if (values.isEmpty()) {
       return OptionalLong.empty();
     }
     try {
-      Duration duration = Duration.parseFrom(values.getFirst());
-      long micros = duration.getSeconds() * 1_000_000L + duration.getNanos() / 1_000L;
-      return micros == 0 ? OptionalLong.empty() : OptionalLong.of(micros);
+      Duration.Builder duration = Duration.newBuilder();
+      for (ByteString value : values) {
+        duration.mergeFrom(value);
+      }
+      ProtoTimes.Checked checked = ProtoTimes.checkedNonnegativeDurationMicros(duration.build());
+      if (checked.isInvalid()) {
+        throw new IOException(
+            "legacy execution-log walltime is malformed, negative, or outside microsecond"
+                + " representation");
+      }
+      return checked.micros();
     } catch (InvalidProtocolBufferException notADuration) {
-      // Field 17 held something else. Treating it as a duration anyway
-      // would put an invented number on the row.
-      return OptionalLong.empty();
+      throw new IOException(
+          "legacy execution-log walltime is not a protobuf Duration", notADuration);
     }
   }
 

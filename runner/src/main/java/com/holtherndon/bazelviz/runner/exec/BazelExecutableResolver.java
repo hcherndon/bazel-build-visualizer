@@ -153,6 +153,10 @@ public final class BazelExecutableResolver {
       throw new ExecutableNotUsableException(entered, "could not run it: " + failure);
     }
 
+    if (result.outputTruncated()) {
+      throw new ExecutableNotUsableException(entered, result.failureDetail());
+    }
+
     String output = result.stdout() + (result.stderr().isBlank() ? "" : "\n" + result.stderr());
     Optional<String> version =
         findFirst(SHORT_VERSION, output).or(() -> findFirst(BUILD_LABEL, output));

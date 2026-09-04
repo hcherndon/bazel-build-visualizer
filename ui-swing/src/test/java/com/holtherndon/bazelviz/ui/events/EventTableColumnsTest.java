@@ -72,6 +72,14 @@ class EventTableColumnsTest {
   }
 
   @Test
+  @DisplayName("a present epoch timestamp renders as the epoch rather than unknown")
+  void epochTimestampIsNotAbsence() {
+    assertThat(EventValueFormat.timestamp(OptionalLong.of(0)))
+        .isEqualTo("1970-01-01 00:00:00.000000")
+        .isNotEqualTo(EventValueFormat.UNKNOWN);
+  }
+
+  @Test
   @DisplayName("a decoded event with no id of its own shows an em dash")
   void eventWithoutAnIdIsUnknownNotBlank() {
     EventRow row =

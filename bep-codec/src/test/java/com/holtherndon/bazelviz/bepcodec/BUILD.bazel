@@ -8,8 +8,11 @@ java_library(
     srcs = glob(["*.java"]),
     deps = JUNIT_DEPS + [
         "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec",
+        "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec/entity",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/entity",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",
         "//proto",
+        "@maven//:com_google_protobuf_protobuf_java",
     ],
 )
 
@@ -49,6 +52,13 @@ java_junit5_test(
 )
 
 java_junit5_test(
+    name = "ProtoTimesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.bepcodec.entity.ProtoTimesTest",
+)
+
+java_junit5_test(
     name = "Murmur3Hash128Test",
     jvm_flags = TEST_JVM_FLAGS,
     runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
@@ -64,6 +74,7 @@ test_suite(
         ":EventIdDisplayTest",
         ":EventIdKeyTest",
         ":Murmur3Hash128Test",
+        ":ProtoTimesTest",
     ],
     visibility = ["//visibility:public"],
 )

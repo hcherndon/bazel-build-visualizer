@@ -470,17 +470,26 @@ public final class GraphLayoutService implements AutoCloseable {
           // and the trees showed a leaf compile as depending on the linker.
           case DEPENDENCIES ->
               GraphExtract.dependencies(
-                  reverse(request), request.sourceNode(), request.maxDepth(), request.nodeLimit());
+                  reverse(request),
+                  request.sourceNode(),
+                  request.maxDepth(),
+                  request.nodeLimit(),
+                  request.edgeLimit());
           case DEPENDENTS ->
               GraphExtract.dependents(
-                  graph, request.sourceNode(), request.maxDepth(), request.nodeLimit());
+                  graph,
+                  request.sourceNode(),
+                  request.maxDepth(),
+                  request.nodeLimit(),
+                  request.edgeLimit());
           case NEIGHBOURHOOD ->
               GraphExtract.neighbourhood(
                   graph,
                   reverse(request),
                   request.sourceNode(),
                   request.maxDepth(),
-                  request.nodeLimit());
+                  request.nodeLimit(),
+                  request.edgeLimit());
           case WHOLE -> GraphExtract.whole(graph, request.nodeLimit(), request.edgeLimit());
           // A path's nodes come from a search the caller already ran, so it
           // cannot be recomputed from the request alone.
@@ -676,7 +685,15 @@ public final class GraphLayoutService implements AutoCloseable {
       return new Rendered(
           request,
           new GraphExtract.Result(
-              request.mode(), List.of(), List.of(), 0, 0, false, request.nodeLimit()),
+              request.mode(),
+              List.of(),
+              List.of(),
+              0,
+              0,
+              request.nodeLimit(),
+              request.edgeLimit(),
+              false,
+              false),
           GraphLayout.Result.empty(request.layout()),
           null,
           explanation);

@@ -3,8 +3,17 @@ package com.holtherndon.bazelviz.enrich.execlog;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.google.devtools.build.lib.exec.Protos.ExecLogEntry;
+import com.google.devtools.build.lib.exec.Protos.SpawnExec;
+import com.google.devtools.build.lib.exec.Protos.SpawnMetrics;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Duration;
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.UnknownFieldSet;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentCommand;
 import com.holtherndon.bazelviz.core.enrich.ExecLogFormat;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -217,6 +226,162 @@ final class ExecLogParserTest {
     assertThat(spawns).allSatisfy(spawn -> assertThat(spawn.timing().startMicros()).isPresent());
   }
 
+  @Test
+  @DisplayName("compact timing outside protobuf's range is a controlled parse failure")
+  void compactRejectsOverflowingTiming() throws Exception {
+    SpawnMetrics metrics =
+        SpawnMetrics.newBuilder()
+            .setStartTime(Timestamp.newBuilder().setSeconds(Long.MAX_VALUE))
+            .setTotalTime(Duration.newBuilder().setSeconds(Long.MAX_VALUE))
+            .build();
+    ExecLogEntry entry =
+        ExecLogEntry.newBuilder()
+            .setSpawn(ExecLogEntry.Spawn.newBuilder().setMetrics(metrics))
+            .build();
+
+    assertThatThrownBy(() -> parseCompact(entry))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("entry 0")
+        .hasMessageContaining("metrics.start_time");
+  }
+
+  @Test
+  @DisplayName("binary malformed timing is a controlled parse failure")
+  void binaryRejectsMalformedTiming() throws Exception {
+    SpawnMetrics metrics =
+        SpawnMetrics.newBuilder()
+            .setStartTime(Timestamp.newBuilder().setNanos(-1))
+            .setTotalTime(Duration.newBuilder().setSeconds(1).setNanos(-1))
+            .build();
+
+    assertThatThrownBy(() -> parseBinary(SpawnExec.newBuilder().setMetrics(metrics).build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("entry 0")
+        .hasMessageContaining("metrics.start_time");
+  }
+
+  @Test
+  @DisplayName("legacy walltime outside protobuf's range is a controlled parse failure")
+  void legacyRejectsOverflowingWalltime() throws Exception {
+    ByteString invalidDuration =
+        Duration.newBuilder().setSeconds(Long.MAX_VALUE).build().toByteString();
+    UnknownFieldSet unknownFields =
+        UnknownFieldSet.newBuilder()
+            .addField(
+                17, UnknownFieldSet.Field.newBuilder().addLengthDelimited(invalidDuration).build())
+            .build();
+
+    assertThatThrownBy(
+            () -> parseBinary(SpawnExec.newBuilder().setUnknownFields(unknownFields).build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("legacy execution-log walltime");
+  }
+
+  @Test
+  @DisplayName("legacy walltime with the wrong outer wire type is explicitly malformed")
+  void legacyRejectsWrongWalltimeWireType() {
+    UnknownFieldSet unknownFields =
+        UnknownFieldSet.newBuilder()
+            .addField(17, UnknownFieldSet.Field.newBuilder().addVarint(1).build())
+            .build();
+
+    assertThatThrownBy(
+            () -> parseBinary(SpawnExec.newBuilder().setUnknownFields(unknownFields).build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("wire type");
+  }
+
+  @Test
+  @DisplayName("modern metrics cannot hide a malformed legacy walltime")
+  void metricsDoNotBypassLegacyWalltimeValidation() {
+    SpawnMetrics metrics =
+        SpawnMetrics.newBuilder().setTotalTime(Duration.newBuilder().setSeconds(1)).build();
+    UnknownFieldSet unknownFields =
+        UnknownFieldSet.newBuilder()
+            .addField(17, UnknownFieldSet.Field.newBuilder().addVarint(1).build())
+            .build();
+
+    assertThatThrownBy(
+            () ->
+                parseBinary(
+                    SpawnExec.newBuilder()
+                        .setMetrics(metrics)
+                        .setUnknownFields(unknownFields)
+                        .build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("wire type");
+  }
+
+  @Test
+  @DisplayName("a malformed later legacy walltime occurrence cannot be ignored")
+  void legacyRejectsMalformedDuplicateWalltime() {
+    ByteString validDuration = Duration.newBuilder().setSeconds(1).build().toByteString();
+    ByteString malformedDuration = ByteString.copyFrom(new byte[] {(byte) 0x80});
+    UnknownFieldSet unknownFields =
+        UnknownFieldSet.newBuilder()
+            .addField(
+                17,
+                UnknownFieldSet.Field.newBuilder()
+                    .addLengthDelimited(validDuration)
+                    .addLengthDelimited(malformedDuration)
+                    .build())
+            .build();
+
+    assertThatThrownBy(
+            () -> parseBinary(SpawnExec.newBuilder().setUnknownFields(unknownFields).build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("legacy execution-log walltime")
+        .hasMessageContaining("not a protobuf Duration");
+  }
+
+  @Test
+  @DisplayName("present zero exec-log times remain distinct from absent times")
+  void zeroAndAbsentTimesStayDistinct() throws Exception {
+    SpawnMetrics zero =
+        SpawnMetrics.newBuilder()
+            .setStartTime(Timestamp.getDefaultInstance())
+            .setTotalTime(Duration.getDefaultInstance())
+            .build();
+
+    EnrichmentCommand.SpawnObserved compactZero =
+        onlySpawn(
+            parseCompact(
+                ExecLogEntry.newBuilder()
+                    .setSpawn(ExecLogEntry.Spawn.newBuilder().setMetrics(zero))
+                    .build()));
+    EnrichmentCommand.SpawnObserved compactAbsent =
+        onlySpawn(
+            parseCompact(
+                ExecLogEntry.newBuilder().setSpawn(ExecLogEntry.Spawn.newBuilder()).build()));
+    EnrichmentCommand.SpawnObserved binaryZero =
+        onlySpawn(parseBinary(SpawnExec.newBuilder().setMetrics(zero).build()));
+
+    assertThat(compactZero.timing().startMicros()).hasValue(0L);
+    assertThat(compactZero.timing().totalMicros()).hasValue(0L);
+    assertThat(compactZero.startUnknownReason()).isEmpty();
+    assertThat(compactAbsent.timing().startMicros()).isEmpty();
+    assertThat(compactAbsent.timing().totalMicros()).isEmpty();
+    assertThat(binaryZero.timing().startMicros()).hasValue(0L);
+    assertThat(binaryZero.timing().totalMicros()).hasValue(0L);
+  }
+
+  @Test
+  @DisplayName("malformed exec-log duration cannot be mistaken for absence")
+  void malformedDurationIsExplicit() {
+    SpawnMetrics invalid =
+        SpawnMetrics.newBuilder()
+            .setTotalTime(Duration.newBuilder().setSeconds(1).setNanos(-1))
+            .build();
+    ExecLogEntry entry =
+        ExecLogEntry.newBuilder()
+            .setSpawn(ExecLogEntry.Spawn.newBuilder().setMetrics(invalid))
+            .build();
+
+    assertThatThrownBy(() -> parseCompact(entry))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("metrics.total_time");
+  }
+
   // ------------------------------------------------------------- redaction
 
   @Test
@@ -269,6 +434,30 @@ final class ExecLogParserTest {
       new BinaryExecLogParser(commands::add, EnvironmentRedactor.none()).parse(source.stream());
     }
     return commands;
+  }
+
+  private static List<EnrichmentCommand> parseCompact(ExecLogEntry entry) throws IOException {
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    entry.writeDelimitedTo(bytes);
+    List<EnrichmentCommand> commands = new ArrayList<>();
+    new CompactExecLogParser(commands::add, EnvironmentRedactor.none())
+        .parse(new ByteArrayInputStream(bytes.toByteArray()));
+    return commands;
+  }
+
+  private static List<EnrichmentCommand> parseBinary(SpawnExec spawn) throws IOException {
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    spawn.writeDelimitedTo(bytes);
+    List<EnrichmentCommand> commands = new ArrayList<>();
+    new BinaryExecLogParser(commands::add, EnvironmentRedactor.none())
+        .parse(new ByteArrayInputStream(bytes.toByteArray()));
+    return commands;
+  }
+
+  private static EnrichmentCommand.SpawnObserved onlySpawn(List<EnrichmentCommand> commands) {
+    List<EnrichmentCommand.SpawnObserved> spawns = spawnsIn(commands);
+    assertThat(spawns).hasSize(1);
+    return spawns.getFirst();
   }
 
   private static List<EnrichmentCommand.SpawnObserved> spawnsIn(List<EnrichmentCommand> all) {

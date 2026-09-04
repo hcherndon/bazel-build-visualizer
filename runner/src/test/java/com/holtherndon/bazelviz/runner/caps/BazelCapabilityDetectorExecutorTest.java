@@ -18,6 +18,16 @@ import org.junit.jupiter.api.Test;
 final class BazelCapabilityDetectorExecutorTest {
 
   @Test
+  void probeFailurePreservesTimeoutAndTruncationTogether() {
+    BazelCapabilityDetector.ProbeResult result =
+        new BazelCapabilityDetector.ProbeResult(1, "", "", true, true);
+
+    assertThat(result.failureDetail())
+        .contains("did not finish in time")
+        .contains("exceeded its bounded capture limit");
+  }
+
+  @Test
   void createsScratchAndRunsEveryProbeOnTheExecutorHost() {
     RecordingExecutor executor = new RecordingExecutor();
     BazelExecutable executable =

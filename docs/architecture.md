@@ -257,6 +257,21 @@ metadata helpers and binary query streams remain non-TTY. Cancellation targets
 the reported remote process group and does not treat a dead desktop SSH client
 as proof that the remote Bazel client stopped.
 
+Local capability probes and query helpers use a separate short-command process
+model. On macOS, `Subprocess` preserves the requested argument vector inside a
+dedicated POSIX process group; on Linux it uses the standard util-linux
+`/usr/bin/setsid` or `/bin/setsid` helper to create the equivalent session and
+group without forcing a fork. Both paths record the group through a private
+`0600` control file before allowing the command to run. Timeout, interruption
+or an inherited output pipe that does not close kills and verifies the whole
+group. A failed or incomplete control-record write exits the gate without
+executing the requested command. Cleanup attempts control capture, bounded
+descendant discovery, root termination and group termination independently, so
+one failed avenue does not skip the others. A host without POSIX permissions,
+`/bin/sh`, or the Linux `setsid` helper falls back to a bounded `ProcessHandle`
+history; that fallback is best effort because Java cannot rediscover a child
+that reparented before it was observed.
+
 The selected execution supplies two workspace tools. **Browse Repository**
 lazily reads one directory at a time and opens files through the shared
 bounded, conflict-aware editor. Exact Bazel convenience symlinks at the

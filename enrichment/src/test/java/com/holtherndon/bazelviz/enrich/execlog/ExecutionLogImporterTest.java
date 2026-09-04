@@ -2,6 +2,10 @@ package com.holtherndon.bazelviz.enrich.execlog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.google.devtools.build.lib.exec.Protos.SpawnExec;
+import com.google.devtools.build.lib.exec.Protos.SpawnMetrics;
+import com.google.protobuf.Duration;
+import com.google.protobuf.Timestamp;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
 import com.holtherndon.bazelviz.core.enrich.ExecLogFormat;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
@@ -276,6 +280,61 @@ final class ExecutionLogImporterTest {
     assertThat(taskState()).isEqualTo(EnrichmentTask.State.FAILED);
   }
 
+  @Test
+  @DisplayName("malformed timing fails explicitly and restores the prior complete enrichment")
+  void malformedTimingPreservesPriorRowsAndSource() throws Exception {
+    importFixture("bazel920-build.binary");
+    long attempts = scalar("SELECT count(*) FROM action_attempts");
+    Path malformed = tempDir.resolve("malformed-timing.binary");
+    writeBinary(
+        malformed,
+        SpawnExec.newBuilder()
+            .setMetrics(
+                SpawnMetrics.newBuilder()
+                    .setTotalTime(Duration.newBuilder().setSeconds(1).setNanos(-1)))
+            .build());
+    long sourceBytes = Files.size(malformed);
+
+    ExecutionLogImporter.Result result =
+        new ExecutionLogImporter(connection, EnvironmentRedactor.none()).importFrom(malformed);
+
+    assertThat(result.state()).isEqualTo(EnrichmentTask.State.FAILED);
+    assertThat(result.error())
+        .hasValueSatisfying(error -> assertThat(error).contains("total_time"));
+    assertThat(scalar("SELECT count(*) FROM action_attempts")).isEqualTo(attempts);
+    assertThat(Files.size(malformed)).isEqualTo(sourceBytes);
+  }
+
+  @Test
+  @DisplayName("persisted execution-log zero is distinct from an absent duration and timestamp")
+  void zeroAndAbsentTimingPersistDistinctly() throws Exception {
+    Path log = tempDir.resolve("zero-and-absent.binary");
+    writeBinary(
+        log,
+        SpawnExec.newBuilder()
+            .setMetrics(
+                SpawnMetrics.newBuilder()
+                    .setStartTime(Timestamp.getDefaultInstance())
+                    .setTotalTime(Duration.getDefaultInstance()))
+            .build(),
+        SpawnExec.getDefaultInstance());
+
+    ExecutionLogImporter.Result result =
+        new ExecutionLogImporter(connection, EnvironmentRedactor.none()).importFrom(log);
+
+    assertThat(result.state()).isEqualTo(EnrichmentTask.State.SUCCEEDED);
+    assertThat(
+            scalar(
+                "SELECT count(*) FROM action_attempts"
+                    + " WHERE start_micros = 0 AND total_micros = 0"))
+        .isEqualTo(1);
+    assertThat(
+            scalar(
+                "SELECT count(*) FROM action_attempts"
+                    + " WHERE start_micros IS NULL AND total_micros IS NULL"))
+        .isEqualTo(1);
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private ExecutionLogImporter.Result importFixture(String name) throws Exception {
@@ -292,6 +351,14 @@ final class ExecutionLogImporterTest {
       Files.write(target, in.readAllBytes());
     }
     return target;
+  }
+
+  private static void writeBinary(Path file, SpawnExec... spawns) throws IOException {
+    try (var output = Files.newOutputStream(file)) {
+      for (SpawnExec spawn : spawns) {
+        spawn.writeDelimitedTo(output);
+      }
+    }
   }
 
   /** Points the session at the build a given fixture came from. */

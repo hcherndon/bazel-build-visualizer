@@ -4,9 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
+import com.holtherndon.bazelviz.graph.CsrFile;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -167,6 +170,22 @@ final class GraphIndexBuilderTest {
 
     // A stale index is worse than none: it answers, and its answers look
     // like the others.
+    assertThatThrownBy(() -> builder.load(EdgeDerivation.DECLARED, "FORWARD"))
+        .isInstanceOf(GraphIndexBuilder.StaleIndexException.class)
+        .hasMessageContaining("stale");
+  }
+
+  @Test
+  @DisplayName("a file whose direction flag disagrees with its registry row is refused")
+  void directionMismatchIsRefused() throws Exception {
+    GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
+    GraphIndexBuilder.Result built = builder.build(EdgeDerivation.DECLARED).orElseThrow();
+    byte[] bytes = Files.readAllBytes(built.forwardFile());
+    ByteBuffer.wrap(bytes)
+        .order(ByteOrder.LITTLE_ENDIAN)
+        .putInt(12, CsrFile.REVERSE_DIRECTION_FLAG);
+    Files.write(built.forwardFile(), bytes);
+
     assertThatThrownBy(() -> builder.load(EdgeDerivation.DECLARED, "FORWARD"))
         .isInstanceOf(GraphIndexBuilder.StaleIndexException.class)
         .hasMessageContaining("stale");

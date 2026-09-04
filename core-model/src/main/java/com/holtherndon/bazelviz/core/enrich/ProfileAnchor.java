@@ -99,7 +99,14 @@ public record ProfileAnchor(
    * {@code Launch Blaze} begins at −17,000 to −20,000 µs (P3) — so this must not clamp.
    */
   public Optional<Long> absolute(long traceMicros) {
-    return canPlaceAbsolutely() ? Optional.of(epochMicros + traceMicros) : Optional.empty();
+    if (!canPlaceAbsolutely()) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(Math.addExact(epochMicros, traceMicros));
+    } catch (ArithmeticException overflow) {
+      return Optional.empty();
+    }
   }
 
   /**

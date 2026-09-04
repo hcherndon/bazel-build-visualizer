@@ -406,7 +406,11 @@ public final class BazelCapabilityDetector {
     if (executor == null) {
       Subprocess.Result result = Subprocess.run(argv, Path.of(scratch), environment, timeout);
       return new ProbeResult(
-          result.exitCode(), result.stdout(), result.stderr(), result.timedOut());
+          result.exitCode(),
+          result.stdout(),
+          result.stderr(),
+          result.timedOut(),
+          result.outputTruncated());
     }
     Map<String, Optional<String>> overrides = new LinkedHashMap<>();
     environment.forEach((name, value) -> overrides.put(name, Optional.of(value)));
@@ -415,17 +419,29 @@ public final class BazelCapabilityDetector {
             new CommandRequest(
                 argv, Optional.of(scratch), overrides, RuntimeEnvironment.INHERIT_ALL, false),
             timeout);
-    return new ProbeResult(result.exitCode(), result.stdout(), result.stderr(), result.timedOut());
+    return new ProbeResult(
+        result.exitCode(), result.stdout(), result.stderr(), result.timedOut(), false);
   }
 
-  private record ProbeResult(int exitCode, String stdout, String stderr, boolean timedOut) {
+  record ProbeResult(
+      int exitCode, String stdout, String stderr, boolean timedOut, boolean outputTruncated) {
     boolean isSuccess() {
-      return !timedOut && exitCode == 0;
+      return !timedOut && !outputTruncated && exitCode == 0;
     }
 
     String failureDetail() {
-      if (timedOut) {
-        return "the command did not finish in time";
+      if (timedOut || outputTruncated) {
+        StringBuilder detail = new StringBuilder();
+        if (timedOut) {
+          detail.append("the command did not finish in time");
+        }
+        if (outputTruncated) {
+          if (!detail.isEmpty()) {
+            detail.append("; ");
+          }
+          detail.append("the command's probe output exceeded its bounded capture limit");
+        }
+        return detail.toString();
       }
       String text = stderr.isBlank() ? stdout : stderr;
       return text.isBlank()

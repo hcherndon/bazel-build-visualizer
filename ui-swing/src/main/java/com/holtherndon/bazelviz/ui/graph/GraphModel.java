@@ -274,7 +274,7 @@ public final class GraphModel {
         new GraphLayoutService.Rendered(
             null,
             new GraphExtract.Result(
-                GraphExtract.Mode.NEIGHBOURHOOD, List.of(), List.of(), 0, 0, false, 0),
+                GraphExtract.Mode.NEIGHBOURHOOD, List.of(), List.of(), 0, 0, 0, 0, false, false),
             GraphLayout.Result.empty(GraphLayout.Kind.HIERARCHY),
             null,
             "");

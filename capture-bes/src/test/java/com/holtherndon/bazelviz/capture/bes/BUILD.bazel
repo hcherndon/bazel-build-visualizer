@@ -7,6 +7,7 @@ java_library(
     srcs = [
         "BesServerTest.java",
         "BesStreamTrackerTest.java",
+        "RawBytesMarshallerTest.java",
         "RecordingSink.java",
     ],
     deps = JUNIT_DEPS + [
@@ -42,6 +43,16 @@ java_junit5_test(
 )
 
 java_junit5_test(
+    name = "RawBytesMarshallerTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.bes.RawBytesMarshallerTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
     name = "RealBazelBesTest",
     srcs = ["RealBazelBesTest.java"],
     deps = JUNIT_DEPS + [
@@ -65,6 +76,7 @@ test_suite(
     tests = [
         ":BesServerTest",
         ":BesStreamTrackerTest",
+        ":RawBytesMarshallerTest",
     ],
     visibility = ["//visibility:public"],
 )

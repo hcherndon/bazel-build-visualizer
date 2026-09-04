@@ -197,7 +197,16 @@ final class GraphLayoutTest {
     int count = 50_000;
     List<Integer> nodes = IntStream.range(0, count).boxed().toList();
     GraphExtract.Result isolated =
-        new GraphExtract.Result(GraphExtract.Mode.WHOLE, nodes, List.of(), count, 0, false, count);
+        new GraphExtract.Result(
+            GraphExtract.Mode.WHOLE,
+            nodes,
+            List.of(),
+            count,
+            0,
+            count,
+            GraphExtract.DEFAULT_EDGE_LIMIT,
+            false,
+            false);
 
     GraphLayout.Result layout = GraphLayout.hierarchy(isolated, RUNNING);
 

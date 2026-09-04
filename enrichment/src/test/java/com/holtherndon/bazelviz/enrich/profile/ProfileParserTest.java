@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.enrich.profile;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.core.enrich.EnrichmentCommand;
 import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
@@ -184,6 +185,30 @@ final class ProfileParserTest {
             EnrichmentCommand.ProfileHeaderSeen.class,
             header ->
                 assertThat(header.anchor().meaning()).isEqualTo(ProfileAnchor.Meaning.EXACT_START));
+  }
+
+  @Test
+  @DisplayName("an anchor that cannot fit in microseconds is a controlled malformed profile")
+  void overflowingAnchorIsRefused() {
+    ProfileParser parser = new ProfileParser(command -> {});
+
+    assertThatThrownBy(
+            () ->
+                parser.parse(
+                    new StringReader(
+                        "{\"otherData\":{\"profile_start_ts\":9223372036854776},"
+                            + "\"traceEvents\":[]}")))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("profile_start_ts")
+        .hasMessageContaining("overflows");
+  }
+
+  @Test
+  @DisplayName("absolute profile placement declines overflow without losing valid epoch zero")
+  void absolutePlacementUsesExactAddition() {
+    assertThat(ProfileAnchor.exact(Long.MAX_VALUE, "profile_start_ts").absolute(1)).isEmpty();
+    assertThat(ProfileAnchor.exact(0, "profile_start_ts").absolute(0)).hasValue(0L);
+    assertThat(ProfileAnchor.absent().absolute(0)).isEmpty();
   }
 
   // ---------------------------------------------------------------- helpers

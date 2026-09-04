@@ -122,6 +122,8 @@ public record ActionRow(
               + " action on 8.4.x regardless of how long the action took";
       case ActionTiming.PARTIAL -> "only one of the two timestamps arrived";
       case ActionTiming.END_BEFORE_START -> "the reported end precedes the reported start";
+      case ActionTiming.INVALID_REPORTED_VALUE ->
+          "at least one reported timestamp was outside protobuf's valid range";
       default -> reason;
     };
   }

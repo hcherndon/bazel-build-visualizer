@@ -8,30 +8,33 @@ whose task list includes "Build forward/reverse CSR indexes"; the visualization
 that reads it is Phase 7. The Phase 0 graph spike exercises a prototype of this
 layout at Tier 2/3 scale.
 
-## CSR file format sketch (plan 13.2)
+## CSR file format (plan 13.2)
 
 One file per direction (forward = producer→consumers, reverse =
 consumer→producers), written once at indexing time, memory-mapped read-only
 afterwards. All integers little-endian, fixed-width.
 
 ```
-header (64 bytes)
-  magic        u64   'BBVCSR1\0'
+header (40 bytes)
+  magic        8 bytes   'BBVCSR01'
   formatVersion u32
-  flags        u32   (bit 0: reverse direction)
+  flags        u32   (bit 0: reverse direction; every other bit is reserved)
   nodeCount    u64   N
   edgeCount    u64   E
-  checksum     u64   xxhash-style digest of the two arrays
-  reserved     u64x2
+  checksum     u64   CRC32C of the two arrays
 
 offsets array
   (N + 1) x u64      offsets[i]..offsets[i+1] index the neighbor slice of
                      node i; offsets[N] == E. Monotone non-decreasing.
 
-neighbors array
-  E x u32 or u64     node ids; width chosen by nodeCount at write time and
-                     recorded in flags. Sorted within each slice.
+targets array
+  E x u32             node ids in [0, N). Ordering within a slice is not significant.
 ```
+
+Readers validate counts and exact body size before mapping, verify the checksum, then validate that
+offsets begin at zero, are monotone and end at `E`, and that every target is within `[0, N)`. A
+checksum-valid file with invalid structure is corrupt and is refused. Bit 0 records the direction
+for inspection and registry checks; it does not change the array representation.
 
 Node ids are dense indexes assigned at indexing time; the mapping from node
 id to domain identity (action, artifact) lives in the session SQLite
@@ -80,10 +83,11 @@ warned about.
 
 ### Traversals
 
-Forward and reverse BFS, depth- and node-budgeted; bidirectional shortest path,
-also budgeted. Running out of budget is reported as its own outcome and never
-as "there is no path" — plan 13.3 forbids a transitive closure, so a search has
-to be able to give up, and giving up is not an answer.
+Forward and reverse BFS are depth-, node-, and edge-budgeted; bidirectional
+shortest path is also budgeted. Running out of either resource budget is
+reported as its own outcome and never as "there is no path" — plan 13.3 forbids
+a transitive closure, so a search has to be able to give up, and giving up is
+not an answer.
 
 ## What Phase 7 added (2026-08-22)
 
@@ -105,11 +109,11 @@ invocation — are absent from the map rather than mapped to zero.
 ### Extraction is always bounded, and always says so
 
 `GraphExtract` returns a subgraph plus the totals it came from. Plan 13.3
-forbids a transitive closure, so every traversal takes a node budget; hitting it
-is reported as its own fact and never as having finished. `whole()` refuses a
-graph that will not fit rather than truncating it, because a "whole graph"
-silently showing the first fifty thousand nodes would be the most misleading
-view in the application.
+forbids a transitive closure, so every rooted traversal takes separate node and
+edge budgets; hitting either is reported as its own partial-result cause and
+never as having finished. `whole()` refuses a graph that will not fit rather
+than truncating it, because a "whole graph" silently showing the first fifty
+thousand nodes would be the most misleading view in the application.
 
 ### Clustering is an aggregation, not a sample
 
