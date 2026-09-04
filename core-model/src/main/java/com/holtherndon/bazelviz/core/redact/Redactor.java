@@ -111,7 +111,7 @@ public final class Redactor {
       if (rule != null) {
         return flag + "=" + pseudonymFor(value, rule, field);
       }
-      return flag + "=" + redactValue(value, field);
+      return flag + "=" + redactArgumentValue(value, field);
     }
     SecretPattern rule = matchingNameRule(argument);
     if (rule != null) {
@@ -120,7 +120,7 @@ public final class Redactor {
       // sees separately. Nothing to do but leave the flag readable.
       return argument;
     }
-    return redactValue(argument, field);
+    return redactArgumentValue(argument, field);
   }
 
   /**
@@ -278,6 +278,20 @@ public final class Redactor {
       current = rebuilt.toString();
     }
     return current;
+  }
+
+  /** Applies both secret and path policy to one argv value. */
+  private String redactArgumentValue(String value, String field) {
+    String current = redactValue(value, field);
+    if (!policy.redactAbsolutePaths()) {
+      return current;
+    }
+    current = mapPrefixesWithin(current, field);
+    String masked = maskUserComponent(current);
+    if (!masked.equals(current)) {
+      report.record("home-directory", field, "[user]", "the account name in a home-directory path");
+    }
+    return masked;
   }
 
   /** Maps every known prefix wherever it appears inside a longer string. */

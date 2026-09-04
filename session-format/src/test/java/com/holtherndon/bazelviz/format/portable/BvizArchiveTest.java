@@ -407,6 +407,53 @@ final class BvizArchiveTest {
   }
 
   @Test
+  @DisplayName("an output path directly inside the session is refused before directory creation")
+  void directInSessionTargetsAreRejected() throws Exception {
+    byte[] manifestBefore = Files.readAllBytes(session.resolve("manifest.json"));
+    byte[] databaseBefore = Files.readAllBytes(session.resolve("session.sqlite"));
+    byte[] rawBefore = Files.readAllBytes(session.resolve("raw/bes-000001.journal"));
+    Path targetDirectory = session.resolve("exports-created-by-writer");
+    Path target = targetDirectory.resolve("inside.bviz");
+
+    assertThatThrownBy(
+            () ->
+                BvizWriter.write(
+                    session, target, BvizWriter.Options.complete("inside"), "0.1.0", CREATED))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("protected session");
+
+    assertThat(targetDirectory).doesNotExist();
+    assertThat(Files.readAllBytes(session.resolve("manifest.json"))).isEqualTo(manifestBefore);
+    assertThat(Files.readAllBytes(session.resolve("session.sqlite"))).isEqualTo(databaseBefore);
+    assertThat(Files.readAllBytes(session.resolve("raw/bes-000001.journal"))).isEqualTo(rawBefore);
+  }
+
+  @Test
+  @DisplayName("a symlinked parent cannot disguise an output path inside the session")
+  void aliasedInSessionTargetsAreRejected() throws Exception {
+    byte[] manifestBefore = Files.readAllBytes(session.resolve("manifest.json"));
+    byte[] databaseBefore = Files.readAllBytes(session.resolve("session.sqlite"));
+    byte[] rawBefore = Files.readAllBytes(session.resolve("raw/bes-000001.journal"));
+    Path alias = tempDir.resolve("session-output-alias");
+    Files.createSymbolicLink(alias, session);
+    Path hiddenDirectory = session.resolve("aliased-exports");
+    Path target = alias.resolve("aliased-exports/inside.bviz");
+
+    assertThatThrownBy(
+            () ->
+                BvizWriter.write(
+                    session, target, BvizWriter.Options.complete("aliased"), "0.1.0", CREATED))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("protected session");
+
+    assertThat(hiddenDirectory).doesNotExist();
+    assertThat(Files.readAllBytes(session.resolve("manifest.json"))).isEqualTo(manifestBefore);
+    assertThat(Files.readAllBytes(session.resolve("session.sqlite"))).isEqualTo(databaseBefore);
+    assertThat(Files.readAllBytes(session.resolve("raw/bes-000001.journal"))).isEqualTo(rawBefore);
+    assertNoWriterScratch();
+  }
+
+  @Test
   @DisplayName("writer scratch directories are owner-only where POSIX modes exist")
   void writerScratchIsOwnerOnly() throws Exception {
     Path scratch = BvizWriter.createOwnerOnlyTempDirectory(tempDir, ".bviz-export-test-");

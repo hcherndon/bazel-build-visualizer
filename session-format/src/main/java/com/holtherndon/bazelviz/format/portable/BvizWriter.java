@@ -207,8 +207,10 @@ public final class BvizWriter {
       long createdMicros,
       BvizLimits limits)
       throws IOException {
-    List<Source> sources = collect(sessionRoot, options, limits);
-    return estimateFor(sources, target, options, appVersion, createdMicros, limits);
+    Path protectedRoot = requireDirectoryWithoutLinks(sessionRoot, "session");
+    Path checkedTarget = requireTargetOutsideSession(protectedRoot, target);
+    List<Source> sources = collect(protectedRoot, options, limits);
+    return estimateFor(sources, checkedTarget, options, appVersion, createdMicros, limits);
   }
 
   /**
@@ -237,14 +239,16 @@ public final class BvizWriter {
     Objects.requireNonNull(options, "options");
     Objects.requireNonNull(appVersion, "appVersion");
     Objects.requireNonNull(limits, "limits");
-    List<Source> sources = collect(sessionRoot, options, limits);
+    Path protectedRoot = requireDirectoryWithoutLinks(sessionRoot, "session");
+    Path checkedTarget = requireTargetOutsideSession(protectedRoot, target);
+    List<Source> sources = collect(protectedRoot, options, limits);
     if (sources.isEmpty()) {
       throw new BvizFormatException(
           "there is nothing to export at "
               + sessionRoot
               + ": no manifest, no database, no raw sources");
     }
-    Path parent = target.toAbsolutePath().getParent();
+    Path parent = checkedTarget.getParent();
     if (parent == null) {
       throw new BvizFormatException("an archive target needs a parent directory: " + target);
     }
@@ -252,7 +256,7 @@ public final class BvizWriter {
     // anything is created beside the requested target.
     Files.createDirectories(parent);
     SpaceEstimate beforeScratch =
-        estimateFor(sources, target, options, appVersion, createdMicros, limits);
+        estimateFor(sources, checkedTarget, options, appVersion, createdMicros, limits);
     if (!beforeScratch.fits()) {
       throw new IOException("not enough room at " + parent + ": " + beforeScratch.describe());
     }
@@ -314,7 +318,10 @@ public final class BvizWriter {
       long archiveBytes = Files.size(partial);
       Result result = new Result(target, index, archiveBytes, sourceBytes);
       Files.move(
-          partial, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+          partial,
+          checkedTarget,
+          StandardCopyOption.REPLACE_EXISTING,
+          StandardCopyOption.ATOMIC_MOVE);
       return result;
     } catch (IOException | RuntimeException failure) {
       operationFailure = failure;
@@ -538,6 +545,41 @@ public final class BvizWriter {
       throw new BvizFormatException("not a no-follow " + description + " directory: " + directory);
     }
     return directory.toRealPath();
+  }
+
+  /**
+   * Resolves existing parent aliases and refuses every destination protected by the session root.
+   */
+  private static Path requireTargetOutsideSession(Path sessionRoot, Path target)
+      throws IOException {
+    Objects.requireNonNull(target, "target");
+    Path absolute = target.toAbsolutePath().normalize();
+    Path parent = absolute.getParent();
+    Path name = absolute.getFileName();
+    if (parent == null || name == null) {
+      throw new BvizFormatException("an archive target needs a parent directory: " + target);
+    }
+    if (Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)) {
+      BasicFileAttributes attributes =
+          Files.readAttributes(absolute, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+      if (attributes.isSymbolicLink()) {
+        throw new BvizFormatException("an archive target cannot be a symbolic link: " + target);
+      }
+    }
+    Path existing = parent;
+    while (existing != null && !Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+      existing = existing.getParent();
+    }
+    if (existing == null) {
+      throw new BvizFormatException("an archive target has no existing ancestor: " + target);
+    }
+    Path resolvedParent = existing.toRealPath().resolve(existing.relativize(parent)).normalize();
+    Path resolvedTarget = resolvedParent.resolve(name).normalize();
+    if (resolvedTarget.equals(sessionRoot) || resolvedTarget.startsWith(sessionRoot)) {
+      throw new BvizFormatException(
+          "an archive target cannot be inside the protected session: " + target);
+    }
+    return resolvedTarget;
   }
 
   private static String archiveName(Path relative) {

@@ -92,6 +92,7 @@ final class ExportControllerTest {
       assertThat(manifest)
           .doesNotContain(SECRET)
           .doesNotContain("canary-user")
+          .doesNotContain("argv-home-user")
           .doesNotContain("builder@secret.internal")
           .doesNotContain("Secret build host")
           .doesNotContain("unknown-Bearer")
@@ -99,7 +100,15 @@ final class ExportControllerTest {
           .doesNotContain("867530912345")
           .doesNotContain("source-unknown-secret")
           .doesNotContain("stable-source-digest-secret")
-          .contains("\"redactionState\": \"REDACTED\"");
+          .contains("\"redactionState\": \"REDACTED\"")
+          .contains("[workspace]/argv-original-bare")
+          .contains("--output_base=/Users/[user]/argv-original-inline")
+          .contains("/Users/[user]/argv-effective-bare")
+          .contains("--output_base=[workspace]/argv-effective-inline")
+          .contains("[workspace]/argv-injected-bare")
+          .contains("--output_base=/Users/[user]/argv-injected-inline")
+          .contains("/Users/[user]/argv-auxiliary-bare")
+          .contains("--output_base=[workspace]/argv-auxiliary-inline");
       String databaseValue = readString(extracted.resolve("session.sqlite"));
       assertThat(databaseValue).startsWith("Bearer ");
       String sharedPseudonym = databaseValue.substring("Bearer ".length());
@@ -110,6 +119,7 @@ final class ExportControllerTest {
       assertThat(everyExtractedByte)
           .doesNotContain(SECRET)
           .doesNotContain("canary-user")
+          .doesNotContain("argv-home-user")
           .doesNotContain("builder@secret.internal")
           .doesNotContain("instrumentation-secret")
           .doesNotContain("raw-secret")
@@ -302,14 +312,22 @@ final class ExportControllerTest {
             "sshPort": 2222
           },
           "bazelExecutable": "/Users/canary-user/bin/bazel",
-          "originalCommand": ["bazel", "build", "--remote_header", "%s"],
-          "effectiveCommand": ["bazel", "build", "--remote_header=%s"],
+          "originalCommand": ["bazel", "build", "--remote_header", "%s",
+            "/Users/canary-user/private/work/argv-original-bare",
+            "--output_base=/Users/argv-home-user/argv-original-inline"],
+          "effectiveCommand": ["bazel", "build", "--remote_header=%s",
+            "/Users/argv-home-user/argv-effective-bare",
+            "--output_base=/Users/canary-user/private/work/argv-effective-inline"],
           "environmentCapturePolicy": "policy %s",
           "capturePreset": "preset %s",
-          "injectedFlags": ["--remote_header=%s"],
+          "injectedFlags": ["--remote_header=%s",
+            "/Users/canary-user/private/work/argv-injected-bare",
+            "--output_base=/Users/argv-home-user/argv-injected-inline"],
           "auxiliaryCommands": [{
             "label": "auxiliary %s",
-            "argv": ["tool", "--credential", "%s"]
+            "argv": ["tool", "--credential", "%s",
+              "/Users/argv-home-user/argv-auxiliary-bare",
+              "--output_base=/Users/canary-user/private/work/argv-auxiliary-inline"]
           }],
           "sources": [{
             "kind": "source %s",
@@ -358,8 +376,8 @@ final class ExportControllerTest {
           "INSERT INTO build_invocation"
               + " (singleton, stream_id, working_directory, workspace_directory,"
               + " options_description, saw_last_message) VALUES"
-              + " (1, 1, '/Users/canary-user/private/work',"
-              + " '/Users/canary-user/private/work', '--remote_header=Bearer "
+              + " (1, 1, NULL, '/Users/canary-user/private/work',"
+              + " '--remote_header=Bearer "
               + SECRET
               + "', 1)");
       execute(

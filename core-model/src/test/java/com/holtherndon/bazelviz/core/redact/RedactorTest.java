@@ -261,6 +261,30 @@ final class RedactorTest {
   }
 
   @Test
+  @DisplayName("bare and inline argv paths apply path mapping after secret redaction")
+  void argvPathsAreRedacted() {
+    Redactor redactor =
+        new Redactor(
+            RedactionPolicy.forExport().withPathPrefix("/Users/alice/workspace", "[workspace]"),
+            KEY);
+
+    List<String> redacted =
+        redactor.argv(
+            List.of(
+                "/Users/alice/workspace/pkg/input.txt",
+                "--output_base=/Users/bob/.cache/bazel",
+                "--remote_header=Bearer secret-value"),
+            "manifest.command");
+
+    assertThat(redacted).hasSize(3);
+    assertThat(redacted.get(0)).isEqualTo("[workspace]/pkg/input.txt");
+    assertThat(redacted.get(1)).isEqualTo("--output_base=/Users/[user]/.cache/bazel");
+    assertThat(redacted.get(2))
+        .startsWith("--remote_header=[redacted:")
+        .doesNotContain("secret-value");
+  }
+
+  @Test
   @DisplayName("paths inside a failure message are mapped too")
   void pathsInsideMessages() {
     // Bazel's own failure text embeds whole command lines and sandbox
