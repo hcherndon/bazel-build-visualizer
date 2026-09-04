@@ -16,49 +16,57 @@ import com.holtherndon.bazelviz.testsupport.bazel.BazelWorkspaceFixture;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * A real instrumented build on each supported Bazel, end to end.
+ * A real instrumented build on one deliberately selected supported Bazel, end to end.
  *
  * <h2>Why this is tagged out of the default build</h2>
  *
  * <p>Bazel sizes its server JVM from the machine's RAM, and four servers alive at once on a laptop
  * has crashed one — repeatedly, at over 120 GB. Two things keep that from happening: {@code
  * BazelWorkspaceFixture.FIXTURE_RC} caps each server at {@code -Xmx1g} with {@code
- * max_idle_secs=15}, and this test is parameterized rather than parallel, so exactly one version is
- * alive at a time.
+ * max_idle_secs=15}, and {@code BBV_BAZEL_MATRIX_VERSION} supplies exactly one supported version to
+ * this parameterized test. Missing, blank, multiple, and unsupported selections fail before this
+ * class finds or starts Bazel.
  *
  * <p>It is still tagged {@code bazel-sweep} — and its target additionally {@code manual}, so no
  * {@code //...} wildcard reaches it and the rc's default {@code --test_tag_filters=-bazel-sweep} is
- * the second fence — because a full four-version sweep downloads and starts four Bazel servers and
- * takes minutes. Run it deliberately, supervised, never in automation:
+ * the second fence — because refreshing the full matrix still downloads and starts four Bazel
+ * servers across four supervised invocations and takes minutes. Run one version deliberately, never
+ * in automation:
  *
- * <pre>bazel test //capture-bes:BazelVersionMatrixTest --test_tag_filters= --test_output=streamed
- * </pre>
+ * <pre>{@code
+ * BBV_BAZEL_MATRIX_VERSION=<supported> bazel test //capture-bes:BazelVersionMatrixTest --test_tag_filters=bazel-sweep --test_output=streamed
+ * }</pre>
  *
  * <p>{@code RealBazelCaptureTest} keeps a single-version end-to-end capture in the default suite,
- * so the path is exercised on every build; this is the one that says the same thing about all four.
+ * so the path is exercised on every build; four deliberate runs of this test say the same thing
+ * about every supported version.
  *
  * <h2>What a row of the matrix means</h2>
  *
- * <p>Each version gets one build of the same fixture workspace, captured through the embedded BES
- * server, and each assertion below is a column of {@code docs/bazel-compatibility.md}'s release
- * matrix. The printed line is what goes into that table — measured, not remembered.
+ * <p>The selected version gets one build of the same fixture workspace, captured through the
+ * embedded BES server, and each assertion below is a column of {@code
+ * docs/bazel-compatibility.md}'s release matrix. The printed line is what goes into that table —
+ * measured, not remembered.
  */
 @Tag("bazel-sweep")
 class BazelVersionMatrixTest {
 
   @ParameterizedTest(name = "Bazel {0}")
-  @ValueSource(strings = {"6.5.0", "7.6.1", "8.4.1", "9.2.0"})
-  @DisplayName("an instrumented build is captured completely on every supported Bazel")
-  void capturesOnEverySupportedVersion(String version, @TempDir Path directory) throws Exception {
+  @MethodSource("selectedVersion")
+  @DisplayName("an instrumented build is captured completely on the selected supported Bazel")
+  void capturesOnSelectedSupportedVersion(String version, @TempDir Path directory)
+      throws Exception {
     Optional<Path> bazel = BazelBinary.find();
     assumeTrue(bazel.isPresent(), BazelBinary::whyUnavailable);
 
@@ -139,8 +147,12 @@ class BazelVersionMatrixTest {
         .isTrue();
   }
 
+  private static Stream<String> selectedVersion() {
+    return BazelVersionMatrixSelection.fromEnvironment(System.getenv());
+  }
+
   private static List<String> hermetic(String... command) {
-    List<String> argv = new java.util.ArrayList<>(BazelWorkspaceFixture.hermeticStartupOptions());
+    List<String> argv = new ArrayList<>(BazelWorkspaceFixture.hermeticStartupOptions());
     argv.addAll(List.of(command));
     return List.copyOf(argv);
   }

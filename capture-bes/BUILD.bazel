@@ -19,12 +19,12 @@ test_suite(
     ],
 )
 
-# THE FOUR-VERSION SWEEP. It downloads and starts several Bazel servers and
-# has previously exhausted the development machine's memory. Both this stable
-# wrapper and the package-local test are manual and carry the bazel-sweep tag.
-# Run one version at a time, deliberately:
+# THE SUPPORTED-VERSION COMPATIBILITY CHECK. Refreshing the full matrix starts
+# several Bazel servers and has previously exhausted the development machine's
+# memory. Both this stable wrapper and the package-local test are manual and
+# carry the bazel-sweep tag. Run one version at a time, deliberately:
 #
-#   bazel test //capture-bes:BazelVersionMatrixTest --test_tag_filters= --test_output=streamed
+#   BBV_BAZEL_MATRIX_VERSION=<supported> bazel test //capture-bes:BazelVersionMatrixTest --test_tag_filters=bazel-sweep --test_output=streamed
 test_suite(
     name = "BazelVersionMatrixTest",
     tags = [

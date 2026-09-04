@@ -79,10 +79,29 @@ java_junit5_test(
     visibility = ["//visibility:public"],
 )
 
+java_library(
+    name = "bazel_version_matrix_selection",
+    srcs = ["BazelVersionMatrixSelection.java"],
+    testonly = True,
+    visibility = ["//visibility:private"],
+    deps = ["//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel"],
+)
+
+java_junit5_test(
+    name = "BazelVersionMatrixSelectionTest",
+    srcs = ["BazelVersionMatrixSelectionTest.java"],
+    deps = JUNIT_DEPS + [":bazel_version_matrix_selection"],
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.capture.live.BazelVersionMatrixSelectionTest",
+    visibility = ["//visibility:public"],
+)
+
 java_junit5_test(
     name = "BazelVersionMatrixTest",
     srcs = ["BazelVersionMatrixTest.java"],
     deps = JUNIT_DEPS + [
+        ":bazel_version_matrix_selection",
         "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/session:session",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps:caps",
@@ -94,7 +113,7 @@ java_junit5_test(
         "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
         ":tests_lib",
     ],
-    env_inherit = REAL_BAZEL_ENV,
+    env_inherit = REAL_BAZEL_ENV + ["BBV_BAZEL_MATRIX_VERSION"],
     jvm_flags = TEST_JVM_FLAGS,
     runtime_deps = JUNIT_RUNTIME_DEPS,
     size = "large",
@@ -205,6 +224,7 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":BazelVersionMatrixSelectionTest",
         ":CaptureCoordinatorRemoteTransferTest",
         ":CaptureRequestTest",
         ":CaptureSummaryTest",

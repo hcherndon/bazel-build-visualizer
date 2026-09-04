@@ -2168,8 +2168,12 @@ it is a different tab and was not reported.
   split into `RealBazelCliRunTest`) are dedicated un-sandboxed targets with
   inherited `PATH`/`HOME`/`BBV_TEST_BAZEL`/`USE_BAZEL_VERSION`, and
   `BazelVersionMatrixTest` sits behind two fences (`manual` tag + the rc's
-  `-bazel-sweep` filter). The outer server is capped in `.bazelrc`
-  (`-Xmx4g`, 300 s idle) for the same reason the fixture caps its children.
+  `-bazel-sweep` filter). Its separate inherited
+  `BBV_BAZEL_MATRIX_VERSION` selector admits exactly one supported version per
+  deliberate run and rejects a missing, blank, multiple, or unsupported value
+  before finding or starting child Bazel. The outer server is capped in
+  `.bazelrc` (`-Xmx4g`, 300 s idle) for the same reason the fixture caps its
+  children.
   jpackage/notarize became `bazel run //app:jpackage` / `//app:notarize`
   over the deploy jar, env-gated exactly as before; CI runs
   `bazelisk test //... --config=ci` on both OSes with the real-bazel
