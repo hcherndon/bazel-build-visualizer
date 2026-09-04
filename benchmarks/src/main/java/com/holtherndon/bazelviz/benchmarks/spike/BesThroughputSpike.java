@@ -141,8 +141,16 @@ public final class BesThroughputSpike {
     RawEventSink sink =
         new RawEventSink() {
           @Override
-          public void submit(RawBesEvent event, Runnable onJournaled) {
-            onJournaled.run();
+          public void submit(RawBesEvent event, SubmissionCallback callback) {
+            try {
+              // This sink models acceptance by the transport itself. Once submit has been entered,
+              // there is no later durability stage to wait for, so the event is safe to
+              // acknowledge.
+              callback.onJournaled();
+            } finally {
+              // A successful submit transfers ownership of the retained-payload lease to the sink.
+              event.close();
+            }
           }
 
           @Override
