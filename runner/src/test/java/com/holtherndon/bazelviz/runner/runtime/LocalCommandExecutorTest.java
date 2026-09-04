@@ -104,6 +104,32 @@ final class LocalCommandExecutorTest {
   }
 
   @Test
+  void interruptingRedirectCleansTheRunningProcessAndTemporaryOutput() throws Exception {
+    Path output = temporary.resolve("interrupted-output.txt");
+    Files.writeString(output, "old");
+    FutureTask<CommandResult> task =
+        new FutureTask<>(
+            () ->
+                LocalCommandExecutor.INSTANCE.runRedirectingStdout(
+                    CommandRequest.of(List.of("/bin/sh", "-c", "printf new; sleep 10"), temporary),
+                    Duration.ofSeconds(30),
+                    output));
+    Thread worker = Thread.ofVirtual().start(task);
+    TimeUnit.MILLISECONDS.sleep(100);
+    worker.interrupt();
+
+    assertThatThrownBy(() -> task.get(5, TimeUnit.SECONDS))
+        .hasCauseInstanceOf(InterruptedException.class);
+    assertThat(Files.readString(output)).isEqualTo("old");
+    try (var files = Files.list(temporary)) {
+      assertThat(
+              files.filter(
+                  path -> path.getFileName().toString().startsWith(".bbv-command-output-")))
+          .isEmpty();
+    }
+  }
+
+  @Test
   void boundedCommandsReceiveEndOfInput() throws Exception {
     CommandResult result =
         LocalCommandExecutor.INSTANCE.run(

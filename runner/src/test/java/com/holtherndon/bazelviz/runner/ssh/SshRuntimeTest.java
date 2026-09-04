@@ -278,11 +278,12 @@ final class SshRuntimeTest {
     assertThat(Files.size(exact)).isEqualTo(10);
 
     Path overLimit = temporary.resolve("over-limit.bin");
+    Path overLimitPid = temporary.resolve("over-limit.pid");
     Path fakeOverLimit =
         executable(
             "fake-sftp-over-limit",
-            "#!/bin/sh\ncat >/dev/null\nprintf '12345' > '%s'\nsleep 0.1\nprintf '678901' >> '%s'\nsleep 10\n"
-                .formatted(overLimit, overLimit));
+            "#!/bin/sh\nprintf '%%s' \"$$\" > '%s'\ncat >/dev/null\nprintf '12345' > '%s'\nsleep 0.1\nprintf '678901' >> '%s'\nsleep 10\n"
+                .formatted(overLimitPid, overLimit, overLimit));
     SftpClient overLimitClient =
         new SftpClient(SshTarget.of("host"), fakeOverLimit, temporary.resolve("control-over"));
     assertThatThrownBy(() -> overLimitClient.download("/remote/over", overLimit, 10))
@@ -290,6 +291,8 @@ final class SshRuntimeTest {
         .hasMessageContaining("exceeded")
         .hasMessageContaining("10");
     assertThat(Files.exists(overLimit)).isFalse();
+    long processId = Long.parseLong(Files.readString(overLimitPid));
+    assertThat(ProcessHandle.of(processId).map(ProcessHandle::isAlive)).isEmpty();
   }
 
   @Test
@@ -301,6 +304,62 @@ final class SshRuntimeTest {
     assertThatThrownBy(() -> SshExecutionFileSystem.decodeKey("12"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("continuation token");
+  }
+
+  @Test
+  void remoteDirectoryPagesUseAStableKeysetAndPropagatePipelineFailures() throws Exception {
+    Path fake =
+        executable(
+            "fake-directory-ssh",
+            "#!/bin/sh\n"
+                + "last=''\n"
+                + "for argument do last=\"$argument\"; done\n"
+                + "marker=$(printf '%s' \"$last\" | sed -n"
+                + " 's/.*\\(BBV_PROCESS_[0-9a-f]*:\\).*/\\1/p')\n"
+                + "printf '%s6500:6500\\n"
+                + "' \"$marker\"\n"
+                + "case \"$last\" in\n"
+                + "  *'/usr/bin/readlink'*) printf '/repo\\n"
+                + "' ;;\n"
+                + "  *'/usr/bin/stat'*) printf 'directory\\0' ; printf '0\\0' ; printf '1\\0' ;;\n"
+                + "  *'/usr/bin/find'*)\n"
+                + "    case \"$last\" in\n"
+                + "      */repo/b*) printf"
+                + " '/repo/c\\037f\\0371\\0371\\0/repo/d\\037f\\0371\\0371\\0' ;;\n"
+                + "      *) printf"
+                + " '/repo/a\\037f\\0371\\0371\\0/repo/b\\037f\\0371\\0371\\0/repo/c\\037f\\0371\\0371\\0'"
+                + " ;;\n"
+                + "    esac ;;\n"
+                + "  *) exit 1 ;;\n"
+                + "esac\n");
+    SshCommandExecutor executor =
+        new SshCommandExecutor(SshTarget.of("fake"), fake, temporary.resolve("control"));
+    SshExecutionFileSystem files =
+        new SshExecutionFileSystem(
+            "execution-one",
+            "/repo",
+            executor,
+            new SftpClient(SshTarget.of("fake"), fake, temporary.resolve("control")));
+
+    var first = files.list(files.path("/repo"), Optional.empty(), 2);
+    var second = files.list(files.path("/repo"), first.nextToken(), 2);
+
+    assertThat(first.entries())
+        .extracting(entry -> entry.path().value())
+        .containsExactly("/repo/a", "/repo/b");
+    assertThat(second.entries())
+        .extracting(entry -> entry.path().value())
+        .containsExactly("/repo/c", "/repo/d");
+    assertThat(second.nextToken()).isEmpty();
+  }
+
+  @Test
+  void openSshInheritedPipeAfterRootExitFailsClosed() throws Exception {
+    Path fake = executable("fake-openssh-inherited-pipe", "#!/bin/sh\n(sleep 10) &\nexit 0\n");
+
+    assertThatThrownBy(() -> OpenSshProcess.run(List.of(fake.toString()), Duration.ofSeconds(2)))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("drained");
   }
 
   @Test

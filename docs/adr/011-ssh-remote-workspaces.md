@@ -1,6 +1,6 @@
 # ADR-011: SSH remote workspaces and execution-scoped I/O
 
-Status: accepted (2026-08-28; amended 2026-08-30 for saved workspaces and local terminals; amended 2026-09-03 for per-workspace Bazel selection)
+Status: accepted (2026-08-28; amended 2026-08-30 for saved workspaces and local terminals; amended 2026-09-03 for per-workspace Bazel selection; amended 2026-09-04 for bounded remote I/O)
 
 ## Context
 
@@ -244,7 +244,8 @@ native resources as described in `docs/packaging.md`.
   and explains the reverse forward, forced TTY, remote staging paths, and the
   fact that a TTY cannot preserve separate remote stdout/stderr channels.
 - The first implementation targets Linux servers with OpenSSH and common POSIX
-  userland tools. Directory pages use GNU `find`, `sort`, `awk`, and `head` as
+  userland tools. Directory pages use GNU `find`, `sort`, `awk`, and Bash's
+  `pipefail` as
   a streaming keyset pipeline; they do not create a whole-directory scratch
   file. Unsupported hosts fail preflight with a concrete missing-tool message;
   there is no silent fallback to local execution.

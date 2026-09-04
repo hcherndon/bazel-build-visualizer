@@ -1,14 +1,13 @@
 package com.holtherndon.bazelviz.runner.runtime;
 
 import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import com.pty4j.PtyProcess;
 import com.pty4j.PtyProcessBuilder;
 import com.pty4j.WinSize;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
@@ -41,21 +40,13 @@ public final class LocalCommandExecutor implements CommandExecutor {
   @Override
   public CommandResult run(CommandRequest request, Duration timeout)
       throws IOException, InterruptedException {
-    requireTimeout(timeout);
-    Process process = builder(request).start();
-    closeQuietly(process.getOutputStream());
-    Drain stdout = Drain.start(process.getInputStream(), "bbv-command-stdout");
-    Drain stderr = Drain.start(process.getErrorStream(), "bbv-command-stderr");
-    boolean exited = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
-    if (!exited) {
-      process.descendants().forEach(ProcessHandle::destroyForcibly);
-      process.destroyForcibly();
-      process.waitFor(5, TimeUnit.SECONDS);
-      closeQuietly(process.getInputStream());
-      closeQuietly(process.getErrorStream());
-      return result(process, -1, stdout, stderr, true);
-    }
-    return result(process, process.exitValue(), stdout, stderr, false);
+    Subprocess.Result result =
+        Subprocess.run(
+            request.argv(),
+            request.workingDirectory().map(Path::of).orElse(null),
+            environment(request),
+            timeout);
+    return commandResult(result);
   }
 
   @Override
@@ -71,32 +62,18 @@ public final class LocalCommandExecutor implements CommandExecutor {
     Path temporary = Files.createTempFile(parent, ".bbv-command-output-", ".tmp");
     boolean moved = false;
     try {
-      ProcessBuilder builder =
-          builder(request).redirectOutput(ProcessBuilder.Redirect.to(temporary.toFile()));
-      Process process = builder.start();
-      closeQuietly(process.getOutputStream());
-      Drain stderr = Drain.start(process.getErrorStream(), "bbv-command-stderr");
-      boolean exited = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
-      if (!exited) {
-        destroyTree(process);
-        process.waitFor(5, TimeUnit.SECONDS);
-        closeQuietly(process.getErrorStream());
-      }
-      String error = stderr.awaitText();
-      if (stderr.incomplete()) {
-        destroyTree(process);
-        throw new IOException("the command output could not be drained to completion");
-      }
-      if (stderr.overflowed()) {
-        throw new IOException("the command produced too much diagnostic output");
-      }
-      CommandResult result =
-          new CommandResult(exited ? process.exitValue() : -1, "", error, !exited);
-      if (exited && result.exitCode() == 0) {
+      Subprocess.Result result =
+          Subprocess.runRedirectingStdout(
+              request.argv(),
+              request.workingDirectory().map(Path::of).orElse(null),
+              environment(request),
+              timeout,
+              temporary);
+      if (result.isSuccess()) {
         moveReplacement(temporary, destination);
         moved = true;
       }
-      return result;
+      return commandResult(result);
     } finally {
       if (!moved) {
         Files.deleteIfExists(temporary);
@@ -189,40 +166,6 @@ public final class LocalCommandExecutor implements CommandExecutor {
     return builder;
   }
 
-  private static CommandResult result(
-      Process process, int exitCode, Drain stdout, Drain stderr, boolean timedOut)
-      throws IOException, InterruptedException {
-    String out = stdout.awaitText();
-    if (stdout.incomplete()) {
-      destroyTree(process);
-      throw new IOException("the command output could not be drained to completion");
-    }
-    String err = stderr.awaitText();
-    if (stderr.incomplete()) {
-      destroyTree(process);
-      throw new IOException("the command output could not be drained to completion");
-    }
-    if (stdout.overflowed() || stderr.overflowed()) {
-      throw new IOException("the command produced too much probe output");
-    }
-    return new CommandResult(exitCode, out, err, timedOut);
-  }
-
-  private static void destroyTree(Process process) {
-    try {
-      process.descendants().forEach(ProcessHandle::destroyForcibly);
-    } catch (RuntimeException ignored) {
-      // The root is still destroyed below.
-    }
-    try {
-      if (process.isAlive()) {
-        process.destroyForcibly();
-      }
-    } catch (RuntimeException ignored) {
-      // Cleanup is best effort; the caller reports the incomplete drain.
-    }
-  }
-
   private static void moveReplacement(Path source, Path destination) throws IOException {
     try {
       Files.move(
@@ -238,12 +181,18 @@ public final class LocalCommandExecutor implements CommandExecutor {
     }
   }
 
-  private static void closeQuietly(InputStream stream) {
-    try {
-      stream.close();
-    } catch (IOException ignored) {
-      // The process already closed its side.
+  private static CommandResult commandResult(Subprocess.Result result) throws IOException {
+    if (result.outputTruncated()) {
+      throw new IOException(result.failureDetail());
     }
+    return new CommandResult(
+        result.exitCode(), result.stdout(), result.stderr(), result.timedOut());
+  }
+
+  private static Map<String, String> environment(CommandRequest request) {
+    Map<String, String> environment = new HashMap<>(System.getenv());
+    applyEnvironment(environment, request);
+    return environment;
   }
 
   private static void closeQuietly(OutputStream stream) {
@@ -251,6 +200,14 @@ public final class LocalCommandExecutor implements CommandExecutor {
       stream.close();
     } catch (IOException ignored) {
       // The process already closed its side.
+    }
+  }
+
+  private static void closeQuietly(InputStream stream) {
+    try {
+      stream.close();
+    } catch (IOException ignored) {
+      // Cleanup is best effort after the terminal closes.
     }
   }
 
@@ -463,67 +420,6 @@ public final class LocalCommandExecutor implements CommandExecutor {
       if (!kill.waitFor(5, TimeUnit.SECONDS) || kill.exitValue() != 0) {
         process.destroy();
       }
-    }
-  }
-
-  private static final class Drain {
-
-    private final InputStream stream;
-    private final Thread thread;
-    private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-    private volatile boolean overflowed;
-    private volatile boolean incomplete;
-
-    private Drain(InputStream stream, String name) {
-      this.stream = stream;
-      thread =
-          Thread.ofVirtual()
-              .name(name)
-              .unstarted(
-                  () -> {
-                    try (stream) {
-                      byte[] buffer = new byte[16 * 1024];
-                      int read;
-                      while ((read = stream.read(buffer)) >= 0) {
-                        if (read == 0) {
-                          continue;
-                        }
-                        int remaining = 16 * 1024 * 1024 - bytes.size();
-                        if (remaining > 0) {
-                          bytes.write(buffer, 0, Math.min(read, remaining));
-                        }
-                        if (read > remaining) {
-                          overflowed = true;
-                        }
-                      }
-                    } catch (IOException closed) {
-                      // The process ended while the pipe was being drained.
-                    }
-                  });
-    }
-
-    static Drain start(InputStream stream, String name) {
-      Drain drain = new Drain(stream, name);
-      drain.thread.start();
-      return drain;
-    }
-
-    String awaitText() throws InterruptedException {
-      thread.join(1_000);
-      if (thread.isAlive()) {
-        incomplete = true;
-        closeQuietly(stream);
-        thread.join(1_000);
-      }
-      return bytes.toString(StandardCharsets.UTF_8);
-    }
-
-    boolean overflowed() {
-      return overflowed;
-    }
-
-    boolean incomplete() {
-      return incomplete || thread.isAlive();
     }
   }
 }

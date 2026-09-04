@@ -180,6 +180,7 @@ public final class SshControlSession implements AutoCloseable {
                         + "exit 69; }; done",
                     "bbv-tools",
                     "/bin/chmod",
+                    "/bin/bash",
                     "/bin/kill",
                     "/bin/ln",
                     "/bin/mv",

@@ -80,35 +80,43 @@ public final class SshCommandExecutor implements CommandExecutor {
     long startedNanos = System.nanoTime();
     logCommandStart("bounded", request, timeout);
     RemoteRunningCommand command = startRemote(request);
-    closeStdinForNonInteractive(request, command);
-    BoundedDrain stdout = BoundedDrain.start(command.stdout(), "bbv-ssh-command-stdout");
-    BoundedDrain stderr = BoundedDrain.start(command.stderr(), "bbv-ssh-command-stderr");
-    boolean exited = command.waitFor(timeout);
-    if (!exited) {
-      stopTimedOut(command);
+    BoundedDrain stdout = null;
+    BoundedDrain stderr = null;
+    try {
+      closeStdinForNonInteractive(request, command);
+      stdout = BoundedDrain.start(command.stdout(), "bbv-ssh-command-stdout");
+      stderr = BoundedDrain.start(command.stderr(), "bbv-ssh-command-stderr");
+      boolean exited = command.waitFor(timeout);
+      if (!exited) {
+        stopTimedOut(command);
+      }
+      String out = stdout.awaitText();
+      if (stdout.incomplete()) {
+        stopIncomplete(command);
+        throw new IOException("the remote command output could not be drained to completion");
+      }
+      String err = stderr.awaitText();
+      if (stderr.incomplete()) {
+        stopIncomplete(command);
+        throw new IOException("the remote command output could not be drained to completion");
+      }
+      if (stdout.overflowed() || stderr.overflowed()) {
+        throw new IOException("the remote command produced too much probe output");
+      }
+      CommandResult result =
+          new CommandResult(exited ? command.exitValue() : -1, out, err, !exited);
+      logCommandResult(
+          "bounded",
+          request,
+          result,
+          startedNanos,
+          Integer.toString(out.getBytes(StandardCharsets.UTF_8).length),
+          Integer.toString(err.getBytes(StandardCharsets.UTF_8).length));
+      return result;
+    } catch (IOException | InterruptedException failure) {
+      cleanupFailedCommandDrains(command, failure, stdout, stderr);
+      throw failure;
     }
-    String out = stdout.awaitText();
-    if (stdout.incomplete()) {
-      stopIncomplete(command);
-      throw new IOException("the remote command output could not be drained to completion");
-    }
-    String err = stderr.awaitText();
-    if (stderr.incomplete()) {
-      stopIncomplete(command);
-      throw new IOException("the remote command output could not be drained to completion");
-    }
-    if (stdout.overflowed() || stderr.overflowed()) {
-      throw new IOException("the remote command produced too much probe output");
-    }
-    CommandResult result = new CommandResult(exited ? command.exitValue() : -1, out, err, !exited);
-    logCommandResult(
-        "bounded",
-        request,
-        result,
-        startedNanos,
-        Integer.toString(out.getBytes(StandardCharsets.UTF_8).length),
-        Integer.toString(err.getBytes(StandardCharsets.UTF_8).length));
-    return result;
   }
 
   @Override
@@ -129,11 +137,14 @@ public final class SshCommandExecutor implements CommandExecutor {
     }
     Path temporary = Files.createTempFile(parent, ".bbv-ssh-output-", ".tmp");
     boolean moved = false;
+    RemoteRunningCommand command = null;
+    StreamCopy copy = null;
+    BoundedDrain stderr = null;
     try {
-      RemoteRunningCommand command = startRemote(request);
+      command = startRemote(request);
       closeStdinForNonInteractive(request, command);
-      BoundedDrain stderr = BoundedDrain.start(command.stderr(), "bbv-ssh-command-stderr");
-      StreamCopy copy = StreamCopy.start(command.stdout(), temporary);
+      stderr = BoundedDrain.start(command.stderr(), "bbv-ssh-command-stderr");
+      copy = StreamCopy.start(command.stdout(), temporary);
       boolean exited = command.waitFor(timeout);
       if (!exited) {
         stopTimedOut(command);
@@ -163,6 +174,11 @@ public final class SshCommandExecutor implements CommandExecutor {
           fileSize(moved ? destination : temporary),
           Integer.toString(err.getBytes(StandardCharsets.UTF_8).length));
       return result;
+    } catch (IOException | InterruptedException failure) {
+      if (command != null) {
+        cleanupFailedCommandCopy(command, failure, stderr, copy);
+      }
+      throw failure;
     } finally {
       if (!moved) {
         Files.deleteIfExists(temporary);
@@ -347,8 +363,7 @@ public final class SshCommandExecutor implements CommandExecutor {
   private void stopTimedOut(RemoteRunningCommand command) throws IOException, InterruptedException {
     command.signal(CancellationMode.FORCE_KILL);
     if (!command.waitFor(Duration.ofSeconds(5))) {
-      command.localProcess.destroyForcibly();
-      command.localProcess.waitFor(2, TimeUnit.SECONDS);
+      Subprocess.terminate(command.localProcess);
     }
   }
 
@@ -360,8 +375,33 @@ public final class SshCommandExecutor implements CommandExecutor {
       command.owner.signal(command.remotePid, command.remotePgid, CancellationMode.FORCE_KILL);
     }
     if (command.localProcess.isAlive()) {
-      command.localProcess.destroyForcibly();
-      command.localProcess.waitFor(2, TimeUnit.SECONDS);
+      Subprocess.terminate(command.localProcess);
+    }
+  }
+
+  private static void cleanupFailedCommandDrains(
+      RemoteRunningCommand command, Throwable failure, BoundedDrain stdout, BoundedDrain stderr) {
+    try {
+      stopIncomplete(command);
+    } catch (IOException | InterruptedException cleanupFailure) {
+      failure.addSuppressed(cleanupFailure);
+      if (cleanupFailure instanceof InterruptedException) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    if (stdout != null) {
+      stdout.close();
+    }
+    if (stderr != null) {
+      stderr.close();
+    }
+  }
+
+  private static void cleanupFailedCommandCopy(
+      RemoteRunningCommand command, Throwable failure, BoundedDrain stderr, StreamCopy copy) {
+    cleanupFailedCommandDrains(command, failure, stderr, null);
+    if (copy != null) {
+      copy.close();
     }
   }
 
@@ -634,6 +674,14 @@ public final class SshCommandExecutor implements CommandExecutor {
     boolean incomplete() {
       return incomplete || thread.isAlive();
     }
+
+    void close() {
+      try {
+        input.close();
+      } catch (IOException ignored) {
+        // Cleanup is best effort after the command failed.
+      }
+    }
   }
 
   private static final class BoundedDrain {
@@ -698,6 +746,14 @@ public final class SshCommandExecutor implements CommandExecutor {
 
     boolean incomplete() {
       return incomplete || thread.isAlive();
+    }
+
+    void close() {
+      try {
+        stream.close();
+      } catch (IOException ignored) {
+        // Cleanup is best effort after the command failed.
+      }
     }
   }
 

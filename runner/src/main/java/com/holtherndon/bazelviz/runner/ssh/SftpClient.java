@@ -17,9 +17,6 @@ import org.slf4j.LoggerFactory;
 /** File transfer through the system SFTP client and an existing control master. */
 final class SftpClient {
 
-  /** Maximum interval between local-size checks while an SFTP download is active. */
-  static final long TRANSFER_POLL_INTERVAL_MILLIS = 25L;
-
   private static final Logger log = LoggerFactory.getLogger(SftpClient.class);
 
   private final SshTarget target;

@@ -187,6 +187,25 @@ public final class Subprocess {
 
   private Subprocess() {}
 
+  /** Terminates an already-started process and its bounded descendant set. */
+  public static void terminate(Process process) throws IOException, InterruptedException {
+    Objects.requireNonNull(process, "process");
+    ProcessHandle[] descendants =
+        process.descendants().limit(MAX_TRACKED_DESCENDANTS).toArray(ProcessHandle[]::new);
+    for (ProcessHandle descendant : descendants) {
+      descendant.destroyForcibly();
+    }
+    process.destroyForcibly();
+    try {
+      if (!process.waitFor(5, TimeUnit.SECONDS)) {
+        throw new IOException("could not terminate subprocess root");
+      }
+    } catch (InterruptedException interrupted) {
+      process.destroyForcibly();
+      throw interrupted;
+    }
+  }
+
   /**
    * Runs {@code argv} in {@code workingDirectory} and waits up to {@code timeout}.
    *

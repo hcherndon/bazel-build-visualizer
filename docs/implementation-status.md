@@ -42,6 +42,12 @@ current commands.
   unverified hosts without the required POSIX permissions, `/bin/sh`, or Linux `setsid`, the fixed
   `ProcessHandle` tracker is a best-effort fallback; it cannot recover a child already reparented
   before Java observed it.
+- Remote SFTP downloads enforce their byte ceiling while the transfer is active and remove any
+  partial local result on overflow, timeout, interruption, or failure. SSH directory pages use
+  opaque absolute-path keyset continuation and a bounded streaming pipeline; pipeline failures,
+  mutation-safe continuation, and literal backslashes remain explicit rather than looking like a
+  complete page. Local and SSH redirected output is installed atomically only after successful,
+  fully drained execution.
 - The raw-byte gRPC marshaller reads at most the configured message limit plus one byte before
   returning `RESOURCE_EXHAUSTED`; an unknown stream length can no longer force an unbounded read.
 - Protobuf timestamps and durations pass through one range-, sign-, and overflow-checked boundary.

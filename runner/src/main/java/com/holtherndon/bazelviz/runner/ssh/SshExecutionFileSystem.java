@@ -241,18 +241,23 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     }
     String after = continuationToken.map(SshExecutionFileSystem::decodeKey).orElse("");
     int requested = Math.addExact(maxEntries, 1);
-    String script =
-        "/usr/bin/find "
+    String pipeline =
+        "export LC_ALL=C; "
+            + "BBV_AFTER="
+            + PosixShell.quote(after)
+            + " /usr/bin/find "
             + PosixShell.quote(canonical.value())
             + " -mindepth 1 -maxdepth 1 -printf '%p\\037%y\\037%s\\037%T@\\0'"
-            + " | LC_ALL=C /usr/bin/sort -z | /usr/bin/awk -v bbv_after="
+            + " | LC_ALL=C /usr/bin/sort -z | BBV_AFTER="
             + PosixShell.quote(after)
-            + " 'BEGIN { RS=\"\\0\"; ORS=\"\\0\" }"
+            + " /usr/bin/awk -v bbv_limit="
+            + requested
+            + " 'BEGIN { RS=\"\\0\"; ORS=\"\\0\"; bbv_after=ENVIRON[\"BBV_AFTER\"] }"
             + " { bbv_separator=index($0, \"\\037\");"
             + " bbv_name=substr($0, 1, bbv_separator-1);"
-            + " if (bbv_after == \"\" || bbv_name > bbv_after) print $0; }'"
-            + " | /usr/bin/head -z -n "
-            + requested;
+            + " if ((bbv_after == \"\" || bbv_name > bbv_after) && bbv_count < bbv_limit)"
+            + " { print $0; bbv_count++; } }'";
+    String script = "/bin/bash -o pipefail -c " + PosixShell.quote(pipeline);
     CommandResult result = run(List.of("/bin/sh", "-c", script));
     if (!result.isSuccess()) {
       throw new IOException(

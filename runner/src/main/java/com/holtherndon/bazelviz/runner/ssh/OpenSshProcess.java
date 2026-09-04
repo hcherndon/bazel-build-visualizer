@@ -70,42 +70,62 @@ final class OpenSshProcess {
     }
     boolean exited = false;
     boolean aborted = false;
-    long deadline = System.nanoTime() + timeout.toNanos();
-    while (!exited) {
-      if (abort != null && abort.getAsBoolean()) {
-        aborted = true;
-        destroyDescendants(process);
-        process.destroyForcibly();
-        process.waitFor(5, TimeUnit.SECONDS);
-        break;
+    try {
+      long deadline = System.nanoTime() + timeout.toNanos();
+      while (!exited) {
+        if (abort != null && abort.getAsBoolean()) {
+          aborted = true;
+          Subprocess.terminate(process);
+          break;
+        }
+        long remainingNanos = deadline - System.nanoTime();
+        if (remainingNanos <= 0) {
+          break;
+        }
+        exited =
+            process.waitFor(
+                Math.max(
+                    1,
+                    Math.min(
+                        TimeUnit.NANOSECONDS.toMillis(remainingNanos),
+                        Subprocess.OUTPUT_DRAIN_GRACE_MILLIS)),
+                TimeUnit.MILLISECONDS);
       }
-      long remainingNanos = deadline - System.nanoTime();
-      if (remainingNanos <= 0) {
-        break;
+    } catch (IOException | InterruptedException failure) {
+      try {
+        Subprocess.terminate(process);
+      } catch (IOException | InterruptedException cleanupFailure) {
+        failure.addSuppressed(cleanupFailure);
       }
-      exited =
-          process.waitFor(
-              Math.max(
-                  1,
-                  Math.min(
-                      TimeUnit.NANOSECONDS.toMillis(remainingNanos),
-                      SftpClient.TRANSFER_POLL_INTERVAL_MILLIS)),
-              TimeUnit.MILLISECONDS);
+      stdout.close();
+      stderr.close();
+      throw failure;
     }
     if (!exited) {
       if (!aborted) {
-        destroyDescendants(process);
-        process.destroyForcibly();
-        process.waitFor(5, TimeUnit.SECONDS);
+        Subprocess.terminate(process);
       }
     }
-    String out = stdout.await();
-    if (stdout.incomplete()) {
-      destroyDescendants(process);
-    }
-    String err = stderr.await();
-    if (stderr.incomplete()) {
-      destroyDescendants(process);
+    String out;
+    String err;
+    try {
+      out = stdout.await();
+      if (stdout.incomplete()) {
+        Subprocess.terminate(process);
+      }
+      err = stderr.await();
+      if (stderr.incomplete()) {
+        Subprocess.terminate(process);
+      }
+    } catch (IOException | InterruptedException failure) {
+      try {
+        Subprocess.terminate(process);
+      } catch (IOException | InterruptedException cleanupFailure) {
+        failure.addSuppressed(cleanupFailure);
+      }
+      stdout.close();
+      stderr.close();
+      throw failure;
     }
     if (stdout.incomplete() || stderr.incomplete()) {
       throw new IOException("OpenSSH output could not be drained to completion");
@@ -127,17 +147,6 @@ final class OpenSshProcess {
         out.getBytes(StandardCharsets.UTF_8).length,
         err.getBytes(StandardCharsets.UTF_8).length);
     return result;
-  }
-
-  private static void destroyDescendants(Process process) {
-    try {
-      process
-          .descendants()
-          .limit(Subprocess.MAX_TRACKED_DESCENDANTS)
-          .forEach(ProcessHandle::destroyForcibly);
-    } catch (RuntimeException ignored) {
-      // The root is still terminated below; descendant cleanup is best effort here.
-    }
   }
 
   private static long elapsedMillis(long startedNanos) {
@@ -206,6 +215,14 @@ final class OpenSshProcess {
 
     boolean incomplete() {
       return incomplete || thread.isAlive();
+    }
+
+    void close() {
+      try {
+        stream.close();
+      } catch (IOException ignored) {
+        // Cleanup is best effort after the root process failed.
+      }
     }
   }
 }
