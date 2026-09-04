@@ -442,7 +442,21 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
 
     EventNormalizer.Normalization result = normalization.get();
     events.write(result.normalized());
-    bufferEntities(streamId, event.sequence(), result);
+    List<String> timeAnomalies = bufferEntities(streamId, event.sequence(), result);
+    for (String anomaly : timeAnomalies) {
+      events.recordDiagnostic(
+          ImportDiagnostic.at(
+              DiagnosticSeverity.WARNING,
+              DiagnosticCodes.INVALID_TIME_VALUE,
+              "sequence "
+                  + event.sequence()
+                  + " has an invalid time: "
+                  + anomaly
+                  + "; the value is unavailable and the raw event is preserved",
+              journaled.location().segmentIndex(),
+              journaled.location().frameOffset(),
+              nowMicros()));
+    }
     if (result.status() == DecodeStatus.FAILED) {
       decodeFailures.incrementAndGet();
       events.recordDiagnostic(
@@ -469,19 +483,25 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
   }
 
   /** Holds one event's entity commands until its {@code bep_events} row exists. */
-  private void bufferEntities(
+  private List<String> bufferEntities(
       long streamId, long sequence, EventNormalizer.Normalization normalization) {
-    normalization
-        .event()
-        .ifPresent(
-            event -> {
-              List<EntityCommand> commands = translator.translate(event);
-              if (!commands.isEmpty()) {
-                pendingEntities.add(new PendingEntities(streamId, sequence, commands));
-                pendingEntityCommands += commands.size();
-                normalizedStreams.add(streamId);
-              }
-            });
+    List<String> anomalies = new ArrayList<>(normalization.timeAnomalies());
+    if (normalization.event().isPresent()) {
+      EntityTranslator.Translation translation =
+          translator.translateChecked(normalization.event().orElseThrow());
+      List<EntityCommand> commands = translation.commands();
+      if (!commands.isEmpty()) {
+        pendingEntities.add(new PendingEntities(streamId, sequence, commands));
+        pendingEntityCommands += commands.size();
+        normalizedStreams.add(streamId);
+      }
+      for (String anomaly : translation.timeAnomalies()) {
+        if (!anomalies.contains(anomaly)) {
+          anomalies.add(anomaly);
+        }
+      }
+    }
+    return anomalies;
   }
 
   /** Applies the buffered commands, whose provenance lookups can now resolve. */
@@ -567,7 +587,21 @@ public final class LiveCapturePipeline implements RawEventSink, AutoCloseable {
             location,
             receiveMicros);
     events.write(normalization.normalized());
-    bufferEntities(streamId, ordinal, normalization);
+    List<String> timeAnomalies = bufferEntities(streamId, ordinal, normalization);
+    for (String anomaly : timeAnomalies) {
+      events.recordDiagnostic(
+          ImportDiagnostic.at(
+              DiagnosticSeverity.WARNING,
+              DiagnosticCodes.INVALID_TIME_VALUE,
+              "record "
+                  + ordinal
+                  + " of the local build event file has an invalid time: "
+                  + anomaly
+                  + "; the value is unavailable and the raw event is preserved",
+              location.segmentIndex(),
+              location.frameOffset(),
+              receiveMicros));
+    }
     if (pendingEntityCommands >= MAX_PENDING_ENTITY_COMMANDS) {
       // This path appends directly rather than going through the queue,
       // so nothing else was going to drain it: without this the whole

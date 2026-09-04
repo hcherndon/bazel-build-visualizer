@@ -1097,17 +1097,34 @@ public final class BepImporter {
             e);
       }
       eventsNormalized++;
-      normalization
-          .event()
-          .ifPresent(
-              event -> {
-                List<EntityCommand> commands = translator.translate(event);
-                if (!commands.isEmpty()) {
-                  pendingEntities.add(
-                      new PendingEntities(normalization.normalized().event().sequence(), commands));
-                  pendingEntityCommands += commands.size();
-                }
-              });
+      List<String> timeAnomalies = new ArrayList<>(normalization.timeAnomalies());
+      if (normalization.event().isPresent()) {
+        EntityTranslator.Translation translation =
+            translator.translateChecked(normalization.event().orElseThrow());
+        List<EntityCommand> commands = translation.commands();
+        if (!commands.isEmpty()) {
+          pendingEntities.add(
+              new PendingEntities(normalization.normalized().event().sequence(), commands));
+          pendingEntityCommands += commands.size();
+        }
+        for (String anomaly : translation.timeAnomalies()) {
+          if (!timeAnomalies.contains(anomaly)) {
+            timeAnomalies.add(anomaly);
+          }
+        }
+      }
+      for (String anomaly : timeAnomalies) {
+        recordDiagnostic(
+            DiagnosticSeverity.WARNING,
+            DiagnosticCodes.INVALID_TIME_VALUE,
+            "record "
+                + normalization.normalized().event().sequence()
+                + " has an invalid time: "
+                + anomaly
+                + "; the value is unavailable and the raw event is preserved",
+            OptionalLong.of(location.frameOffset()),
+            OptionalLong.of(location.segmentIndex()));
+      }
       if (pendingEntityCommands >= MAX_PENDING_ENTITY_COMMANDS) {
         // The events have to go in first, or the provenance lookups
         // find nothing. Flushing early costs a commit; not flushing

@@ -28,8 +28,10 @@ final class GraphWeightEncodingTest {
             List.of(new GraphExtract.Edge(0, 1), new GraphExtract.Edge(1, 2)),
             3,
             2,
+            100,
+            100,
             false,
-            100);
+            false);
     GraphLayout.Result layout =
         GraphLayout.run(GraphLayout.Kind.LINEAR, extract, new AtomicBoolean(false));
     GraphLayoutService.Rendered rendered =

@@ -6,6 +6,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.ActionExecuted;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetrics;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildStarted;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.TargetComplete;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.TestResult;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.TestSummary;
 import com.google.devtools.build.v1.OrderedBuildEvent;
 import com.google.devtools.build.v1.PublishBuildToolEventStreamRequest;
 import com.google.devtools.build.v1.StreamId;
@@ -42,6 +47,152 @@ final class ProtoTimesTest {
     assertThat(ProtoTimes.micros(true, invalidTimestamp, 123)).isEmpty();
     assertThatThrownBy(() -> ProtoTimes.micros(invalidTimestamp))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  @DisplayName("checked conversions distinguish absent, epoch zero, and malformed values")
+  void checkedConversionsPreserveAllThreeStates() {
+    assertThat(ProtoTimes.checkedMillisMicros(0).state()).isEqualTo(ProtoTimes.State.ABSENT);
+    assertThat(ProtoTimes.checkedTimestampMicros(timestamp(0, 0)).state())
+        .isEqualTo(ProtoTimes.State.PRESENT);
+    assertThat(ProtoTimes.checkedTimestampMicros(timestamp(0, 0)).micros()).hasValue(0L);
+    assertThat(ProtoTimes.checkedTimestampMicros(timestamp(Long.MAX_VALUE, 0)).state())
+        .isEqualTo(ProtoTimes.State.INVALID);
+  }
+
+  @Test
+  @DisplayName("a present epoch invocation time wins over a legacy fallback")
+  void presentEpochDoesNotFallBack() {
+    BuildEvent event =
+        BuildEvent.newBuilder()
+            .setId(
+                BuildEventId.newBuilder()
+                    .setStarted(BuildEventId.BuildStartedId.getDefaultInstance()))
+            .setStarted(
+                BuildStarted.newBuilder().setStartTime(timestamp(0, 0)).setStartTimeMillis(123))
+            .build();
+
+    EntityTranslator.Translation translated = new EntityTranslator().translateChecked(event);
+    EntityCommand.InvocationStarted started =
+        (EntityCommand.InvocationStarted) translated.commands().getFirst();
+
+    assertThat(started.startMicros()).hasValue(0L);
+    assertThat(translated.timeAnomalies()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("test timeouts validate Duration structure and nonnegative integral seconds")
+  void testTimeoutsAreFullyValidated() {
+    EntityCommand.TargetCompleted maximum = completedWithTimeout(duration(315_576_000_000L, 0));
+    assertThat(maximum.testTimeoutSeconds()).hasValue(315_576_000_000L);
+
+    for (Duration invalid :
+        List.of(duration(315_576_000_001L, 0), duration(1, -1), duration(-1, 0), duration(1, 1))) {
+      BuildEvent event = targetCompleted(invalid);
+      EntityTranslator.Translation translated = new EntityTranslator().translateChecked(event);
+      EntityCommand.TargetCompleted completed =
+          (EntityCommand.TargetCompleted) translated.commands().getFirst();
+      assertThat(completed.testTimeoutSeconds()).as("%s", invalid).isEmpty();
+      assertThat(translated.timeAnomalies()).as("%s", invalid).hasSize(1);
+    }
+
+    assertThat(completedWithTimeout(duration(0, 0)).testTimeoutSeconds()).hasValue(0L);
+
+    BuildEvent negativeLegacy =
+        targetCompleted(duration(0, 0)).toBuilder()
+            .setCompleted(TargetComplete.newBuilder().setSuccess(true).setTestTimeoutSeconds(-1))
+            .build();
+    EntityTranslator.Translation translated =
+        new EntityTranslator().translateChecked(negativeLegacy);
+    assertThat(
+            ((EntityCommand.TargetCompleted) translated.commands().getFirst()).testTimeoutSeconds())
+        .isEmpty();
+    assertThat(translated.timeAnomalies())
+        .singleElement()
+        .asString()
+        .contains("test_timeout_seconds");
+  }
+
+  @Test
+  @DisplayName("an invalid critical-path duration is unavailable and diagnosed")
+  void invalidCriticalPathDurationIsDiagnosed() {
+    BuildEvent event =
+        BuildEvent.newBuilder()
+            .setBuildMetrics(
+                BuildMetrics.newBuilder()
+                    .setTimingMetrics(
+                        BuildMetrics.TimingMetrics.newBuilder()
+                            .setCriticalPathTime(duration(0, -1))))
+            .build();
+
+    EntityTranslator.Translation translated = new EntityTranslator().translateChecked(event);
+    EntityCommand.BuildMetricsReported metrics =
+        (EntityCommand.BuildMetricsReported) translated.commands().getFirst();
+
+    assertThat(metrics.criticalPathMicros()).isEmpty();
+    assertThat(translated.timeAnomalies())
+        .singleElement()
+        .asString()
+        .contains("critical_path_time");
+  }
+
+  @Test
+  @DisplayName("test times preserve malformed, absent, and present-zero states")
+  void testTimesPreserveAllAvailabilityStates() {
+    BuildEvent attemptEvent =
+        BuildEvent.newBuilder()
+            .setId(
+                BuildEventId.newBuilder()
+                    .setTestResult(
+                        BuildEventId.TestResultId.newBuilder()
+                            .setLabel("//pkg:test")
+                            .setConfiguration(
+                                BuildEventId.ConfigurationId.newBuilder().setId("cfg"))
+                            .setRun(1)
+                            .setShard(1)
+                            .setAttempt(1)))
+            .setTestResult(
+                TestResult.newBuilder()
+                    .setTestAttemptStart(timestamp(Long.MAX_VALUE, 0))
+                    .setTestAttemptDuration(duration(-1, 0)))
+            .build();
+    EntityTranslator.Translation attemptTranslation =
+        new EntityTranslator().translateChecked(attemptEvent);
+    EntityCommand.TestAttemptCompleted attempt =
+        (EntityCommand.TestAttemptCompleted) attemptTranslation.commands().getFirst();
+
+    assertThat(attempt.startMicros()).isEmpty();
+    assertThat(attempt.durationMicros()).isEmpty();
+    assertThat(attemptTranslation.timeAnomalies())
+        .anyMatch(message -> message.contains("test_attempt_start"))
+        .anyMatch(message -> message.contains("test_attempt_duration"));
+
+    BuildEvent summaryEvent =
+        BuildEvent.newBuilder()
+            .setId(
+                BuildEventId.newBuilder()
+                    .setTestSummary(
+                        BuildEventId.TestSummaryId.newBuilder()
+                            .setLabel("//pkg:test")
+                            .setConfiguration(
+                                BuildEventId.ConfigurationId.newBuilder().setId("cfg"))))
+            .setTestSummary(
+                TestSummary.newBuilder()
+                    .setFirstStartTime(timestamp(0, 0))
+                    .setTotalRunDuration(duration(-1, 0)))
+            .build();
+    EntityTranslator.Translation summaryTranslation =
+        new EntityTranslator().translateChecked(summaryEvent);
+    EntityCommand.TestSummarized summary =
+        (EntityCommand.TestSummarized) summaryTranslation.commands().getFirst();
+
+    assertThat(summary.firstStartMicros()).hasValue(0L);
+    assertThat(summary.lastStopMicros()).isEmpty();
+    assertThat(summary.bazelReportedDurationMicros()).isEmpty();
+    assertThat(summaryTranslation.timeAnomalies())
+        .singleElement()
+        .asString()
+        .contains("total_run_duration");
   }
 
   @Test
@@ -119,6 +270,36 @@ final class ProtoTimesTest {
 
     assertThat(decoded.isFailed()).isFalse();
     assertThat(decoded.envelope().orElseThrow().eventTimeMicros()).isEmpty();
+    assertThat(decoded.envelope().orElseThrow().eventTimeState())
+        .isEqualTo(ProtoTimes.State.INVALID);
+  }
+
+  @Test
+  @DisplayName("a present epoch BES envelope time remains present")
+  void envelopeEpochIsPresent() {
+    com.google.devtools.build.v1.BuildEvent envelopeEvent =
+        com.google.devtools.build.v1.BuildEvent.newBuilder()
+            .setEventTime(Timestamp.getDefaultInstance())
+            .setBazelEvent(Any.newBuilder().setValue(ByteString.copyFromUtf8("raw bep payload")))
+            .build();
+    byte[] request =
+        PublishBuildToolEventStreamRequest.newBuilder()
+            .setOrderedBuildEvent(
+                OrderedBuildEvent.newBuilder()
+                    .setStreamId(StreamId.newBuilder().setBuildId("build"))
+                    .setSequenceNumber(1)
+                    .setEvent(envelopeEvent))
+            .build()
+            .toByteArray();
+
+    var envelope =
+        new BesEnvelopeDecoder(1_024)
+            .decodeToolEvent(request, 0, request.length)
+            .envelope()
+            .orElseThrow();
+
+    assertThat(envelope.eventTimeMicros()).hasValue(0L);
+    assertThat(envelope.eventTimeState()).isEqualTo(ProtoTimes.State.PRESENT);
   }
 
   private static Timestamp timestamp(long seconds, int nanos) {
@@ -127,5 +308,22 @@ final class ProtoTimesTest {
 
   private static Duration duration(long seconds, int nanos) {
     return Duration.newBuilder().setSeconds(seconds).setNanos(nanos).build();
+  }
+
+  private static EntityCommand.TargetCompleted completedWithTimeout(Duration timeout) {
+    return (EntityCommand.TargetCompleted)
+        new EntityTranslator().translate(targetCompleted(timeout)).getFirst();
+  }
+
+  private static BuildEvent targetCompleted(Duration timeout) {
+    return BuildEvent.newBuilder()
+        .setId(
+            BuildEventId.newBuilder()
+                .setTargetCompleted(
+                    BuildEventId.TargetCompletedId.newBuilder()
+                        .setLabel("//pkg:test")
+                        .setConfiguration(BuildEventId.ConfigurationId.newBuilder().setId("cfg"))))
+        .setCompleted(TargetComplete.newBuilder().setSuccess(true).setTestTimeout(timeout))
+        .build();
   }
 }

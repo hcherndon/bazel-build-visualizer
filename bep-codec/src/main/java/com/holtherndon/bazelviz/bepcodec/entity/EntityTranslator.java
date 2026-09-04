@@ -15,6 +15,7 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Out
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.TargetComplete;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.TestResult;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.TestSummary;
+import com.google.protobuf.Duration;
 import com.holtherndon.bazelviz.core.domain.TestOutcome;
 import com.holtherndon.bazelviz.core.entity.ActionTiming;
 import com.holtherndon.bazelviz.core.entity.EntityCommand;
@@ -49,6 +50,14 @@ import java.util.OptionalLong;
  */
 public final class EntityTranslator {
 
+  /** Entity commands plus malformed time fields that could not be represented truthfully. */
+  public record Translation(List<EntityCommand> commands, List<String> timeAnomalies) {
+    public Translation {
+      commands = List.copyOf(commands);
+      timeAnomalies = List.copyOf(timeAnomalies);
+    }
+  }
+
   /** The option that decides whether successful actions appear in the stream at all. */
   private static final String PUBLISH_ALL_ACTIONS = "--build_event_publish_all_actions";
 
@@ -71,6 +80,120 @@ public final class EntityTranslator {
     withEnd.addAll(commands);
     withEnd.add(new EntityCommand.StreamEnded());
     return withEnd;
+  }
+
+  /** Translates an event while preserving the distinction between absent and invalid times. */
+  public Translation translateChecked(BuildEvent event) {
+    return new Translation(translate(event), timeAnomalies(event));
+  }
+
+  private static List<String> timeAnomalies(BuildEvent event) {
+    List<String> anomalies = new ArrayList<>(3);
+    switch (event.getPayloadCase()) {
+      case STARTED ->
+          noteInvalid(
+              anomalies,
+              "buildStarted.start_time",
+              ProtoTimes.checkedMicros(
+                  event.getStarted().hasStartTime(),
+                  event.getStarted().getStartTime(),
+                  event.getStarted().getStartTimeMillis()));
+      case FINISHED ->
+          noteInvalid(
+              anomalies,
+              "buildFinished.finish_time",
+              ProtoTimes.checkedMicros(
+                  event.getFinished().hasFinishTime(),
+                  event.getFinished().getFinishTime(),
+                  event.getFinished().getFinishTimeMillis()));
+      case ACTION -> {
+        if (event.getAction().hasStartTime()) {
+          noteInvalid(
+              anomalies,
+              "action.start_time",
+              ProtoTimes.checkedTimestampMicros(event.getAction().getStartTime()));
+        }
+        if (event.getAction().hasEndTime()) {
+          noteInvalid(
+              anomalies,
+              "action.end_time",
+              ProtoTimes.checkedTimestampMicros(event.getAction().getEndTime()));
+        }
+      }
+      case TEST_RESULT -> {
+        TestResult result = event.getTestResult();
+        noteInvalid(
+            anomalies,
+            "testResult.test_attempt_start",
+            ProtoTimes.checkedMicros(
+                result.hasTestAttemptStart(),
+                result.getTestAttemptStart(),
+                result.getTestAttemptStartMillisEpoch()));
+        noteInvalid(
+            anomalies,
+            "testResult.test_attempt_duration",
+            ProtoTimes.checkedNonnegativeMicros(
+                result.hasTestAttemptDuration(),
+                result.getTestAttemptDuration(),
+                result.getTestAttemptDurationMillis()));
+      }
+      case TEST_SUMMARY -> {
+        TestSummary summary = event.getTestSummary();
+        noteInvalid(
+            anomalies,
+            "testSummary.first_start_time",
+            ProtoTimes.checkedMicros(
+                summary.hasFirstStartTime(),
+                summary.getFirstStartTime(),
+                summary.getFirstStartTimeMillis()));
+        noteInvalid(
+            anomalies,
+            "testSummary.last_stop_time",
+            ProtoTimes.checkedMicros(
+                summary.hasLastStopTime(),
+                summary.getLastStopTime(),
+                summary.getLastStopTimeMillis()));
+        noteInvalid(
+            anomalies,
+            "testSummary.total_run_duration",
+            ProtoTimes.checkedNonnegativeMicros(
+                summary.hasTotalRunDuration(),
+                summary.getTotalRunDuration(),
+                summary.getTotalRunDurationMillis()));
+      }
+      case BUILD_METRICS -> {
+        BuildMetrics.TimingMetrics timing = event.getBuildMetrics().getTimingMetrics();
+        if (event.getBuildMetrics().hasTimingMetrics() && timing.hasCriticalPathTime()) {
+          noteInvalid(
+              anomalies,
+              "buildMetrics.timing_metrics.critical_path_time",
+              ProtoTimes.checkedNonnegativeDurationMicros(timing.getCriticalPathTime()));
+        }
+      }
+      case COMPLETED -> {
+        TargetComplete completed = event.getCompleted();
+        if (completed.hasTestTimeout()) {
+          if (!validTestTimeout(completed.getTestTimeout())) {
+            anomalies.add(
+                "targetCompleted.test_timeout is malformed, negative, or not an integral second");
+          }
+        } else if (completed.getTestTimeoutSeconds() < 0) {
+          anomalies.add("targetCompleted.test_timeout_seconds is negative");
+        }
+      }
+      default -> {
+        // This payload carries no time normalized into an entity.
+      }
+    }
+    return anomalies;
+  }
+
+  private static void noteInvalid(
+      List<String> anomalies, String field, ProtoTimes.Checked checked) {
+    if (checked.isInvalid()) {
+      anomalies.add(
+          field + " is malformed, outside microsecond representation, or invalid for this field");
+    }
   }
 
   private List<EntityCommand> fromPayload(BuildEvent event) {
@@ -215,7 +338,7 @@ public final class EntityTranslator {
         span(hasTiming, timing.getExecutionPhaseTimeInMs()),
         span(hasTiming, timing.getActionsExecutionStartInMs()),
         timing.hasCriticalPathTime()
-            ? ProtoTimes.durationMicros(timing.getCriticalPathTime())
+            ? ProtoTimes.nonnegativeDurationMicros(timing.getCriticalPathTime())
             : OptionalLong.empty(),
         mnemonics,
         runners,
@@ -353,10 +476,18 @@ public final class EntityTranslator {
    */
   private static OptionalLong testTimeoutSeconds(TargetComplete payload) {
     if (payload.hasTestTimeout()) {
-      return OptionalLong.of(payload.getTestTimeout().getSeconds());
+      return validTestTimeout(payload.getTestTimeout())
+          ? OptionalLong.of(payload.getTestTimeout().getSeconds())
+          : OptionalLong.empty();
     }
     long seconds = payload.getTestTimeoutSeconds();
-    return seconds == 0L ? OptionalLong.empty() : OptionalLong.of(seconds);
+    return seconds <= 0L ? OptionalLong.empty() : OptionalLong.of(seconds);
+  }
+
+  private static boolean validTestTimeout(Duration timeout) {
+    return ProtoTimes.isValidDuration(timeout)
+        && timeout.getSeconds() >= 0
+        && timeout.getNanos() == 0;
   }
 
   // --- file sets --------------------------------------------------------
@@ -473,7 +604,7 @@ public final class EntityTranslator {
                 payload.hasTestAttemptStart(),
                 payload.getTestAttemptStart(),
                 payload.getTestAttemptStartMillisEpoch()),
-            ProtoTimes.micros(
+            ProtoTimes.nonnegativeMicros(
                 payload.hasTestAttemptDuration(),
                 payload.getTestAttemptDuration(),
                 payload.getTestAttemptDurationMillis()),
@@ -518,7 +649,7 @@ public final class EntityTranslator {
                 payload.hasLastStopTime(),
                 payload.getLastStopTime(),
                 payload.getLastStopTimeMillis()),
-            ProtoTimes.micros(
+            ProtoTimes.nonnegativeMicros(
                 payload.hasTotalRunDuration(),
                 payload.getTotalRunDuration(),
                 payload.getTotalRunDurationMillis()),

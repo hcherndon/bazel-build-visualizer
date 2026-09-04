@@ -227,7 +227,7 @@ final class ExecLogParserTest {
   }
 
   @Test
-  @DisplayName("compact timing outside protobuf's range is unavailable rather than wrapped")
+  @DisplayName("compact timing outside protobuf's range is a controlled parse failure")
   void compactRejectsOverflowingTiming() throws Exception {
     SpawnMetrics metrics =
         SpawnMetrics.newBuilder()
@@ -239,16 +239,14 @@ final class ExecLogParserTest {
             .setSpawn(ExecLogEntry.Spawn.newBuilder().setMetrics(metrics))
             .build();
 
-    EnrichmentCommand.SpawnObserved spawn = onlySpawn(parseCompact(entry));
-
-    assertThat(spawn.timing().startMicros()).isEmpty();
-    assertThat(spawn.timing().totalMicros()).isEmpty();
-    assertThat(spawn.startUnknownReason())
-        .hasValueSatisfying(reason -> assertThat(reason).contains("malformed or out-of-range"));
+    assertThatThrownBy(() -> parseCompact(entry))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("entry 0")
+        .hasMessageContaining("metrics.start_time");
   }
 
   @Test
-  @DisplayName("binary malformed timing is unavailable rather than reported as a value")
+  @DisplayName("binary malformed timing is a controlled parse failure")
   void binaryRejectsMalformedTiming() throws Exception {
     SpawnMetrics metrics =
         SpawnMetrics.newBuilder()
@@ -256,17 +254,14 @@ final class ExecLogParserTest {
             .setTotalTime(Duration.newBuilder().setSeconds(1).setNanos(-1))
             .build();
 
-    EnrichmentCommand.SpawnObserved spawn =
-        onlySpawn(parseBinary(SpawnExec.newBuilder().setMetrics(metrics).build()));
-
-    assertThat(spawn.timing().startMicros()).isEmpty();
-    assertThat(spawn.timing().totalMicros()).isEmpty();
-    assertThat(spawn.startUnknownReason())
-        .hasValueSatisfying(reason -> assertThat(reason).contains("malformed or out-of-range"));
+    assertThatThrownBy(() -> parseBinary(SpawnExec.newBuilder().setMetrics(metrics).build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("entry 0")
+        .hasMessageContaining("metrics.start_time");
   }
 
   @Test
-  @DisplayName("legacy walltime outside protobuf's range is unavailable rather than wrapped")
+  @DisplayName("legacy walltime outside protobuf's range is a controlled parse failure")
   void legacyRejectsOverflowingWalltime() throws Exception {
     ByteString invalidDuration =
         Duration.newBuilder().setSeconds(Long.MAX_VALUE).build().toByteString();
@@ -276,10 +271,58 @@ final class ExecLogParserTest {
                 17, UnknownFieldSet.Field.newBuilder().addLengthDelimited(invalidDuration).build())
             .build();
 
-    EnrichmentCommand.SpawnObserved spawn =
-        onlySpawn(parseBinary(SpawnExec.newBuilder().setUnknownFields(unknownFields).build()));
+    assertThatThrownBy(
+            () -> parseBinary(SpawnExec.newBuilder().setUnknownFields(unknownFields).build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("legacy execution-log walltime");
+  }
 
-    assertThat(spawn.timing().totalMicros()).isEmpty();
+  @Test
+  @DisplayName("present zero exec-log times remain distinct from absent times")
+  void zeroAndAbsentTimesStayDistinct() throws Exception {
+    SpawnMetrics zero =
+        SpawnMetrics.newBuilder()
+            .setStartTime(Timestamp.getDefaultInstance())
+            .setTotalTime(Duration.getDefaultInstance())
+            .build();
+
+    EnrichmentCommand.SpawnObserved compactZero =
+        onlySpawn(
+            parseCompact(
+                ExecLogEntry.newBuilder()
+                    .setSpawn(ExecLogEntry.Spawn.newBuilder().setMetrics(zero))
+                    .build()));
+    EnrichmentCommand.SpawnObserved compactAbsent =
+        onlySpawn(
+            parseCompact(
+                ExecLogEntry.newBuilder().setSpawn(ExecLogEntry.Spawn.newBuilder()).build()));
+    EnrichmentCommand.SpawnObserved binaryZero =
+        onlySpawn(parseBinary(SpawnExec.newBuilder().setMetrics(zero).build()));
+
+    assertThat(compactZero.timing().startMicros()).hasValue(0L);
+    assertThat(compactZero.timing().totalMicros()).hasValue(0L);
+    assertThat(compactZero.startUnknownReason()).isEmpty();
+    assertThat(compactAbsent.timing().startMicros()).isEmpty();
+    assertThat(compactAbsent.timing().totalMicros()).isEmpty();
+    assertThat(binaryZero.timing().startMicros()).hasValue(0L);
+    assertThat(binaryZero.timing().totalMicros()).hasValue(0L);
+  }
+
+  @Test
+  @DisplayName("malformed exec-log duration cannot be mistaken for absence")
+  void malformedDurationIsExplicit() {
+    SpawnMetrics invalid =
+        SpawnMetrics.newBuilder()
+            .setTotalTime(Duration.newBuilder().setSeconds(1).setNanos(-1))
+            .build();
+    ExecLogEntry entry =
+        ExecLogEntry.newBuilder()
+            .setSpawn(ExecLogEntry.Spawn.newBuilder().setMetrics(invalid))
+            .build();
+
+    assertThatThrownBy(() -> parseCompact(entry))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("metrics.total_time");
   }
 
   // ------------------------------------------------------------- redaction

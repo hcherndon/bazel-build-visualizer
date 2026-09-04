@@ -3,7 +3,6 @@ package com.holtherndon.bazelviz.capture.normalize;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.Timestamp;
 import com.holtherndon.bazelviz.bepcodec.BepEventDecoder;
 import com.holtherndon.bazelviz.bepcodec.BepPayloadType;
 import com.holtherndon.bazelviz.bepcodec.BesEnvelope;
@@ -217,6 +216,7 @@ public final class EventNormalizer {
       children = hashes;
     }
 
+    EventTime eventTime = eventTime(event);
     EventRecord record =
         new EventRecord(
             streamId,
@@ -230,7 +230,7 @@ public final class EventNormalizer {
             location.payloadLength(),
             status,
             status == DecodeStatus.UNKNOWN_FIELDS,
-            eventMicros(event),
+            eventTime.micros(),
             receiveMicros);
 
     return new Normalization(
@@ -238,7 +238,8 @@ public final class EventNormalizer {
         status,
         decoded.detail(),
         invocationId(event),
-        Optional.ofNullable(event));
+        Optional.ofNullable(event),
+        eventTime.anomalies());
   }
 
   /**
@@ -254,34 +255,55 @@ public final class EventNormalizer {
    * a version this application explicitly supports.
    */
   @SuppressWarnings("deprecation") // start_time_millis / finish_time_millis, read on purpose
-  private static OptionalLong eventMicros(BuildEvent event) {
+  private static EventTime eventTime(BuildEvent event) {
     if (event == null) {
-      return OptionalLong.empty();
+      return EventTime.absent();
     }
     return switch (event.getPayloadCase()) {
       case STARTED ->
-          micros(
-              event.getStarted().hasStartTime() ? event.getStarted().getStartTime() : null,
-              event.getStarted().getStartTimeMillis());
+          checkedEventTime(
+              "buildStarted.start_time",
+              ProtoTimes.checkedMicros(
+                  event.getStarted().hasStartTime(),
+                  event.getStarted().getStartTime(),
+                  event.getStarted().getStartTimeMillis()));
       case FINISHED ->
-          micros(
-              event.getFinished().hasFinishTime() ? event.getFinished().getFinishTime() : null,
-              event.getFinished().getFinishTimeMillis());
-      default -> OptionalLong.empty();
+          checkedEventTime(
+              "buildFinished.finish_time",
+              ProtoTimes.checkedMicros(
+                  event.getFinished().hasFinishTime(),
+                  event.getFinished().getFinishTime(),
+                  event.getFinished().getFinishTimeMillis()));
+      default -> EventTime.absent();
     };
   }
 
   /**
-   * Prefers the {@code Timestamp} field over the deprecated millis field, and treats a zero millis
-   * value as absent rather than as the epoch: Bazel leaves the deprecated field unset when it
-   * writes the new one, and reading that as 1970 would be an unavailable value shown as a number
-   * (plan 11.4).
+   * Prefers a present {@code Timestamp} field over the deprecated millis field, including a valid
+   * epoch value. A zero legacy millis scalar remains absent because proto3 cannot distinguish it
+   * from an omitted scalar. A malformed present message never falls back: doing so would replace
+   * the source's invalid value with a different one and erase the anomaly (plan 11.4).
    */
-  private static OptionalLong micros(Timestamp timestamp, long fallbackMillis) {
-    if (timestamp != null && (timestamp.getSeconds() != 0 || timestamp.getNanos() != 0)) {
-      return ProtoTimes.timestampMicros(timestamp);
+  private static EventTime checkedEventTime(String field, ProtoTimes.Checked checked) {
+    return checked.isInvalid()
+        ? new EventTime(
+            OptionalLong.empty(),
+            List.of(
+                field
+                    + " is malformed, outside microsecond representation, or invalid for this"
+                    + " field"))
+        : new EventTime(checked.micros(), List.of());
+  }
+
+  private record EventTime(OptionalLong micros, List<String> anomalies) {
+    private EventTime {
+      Objects.requireNonNull(micros, "micros");
+      anomalies = List.copyOf(anomalies);
     }
-    return ProtoTimes.millisMicros(fallbackMillis);
+
+    private static EventTime absent() {
+      return new EventTime(OptionalLong.empty(), List.of());
+    }
   }
 
   /** The invocation id, which only the {@code BuildStarted} event carries. */
@@ -310,5 +332,10 @@ public final class EventNormalizer {
       DecodeStatus status,
       String failureDetail,
       Optional<String> invocationId,
-      Optional<BuildEvent> event) {}
+      Optional<BuildEvent> event,
+      List<String> timeAnomalies) {
+    public Normalization {
+      timeAnomalies = List.copyOf(timeAnomalies);
+    }
+  }
 }

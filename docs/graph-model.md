@@ -8,30 +8,33 @@ whose task list includes "Build forward/reverse CSR indexes"; the visualization
 that reads it is Phase 7. The Phase 0 graph spike exercises a prototype of this
 layout at Tier 2/3 scale.
 
-## CSR file format sketch (plan 13.2)
+## CSR file format (plan 13.2)
 
 One file per direction (forward = producer→consumers, reverse =
 consumer→producers), written once at indexing time, memory-mapped read-only
 afterwards. All integers little-endian, fixed-width.
 
 ```
-header (64 bytes)
-  magic        u64   'BBVCSR1\0'
+header (40 bytes)
+  magic        8 bytes   'BBVCSR01'
   formatVersion u32
-  flags        u32   (bit 0: reverse direction)
+  flags        u32   (bit 0: reverse direction; every other bit is reserved)
   nodeCount    u64   N
   edgeCount    u64   E
-  checksum     u64   xxhash-style digest of the two arrays
-  reserved     u64x2
+  checksum     u64   CRC32C of the two arrays
 
 offsets array
   (N + 1) x u64      offsets[i]..offsets[i+1] index the neighbor slice of
                      node i; offsets[N] == E. Monotone non-decreasing.
 
-neighbors array
-  E x u32 or u64     node ids; width chosen by nodeCount at write time and
-                     recorded in flags. Sorted within each slice.
+targets array
+  E x u32             node ids in [0, N). Ordering within a slice is not significant.
 ```
+
+Readers validate counts and exact body size before mapping, verify the checksum, then validate that
+offsets begin at zero, are monotone and end at `E`, and that every target is within `[0, N)`. A
+checksum-valid file with invalid structure is corrupt and is refused. Bit 0 records the direction
+for inspection and registry checks; it does not change the array representation.
 
 Node ids are dense indexes assigned at indexing time; the mapping from node
 id to domain identity (action, artifact) lives in the session SQLite

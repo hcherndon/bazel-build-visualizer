@@ -114,8 +114,51 @@ class NormalizationAnomalyTest {
     BepBinaryWriter.write(source, List.of(event).iterator());
 
     EventSummary stored = importAndReadFirstEvent(temporary, source);
+    List<DiagnosticEntry> diagnostics = importAndReadDiagnostics(temporary, source);
 
     assertThat(stored.eventMicros()).isEmpty();
+    assertThat(diagnostics)
+        .filteredOn(entry -> entry.diagnostic().code().equals(DiagnosticCodes.INVALID_TIME_VALUE))
+        .singleElement()
+        .satisfies(
+            entry -> {
+              assertThat(entry.diagnostic().message()).contains("buildStarted.start_time");
+            });
+  }
+
+  @Test
+  @DisplayName("an absent timestamp stays unavailable without an invalid-value diagnostic")
+  void absentEventTimestampIsQuiet(@TempDir Path temporary) throws Exception {
+    Path source = temporary.resolve("absent-time.bep");
+    BepBinaryWriter.write(source, List.of(started(BuildStarted.newBuilder())).iterator());
+
+    EventSummary stored = importAndReadFirstEvent(temporary, source);
+    List<DiagnosticEntry> diagnostics = importAndReadDiagnostics(temporary, source);
+
+    assertThat(stored.eventMicros()).isEmpty();
+    assertThat(diagnostics)
+        .noneMatch(entry -> entry.diagnostic().code().equals(DiagnosticCodes.INVALID_TIME_VALUE));
+  }
+
+  @Test
+  @DisplayName("a present epoch timestamp is stored as zero and never replaced by legacy millis")
+  void epochTimestampIsPersisted(@TempDir Path temporary) throws Exception {
+    Path source = temporary.resolve("epoch-time.bep");
+    BepBinaryWriter.write(
+        source,
+        List.of(
+                started(
+                    BuildStarted.newBuilder()
+                        .setStartTime(Timestamp.getDefaultInstance())
+                        .setStartTimeMillis(123)))
+            .iterator());
+
+    EventSummary stored = importAndReadFirstEvent(temporary, source);
+    List<DiagnosticEntry> diagnostics = importAndReadDiagnostics(temporary, source);
+
+    assertThat(stored.eventMicros()).hasValue(0L);
+    assertThat(diagnostics)
+        .noneMatch(entry -> entry.diagnostic().code().equals(DiagnosticCodes.INVALID_TIME_VALUE));
   }
 
   private static List<DiagnosticEntry> importAndReadDiagnostics(Path temporary, Path source)
@@ -177,6 +220,14 @@ class NormalizationAnomalyTest {
                     OutputGroup.newBuilder()
                         .setName("default")
                         .addFileSets(BuildEventId.NamedSetOfFilesId.newBuilder().setId(fileSetId))))
+        .build();
+  }
+
+  private static BuildEvent started(BuildStarted.Builder payload) {
+    return BuildEvent.newBuilder()
+        .setId(
+            BuildEventId.newBuilder().setStarted(BuildEventId.BuildStartedId.getDefaultInstance()))
+        .setStarted(payload)
         .build();
   }
 }

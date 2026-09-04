@@ -119,6 +119,35 @@ class TestInspectionTest {
         .contains(FileLink.testLog("test.log", "file:///out/t/test.log"));
   }
 
+  @Test
+  @DisplayName("a stored timeout too large for microseconds is unknown rather than wrapped")
+  void timeoutDisplayCannotOverflow() {
+    TestRow row =
+        new TestRow(
+            1,
+            "//t:huge_timeout_test",
+            Optional.of("cfg"),
+            TestOutcome.PASSED,
+            OptionalInt.of(1),
+            OptionalInt.of(1),
+            OptionalInt.empty(),
+            OptionalInt.of(1),
+            0,
+            OptionalLong.empty(),
+            OptionalLong.empty(),
+            OptionalLong.empty(),
+            OptionalLong.of(Long.MAX_VALUE),
+            0,
+            0,
+            OptionalLong.empty());
+
+    Inspection inspection = TestInspection.of(row, List.of(), List.of());
+
+    assertThat(valueOf(inspection, "Timeout")).isEmpty();
+    assertThat(noteOf(inspection, "Timeout"))
+        .hasValueSatisfying(note -> assertThat(note).contains("too large"));
+  }
+
   private static TestRow test(
       TestOutcome status, OptionalInt shards, long attempts, long failedAttempts) {
     return new TestRow(

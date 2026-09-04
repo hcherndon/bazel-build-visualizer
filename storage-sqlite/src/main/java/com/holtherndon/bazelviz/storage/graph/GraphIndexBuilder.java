@@ -203,7 +203,7 @@ public final class GraphIndexBuilder {
     Path forwardFile = directory.resolve(fileName(kind, "forward"));
     Path reverseFile = directory.resolve(fileName(kind, "reverse"));
     long forwardChecksum = CsrFile.write(forward, forwardFile);
-    long reverseChecksum = CsrFile.write(reverse, reverseFile);
+    long reverseChecksum = CsrFile.write(reverse, reverseFile, true);
 
     register(kind, "FORWARD", forwardFile, forward, forwardChecksum);
     register(kind, "REVERSE", reverseFile, reverse, reverseChecksum);
@@ -366,7 +366,8 @@ public final class GraphIndexBuilder {
         CsrFile.Header header = CsrFile.headerOf(file);
         if (header.nodeCount() != rows.getLong("node_count")
             || header.edgeCount() != rows.getLong("edge_count")
-            || !Long.toHexString(header.checksum()).equals(rows.getString("checksum"))) {
+            || !Long.toHexString(header.checksum()).equals(rows.getString("checksum"))
+            || header.reverseDirection() != "REVERSE".equals(direction)) {
           throw new StaleIndexException(file);
         }
         return Optional.of(CsrFile.read(file));

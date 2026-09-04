@@ -86,8 +86,42 @@ final class GraphExtractTest {
     GraphExtract.Result around = GraphExtract.neighbourhood(forward, reverseOf(forward), 2, 1, 100);
 
     // "What does this need and what needs this" is one question.
-    assertThat(around.nodes()).contains(1, 2, 3);
+    assertThat(around.nodes()).containsExactly(2, 3, 1);
+    assertThat(around.edges())
+        .containsExactly(new GraphExtract.Edge(2, 3), new GraphExtract.Edge(1, 2));
     assertThat(around.mode()).isEqualTo(GraphExtract.Mode.NEIGHBOURHOOD);
+  }
+
+  @Test
+  @DisplayName("a neighbourhood deduplicates overlapping directed edges without reordering")
+  void neighbourhoodDeduplicatesInTraversalOrder() {
+    CsrGraph cyclic =
+        CsrBuilder.build(
+            2,
+            visitor -> {
+              visitor.edge(0, 1);
+              visitor.edge(1, 0);
+            });
+
+    GraphExtract.Result around =
+        GraphExtract.neighbourhood(cyclic, reverseOf(cyclic), 0, 1, 10, 10);
+
+    assertThat(around.nodes()).containsExactly(0, 1);
+    assertThat(around.edges())
+        .containsExactly(new GraphExtract.Edge(0, 1), new GraphExtract.Edge(1, 0));
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  @DisplayName("legacy partial results preserve their original node-limit meaning")
+  void legacyPartialStatusPreservesNodeLimitMeaning() {
+    GraphExtract.Result legacy =
+        new GraphExtract.Result(
+            GraphExtract.Mode.NEIGHBOURHOOD, List.of(0), List.of(), 10, 20, true, 5);
+
+    assertThat(legacy.hitLimit()).isTrue();
+    assertThat(legacy.hitNodeLimit()).isTrue();
+    assertThat(legacy.hitEdgeLimit()).isFalse();
   }
 
   @Test

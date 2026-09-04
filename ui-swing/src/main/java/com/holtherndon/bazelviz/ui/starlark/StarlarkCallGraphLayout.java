@@ -68,8 +68,10 @@ final class StarlarkCallGraphLayout {
             layoutEdges,
             graph.totalFunctionCount(),
             graph.visibleEdgeCount(),
-            graph.omittedFunctionCount() > 0 || graph.omittedVisibleEdgeCount() > 0,
-            graph.nodes().size());
+            graph.nodes().size(),
+            layoutEdges.size(),
+            graph.omittedFunctionCount() > 0,
+            graph.omittedVisibleEdgeCount() > 0);
     GraphLayout.Result layered = GraphLayout.layered(extracted, new AtomicBoolean());
 
     long maxNodeWeight =

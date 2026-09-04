@@ -117,11 +117,16 @@ public final class ProfileParser {
    * itself spans 1.2–1.5 s, so it cannot be a finish. {@code profile_start_ts} on 8.4.1+ is exact
    * and matches {@code otherData.date} to the millisecond (P1).
    */
-  private static ProfileAnchor anchorFor(String key, long millis) {
+  private static ProfileAnchor anchorFor(String key, long millis) throws IOException {
     if (key == null) {
       return ProfileAnchor.absent();
     }
-    long micros = millis * 1_000L;
+    long micros;
+    try {
+      micros = Math.multiplyExact(millis, 1_000L);
+    } catch (ArithmeticException overflow) {
+      throw new IOException("profile anchor " + key + " overflows microsecond precision", overflow);
+    }
     return key.equals("profile_start_ts")
         ? ProfileAnchor.exact(micros, key)
         : ProfileAnchor.flooredStart(micros, key);

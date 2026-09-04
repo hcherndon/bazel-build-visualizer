@@ -19,7 +19,7 @@ import java.util.zip.CRC32C;
  * <pre>
  *   magic          8 bytes   "BBVCSR01"
  *   formatVersion  4 bytes
- *   flags          4 bytes   reserved, zero
+ *   flags          4 bytes   bit 0 means reverse direction
  *   nodeCount      8 bytes
  *   edgeCount      8 bytes
  *   checksum       8 bytes   CRC32C of everything after this field
@@ -54,6 +54,9 @@ public final class CsrFile {
 
   static final int HEADER_BYTES = 8 + 4 + 4 + 8 + 8 + 8;
 
+  /** Header flag identifying a consumer-to-producer reverse index. */
+  public static final int REVERSE_DIRECTION_FLAG = 1;
+
   private CsrFile() {}
 
   /**
@@ -62,6 +65,11 @@ public final class CsrFile {
    * @return the checksum recorded in the header, for the index registry
    */
   public static long write(CsrGraph graph, Path file) throws IOException {
+    return write(graph, file, false);
+  }
+
+  /** Writes a graph and records whether its edges are the reverse direction. */
+  public static long write(CsrGraph graph, Path file, boolean reverseDirection) throws IOException {
     long nodeCount = graph.nodeCount();
     long edgeCount = graph.edgeCount();
     Path temporary = file.resolveSibling(file.getFileName() + ".building");
@@ -83,7 +91,7 @@ public final class CsrFile {
     ByteBuffer header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
     header.put(MAGIC);
     header.putInt(FORMAT_VERSION);
-    header.putInt(0);
+    header.putInt(reverseDirection ? REVERSE_DIRECTION_FLAG : 0);
     header.putLong(nodeCount);
     header.putLong(edgeCount);
     header.putLong(checksum);
@@ -130,12 +138,20 @@ public final class CsrFile {
         throw new CsrFormatException(file, "checksum does not match its contents");
       }
 
-      long[] offsets = new long[Math.toIntExact(nodeCount + 1)];
-      body.asLongBuffer().get(offsets);
-      int[] targets = new int[Math.toIntExact(edgeCount)];
-      body.position(Math.toIntExact((nodeCount + 1) * Long.BYTES));
-      body.asIntBuffer().get(targets);
-      return new CsrGraph(offsets, targets);
+      try {
+        long[] offsets = new long[Math.toIntExact(nodeCount + 1)];
+        body.asLongBuffer().get(offsets);
+        int[] targets = new int[Math.toIntExact(edgeCount)];
+        body.position(Math.toIntExact(Math.multiplyExact(nodeCount + 1, Long.BYTES)));
+        body.asIntBuffer().get(targets);
+        validateStructure(file, offsets, targets);
+        return new CsrGraph(offsets, targets);
+      } catch (ArithmeticException | IndexOutOfBoundsException malformed) {
+        throw new CsrFormatException(
+            file, "body structure cannot be represented safely", malformed);
+      } catch (IllegalArgumentException malformed) {
+        throw new CsrFormatException(file, malformed.getMessage(), malformed);
+      }
     }
   }
 
@@ -144,7 +160,11 @@ public final class CsrFile {
     try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
       ValidatedHeader header = readHeader(channel, file);
       return new Header(
-          header.formatVersion(), header.nodeCount(), header.edgeCount(), header.checksum());
+          header.formatVersion(),
+          header.nodeCount(),
+          header.edgeCount(),
+          header.checksum(),
+          header.reverseDirection());
     }
   }
 
@@ -174,7 +194,7 @@ public final class CsrFile {
           file, "format version " + version + ", and this build reads " + FORMAT_VERSION);
     }
     int flags = bytes.getInt();
-    if (flags != 0) {
+    if ((flags & ~REVERSE_DIRECTION_FLAG) != 0) {
       throw new CsrFormatException(file, "unsupported flags " + flags);
     }
     long nodeCount = bytes.getLong();
@@ -187,7 +207,38 @@ public final class CsrFile {
           file,
           "header promises " + bodyBytes + " bytes of graph and the file holds " + actualBodyBytes);
     }
-    return new ValidatedHeader(version, nodeCount, edgeCount, checksum, bodyBytes);
+    return new ValidatedHeader(
+        version, nodeCount, edgeCount, checksum, bodyBytes, (flags & REVERSE_DIRECTION_FLAG) != 0);
+  }
+
+  private static void validateStructure(Path file, long[] offsets, int[] targets)
+      throws CsrFormatException {
+    if (offsets.length == 0 || offsets[0] != 0) {
+      throw new CsrFormatException(file, "offsets must start at zero");
+    }
+    for (int index = 0; index + 1 < offsets.length; index++) {
+      long offset = offsets[index];
+      long next = offsets[index + 1];
+      if (offset < 0 || offset > next || next > targets.length) {
+        throw new CsrFormatException(
+            file, "invalid offsets at node " + index + ": " + offset + " then " + next);
+      }
+    }
+    if (offsets[offsets.length - 1] != targets.length) {
+      throw new CsrFormatException(
+          file,
+          "final offset "
+              + offsets[offsets.length - 1]
+              + " does not match edge count "
+              + targets.length);
+    }
+    int nodeCount = offsets.length - 1;
+    for (int edge = 0; edge < targets.length; edge++) {
+      if (targets[edge] < 0 || targets[edge] >= nodeCount) {
+        throw new CsrFormatException(
+            file, "target " + targets[edge] + " at edge " + edge + " is outside the node range");
+      }
+    }
   }
 
   private static int checkedBodyBytes(Path file, long nodeCount, long edgeCount)
@@ -222,10 +273,21 @@ public final class CsrFile {
   }
 
   private record ValidatedHeader(
-      int formatVersion, long nodeCount, long edgeCount, long checksum, int bodyBytes) {}
+      int formatVersion,
+      long nodeCount,
+      long edgeCount,
+      long checksum,
+      int bodyBytes,
+      boolean reverseDirection) {}
 
   /** What a file's header says about it. */
-  public record Header(int formatVersion, long nodeCount, long edgeCount, long checksum) {}
+  public record Header(
+      int formatVersion, long nodeCount, long edgeCount, long checksum, boolean reverseDirection) {
+    /** Compatibility constructor for callers written before direction was exposed. */
+    public Header(int formatVersion, long nodeCount, long edgeCount, long checksum) {
+      this(formatVersion, nodeCount, edgeCount, checksum, false);
+    }
+  }
 
   /** The file is not a CSR index this build can read. */
   public static final class CsrFormatException extends IOException {
@@ -234,6 +296,10 @@ public final class CsrFile {
 
     CsrFormatException(Path file, String why) {
       super(file + " is not a usable graph index: " + why);
+    }
+
+    CsrFormatException(Path file, String why, Throwable cause) {
+      super(file + " is not a usable graph index: " + why, cause);
     }
   }
 }

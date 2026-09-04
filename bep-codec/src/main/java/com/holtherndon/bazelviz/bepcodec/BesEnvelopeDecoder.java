@@ -7,13 +7,11 @@ import com.google.devtools.build.v1.PublishLifecycleEventRequest;
 import com.google.devtools.build.v1.StreamId;
 import com.google.protobuf.CodedInputStream;
 import com.google.protobuf.InvalidProtocolBufferException;
-import com.google.protobuf.Timestamp;
 import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.OptionalLong;
 
 /**
  * Reads the BES request that a journal frame of kind {@code BES_ENVELOPE} or {@code BES_LIFECYCLE}
@@ -131,7 +129,8 @@ public final class BesEnvelopeDecoder {
               envelope.component(),
               envelope.sequence(),
               Optional.empty(),
-              envelope.eventTimeMicros()));
+              envelope.eventTimeMicros(),
+              envelope.eventTimeState()));
     } catch (InvalidProtocolBufferException malformed) {
       return Result.failed("not a PublishLifecycleEventRequest: " + malformed.getMessage());
     } catch (IOException | RuntimeException failure) {
@@ -143,6 +142,7 @@ public final class BesEnvelopeDecoder {
     StreamId streamId = ordered.getStreamId();
     BuildEvent event = ordered.getEvent();
     BesEnvelope.Kind kind = kindOf(event);
+    ProtoTimes.Checked eventTime = eventTime(event);
     return new BesEnvelope(
         kind,
         nonEmpty(streamId.getBuildId()),
@@ -150,7 +150,8 @@ public final class BesEnvelopeDecoder {
         nonEmpty(streamId.getComponent().name()),
         ordered.getSequenceNumber(),
         kind.carriesBuildEvent() ? Optional.of(event.getBazelEvent().getValue()) : Optional.empty(),
-        eventTimeMicros(event));
+        eventTime.micros(),
+        eventTime.state());
   }
 
   private static BesEnvelope.Kind kindOf(BuildEvent event) {
@@ -172,15 +173,11 @@ public final class BesEnvelopeDecoder {
    * {@code event_time} unset on some envelopes, and 1970 shown in a timeline is an unavailable
    * value rendered as a number (plan 11.4).
    */
-  private static OptionalLong eventTimeMicros(BuildEvent event) {
+  private static ProtoTimes.Checked eventTime(BuildEvent event) {
     if (!event.hasEventTime()) {
-      return OptionalLong.empty();
+      return ProtoTimes.Checked.absent();
     }
-    Timestamp time = event.getEventTime();
-    if (time.getSeconds() == 0 && time.getNanos() == 0) {
-      return OptionalLong.empty();
-    }
-    return ProtoTimes.timestampMicros(time);
+    return ProtoTimes.checkedTimestampMicros(event.getEventTime());
   }
 
   private static Optional<String> nonEmpty(String value) {

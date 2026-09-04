@@ -6,6 +6,7 @@ import com.google.protobuf.Duration;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.UnknownFieldSet;
 import com.holtherndon.bazelviz.bepcodec.entity.ProtoTimes;
+import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -70,11 +71,11 @@ final class LegacySpawnFields {
   /**
    * The wall time, from field 17, in microseconds.
    *
-   * <p>The field holds a {@code Duration} submessage, so its bytes are parsed as one. A zero-length
-   * duration reads as unknown rather than as an instantaneous spawn — a spawn that took no
-   * measurable time did not take zero time.
+   * <p>The field holds a {@code Duration} submessage, so its bytes are parsed as one. Presence
+   * distinguishes a reported zero from an absent field. Malformed and negative values fail the
+   * enrichment explicitly instead of being stored as either state.
    */
-  static OptionalLong walltimeMicros(SpawnExec spawn) {
+  static OptionalLong walltimeMicros(SpawnExec spawn) throws IOException {
     List<ByteString> values =
         spawn.getUnknownFields().getField(WALLTIME_FIELD).getLengthDelimitedList();
     if (values.isEmpty()) {
@@ -82,12 +83,16 @@ final class LegacySpawnFields {
     }
     try {
       Duration duration = Duration.parseFrom(values.getFirst());
-      OptionalLong micros = ProtoTimes.durationMicros(duration);
-      return micros.isPresent() && micros.getAsLong() > 0 ? micros : OptionalLong.empty();
+      ProtoTimes.Checked checked = ProtoTimes.checkedNonnegativeDurationMicros(duration);
+      if (checked.isInvalid()) {
+        throw new IOException(
+            "legacy execution-log walltime is malformed, negative, or outside microsecond"
+                + " representation");
+      }
+      return checked.micros();
     } catch (InvalidProtocolBufferException notADuration) {
-      // Field 17 held something else. Treating it as a duration anyway
-      // would put an invented number on the row.
-      return OptionalLong.empty();
+      throw new IOException(
+          "legacy execution-log walltime is not a protobuf Duration", notADuration);
     }
   }
 

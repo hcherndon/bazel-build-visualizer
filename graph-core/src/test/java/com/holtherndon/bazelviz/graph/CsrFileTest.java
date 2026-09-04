@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.zip.CRC32C;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -209,13 +210,67 @@ final class CsrFileTest {
     Path reverse = tempDir.resolve("r.csr");
     CsrGraph graph = sample();
     CsrFile.write(graph, forward);
-    CsrFile.write(CsrBuilder.reverse(graph), reverse);
+    CsrFile.write(CsrBuilder.reverse(graph), reverse, true);
 
     CsrGraph back = CsrFile.read(reverse);
     assertThat(back.edgeCount()).isEqualTo(graph.edgeCount());
     // Node 3 has no forward neighbours and two reverse ones.
     assertThat(neighbors(CsrFile.read(forward), 3)).isEmpty();
     assertThat(neighbors(back, 3)).containsExactlyInAnyOrder(1, 2);
+    assertThat(CsrFile.headerOf(forward).reverseDirection()).isFalse();
+    assertThat(CsrFile.headerOf(reverse).reverseDirection()).isTrue();
+  }
+
+  @Test
+  @DisplayName("the documented reverse flag is accepted and unknown flags are refused")
+  void flagsAreValidatedBitwise() throws Exception {
+    Path reverse = tempDir.resolve("flagged.csr");
+    CsrFile.write(sample(), reverse);
+    byte[] bytes = Files.readAllBytes(reverse);
+    ByteBuffer.wrap(bytes)
+        .order(ByteOrder.LITTLE_ENDIAN)
+        .putInt(12, CsrFile.REVERSE_DIRECTION_FLAG);
+    Files.write(reverse, bytes);
+
+    assertThat(CsrFile.read(reverse).edgeCount()).isEqualTo(4);
+    assertThat(CsrFile.headerOf(reverse).reverseDirection()).isTrue();
+
+    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(12, 2);
+    Files.write(reverse, bytes);
+    assertThatThrownBy(() -> CsrFile.read(reverse))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("unsupported flags 2");
+  }
+
+  @Test
+  @DisplayName("checksum-valid invalid offsets are still refused as structural corruption")
+  void structurallyInvalidOffsetsAreRefused() throws Exception {
+    Path file = tempDir.resolve("bad-offset.csr");
+    CsrFile.write(sample(), file);
+    byte[] bytes = Files.readAllBytes(file);
+    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putLong(CsrFile.HEADER_BYTES, 1L);
+    updateChecksum(bytes);
+    Files.write(file, bytes);
+
+    assertThatThrownBy(() -> CsrFile.read(file))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("offsets must start at zero");
+  }
+
+  @Test
+  @DisplayName("checksum-valid out-of-range targets are format errors")
+  void structurallyInvalidTargetsAreRefused() throws Exception {
+    Path file = tempDir.resolve("bad-target.csr");
+    CsrFile.write(sample(), file);
+    byte[] bytes = Files.readAllBytes(file);
+    int firstTarget = CsrFile.HEADER_BYTES + (4 + 1) * Long.BYTES;
+    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(firstTarget, 4);
+    updateChecksum(bytes);
+    Files.write(file, bytes);
+
+    assertThatThrownBy(() -> CsrFile.read(file))
+        .isInstanceOf(CsrFile.CsrFormatException.class)
+        .hasMessageContaining("outside the node range");
   }
 
   private static List<Integer> neighbors(CsrGraph graph, int node) {
@@ -235,5 +290,11 @@ final class CsrFileTest {
     Path file = tempDir.resolve(name);
     Files.write(file, header.array());
     return file;
+  }
+
+  private static void updateChecksum(byte[] bytes) {
+    CRC32C checksum = new CRC32C();
+    checksum.update(bytes, CsrFile.HEADER_BYTES, bytes.length - CsrFile.HEADER_BYTES);
+    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putLong(32, checksum.getValue());
   }
 }

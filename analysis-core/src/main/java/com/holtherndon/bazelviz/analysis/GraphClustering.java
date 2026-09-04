@@ -297,8 +297,10 @@ public final class GraphClustering {
           subgraph,
           totalNodes,
           totalEdges,
+          maxClusters,
+          Math.max(GraphExtract.DEFAULT_EDGE_LIMIT, subgraph.size()),
           hitLimit,
-          maxClusters);
+          false);
     }
 
     /** What the view must say alongside the boxes. */

@@ -463,7 +463,13 @@ public final class GraphExtract {
       boolean hitNodeLimit,
       boolean hitEdgeLimit) {
 
-    /** Source-compatible constructor for callers that predate the separate edge-limit status. */
+    /**
+     * Source-compatible constructor for callers that predate the separate edge-limit status.
+     *
+     * <p>The old API exposed only {@code nodeLimit}, so its flag remains a node-limit hit. New
+     * callers that can omit edges must use the canonical constructor and state both causes.
+     */
+    @Deprecated
     public Result(
         Mode mode,
         List<Integer> nodes,

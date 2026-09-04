@@ -23,6 +23,40 @@ import java.util.OptionalLong;
  */
 public final class ProtoTimes {
 
+  /** Whether a time was absent, validly present, or present but malformed. */
+  public enum State {
+    ABSENT,
+    PRESENT,
+    INVALID
+  }
+
+  /** A checked conversion that does not collapse malformed input into absence. */
+  public record Checked(State state, OptionalLong micros) {
+    public Checked {
+      Objects.requireNonNull(state, "state");
+      Objects.requireNonNull(micros, "micros");
+      if ((state == State.PRESENT) != micros.isPresent()) {
+        throw new IllegalArgumentException("only a present time may carry microseconds");
+      }
+    }
+
+    public boolean isInvalid() {
+      return state == State.INVALID;
+    }
+
+    public static Checked absent() {
+      return new Checked(State.ABSENT, OptionalLong.empty());
+    }
+
+    private static Checked present(long micros) {
+      return new Checked(State.PRESENT, OptionalLong.of(micros));
+    }
+
+    private static Checked invalid() {
+      return new Checked(State.INVALID, OptionalLong.empty());
+    }
+  }
+
   private ProtoTimes() {}
 
   /** Epoch micros for a valid timestamp the caller has already confirmed is present. */
@@ -39,6 +73,11 @@ public final class ProtoTimes {
 
   /** Epoch micros, or unavailable when the protobuf timestamp is malformed. */
   public static OptionalLong timestampMicros(Timestamp timestamp) {
+    return checkedTimestampMicros(timestamp).micros();
+  }
+
+  /** Checked epoch-microsecond conversion for a timestamp known to be present. */
+  public static Checked checkedTimestampMicros(Timestamp timestamp) {
     Objects.requireNonNull(timestamp, "timestamp");
     long seconds = timestamp.getSeconds();
     int nanos = timestamp.getNanos();
@@ -47,37 +86,69 @@ public final class ProtoTimes {
         || seconds > 253_402_300_799L
         || nanos < 0
         || nanos > 999_999_999) {
-      return OptionalLong.empty();
+      return Checked.invalid();
     }
-    return exactMicros(seconds, nanos);
+    return checkedExactMicros(seconds, nanos);
   }
 
   /** Micros, or unavailable when the protobuf duration is malformed. */
   public static OptionalLong durationMicros(Duration duration) {
+    return checkedDurationMicros(duration).micros();
+  }
+
+  /** Checked microsecond conversion for a duration known to be present. */
+  public static Checked checkedDurationMicros(Duration duration) {
+    Objects.requireNonNull(duration, "duration");
+    long seconds = duration.getSeconds();
+    int nanos = duration.getNanos();
+    if (!isValidDuration(duration)) {
+      return Checked.invalid();
+    }
+    return checkedExactMicros(seconds, nanos);
+  }
+
+  /** Checked duration conversion for fields whose domain cannot be negative. */
+  public static Checked checkedNonnegativeDurationMicros(Duration duration) {
+    Checked checked = checkedDurationMicros(duration);
+    return checked.state() == State.PRESENT
+            && (duration.getSeconds() < 0 || duration.getNanos() < 0)
+        ? Checked.invalid()
+        : checked;
+  }
+
+  /** Optional form of {@link #checkedNonnegativeDurationMicros(Duration)}. */
+  public static OptionalLong nonnegativeDurationMicros(Duration duration) {
+    return checkedNonnegativeDurationMicros(duration).micros();
+  }
+
+  /** Whether this message obeys protobuf Duration's range and sign rules. */
+  public static boolean isValidDuration(Duration duration) {
     Objects.requireNonNull(duration, "duration");
     long seconds = duration.getSeconds();
     int nanos = duration.getNanos();
     // google.protobuf.Duration spans +/-10,000 years. Seconds and nanos must carry the same sign.
-    if (seconds < -315_576_000_000L
-        || seconds > 315_576_000_000L
-        || nanos < -999_999_999
-        || nanos > 999_999_999
-        || (seconds < 0 && nanos > 0)
-        || (seconds > 0 && nanos < 0)) {
-      return OptionalLong.empty();
-    }
-    return exactMicros(seconds, nanos);
+    return seconds >= -315_576_000_000L
+        && seconds <= 315_576_000_000L
+        && nanos >= -999_999_999
+        && nanos <= 999_999_999
+        && (seconds >= 0 || nanos <= 0)
+        && (seconds <= 0 || nanos >= 0);
   }
 
   /** Micros for a legacy millisecond field, or unavailable when multiplication would overflow. */
   public static OptionalLong millisMicros(long millis) {
+    return checkedMillisMicros(millis).micros();
+  }
+
+  /** Checked conversion for a legacy scalar whose zero value is indistinguishable from absence. */
+  public static Checked checkedMillisMicros(long millis) {
     if (millis == 0L) {
-      return OptionalLong.empty();
+      return Checked.absent();
     }
     try {
-      return OptionalLong.of(Math.multiplyExact(millis, 1_000L));
+      return Checked.present(Math.multiplyExact(millis, 1_000L));
     } catch (ArithmeticException overflow) {
-      return OptionalLong.empty();
+      return Checked.invalid();
     }
   }
 
@@ -89,10 +160,15 @@ public final class ProtoTimes {
    *     indistinguishable from absent and no build event legitimately happened at the epoch
    */
   public static OptionalLong micros(boolean present, Timestamp timestamp, long millis) {
+    return checkedMicros(present, timestamp, millis).micros();
+  }
+
+  /** Checked timestamp conversion, preserving message presence even when its value is the epoch. */
+  public static Checked checkedMicros(boolean present, Timestamp timestamp, long millis) {
     if (present) {
-      return timestampMicros(timestamp);
+      return checkedTimestampMicros(timestamp);
     }
-    return millisMicros(millis);
+    return checkedMillisMicros(millis);
   }
 
   /**
@@ -104,20 +180,39 @@ public final class ProtoTimes {
    * than declining to say.
    */
   public static OptionalLong micros(boolean present, Duration duration, long millis) {
-    if (present) {
-      return durationMicros(duration);
-    }
-    return millisMicros(millis);
+    return checkedMicros(present, duration, millis).micros();
   }
 
-  private static OptionalLong exactMicros(long seconds, int nanos) {
+  /** Checked duration conversion with a legacy-millisecond fallback. */
+  public static Checked checkedMicros(boolean present, Duration duration, long millis) {
+    if (present) {
+      return checkedDurationMicros(duration);
+    }
+    return checkedMillisMicros(millis);
+  }
+
+  /** Checked nonnegative duration conversion with a legacy-millisecond fallback. */
+  public static Checked checkedNonnegativeMicros(boolean present, Duration duration, long millis) {
+    Checked checked =
+        present ? checkedNonnegativeDurationMicros(duration) : checkedMillisMicros(millis);
+    return checked.state() == State.PRESENT && checked.micros().orElseThrow() < 0
+        ? Checked.invalid()
+        : checked;
+  }
+
+  /** Optional form of {@link #checkedNonnegativeMicros(boolean, Duration, long)}. */
+  public static OptionalLong nonnegativeMicros(boolean present, Duration duration, long millis) {
+    return checkedNonnegativeMicros(present, duration, millis).micros();
+  }
+
+  private static Checked checkedExactMicros(long seconds, int nanos) {
     try {
-      return OptionalLong.of(
+      return Checked.present(
           Math.addExact(Math.multiplyExact(seconds, 1_000_000L), nanos / 1_000L));
     } catch (ArithmeticException overflow) {
       // The documented protobuf ranges fit in a long at microsecond precision. Keep this guard at
       // the conversion boundary so a future range change cannot silently wrap.
-      return OptionalLong.empty();
+      return Checked.invalid();
     }
   }
 }

@@ -685,7 +685,15 @@ public final class GraphLayoutService implements AutoCloseable {
       return new Rendered(
           request,
           new GraphExtract.Result(
-              request.mode(), List.of(), List.of(), 0, 0, false, request.nodeLimit()),
+              request.mode(),
+              List.of(),
+              List.of(),
+              0,
+              0,
+              request.nodeLimit(),
+              request.edgeLimit(),
+              false,
+              false),
           GraphLayout.Result.empty(request.layout()),
           null,
           explanation);

@@ -86,12 +86,7 @@ public final class TestInspection {
                     EntityFormat.duration(test.bazelReportedDurationMicros())
                         + " (excludes failed retries)")
                 : Inspection.Field.unknown("Bazel's reported duration", "not reported"))
-        .field(
-            test.timeoutSeconds().isPresent()
-                ? Inspection.Field.of(
-                    "Timeout",
-                    EntityFormat.duration(test.timeoutSeconds().getAsLong() * 1_000_000L))
-                : Inspection.Field.unknown("Timeout", "only reported under `bazel test`"));
+        .field(timeoutField(test));
 
     if (attempts.isEmpty()) {
       builder
@@ -182,5 +177,18 @@ public final class TestInspection {
 
   private static Inspection.Field counted(String name, Optional<String> value) {
     return EntityFormat.field(name, value);
+  }
+
+  private static Inspection.Field timeoutField(TestRow test) {
+    if (test.timeoutSeconds().isEmpty()) {
+      return Inspection.Field.unknown("Timeout", "only reported under `bazel test`");
+    }
+    try {
+      long micros = Math.multiplyExact(test.timeoutSeconds().getAsLong(), 1_000_000L);
+      return Inspection.Field.of("Timeout", EntityFormat.duration(micros));
+    } catch (ArithmeticException overflow) {
+      return Inspection.Field.unknown(
+          "Timeout", "the reported timeout is too large to display at microsecond precision");
+    }
   }
 }
