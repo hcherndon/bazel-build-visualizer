@@ -292,6 +292,27 @@ final class ExecLogParserTest {
   }
 
   @Test
+  @DisplayName("modern metrics cannot hide a malformed legacy walltime")
+  void metricsDoNotBypassLegacyWalltimeValidation() {
+    SpawnMetrics metrics =
+        SpawnMetrics.newBuilder().setTotalTime(Duration.newBuilder().setSeconds(1)).build();
+    UnknownFieldSet unknownFields =
+        UnknownFieldSet.newBuilder()
+            .addField(17, UnknownFieldSet.Field.newBuilder().addVarint(1).build())
+            .build();
+
+    assertThatThrownBy(
+            () ->
+                parseBinary(
+                    SpawnExec.newBuilder()
+                        .setMetrics(metrics)
+                        .setUnknownFields(unknownFields)
+                        .build()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("wire type");
+  }
+
+  @Test
   @DisplayName("a malformed later legacy walltime occurrence cannot be ignored")
   void legacyRejectsMalformedDuplicateWalltime() {
     ByteString validDuration = Duration.newBuilder().setSeconds(1).build().toByteString();

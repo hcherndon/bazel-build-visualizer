@@ -153,6 +153,7 @@ public final class BinaryExecLogParser {
    * neither, and its only duration is the legacy {@code walltime} at field 17 (S1, S2).
    */
   private SpawnTiming timingFor(SpawnExec spawn) throws IOException {
+    OptionalLong legacy = LegacySpawnFields.walltimeMicros(spawn);
     if (spawn.hasMetrics()) {
       SpawnMetrics metrics = spawn.getMetrics();
       return new SpawnTiming(
@@ -178,7 +179,6 @@ public final class BinaryExecLogParser {
           positive(metrics.getMemoryEstimateBytes()),
           positive(metrics.getMeasuredMemoryPeakBytes()));
     }
-    OptionalLong legacy = LegacySpawnFields.walltimeMicros(spawn);
     return legacy.isPresent() ? SpawnTiming.durationOnly(legacy.getAsLong()) : SpawnTiming.none();
   }
 
