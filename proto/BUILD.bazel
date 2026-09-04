@@ -50,17 +50,18 @@ filegroup(
 # expects in srcs. The vendored files expand in glob order (lexicographic),
 # which is also the order the descriptor-set parity diff was verified against.
 #
-# The google/protobuf/* well-known types are include-only, exactly as under
-# Gradle (whose plugin extracted them from the protobuf-java jar): they are
-# on the -I path so imports resolve, but are never passed as compile inputs,
-# so no code is generated for them and the descriptor set matches Gradle's.
-# They come from the protobuf 36.0 BCR module — the same release protobuf-java
-# 4.36.0 ships from.
+# The google/protobuf/* descriptor and well-known types are include-only,
+# exactly as under Gradle (whose plugin extracted them from the protobuf-java
+# jar): they are on the -I path so imports resolve, but are never passed as
+# compile inputs, so no code is generated for them and the descriptor set
+# matches Gradle's. They come from the protobuf 36.0 BCR module — the same
+# release protobuf-java 4.36.0 ships from.
 genrule(
     name = "bep_codegen",
     srcs = [
         ":vendored_protos",
-        "@protobuf//:well_known_protos",
+        "@protobuf//:descriptor_proto_srcs",
+        "@protobuf//:well_known_type_protos",
     ],
     outs = [
         "bep_java.srcjar",
@@ -68,8 +69,9 @@ genrule(
         "descriptor_set.desc",
     ],
     cmd = """
-        for wkt in $(execpaths @protobuf//:well_known_protos); do
-            wkt_root=$${wkt%/google/protobuf/*}
+        for proto_include in $(execpaths @protobuf//:descriptor_proto_srcs) \
+            $(execpaths @protobuf//:well_known_type_protos); do
+            wkt_root=$${proto_include%/google/protobuf/*}
             break
         done
         $(execpath :protoc_bin) \

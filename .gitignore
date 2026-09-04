@@ -27,6 +27,14 @@ bin/
 *.iml
 .vscode/
 
+# JetBrains' Bazel plugin materializes its downloaded/generated BSP aspects
+# here. They are machine-local cache state, not part of the repository.
+/.bazelbsp/
+
+# Codex keeps isolated Git worktrees below this root. Committing one would add
+# a gitlink whose branch and lifetime belong to a separate task.
+/.Codex/
+
 hs_err_pid*
 replay_pid*
 

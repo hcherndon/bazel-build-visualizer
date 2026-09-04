@@ -12,6 +12,9 @@ the 2026-08-25 signoff compared the two with this logic and recorded
 Usage:
   tools/test_inventory.py bazel-testlogs
   tools/test_inventory.py <old-xml-root> <new-xml-root>
+
+Each root must be an existing directory containing at least one well-formed
+JUnit XML report. Missing or unreliable input is an error, never an empty run.
 """
 
 import sys
@@ -19,22 +22,51 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
+class InventoryError(Exception):
+    """Raised when a test inventory cannot be read reliably."""
+
+
 def inventory(root):
     """{class name: test count} plus (tests, failures, skipped) totals."""
+    root = Path(root)
+    if not root.exists():
+        raise InventoryError(f"{root}: inventory root does not exist")
+    if not root.is_dir():
+        raise InventoryError(f"{root}: inventory root is not a directory")
+
+    xml_files = sorted(root.rglob("*.xml"))
+    if not xml_files:
+        raise InventoryError(f"{root}: no XML test reports found")
+
     classes = {}
     tests = failures = skipped = 0
-    for file in sorted(Path(root).rglob("*.xml")):
+    for file in xml_files:
         try:
             parsed = ET.parse(file).getroot()
-        except ET.ParseError:
-            continue
-        for suite in parsed.iter("testsuite"):
+        except (ET.ParseError, OSError) as error:
+            raise InventoryError(f"{file}: cannot read XML test report: {error}") from error
+
+        suites = list(parsed.iter("testsuite"))
+        if not suites:
+            raise InventoryError(f"{file}: XML test report has no <testsuite>")
+
+        for suite in suites:
             for case in suite.iter("testcase"):
                 name = case.get("classname") or suite.get("name") or "?"
                 classes[name] = classes.get(name, 0) + 1
                 tests += 1
-            failures += int(suite.get("failures", 0)) + int(suite.get("errors", 0))
-            skipped += int(suite.get("skipped", 0))
+            try:
+                suite_failures = int(suite.get("failures", 0))
+                suite_errors = int(suite.get("errors", 0))
+                suite_skipped = int(suite.get("skipped", 0))
+            except ValueError as error:
+                raise InventoryError(
+                    f"{file}: <testsuite> has a non-integer result count"
+                ) from error
+            if min(suite_failures, suite_errors, suite_skipped) < 0:
+                raise InventoryError(f"{file}: <testsuite> has a negative result count")
+            failures += suite_failures + suite_errors
+            skipped += suite_skipped
     return classes, tests, failures, skipped
 
 
@@ -47,13 +79,20 @@ def main(argv):
     if len(argv) not in (2, 3):
         print(__doc__, file=sys.stderr)
         return 2
-    a = inventory(argv[1])
+
+    try:
+        inventories = [inventory(root) for root in argv[1:]]
+    except InventoryError as error:
+        print(f"test_inventory: {error}", file=sys.stderr)
+        return 2
+
+    a = inventories[0]
     describe(argv[1], *a)
     if len(argv) == 2:
         for name in sorted(a[0]):
             print(f"  {name}: {a[0][name]}")
         return 0
-    b = inventory(argv[2])
+    b = inventories[1]
     describe(argv[2], *b)
     delta = 0
     for name in sorted(set(a[0]) | set(b[0])):
