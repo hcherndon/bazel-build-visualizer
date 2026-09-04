@@ -243,8 +243,9 @@ two-finger horizontal gesture pans left or right in time; Shift + wheel offers
 the same fallback. Hold Control or Command while scrolling to zoom around the
 pointer. A native pinch also zooms on macOS when the application is started
 through the Bazel launcher or packaged app; a manually launched jar needs the
-package export documented in the README. The **−**, **+**, and **Fit build**
-buttons offer the same controls without a gesture.
+[macOS package export](troubleshooting.md#timeline-pinch-does-not-zoom-on-macos).
+The **−**, **+**, and **Fit build** buttons offer the same controls without a
+gesture.
 
 Primary-button drag pans in time. Shift + primary-button drag selects a range,
 and the Actions table narrows to spans that overlap it. A short click still

@@ -69,6 +69,19 @@ grep -Fq 'BBV_MAC_SIGNING_IDENTITY' "$docs/packaging.md" ||
     fail "release checklist does not require a signing identity"
 grep -Fq 'it does not sign it' "$docs/packaging.md" ||
     fail "release checklist does not distinguish notarization from signing"
+for legal_contract in \
+    '//app:app_runtime_maven_deps' \
+    'exact 40 Maven coordinates' \
+    'PPROF-APACHE-2.0.txt' \
+    'JSVG-2.1.0-CORRESPONDING-SOURCE.tar.gz' \
+    'complete gRPC, FlatLaf, JNA, Pty4J'; do
+    grep -Fq "$legal_contract" "$docs/packaging.md" ||
+        fail "packaging guide omits legal contract: $legal_contract"
+done
+grep -Fq '(troubleshooting.md#timeline-pinch-does-not-zoom-on-macos)' \
+    "$docs/user-guide.md" || fail "user guide does not link the macOS pinch fix"
+grep -Fq '### Timeline pinch does not zoom on macOS' "$docs/troubleshooting.md" ||
+    fail "troubleshooting guide has no macOS pinch anchor"
 grep -Fq '> Historical audit record.' "$docs/phase10-audit.md" ||
     fail "Phase 10 audit is not marked historical"
 if grep -Eq '84,000|shortfall is gRPC|gap is gRPC|80k/s against 86k/s|Coalescing acknowledgements would close' \

@@ -95,14 +95,15 @@ smoke; that remains a release-candidate check.
 ## Third-party licenses and notices
 
 The deploy jar carries a collision-safe legal bundle under
-`META-INF/third-party/`. Its `THIRD-PARTY-NOTICES.txt` indexes JediTerm 3.74,
-Pty4J 0.13.8 and the transitives introduced by that stack, plus the repository
-browser's fixed SVG assets and renderer. Component-specific files preserve
-JediTerm's selected Apache-2.0 text, Pty4J's complete EPL-1.0 text and upstream
-notice, JNA's Apache license choice, and the Kotlin, JetBrains Annotations and
-SLF4J texts and notices. The index also records the vendored google/pprof
-schema and its pinned revision; the bundle's standard Apache-2.0 text covers
-that source, while its exact upstream license remains beside the proto source.
+`META-INF/third-party/`. Its `THIRD-PARTY-NOTICES.txt` indexes the complete
+Bazel-resolved runtime closure, not a feature-level subset. The
+`//app:app_runtime_maven_deps` genquery proves the exact 40 Maven coordinates,
+including the intentionally empty Guava `listenablefuture` and gRPC
+`grpc-context` compatibility artifacts. The release test requires a matching
+notice and named legal file for every coordinate. It also covers embedded
+lineages and vendored runtime sources, including the Bazel, googleapis and
+google/pprof schemas. The pprof schema uses its exact
+`PPROF-APACHE-2.0.txt`, rather than a shared generic license entry.
 
 The repository browser includes 32 SVGs copied from Material Icon Theme 5.38.1
 at commit `448ab3977ef83b817c2c722ce7cd5034d195b39f` under MIT. Those files total
@@ -117,22 +118,27 @@ affiliation. The exact upstream MIT text is retained as
 `bazel.svg` or `bazel-folder.svg`. Icons are packaged resources, not content
 fetched when the application runs.
 
-FlatLaf Extras 3.7.2 renders those resources through JSVG 2.1.0. FlatLaf is
-Apache-2.0 and JSVG is MIT; their exact upstream texts are retained as
-`FLATLAF-APACHE-2.0.txt` and `JSVG-MIT.txt`. The matching FlatLaf release and
-JSVG release were published 2026-07-09 and 2026-05-05 from active projects.
-They are pure Java and add 904,150 bytes of resolved jars before deploy-jar
-compression, with no native resource or runtime download.
+FlatLaf Extras 3.7.2 renders those resources through JSVG 2.1.0. The Extras
+adapter and JSVG renderer are pure Java and add no runtime download. FlatLaf
+core separately carries seven Windows, Linux and macOS native libraries. JSVG's
+project license is MIT, but its shipped code also includes four modified OpenJDK
+gradient classes under GPL-2.0-only with the Classpath Exception, a
+BSD-selected blend implementation and a zlib-licensed DataUri implementation.
+The legal bundle therefore includes those exact terms and the official
+`JSVG-2.1.0-CORRESPONDING-SOURCE.tar.gz`, with the affected sources and build
+inputs needed to rebuild them.
 
 Pty4J embeds native code for every supported host in the same jar. The legal
 bundle therefore also keeps the WinPTY MIT text and the Windows Terminal
 1.22.11141.0 MIT text and third-party notice, even in a macOS package. The
-files and the icon-rendering legal texts are copied from version-pinned official
-source revisions; they are not reconstructed from Maven metadata. The
+files and icon-rendering legal texts come from version-pinned official source
+revisions; they are not reconstructed from Maven metadata. The
 `//app/src/test/java/com/holtherndon/bazelviz/app:ThirdPartyNoticesTest` target
-opens the finished deploy jar, requires every named entry and verifies each
-reviewed packaged file's SHA-256. This test protects both the Bazel fat jar and
-the jpackage image, because `jpackage.sh` copies that jar without filtering it.
+opens the finished deploy jar and gates the exact legal payload and hashes; the
+JSVG source archive, contents and hash; the complete gRPC, FlatLaf, JNA, Pty4J
+and SQLite native resource sets; and the shaded Netty, JCTools and embedded
+lineage evidence. This protects both the Bazel fat jar and the jpackage image,
+because `jpackage.sh` copies that jar without filtering it.
 
 ## Product and bundle versions
 

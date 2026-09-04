@@ -2682,13 +2682,14 @@ it is a different tab and was not reported.
   project artwork, do not contain the official Bazel logo, and total 9,080
   bytes. All 34 icons total 23,487 bytes.
   Language and project marks identify file types only and do not imply
-  endorsement. FlatLaf Extras 3.7.2 supplies the Swing icon adapter over JSVG
-  2.1.0. Both are pure Java, were current releases from active projects at
-  review time (2026-07-09 and 2026-05-05), and add 904,150 bytes of resolved
-  jars before deploy-jar compression. The renderer and assets are local-only;
-  no runtime download, remote file operation, or native dependency was added.
-  Their exact upstream license texts join the deploy jar's collision-safe
-  legal bundle, and the deploy-jar test pins those reviewed texts by SHA-256.
+  endorsement. FlatLaf Extras 3.7.2 supplies the pure-Java Swing icon adapter
+  over the pure-Java JSVG 2.1.0 renderer. They were current releases from
+  active projects at review time (2026-07-09 and 2026-05-05) and add 904,150
+  bytes of resolved jars before deploy-jar compression. The renderer and
+  assets are local-only and add no runtime download or remote file operation.
+  FlatLaf core separately carries seven Windows, Linux and macOS native
+  libraries. The deploy-jar test gates that exact native set, JSVG's required
+  corresponding source, and the reviewed legal payload.
 
   Exact Bazel convenience links at the repository root (`bazel-out`,
   `bazel-bin`, `bazel-testlogs`, legacy `bazel-genfiles`, and
