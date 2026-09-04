@@ -16,6 +16,7 @@ import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
+import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
@@ -46,7 +47,6 @@ import javax.swing.JSplitPane;
 import javax.swing.JTable;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
-import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
@@ -102,7 +102,7 @@ public final class ActionsView extends JPanel {
 
   private final CardLayout cards = new CardLayout();
   private final JPanel deck = new JPanel(cards);
-  private final JLabel emptyLabel = new JLabel(" ", SwingConstants.CENTER);
+  private final EmptyStatePanel emptyState = new EmptyStatePanel(" ");
   private final JTable table = new JTable();
   private final InspectorPanel inspector = new InspectorPanel();
   private final JLabel statusLabel = new JLabel(" ");
@@ -215,14 +215,9 @@ public final class ActionsView extends JPanel {
   public ActionsView() {
     super(new BorderLayout());
 
-    emptyLabel.setEnabled(false);
-    JPanel empty = new JPanel(new BorderLayout());
-    empty.add(emptyLabel, BorderLayout.CENTER);
-
     PlainText.install(table);
     PlainText.disableHtml(statusLabel);
     PlainText.disableHtml(captureNote);
-    PlainText.disableHtml(emptyLabel);
     table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
     table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
     table.setFillsViewportHeight(true);
@@ -293,7 +288,7 @@ public final class ActionsView extends JPanel {
     session.add(split, BorderLayout.CENTER);
     session.add(status, BorderLayout.SOUTH);
 
-    deck.add(empty, CARD_EMPTY);
+    deck.add(emptyState, CARD_EMPTY);
     deck.add(session, CARD_TABLE);
     add(deck, BorderLayout.CENTER);
     showEmpty("No session is open.");
@@ -550,7 +545,7 @@ public final class ActionsView extends JPanel {
   }
 
   public void showEmpty(String message) {
-    emptyLabel.setText(Objects.requireNonNull(message, "message"));
+    emptyState.setText(Objects.requireNonNull(message, "message"));
     showAllButton.setEnabled(false);
     cards.show(deck, CARD_EMPTY);
   }

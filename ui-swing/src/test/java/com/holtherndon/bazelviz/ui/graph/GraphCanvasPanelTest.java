@@ -194,10 +194,13 @@ final class GraphCanvasPanelTest {
     JToggleButton help = (JToggleButton) namedComponent(panel, "graph.controlsHelp");
     SwingUtilities.invokeAndWait(help::doClick);
     assertThat(helpPanel.isVisible()).isTrue();
-    assertThat(((JTextArea) namedComponent(panel, "graph.scopeExplanation")).getLineWrap())
-        .isTrue();
-    assertThat(((JTextArea) namedComponent(panel, "graph.appearanceExplanation")).getLineWrap())
-        .isTrue();
+    JTextArea scopeExplanation = (JTextArea) namedComponent(panel, "graph.scopeExplanation");
+    JTextArea appearanceExplanation =
+        (JTextArea) namedComponent(panel, "graph.appearanceExplanation");
+    assertThat(scopeExplanation.getLineWrap()).isTrue();
+    assertThat(scopeExplanation.getMinimumSize().width).isZero();
+    assertThat(appearanceExplanation.getLineWrap()).isTrue();
+    assertThat(appearanceExplanation.getMinimumSize().width).isZero();
     SwingUtilities.invokeAndWait(
         () -> {
           helpPanel.setSize(600, 200);

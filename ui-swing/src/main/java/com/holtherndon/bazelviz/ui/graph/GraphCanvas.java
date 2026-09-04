@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.graph;
 
 import com.holtherndon.bazelviz.analysis.GraphLayout;
+import com.holtherndon.bazelviz.ui.theme.CanvasAccessibility;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -13,6 +14,7 @@ import java.awt.Graphics2D;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
@@ -27,7 +29,9 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
+import javax.accessibility.AccessibleContext;
 import javax.swing.JComponent;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 
@@ -217,15 +221,33 @@ public final class GraphCanvas extends JComponent {
   private Runnable viewChangedListener = () -> {};
   private IntConsumer focusListener = position -> {};
 
+  private static final String KEYBOARD_HELP =
+      "Use the arrow keys to move between nodes, Enter to focus the selected node, "
+          + "plus or minus to zoom, 0 to fit, and Escape to clear the selection.";
+
   public GraphCanvas() {
     setOpaque(true);
     refreshTheme();
-    setFocusable(true);
+    CanvasAccessibility.configure(this, "Dependency graph canvas", KEYBOARD_HELP);
     setPreferredSize(new Dimension(600, 400));
+    installKeyboardActions();
     Mouse mouse = new Mouse();
     addMouseListener(mouse);
     addMouseMotionListener(mouse);
     addMouseWheelListener(mouse);
+  }
+
+  @Override
+  public AccessibleContext getAccessibleContext() {
+    if (accessibleContext == null) {
+      accessibleContext = new AccessibleGraphCanvas();
+    }
+    return accessibleContext;
+  }
+
+  /** Standard Swing accessible peer for the custom-painted graph. */
+  protected final class AccessibleGraphCanvas extends AccessibleJComponent {
+    private static final long serialVersionUID = 1L;
   }
 
   @Override
@@ -253,6 +275,7 @@ public final class GraphCanvas extends JComponent {
     nodeDrag = -1;
     nodeDragging = false;
     fitToView();
+    updateAccessibleDescription();
     repaint();
   }
 
@@ -266,6 +289,7 @@ public final class GraphCanvas extends JComponent {
    */
   public void restyle(GraphModel model) {
     this.model = model == null ? GraphModel.empty() : model;
+    updateAccessibleDescription();
     repaint();
   }
 
@@ -520,7 +544,117 @@ public final class GraphCanvas extends JComponent {
 
   private void notifySelectionChanged() {
     revealedCrossLinks = countRevealedCrossLinks();
+    updateAccessibleDescription();
     selectionListener.accept(selectedPositions());
+  }
+
+  private void installKeyboardActions() {
+    CanvasAccessibility.bind(
+        this,
+        "graph-previous-node",
+        KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0),
+        () -> moveKeyboardSelection(-1));
+    CanvasAccessibility.bind(
+        this,
+        "graph-previous-node-up",
+        KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0),
+        () -> moveKeyboardSelection(-1));
+    CanvasAccessibility.bind(
+        this,
+        "graph-next-node",
+        KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0),
+        () -> moveKeyboardSelection(1));
+    CanvasAccessibility.bind(
+        this,
+        "graph-next-node-down",
+        KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0),
+        () -> moveKeyboardSelection(1));
+    CanvasAccessibility.bind(
+        this,
+        "graph-first-node",
+        KeyStroke.getKeyStroke(KeyEvent.VK_HOME, 0),
+        () -> selectKeyboardPosition(0));
+    CanvasAccessibility.bind(
+        this,
+        "graph-last-node",
+        KeyStroke.getKeyStroke(KeyEvent.VK_END, 0),
+        () -> selectKeyboardPosition(model.size() - 1));
+    CanvasAccessibility.bind(
+        this,
+        "graph-focus-node",
+        KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0),
+        this::focusKeyboardSelection);
+    CanvasAccessibility.bind(
+        this,
+        "graph-clear-selection",
+        KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+        () -> select(-1));
+    CanvasAccessibility.bind(
+        this,
+        "graph-zoom-in",
+        KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, KeyEvent.SHIFT_DOWN_MASK),
+        () -> zoomFromKeyboard(1.25));
+    CanvasAccessibility.bind(
+        this,
+        "graph-zoom-in-keypad",
+        KeyStroke.getKeyStroke(KeyEvent.VK_ADD, 0),
+        () -> zoomFromKeyboard(1.25));
+    CanvasAccessibility.bind(
+        this,
+        "graph-zoom-out",
+        KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, 0),
+        () -> zoomFromKeyboard(1.0 / 1.25));
+    CanvasAccessibility.bind(
+        this,
+        "graph-zoom-out-keypad",
+        KeyStroke.getKeyStroke(KeyEvent.VK_SUBTRACT, 0),
+        () -> zoomFromKeyboard(1.0 / 1.25));
+    CanvasAccessibility.bind(
+        this, "graph-fit", KeyStroke.getKeyStroke(KeyEvent.VK_0, 0), this::fitToView);
+  }
+
+  private void moveKeyboardSelection(int delta) {
+    if (model.size() == 0) {
+      return;
+    }
+    int current = selection.size() == 1 ? selection.iterator().next() : (delta > 0 ? -1 : 0);
+    select(Math.floorMod(current + delta, model.size()));
+  }
+
+  private void selectKeyboardPosition(int position) {
+    if (model.size() > 0) {
+      select(position);
+    }
+  }
+
+  private void focusKeyboardSelection() {
+    if (selection.size() == 1) {
+      focusListener.accept(selection.iterator().next());
+    }
+  }
+
+  private void zoomFromKeyboard(double factor) {
+    fitLabelNote = "";
+    setTransform(transform.zoomedAround(getWidth() / 2.0, getHeight() / 2.0, factor));
+  }
+
+  private void updateAccessibleDescription() {
+    String state;
+    if (model.size() == 0) {
+      state = "No graph nodes are shown. ";
+    } else if (selection.size() == 1) {
+      state =
+          "Showing "
+              + model.size()
+              + " graph nodes. Selected "
+              + model.canvasLabelAt(selection.iterator().next())
+              + ". ";
+    } else if (selection.isEmpty()) {
+      state = "Showing " + model.size() + " graph nodes; none is selected. ";
+    } else {
+      state = "Showing " + model.size() + " graph nodes; " + selection.size() + " are selected. ";
+    }
+    CanvasAccessibility.describe(this, state + KEYBOARD_HELP);
   }
 
   private int countRevealedCrossLinks() {

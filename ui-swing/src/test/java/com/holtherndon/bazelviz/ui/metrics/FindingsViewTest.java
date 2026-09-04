@@ -38,7 +38,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import javax.swing.AbstractButton;
+import javax.swing.JComponent;
+import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JScrollPane;
+import javax.swing.plaf.basic.BasicHTML;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -51,6 +55,9 @@ import org.junit.jupiter.api.io.TempDir;
  * the view needs none either.
  */
 final class FindingsViewTest {
+
+  private static final String HOSTILE =
+      "<html><img src=\"http://example.invalid/finding.png\">Finding";
 
   @Test
   @DisplayName("the no-session message replaces and fills the whole Findings pane")
@@ -73,6 +80,25 @@ final class FindingsViewTest {
     layoutTree(view);
     assertThat(view.emptyStateForTest().isVisible()).isTrue();
     assertThat(view.emptyStateForTest().getSize()).isEqualTo(view.getSize());
+  }
+
+  @Test
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  void findingRowsRenderBuildTextLiterally() {
+    FindingsView view = new FindingsView();
+    view.show(
+        new MetricsService.Result(
+            metrics(bothPaths(), List.of()),
+            List.of(finding(HOSTILE)),
+            FindingThresholds.defaults()));
+    JList list = (JList) view.listScrollForTest().getViewport().getView();
+    Component row =
+        list.getCellRenderer()
+            .getListCellRendererComponent(list, list.getModel().getElementAt(0), 0, false, false);
+    JComponent rendered = (JComponent) row;
+    BasicHTML.updateRenderer(rendered, ((JLabel) rendered).getText());
+
+    assertThat(rendered.getClientProperty(BasicHTML.propertyKey)).isNull();
   }
 
   @Test

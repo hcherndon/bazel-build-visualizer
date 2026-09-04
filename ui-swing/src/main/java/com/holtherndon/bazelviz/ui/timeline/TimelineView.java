@@ -5,6 +5,7 @@ import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
+import com.holtherndon.bazelviz.ui.theme.CanvasAccessibility;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
@@ -19,6 +20,7 @@ import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
@@ -32,6 +34,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
+import javax.accessibility.AccessibleContext;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.JButton;
@@ -46,6 +49,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTextArea;
 import javax.swing.JViewport;
+import javax.swing.KeyStroke;
 import javax.swing.Scrollable;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
@@ -167,6 +171,10 @@ public final class TimelineView extends JPanel {
       "Scroll: lanes  ·  Two-finger sideways: pan  ·  Ctrl/⌘+scroll or pinch: zoom"
           + "  ·  Drag: pan"
           + "  ·  Shift+drag: select";
+
+  private static final String KEYBOARD_HELP =
+      "Use Left and Right to move between visible actions, Up and Down to scroll lanes, "
+          + "Shift+Left or Shift+Right to pan time, plus or minus to zoom, and 0 to fit.";
   private final CardLayout cards = new CardLayout();
   private final JPanel deck = new JPanel(cards);
   private final JLabel empty = new JLabel("No timeline for this session.", SwingConstants.CENTER);
@@ -318,11 +326,11 @@ public final class TimelineView extends JPanel {
     fitBuild.addActionListener(event -> fitBuild());
 
     JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
-    bar.add(PlainText.disableHtml(new JLabel("Group by:")));
+    bar.add(labelFor("Group by", groupChoice));
     bar.add(groupChoice);
-    bar.add(PlainText.disableHtml(new JLabel("Sort:")));
+    bar.add(labelFor("Sort", sortChoice));
     bar.add(sortChoice);
-    bar.add(PlainText.disableHtml(new JLabel("Colour:")));
+    bar.add(labelFor("Colour", colourChoice));
     bar.add(colourChoice);
     bar.add(followBox);
     bar.add(zoomOut);
@@ -481,6 +489,13 @@ public final class TimelineView extends JPanel {
     hideInspector();
   }
 
+  private static JLabel labelFor(String text, JComponent target) {
+    JLabel label = PlainText.disableHtml(new JLabel(text + ":"));
+    label.setLabelFor(target);
+    target.getAccessibleContext().setAccessibleName(text);
+    return label;
+  }
+
   private void styleInspectorBorder() {
     inspector.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
   }
@@ -580,6 +595,7 @@ public final class TimelineView extends JPanel {
     } else {
       liveTicker.stop();
     }
+    updateCanvasAccessibleDescription();
     repaintAll();
   }
 
@@ -628,6 +644,7 @@ public final class TimelineView extends JPanel {
     // there rather than left pointing past the end.
     relayoutLanes();
     scrollTo(scrolledTo);
+    updateCanvasAccessibleDescription();
     repaintAll();
   }
 
@@ -659,6 +676,7 @@ public final class TimelineView extends JPanel {
     liveTicker.stop();
     viewportRefreshTimer.stop();
     hideInspector();
+    updateCanvasAccessibleDescription();
     cards.show(deck, "empty");
   }
 
@@ -837,6 +855,7 @@ public final class TimelineView extends JPanel {
     if (viewport != null) {
       viewport = viewport.selecting(OptionalLong.of(nodeId));
       scrollSelectionIntoView();
+      updateCanvasAccessibleDescription();
       repaintAll();
     }
   }
@@ -1500,6 +1519,9 @@ public final class TimelineView extends JPanel {
     private int lastPointerX = -1;
 
     Canvas() {
+      CanvasAccessibility.configure(
+          this, "Build execution timeline", "No timeline is loaded. " + KEYBOARD_HELP);
+      installKeyboardActions();
       MouseAdapter mouse =
           new MouseAdapter() {
             private int lastX;
@@ -1508,6 +1530,7 @@ public final class TimelineView extends JPanel {
 
             @Override
             public void mousePressed(MouseEvent event) {
+              requestFocusInWindow();
               lastPointerX = event.getX();
               if (maybeShowContextMenu(event)) {
                 pressX = -1;
@@ -1633,6 +1656,77 @@ public final class TimelineView extends JPanel {
       addMouseListener(mouse);
       addMouseMotionListener(mouse);
       addMouseWheelListener(mouse);
+    }
+
+    @Override
+    public AccessibleContext getAccessibleContext() {
+      if (accessibleContext == null) {
+        accessibleContext = new AccessibleTimelineCanvas();
+      }
+      return accessibleContext;
+    }
+
+    /** Standard Swing accessible peer for the custom-painted timeline. */
+    private final class AccessibleTimelineCanvas extends AccessibleJComponent {
+      private static final long serialVersionUID = 1L;
+    }
+
+    private void installKeyboardActions() {
+      CanvasAccessibility.bind(
+          this,
+          "timeline-previous-action",
+          KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0),
+          () -> selectAdjacentSpan(-1));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-next-action",
+          KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0),
+          () -> selectAdjacentSpan(1));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-scroll-up",
+          KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0),
+          () -> scrollTo(scrollPosition() - VERTICAL_SCROLL_UNIT));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-scroll-down",
+          KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0),
+          () -> scrollTo(scrollPosition() + VERTICAL_SCROLL_UNIT));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-pan-left",
+          KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, KeyEvent.SHIFT_DOWN_MASK),
+          () -> panFromKeyboard(80));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-pan-right",
+          KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, KeyEvent.SHIFT_DOWN_MASK),
+          () -> panFromKeyboard(-80));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-zoom-in",
+          KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, KeyEvent.SHIFT_DOWN_MASK),
+          () -> zoomAround(getWidth() / 2.0, 1.25));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-zoom-in-keypad",
+          KeyStroke.getKeyStroke(KeyEvent.VK_ADD, 0),
+          () -> zoomAround(getWidth() / 2.0, 1.25));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-zoom-out",
+          KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, 0),
+          () -> zoomAround(getWidth() / 2.0, 1.0 / 1.25));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-zoom-out-keypad",
+          KeyStroke.getKeyStroke(KeyEvent.VK_SUBTRACT, 0),
+          () -> zoomAround(getWidth() / 2.0, 1.0 / 1.25));
+      CanvasAccessibility.bind(
+          this,
+          "timeline-fit",
+          KeyStroke.getKeyStroke(KeyEvent.VK_0, 0),
+          TimelineView.this::fitBuild);
     }
 
     double zoomAnchorX() {
@@ -1971,9 +2065,73 @@ public final class TimelineView extends JPanel {
     // A lane the click only caught the edge of comes fully into view, so
     // the inspector beside it is describing something the user can see.
     scrollSelectionIntoView();
+    updateCanvasAccessibleDescription();
     selectionHandler.accept(nodeId);
     actionPickedHandler.accept(nodeId);
     repaintAll();
+  }
+
+  /** Moves to the next painted action without requiring a pointer-sized hit target. */
+  private void selectAdjacentSpan(int delta) {
+    if (viewport == null || window.size() == 0 || !drawingSpans()) {
+      return;
+    }
+    int current = -1;
+    if (viewport.selectedNode().isPresent()) {
+      long selectedNode = viewport.selectedNode().getAsLong();
+      for (int index = 0; index < window.size(); index++) {
+        if (window.nodeId(index) == selectedNode) {
+          current = index;
+          break;
+        }
+      }
+    }
+    if (current < 0 && delta < 0) {
+      current = 0;
+    }
+    for (int step = 1; step <= window.size(); step++) {
+      int candidate = Math.floorMod(current + delta * step, window.size());
+      if (spanTouchesCanvas(candidate)) {
+        selectSpan(candidate);
+        return;
+      }
+    }
+  }
+
+  /** Pans the time axis through the same clamped, refresh-coalesced path as a drag. */
+  private void panFromKeyboard(int pixels) {
+    if (viewport == null) {
+      return;
+    }
+    TimelineTransform before = viewport.transform();
+    TimelineTransform after = clamp(before.pannedByPixels(pixels));
+    if (after.equals(before)) {
+      return;
+    }
+    viewport = viewport.navigatedTo(after);
+    followBox.setSelected(false);
+    repaintAll();
+    viewportRefreshTimer.restart();
+  }
+
+  private void updateCanvasAccessibleDescription() {
+    String state;
+    if (model == null || viewport == null) {
+      state = "No timeline is loaded. ";
+    } else if (viewport.selectedNode().isPresent()) {
+      state =
+          "Showing "
+              + window.size()
+              + " actions in the current exact window. Selected action "
+              + viewport.selectedNode().getAsLong()
+              + ". ";
+    } else if (drawingSpans()) {
+      state =
+          "Showing " + window.size() + " actions in the current exact window; none is selected. ";
+    } else {
+      state = "Showing aggregate build activity at this zoom; individual actions are not shown. ";
+    }
+    CanvasAccessibility.describe(canvas, state + KEYBOARD_HELP);
   }
 
   /**

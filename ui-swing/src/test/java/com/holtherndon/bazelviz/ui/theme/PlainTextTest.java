@@ -13,6 +13,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JTable;
 import javax.swing.JTree;
 import javax.swing.SwingUtilities;
@@ -103,6 +104,27 @@ class PlainTextTest {
                 tree.getCellRenderer()
                     .getTreeCellRendererComponent(tree, HOSTILE, false, false, true, 0, false));
     JComponent rendered = (JComponent) node;
+    BasicHTML.updateRenderer(rendered, HOSTILE);
+    assertThat(rendered.getClientProperty(BasicHTML.propertyKey)).isNull();
+  }
+
+  @Test
+  @DisplayName("a list's rows are text")
+  void listRowsShowText() throws Exception {
+    JList<String> list =
+        onEdt(
+            () -> {
+              JList<String> created = new JList<>(new String[] {HOSTILE});
+              PlainText.install(created);
+              return created;
+            });
+
+    Component row =
+        onEdt(
+            () ->
+                list.getCellRenderer()
+                    .getListCellRendererComponent(list, HOSTILE, 0, false, false));
+    JComponent rendered = (JComponent) row;
     BasicHTML.updateRenderer(rendered, HOSTILE);
     assertThat(rendered.getClientProperty(BasicHTML.propertyKey)).isNull();
   }

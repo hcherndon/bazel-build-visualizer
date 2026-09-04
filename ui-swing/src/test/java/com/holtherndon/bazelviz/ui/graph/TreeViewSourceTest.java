@@ -14,12 +14,18 @@ import com.holtherndon.bazelviz.ui.session.QueryReader;
 import com.holtherndon.bazelviz.ui.session.SessionInfo;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import java.awt.Component;
+import java.awt.Container;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import javax.swing.JLabel;
+import javax.swing.JTextArea;
 import javax.swing.JTree;
 import javax.swing.SwingUtilities;
 import javax.swing.tree.DefaultMutableTreeNode;
@@ -126,6 +132,18 @@ final class TreeViewSourceTest {
   void actionGraphIsPreferred() {
     assertThat(view.shownGraphForTesting()).isEqualTo(GraphKind.DECLARED_ACTIONS);
     assertThat(view.detailLabel().getText()).contains("A node is one declared action");
+  }
+
+  @Test
+  @DisplayName("tree explanations wrap and every text field has an accessible label")
+  void explanationsAndLabelsAreWidthSafe() {
+    assertWrapping(view.detailLabel());
+    assertWrapping(view.warningLabel());
+
+    assertThat(namedLabel("tree.graphLabel").getLabelFor()).isSameAs(view.sourceSelector());
+    assertThat(namedLabel("tree.findLabel").getLabelFor()).isNotNull();
+    assertThat(namedLabel("tree.pathFromLabel").getLabelFor()).isNotNull();
+    assertThat(namedLabel("tree.pathToLabel").getLabelFor()).isNotNull();
   }
 
   @Test
@@ -251,6 +269,33 @@ final class TreeViewSourceTest {
   private static String rootLabel(JTree tree) {
     Object root = tree.getModel().getRoot();
     return String.valueOf(root);
+  }
+
+  private JLabel namedLabel(String name) {
+    return allComponents(view).stream()
+        .filter(JLabel.class::isInstance)
+        .map(JLabel.class::cast)
+        .filter(label -> name.equals(label.getName()))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("No JLabel named " + name));
+  }
+
+  private static List<Component> allComponents(Container root) {
+    List<Component> result = new ArrayList<>();
+    for (Component child : root.getComponents()) {
+      result.add(child);
+      if (child instanceof Container nested) {
+        result.addAll(allComponents(nested));
+      }
+    }
+    return result;
+  }
+
+  private static void assertWrapping(JTextArea area) {
+    assertThat(area.getLineWrap()).isTrue();
+    assertThat(area.getWrapStyleWord()).isTrue();
+    assertThat(area.isFocusable()).isTrue();
+    assertThat(area.getMinimumSize().width).isZero();
   }
 
   /** Every child row of the root, joined, so containment means substring. */

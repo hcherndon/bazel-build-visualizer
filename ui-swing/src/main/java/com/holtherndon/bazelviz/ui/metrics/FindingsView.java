@@ -12,6 +12,7 @@ import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
+import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Component;
@@ -757,14 +758,9 @@ public final class FindingsView extends JPanel {
    * not paint the overflow — the silent truncation rule 12 forbids.
    */
   private static Component wrapped(String text, boolean bold) {
-    JTextArea area = new JTextArea(text);
-    area.setLineWrap(true);
-    area.setWrapStyleWord(true);
-    area.setEditable(false);
-    area.setOpaque(false);
+    JTextArea area = WrappingLabel.create(text);
     area.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
     area.setAlignmentX(LEFT_ALIGNMENT);
-    area.setFocusable(true);
     if (bold) {
       area.setFont(area.getFont().deriveFont(Font.BOLD));
     }
@@ -784,6 +780,7 @@ public final class FindingsView extends JPanel {
         setText(finding.summary());
         setToolTipText(PlainText.tooltip(finding.whyItMayMatter()));
       }
+      PlainText.disableHtml(this);
       return this;
     }
   }

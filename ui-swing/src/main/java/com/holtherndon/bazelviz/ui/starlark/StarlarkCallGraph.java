@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.ui.graph.GraphColours;
 import com.holtherndon.bazelviz.ui.graph.GraphTransform;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
+import com.holtherndon.bazelviz.ui.theme.CanvasAccessibility;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -18,6 +19,7 @@ import java.awt.RenderingHints;
 import java.awt.Shape;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
@@ -36,6 +38,7 @@ import javax.swing.JComponent;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 import javax.swing.JToolTip;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 
@@ -70,12 +73,17 @@ public final class StarlarkCallGraph extends JComponent {
   private double nodeStartOffsetY;
   private boolean nodeDragging;
 
+  private static final String KEYBOARD_HELP =
+      "Use the arrow keys to move between functions, Enter to focus, O to open source, "
+          + "plus or minus to zoom, and 0 to fit the graph.";
+
   public StarlarkCallGraph() {
     setOpaque(true);
-    setFocusable(true);
     setLayout(null);
     setPreferredSize(new Dimension(760, 500));
-    getAccessibleContext().setAccessibleName("Starlark directed call graph");
+    CanvasAccessibility.configure(
+        this, "Starlark directed call graph", "No functions are shown. " + KEYBOARD_HELP);
+    installKeyboardActions();
     PlainText.disableHtml(nodeToolTip);
     nodeToolTip.setComponent(this);
     nodeToolTip.setVisible(false);
@@ -132,6 +140,7 @@ public final class StarlarkCallGraph extends JComponent {
     hoveredFunctionId = -1;
     hideNodeToolTip();
     fitToView();
+    updateAccessibleDescription();
     repaint();
   }
 
@@ -194,6 +203,7 @@ public final class StarlarkCallGraph extends JComponent {
     if (focus) {
       focus(box.orElseThrow());
     }
+    updateAccessibleDescription();
     repaint();
     return true;
   }
@@ -481,7 +491,112 @@ public final class StarlarkCallGraph extends JComponent {
     if (changed) {
       selectionListener.accept(box.node());
     }
+    updateAccessibleDescription();
     repaint();
+  }
+
+  private void installKeyboardActions() {
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-previous",
+        KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0),
+        () -> moveKeyboardSelection(-1));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-previous-up",
+        KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0),
+        () -> moveKeyboardSelection(-1));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-next",
+        KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0),
+        () -> moveKeyboardSelection(1));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-next-down",
+        KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0),
+        () -> moveKeyboardSelection(1));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-focus",
+        KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0),
+        this::focusKeyboardSelection);
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-open-source",
+        KeyStroke.getKeyStroke(KeyEvent.VK_O, 0),
+        this::openKeyboardSelection);
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-zoom-in",
+        KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, KeyEvent.SHIFT_DOWN_MASK),
+        () -> zoomFromKeyboard(1.25));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-zoom-in-keypad",
+        KeyStroke.getKeyStroke(KeyEvent.VK_ADD, 0),
+        () -> zoomFromKeyboard(1.25));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-zoom-out",
+        KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, 0),
+        () -> zoomFromKeyboard(1.0 / 1.25));
+    CanvasAccessibility.bind(
+        this,
+        "starlark-call-zoom-out-keypad",
+        KeyStroke.getKeyStroke(KeyEvent.VK_SUBTRACT, 0),
+        () -> zoomFromKeyboard(1.0 / 1.25));
+    CanvasAccessibility.bind(
+        this, "starlark-call-fit", KeyStroke.getKeyStroke(KeyEvent.VK_0, 0), this::fitToView);
+  }
+
+  private void moveKeyboardSelection(int delta) {
+    if (layout.nodes().isEmpty()) {
+      return;
+    }
+    int current = -1;
+    for (int index = 0; index < layout.nodes().size(); index++) {
+      if (layout.nodes().get(index).node().functionId() == selectedFunctionId) {
+        current = index;
+        break;
+      }
+    }
+    if (current < 0 && delta < 0) {
+      current = 0;
+    }
+    selectFromPointer(layout.nodes().get(Math.floorMod(current + delta, layout.nodes().size())));
+  }
+
+  private void focusKeyboardSelection() {
+    boxFor(selectedFunctionId).ifPresent(this::focus);
+  }
+
+  private void openKeyboardSelection() {
+    boxFor(selectedFunctionId).flatMap(box -> box.node().source()).ifPresent(sourceListener);
+  }
+
+  private void zoomFromKeyboard(double factor) {
+    transform = transform.zoomedAround(getWidth() / 2.0, getHeight() / 2.0, factor);
+    fitPending = false;
+    repaint();
+  }
+
+  private void updateAccessibleDescription() {
+    String state;
+    Optional<StarlarkCallGraphLayout.NodeBox> selected = boxFor(selectedFunctionId);
+    if (layout.nodes().isEmpty()) {
+      state = "No functions are shown. ";
+    } else if (selected.isPresent()) {
+      state =
+          "Showing "
+              + layout.nodes().size()
+              + " functions. Selected "
+              + selected.orElseThrow().node().function()
+              + ". ";
+    } else {
+      state = "Showing " + layout.nodes().size() + " functions; none is selected. ";
+    }
+    CanvasAccessibility.describe(this, state + KEYBOARD_HELP);
   }
 
   private void focus(StarlarkCallGraphLayout.NodeBox box) {
@@ -602,6 +717,7 @@ public final class StarlarkCallGraph extends JComponent {
 
     @Override
     public void mousePressed(MouseEvent event) {
+      requestFocusInWindow();
       hideNodeToolTip();
       popupShown = false;
       if (maybePopup(event)) {

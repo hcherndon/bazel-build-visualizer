@@ -11,6 +11,8 @@ import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.GraphicsEnvironment;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -18,10 +20,13 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
+import javax.swing.Action;
 import javax.swing.JButton;
+import javax.swing.JComponent;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 import javax.swing.JSplitPane;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -105,6 +110,15 @@ final class TimelineInspectorTest {
     return found;
   }
 
+  private static void invokeKey(JComponent component, KeyStroke stroke) {
+    Object key = component.getInputMap(JComponent.WHEN_FOCUSED).get(stroke);
+    assertThat(key).as("action bound to %s", stroke).isNotNull();
+    Action action = component.getActionMap().get(key);
+    assertThat(action).as("action installed for %s", stroke).isNotNull();
+    action.actionPerformed(
+        new ActionEvent(component, ActionEvent.ACTION_PERFORMED, String.valueOf(key)));
+  }
+
   @Test
   @DisplayName("clicking a span shows the inspector and reports the selection")
   void clickShowsTheInspector() {
@@ -130,6 +144,39 @@ final class TimelineInspectorTest {
     assertThat(selected).containsExactly(42L);
     assertThat(picked).containsExactly(42L);
     assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(42);
+  }
+
+  @Test
+  @DisplayName("the timeline exposes its state and exact spans to keyboard users")
+  void keyboardNavigationSelectsVisibleSpans() {
+    TimelineView view = new TimelineView();
+    JComponent canvas = view.canvasForTest();
+    canvas.setSize(WIDTH, HEIGHT);
+    view.setModel(aModel());
+    SpanWindow.Builder window = SpanWindow.builder(0, 10_000_000);
+    window.add(0, 2_000_000, 0, 42, "");
+    window.add(3_000_000, 5_000_000, 0, 43, "");
+    view.setWindow(window.build());
+
+    assertThat(canvas.isFocusable()).isTrue();
+    assertThat(canvas.getAccessibleContext().getAccessibleName())
+        .isEqualTo("Build execution timeline");
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .contains("Showing 2 actions")
+        .contains("Left and Right")
+        .contains("plus or minus");
+
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+    assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(42);
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+    assertThat(view.viewport().orElseThrow().selectedNode()).hasValue(43);
+    assertThat(canvas.getAccessibleContext().getAccessibleDescription())
+        .contains("Selected action 43");
+
+    double beforeZoom = view.viewport().orElseThrow().transform().pixelsPerMicro();
+    invokeKey(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, KeyEvent.SHIFT_DOWN_MASK));
+    assertThat(view.viewport().orElseThrow().transform().pixelsPerMicro())
+        .isGreaterThan(beforeZoom);
   }
 
   @Test

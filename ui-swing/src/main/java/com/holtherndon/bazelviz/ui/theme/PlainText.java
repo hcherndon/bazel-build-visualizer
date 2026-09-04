@@ -1,7 +1,9 @@
 package com.holtherndon.bazelviz.ui.theme;
 
 import java.awt.Component;
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.JComponent;
+import javax.swing.JList;
 import javax.swing.JTable;
 import javax.swing.JTree;
 import javax.swing.table.DefaultTableCellRenderer;
@@ -58,6 +60,12 @@ public final class PlainText {
   public static void install(JTree tree) {
     tree.setCellRenderer(new PlainTreeRenderer());
     disableHtml(tree);
+  }
+
+  /** Installs a cell renderer that shows every list value as text. */
+  public static void install(JList<?> list) {
+    list.setCellRenderer(new PlainListRenderer());
+    disableHtml(list);
   }
 
   /**
@@ -122,6 +130,27 @@ public final class PlainText {
         boolean focused) {
       Component rendered =
           super.getTreeCellRendererComponent(tree, value, selected, expanded, leaf, row, focused);
+      if (rendered instanceof JComponent component) {
+        component.putClientProperty(HTML_DISABLE, Boolean.TRUE);
+      }
+      return rendered;
+    }
+  }
+
+  /** A list cell renderer with HTML off. */
+  private static final class PlainListRenderer extends DefaultListCellRenderer {
+
+    private static final long serialVersionUID = 1L;
+
+    PlainListRenderer() {
+      putClientProperty(HTML_DISABLE, Boolean.TRUE);
+    }
+
+    @Override
+    public Component getListCellRendererComponent(
+        JList<?> list, Object value, int index, boolean selected, boolean focused) {
+      Component rendered =
+          super.getListCellRendererComponent(list, value, index, selected, focused);
       if (rendered instanceof JComponent component) {
         component.putClientProperty(HTML_DISABLE, Boolean.TRUE);
       }

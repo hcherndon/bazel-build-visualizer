@@ -7,6 +7,8 @@ import java.awt.Dimension;
 import java.awt.GraphicsEnvironment;
 import java.awt.Point;
 import java.awt.Rectangle;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
@@ -15,7 +17,10 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.swing.Action;
+import javax.swing.JComponent;
 import javax.swing.JViewport;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -190,6 +195,47 @@ final class StarlarkFlameGraphTest {
         });
   }
 
+  @Test
+  void keyboardNavigationSelectsContextsAndOffersTheMouseActions() throws Exception {
+    StarlarkProfileReader.SourceLocation source =
+        StarlarkProfileReader.SourceLocation.file("rules/compile.bzl");
+    StarlarkProfileReader.FlameNode root = node(1, OptionalLong.empty(), 0, "root", 2_000, source);
+    StarlarkProfileReader.FlameNode child = node(2, OptionalLong.of(1), 1, "child", 1_000, source);
+    AtomicReference<Long> focused = new AtomicReference<>();
+    AtomicReference<StarlarkProfileReader.SourceLocation> opened = new AtomicReference<>();
+    StarlarkFlameGraph graph = onEdt(StarlarkFlameGraph::new);
+
+    onEdt(
+        () -> {
+          graph.setSize(700, 180);
+          graph.onFocus(focused::set);
+          graph.onOpenSource(opened::set);
+          graph.setSlice(
+              new StarlarkProfileReader.FlameSlice(
+                  OptionalLong.empty(), 2, 0, OptionalLong.of(2_000), List.of(root, child)));
+
+          assertThat(graph.isFocusable()).isTrue();
+          assertThat(graph.getAccessibleContext().getAccessibleName())
+              .isEqualTo("Starlark CPU flame graph");
+          assertThat(graph.getAccessibleContext().getAccessibleDescription())
+              .contains("Showing 2 call contexts")
+              .contains("arrow keys");
+
+          invokeKey(graph, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+          assertThat(graph.selectedNodeIdForTest()).isEqualTo(1);
+          invokeKey(graph, KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0));
+          assertThat(graph.selectedNodeIdForTest()).isEqualTo(2);
+          invokeKey(graph, KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0));
+          invokeKey(graph, KeyStroke.getKeyStroke(KeyEvent.VK_O, 0));
+          invokeKey(graph, KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0));
+          assertThat(graph.selectedNodeIdForTest()).isEqualTo(-1);
+          return null;
+        });
+
+    assertThat(focused).hasValue(2L);
+    assertThat(opened).hasValue(source);
+  }
+
   private static StarlarkProfileReader.FlameNode node(
       long id,
       OptionalLong parent,
@@ -226,5 +272,14 @@ final class StarlarkFlameGraphTest {
       throw error;
     }
     return value.get();
+  }
+
+  private static void invokeKey(JComponent component, KeyStroke stroke) {
+    Object key = component.getInputMap(JComponent.WHEN_FOCUSED).get(stroke);
+    assertThat(key).as("action bound to %s", stroke).isNotNull();
+    Action action = component.getActionMap().get(key);
+    assertThat(action).as("action installed for %s", stroke).isNotNull();
+    action.actionPerformed(
+        new ActionEvent(component, ActionEvent.ACTION_PERFORMED, String.valueOf(key)));
   }
 }

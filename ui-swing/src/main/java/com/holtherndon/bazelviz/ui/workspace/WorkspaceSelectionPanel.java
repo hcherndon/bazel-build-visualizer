@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.workspace;
 
+import com.holtherndon.bazelviz.ui.theme.PlainText;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
@@ -709,6 +710,7 @@ public final class WorkspaceSelectionPanel extends JPanel {
         JList<?> list, Object value, int index, boolean selected, boolean focused) {
       JLabel rendered =
           (JLabel) super.getListCellRendererComponent(list, value, index, selected, focused);
+      PlainText.disableHtml(rendered);
       if (value instanceof WorkspaceProfile workspace) {
         rendered.setText(
             workspace.label()
@@ -718,11 +720,12 @@ public final class WorkspaceSelectionPanel extends JPanel {
                 + "  —  "
                 + workspace.workingDirectory());
         rendered.setToolTipText(
-            workspace.machineDisplayName()
-                + " · "
-                + workspace.workingDirectory()
-                + " · "
-                + workspace.bazelExecutable());
+            PlainText.tooltip(
+                workspace.machineDisplayName()
+                    + " · "
+                    + workspace.workingDirectory()
+                    + " · "
+                    + workspace.bazelExecutable()));
         rendered.getAccessibleContext().setAccessibleName(rendered.getText());
       }
       return rendered;

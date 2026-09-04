@@ -1603,6 +1603,7 @@ public final class LauncherPanel extends JPanel {
                   + (preset == CapturePreset.PERFORMANCE_DIAGNOSTICS ? " (recommended)" : "");
       JLabel label =
           (JLabel) super.getListCellRendererComponent(list, text, index, selected, focused);
+      PlainText.disableHtml(label);
       label.setHorizontalAlignment(JLabel.LEFT);
       label.setToolTipText(
           preset == null ? null : PlainText.tooltip(LauncherPanel.presetTooltip(preset)));
@@ -1621,6 +1622,7 @@ public final class LauncherPanel extends JPanel {
         JList<?> list, Object value, int index, boolean selected, boolean focused) {
       JLabel label =
           (JLabel) super.getListCellRendererComponent(list, value, index, selected, focused);
+      PlainText.disableHtml(label);
       String command = value == null ? "" : value.toString();
       int cellWidth = list.getFixedCellWidth();
       int textWidth =
