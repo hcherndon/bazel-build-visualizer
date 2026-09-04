@@ -4,14 +4,13 @@
 #
 #   bazel run //app:jpackage                       # app-image (unsigned)
 #   bazel run //app:jpackage -- --type=dmg         # dmg, for notarization
-#   bazel run //app:jpackage -- --app-version=2.0.0
 #
 # The input is the deploy jar (//app:app_deploy.jar) rather than Gradle's
 # installDist layout: a single fat jar is exactly what a desktop app that is
 # never on anybody else's classpath wants, and it is the artifact Bazel
 # already builds deterministically.
 #
-# jpackage itself comes from the LOCAL JDK (JAVA_HOME, or PATH) — the remote
+# jpackage itself comes from the LOCAL JDK 25 (JAVA_HOME, or PATH) — the remote
 # JDK Bazel compiles with is a build-time toolchain, and packaging for the
 # host is the one step that is honestly host-specific.
 #
@@ -27,36 +26,29 @@ if [[ -z "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
     exit 1
 fi
 
-# The version a user sees is AppInfo.VERSION (0.1.0-SNAPSHOT), shown in the
-# About dialog. macOS refuses a CFBundleVersion whose first component is
-# zero, and CFBundleVersion is a build-ordering number rather than the
-# product's identity — so a placeholder is a platform requirement and not a
-# claim about the release. It is announced when it happens, and
-# --app-version=<v> overrides it.
+# AppInfo.VERSION and PROJECT_VERSION are the 0.1.0 product version. macOS
+# refuses a CFBundleVersion whose first component is zero, so jpackage receives
+# a separate build version there. The custom Info.plist template keeps
+# CFBundleShortVersionString at the product version users see.
 PROJECT_VERSION="0.1.0"
+MACOS_BUNDLE_VERSION="1"
 PACKAGE_TYPE="app-image"
-APP_VERSION=""
 
 for arg in "$@"; do
     case "$arg" in
         --type=*) PACKAGE_TYPE="${arg#--type=}" ;;
-        --app-version=*) APP_VERSION="${arg#--app-version=}" ;;
         *)
-            echo "error: unknown argument '$arg' (supported: --type=<app-image|dmg|pkg>, --app-version=<v>)" >&2
+            echo "error: unknown argument '$arg' (supported: --type=<app-image|dmg|pkg>)" >&2
             exit 1
             ;;
     esac
 done
 
-if [[ -z "$APP_VERSION" ]]; then
-    if [[ "$PROJECT_VERSION" == 0.* ]]; then
-        APP_VERSION="1.0.0"
-        echo "jpackage: macOS will not accept an app-version starting with zero, so this" >&2
-        echo " package is stamped $APP_VERSION while the application reports $PROJECT_VERSION." >&2
-        echo " Pass --app-version=<v> to choose another." >&2
-    else
-        APP_VERSION="$PROJECT_VERSION"
-    fi
+PACKAGE_VERSION="$PROJECT_VERSION"
+if [[ "$(uname -s)" == "Darwin" && "$PROJECT_VERSION" == 0.* ]]; then
+    PACKAGE_VERSION="$MACOS_BUNDLE_VERSION"
+    echo "jpackage: macOS requires a positive CFBundleVersion, so this bundle uses" >&2
+    echo " build version $PACKAGE_VERSION; its product version remains $PROJECT_VERSION." >&2
 fi
 
 JPACKAGE="jpackage"
@@ -68,12 +60,23 @@ if ! command -v "$JPACKAGE" > /dev/null; then
     echo " and expose it via JAVA_HOME or PATH; the hermetic build JDK is not used here." >&2
     exit 1
 fi
+JPACKAGE_VERSION="$("$JPACKAGE" --version 2>/dev/null)"
+if [[ "$JPACKAGE_VERSION" != "25" && "$JPACKAGE_VERSION" != 25.* ]]; then
+    echo "error: jpackage must come from JDK 25; found $JPACKAGE_VERSION at $JPACKAGE" >&2
+    echo " Set JAVA_HOME to a JDK 25 installation or put its bin directory on PATH." >&2
+    exit 1
+fi
 
 # Runfiles-relative inputs ('bazel run' starts in the runfiles root).
 DEPLOY_JAR="app/app_deploy.jar"
 ASSOCIATION="app/src/main/packaging/bviz.properties"
+RESOURCE_DIRECTORY="app/src/main/packaging"
 [[ -f "$DEPLOY_JAR" ]] || { echo "error: missing $DEPLOY_JAR in runfiles" >&2; exit 1; }
 [[ -f "$ASSOCIATION" ]] || { echo "error: missing $ASSOCIATION in runfiles" >&2; exit 1; }
+[[ -f "$RESOURCE_DIRECTORY/Info.plist" ]] || {
+    echo "error: missing $RESOURCE_DIRECTORY/Info.plist in runfiles" >&2
+    exit 1
+}
 
 # jpackage wants an input DIRECTORY whose contents become the app's lib dir.
 STAGING="$(mktemp -d)"
@@ -88,12 +91,13 @@ COMMAND=(
     "$JPACKAGE"
     --type "$PACKAGE_TYPE"
     --name "Bazel Build Visualizer"
-    --app-version "$APP_VERSION"
+    --app-version "$PACKAGE_VERSION"
     --vendor "holtherndon"
     --input "$STAGING"
     --main-jar "bbv_deploy.jar"
     --main-class "com.holtherndon.bazelviz.app.Main"
     --dest "$OUT"
+    --resource-dir "$RESOURCE_DIRECTORY"
     # See tools/java_test_settings.bzl for why ALL-UNNAMED is the only
     # available target:
     # everything, FlatLaf included, is on the classpath.

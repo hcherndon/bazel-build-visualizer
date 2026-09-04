@@ -1,13 +1,18 @@
 # Performance
 
-Performance is a feature gate, not an aspiration. Numbers in this file are
-only ever *measured* numbers — never estimates; a row with no measurement
-says so explicitly. The plan's own framing (section 20.2) applies: these are
-benchmark targets, not guarantees.
+Performance is a feature gate, not an aspiration. Measurements and analytic
+estimates are labelled separately; an estimate is never presented as a
+measurement. A row with no measurement says so explicitly. The plan's own
+framing (section 20.2) applies: these are benchmark targets, not guarantees.
 
 macOS on Apple Silicon is the platform the objectives are stated against
 (plan 20.2). Linux is a portability target and CI tests there, but no
 performance objective is gated on Linux numbers.
+
+For 0.1.0, objective 1 is not met, Tier 3 graph construction is unmeasured, and
+the EDT evidence is structural rather than an end-to-end pause trace. Ordinary
+CI does not run the benchmark tiers; the measurements below are deliberate
+manual records with their environment and method.
 
 **Build-system note (2026-08-24).** The build migrated from Gradle to Bazel
 (ADR-009) after every figure below was measured. The figures stand: the
@@ -89,8 +94,8 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 | 6 | A cached action-table page appears within 100 ms | **met** — table cache max 25.0 µs; keyset pages 0.75–1.13 ms at 5,000,000 actions, at every depth |
 | 7 | An uncached indexed page normally appears within 500 ms | **met** — 0.6 ms for the first page of a 5,000,000-action session opened from cold |
 | 8 | Opening an already indexed Tier 3 session shows its overview within five seconds without loading all actions | **met — 9.6 ms** from cold, on a 1.5 GB, 5,000,000-action database |
-| 9 | Application-managed heap remains below 4 GB for Tier 3 | **met** — 0.48 GB resident while capturing 50,000,000 events (0.96 GB with the larger page cache); the CSR graph is 176 MB at Tier 2 and extrapolates to ~880 MB at Tier 3 |
-| 10 | No routine EDT pause exceeds 100 ms | **met structurally** — `EdtDisciplineTest` asserts every component that can reach a database owns a thread; three paint-isolation tests assert the painted views can reach neither. Frame p95s above are the empirical half. |
+| 9 | Application-managed heap remains below 4 GB for Tier 3 | **partial** — capture measured 0.48 GB resident at 50,000,000 events (0.96 GB with the larger page cache). CSR retained arrays measured 176 MB at Tier 2; ~880 MB at Tier 3 is a linear estimate, not a Tier 3 graph measurement. |
+| 10 | No routine EDT pause exceeds 100 ms | **structurally supported, not measured end to end** — `EdtDisciplineTest` requires database-reaching components to own a worker; paint-isolation tests keep connections and executors out of painted views. Frame p95s measure only the rendering spikes. |
 | 11 | Long queries are cancellable | **met** — `SessionReader.cancelRunningQuery`, `GraphLayoutService.cancel`, and every layout returns a placement of nothing rather than a partial one |
 | 12 | Session finalization can resume after application restart | **met** — an import interrupted at 145,000 of 300,000 events resumes to a state identical to a clean import |
 
@@ -215,11 +220,11 @@ and the object-per-edge column is a hand-written `32 B/edge + 64 B/node`
 estimate. Both are therefore invariant to JVM object-layout flags — see
 "Java 25 runtime options" below.
 
-The 8x memory advantage over an object-per-edge representation is the
+The analytic 8x memory advantage over an object-per-edge representation is the
 quantitative justification for ADR-006/007. Extrapolating Tier 2's 176 MB
-linearly, Tier 3 (100M edges) lands near 880 MB for both directions — inside
-the 4 GB heap objective, but close enough that the memory-mapped CSR files of
-plan 13.2 remain necessary rather than optional.
+linearly, Tier 3 (100M edges) lands near 880 MB for both directions. That
+estimate is below the 4 GB objective but does not prove a Tier 3 graph fits;
+the memory-mapped CSR files of plan 13.2 remain necessary rather than optional.
 
 Caveat: the synthetic edge generator biases producers to within 4096 indices
 of the consumer, which equals the spike's cluster size, so only ~c-1
@@ -889,7 +894,7 @@ enough past the small case to show the effect and short enough to run twice:
 | | Before | After |
 |---|---:|---:|
 | 3,000,000 events | 43,803/s | **51,527/s** (+18%) |
-| 200,000 events | 79,359/s | 77,5xx/s (three runs: 75.9k, 77.6k, 77.5k) |
+| 200,000 events | 79,359/s | three runs: 75.9k/s, 77.6k/s, 77.5k/s |
 
 The small case is unchanged within noise, which is what the change predicts: at
 200,000 events the table fits in the default cache and a larger one buys

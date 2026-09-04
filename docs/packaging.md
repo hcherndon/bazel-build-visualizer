@@ -3,6 +3,19 @@
 What `bazel run //app:jpackage` produces, what it deliberately does not do,
 and where the credentials live.
 
+## 0.1.0 release status
+
+The supported 0.1.0 package target is Apple Silicon macOS. An unsigned Apple
+Silicon development image has been built and launched on macOS 26.6.2. No
+signed and notarized 0.1.0 candidate has passed the release checklist below,
+so the repository does not yet claim a generally installable release.
+
+Intel macOS packaging is unavailable in 0.1.0: the repository pins arm64
+protobuf and gRPC code generators for every macOS build. Linux can run the
+remote SSH client from source but has no installer; Windows remains unverified.
+Ordinary CI builds the deploy jar and runs tests, but deliberately omits native
+packaging, signing, notarization, and host-state real-Bazel coverage.
+
 ## What is built
 
 ```
@@ -16,9 +29,12 @@ runs against the deploy jar (`//app:app_deploy.jar`) — a single fat jar is
 exactly what a desktop application that is never on anybody else's classpath
 wants, and it is the artifact Bazel already builds deterministically. (The
 Gradle era packaged the `installDist` directory instead; that layout died
-with the `application` plugin.) jpackage itself comes from the **local** JDK
+with the `application` plugin.) jpackage itself comes from the **local JDK 25**
 (`JAVA_HOME` or `PATH`) — the hermetic remote JDK is a build-time toolchain,
-and packaging for the host is the one honestly host-specific step.
+and packaging for the host is the one honestly host-specific step. The
+packaging script rejects another jpackage major version because the application
+is compiled for Java 25 (class-file version 69); an older bundled runtime would
+produce an image that cannot launch.
 
 The image carries the JVM options the `bbv` launcher carries. This is not
 cosmetic: `--enable-native-access=ALL-UNNAMED` is load-bearing, because
@@ -31,13 +47,16 @@ adapter is loaded reflectively and fails closed: without the export, its native
 pinch path stays off while Control/Command + wheel and the zoom buttons keep
 working.
 
-Verified on this machine: the image builds, its `Info.plist` declares the file
+An unsigned Apple Silicon development image has been verified: it builds, its
+`Info.plist` declares the file
 association, its `.cfg` carries all four JVM options, and the packaged launcher
-runs the CLI subcommands.
+runs the CLI subcommands. This is development evidence, not a signed 0.1.0
+release-candidate result.
 
 The same macOS package export belongs in an IDE VM-options field or a direct
 graphical `java -jar` command. `bazel run //app:app` and `//app:jpackage` add it
-themselves; the README shows the manual command. It is intentionally not added
+themselves; [Troubleshooting](troubleshooting.md#timeline-pinch-does-not-zoom-on-macos)
+shows the manual command. It is intentionally not added
 on Linux, where that macOS-only package does not exist.
 
 ## Terminal native resources
@@ -115,20 +134,24 @@ opens the finished deploy jar, requires every named entry and verifies each
 reviewed packaged file's SHA-256. This test protects both the Bazel fat jar and
 the jpackage image, because `jpackage.sh` copies that jar without filtering it.
 
-## The version stamped on the package is not the product's version
+## Product and bundle versions
 
-macOS refuses a `CFBundleVersion` whose first component is zero, and this
-project is `0.1.0`. `CFBundleVersion` is a build-ordering number rather than an
-identity — the version a user reads is `AppInfo.VERSION`, in the About dialog —
-so the task stamps `1.0.0` and **says so on every run**:
+The 0.1.0 identity is consistent across `AppInfo.VERSION`, the packaging
+script, and the user-visible `CFBundleShortVersionString`. macOS requires a
+positive `CFBundleVersion`, so the first 0.1.0 package uses the independent
+bundle build number `1`. The script reports that distinction on every run,
+including these values:
 
 ```
-jpackage: macOS will not accept an app-version starting with zero, so this
-package is stamped 1.0.0 while the application reports 0.1.0.
+jpackage: macOS requires a positive CFBundleVersion, so this bundle uses
+ build version 1; its product version remains 0.1.0.
 ```
 
-`-- --app-version=…` overrides it. Once the project reaches `1.0.0` the
-substitution stops happening by itself.
+The checked-in `Info.plist` template sets the short version to `0.1.0` and lets
+jpackage substitute the bundle build number. A static packaging test and the
+Java application metadata test guard those values. A release owner must still
+inspect the finished plist before signing; source-template checks do not prove
+the generated bundle.
 
 ## File associations
 
@@ -179,25 +202,41 @@ Gatekeeper will refuse it on another machine.
 
 **jpackage does not cross-compile.** It packages for the architecture of the
 JDK running it, and jlink cannot produce a runtime image for another
-architecture without that architecture's `jmods`. So "build Apple Silicon and
-Intel packages" means running `//app:jpackage` twice, on two machines or on
-two CI runners:
+architecture without that architecture's `jmods`. More importantly, this
+repository currently selects arm64 protobuf and gRPC generators for every
+macOS CPU. A clean Intel build therefore cannot reach jpackage.
 
-```
-runs-on: macos-14      # arm64
-runs-on: macos-13      # x86_64
-```
+The 0.1.0 package is Apple-Silicon-only. Do not relabel it as universal or
+Intel-compatible. Intel support remains planned and requires pinned x86-64
+code-generation tools plus a clean build and the full release-candidate smoke
+on an Intel host.
 
-This is stated rather than worked around. A build that produced one package and
-named it after both architectures would be worse than one that produces one and
-says which.
+## Release-candidate checklist
 
-A universal binary is a third option and is not taken: it would mean shipping
-two JVMs in one bundle, roughly doubling a download that is already dominated by
-the runtime image, to save a user one choice on a download page.
+These are manual release gates; they have not all passed for 0.1.0 yet.
+
+1. On a clean Apple Silicon macOS host, select JDK 25 and build the deploy jar
+   and DMG with `bazel run //app:jpackage -- --type=dmg`.
+2. Inspect the finished `Info.plist`: short version `0.1.0`, bundle version `1`,
+   the `.bviz` association, and no unsupported minimum-macOS claim. Inspect the
+   launcher configuration for all required JVM options.
+3. Run the packaged launcher, check `--version`, open the GUI, import a known
+   session, and confirm the application and state directories.
+4. Install the DMG through Finder and double-click a `.bviz` file. Repeat the
+   packaged local Terminal text, resize, and alternate-screen smoke.
+5. Repeat the packaged Terminal smoke through an authorized SSH Workspace.
+6. Sign, notarize, and staple the exact tested artifacts. Verify Gatekeeper on
+   a clean machine; do not mutate or repackage them after notarization.
+7. Record the host, JDK, artifact hashes, and results. Publish only a candidate
+   that passed every applicable step.
 
 ## What is not here
 
+- **No custom application icon or completed package polish.** jpackage still
+  supplies its default icon, and the package has no explicit description or
+  copyright metadata. The project makes no minimum-macOS promise beyond the
+  measured host above; a release candidate must not inherit an unverified
+  default deployment floor.
 - **Preferences is intentionally narrow.** The modeless window has **Theme**
   and **Discovery** tabs, and packaged macOS integration routes its Preferences
   action to the same window as **Settings › Preferences…**. It is not yet a

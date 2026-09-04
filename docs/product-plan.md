@@ -2,7 +2,8 @@
 
 ## Detailed implementation plan for an agentic coding agent
 
-**Status:** Approved planning baseline
+**Status:** Historical approved planning baseline; accepted ADRs and current
+implementation documents supersede it where noted
 **Primary platform:** macOS, Apple Silicon first
 **Portability target:** Windows and Linux-compatible architecture
 **Bazel compatibility:** Bazel 6 through Bazel 9 using capability detection
@@ -14,11 +15,15 @@ preserved as the historical approved text)*
 **Working title:** Bazel Build Visualizer
 **Intended implementer:** Agentic coding system such as Claude Code or Codex
 
-> This file is the authoritative baseline for the repository. It is reproduced
-> verbatim from the approved plan. Any change to a fixed architectural decision
-> requires a new or amended ADR under `docs/adr/` **before** the code changes
-> (see section 26, rule 4). Docs elsewhere in `docs/` elaborate on this plan;
-> where they disagree with it, this file wins.
+> **Current authority:** Section 26 remains the standing execution contract,
+> with accepted ADRs taking precedence over this historical plan.
+> [ADR-009](adr/009-bazel-build.md) supersedes ADR-003: this repository is
+> Bazel-only. Every Gradle file, command, CI instruction, module description,
+> and definition-of-done command below is preserved only as historical planning
+> material and must not be used to build or verify the current tree. Start with
+> the repository README and `docs/implementation-status.md` for current
+> behavior. A fixed architectural change still requires a new or amended ADR
+> before code changes.
 
 ---
 
@@ -235,7 +240,10 @@ Permitted features include:
 
 Do not require preview features.
 
-## ADR-003: Use Gradle Kotlin DSL
+## Historical ADR-003: Use Gradle Kotlin DSL (superseded)
+
+This section is nonauthoritative historical text. ADR-009 replaced Gradle with
+Bazel and the current repository contains no Gradle build.
 
 Use a Gradle multi-module project with:
 

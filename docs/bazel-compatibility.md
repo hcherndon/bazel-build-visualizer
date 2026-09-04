@@ -263,12 +263,15 @@ row it asserts — so this table is measured rather than remembered. Re-run it
 with:
 
 ```
-bazel test //capture-bes:BazelVersionMatrixTest --test_tag_filters= --test_output=streamed
+BBV_BAZEL_MATRIX_VERSION=9.2.0 bazel test //capture-bes:BazelVersionMatrixTest \
+  --test_tag_filters=bazel-sweep --test_output=streamed
 ```
 
-(Deliberately awkward to reach: the target is tagged `manual` so no wildcard
-expands to it, and the rc's default `--test_tag_filters=-bazel-sweep` is the
-second fence. Run it on purpose, supervised, never in automation.)
+Select exactly one supported version (`6.5.0`, `7.6.1`, `8.4.1`, or `9.2.0`)
+with `BBV_BAZEL_MATRIX_VERSION`. The positive tag filter is deliberate: never
+clear `--test_tag_filters`, which can start several Bazel servers and exhaust
+the development host. Run one version on purpose, supervised, never in
+ordinary automation.
 
 | Version | Build | Capture | Received | Journaled | Indexed rows | Version recorded |
 |---|---|---|---:|---:|---:|---|

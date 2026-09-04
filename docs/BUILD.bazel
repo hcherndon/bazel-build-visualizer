@@ -2,4 +2,21 @@
 # page is executable documentation — LimitsDocTest parses it and checks every
 # row against the constant it names, so the test target declares the page as
 # data and finds it through runfiles.
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
 exports_files(["limits.md"])
+
+sh_test(
+    name = "release_docs_test",
+    size = "small",
+    srcs = ["release_docs_test.sh"],
+    data = glob([
+        "*.md",
+        "images/*.svg",
+    ]) + [
+        "//:CHANGELOG.md",
+        "//:LICENSE",
+        "//:README.md",
+        "//:SECURITY.md",
+    ],
+)

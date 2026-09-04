@@ -11,6 +11,10 @@ below and summarized here:
 This is the historical cutover record. [ADR-010](adr/010-package-local-bazel-targets.md)
 later replaced its module-wide macro and source-layout choices with
 package-local native targets; the executed evidence below is not rewritten.
+Commands, runner labels, version metadata, and Gradle comparisons below are
+not current operating instructions. Use [README.md](../README.md),
+[implementation-status.md](implementation-status.md), and ADR-009 for the
+current Bazel-only contract.
 
 - **Five catalog additions the draft predates** (all now in the
   `maven.install` list): `com.fifesoft:rsyntaxtextarea:3.6.1`,

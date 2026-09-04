@@ -4,7 +4,7 @@ package com.holtherndon.bazelviz.app;
 final class AppInfo {
 
   static final String NAME = "Bazel Build Visualizer";
-  static final String VERSION = "0.1.0-SNAPSHOT";
+  static final String VERSION = "0.1.0";
 
   private AppInfo() {}
 }

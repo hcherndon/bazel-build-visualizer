@@ -241,7 +241,7 @@ public final class MainWindow extends JFrame {
    * {@code AppInfo} because {@code :app} depends on this module and not the other way round, so the
    * version cannot be imported from there.
    */
-  private static final String APP_VERSION = "0.1.0-SNAPSHOT";
+  private static final String APP_VERSION = "0.1.0";
 
   // Unknown-is-not-zero: counts are unknown until a session exists, so the
   // status bar shows an em dash, never "0".

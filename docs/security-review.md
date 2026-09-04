@@ -1,7 +1,7 @@
 # Security and privacy review
 
 Plan section 22, clause by clause, with the evidence for each and the gaps
-stated. Written for the Phase 10 release gate; every claim below names the code
+stated. Reconciled for the 0.1.0 release review; every claim below names the code
 or the test that makes it true, so a reviewer can check rather than believe.
 
 The threat model this is written against: a local single-user desktop tool that
@@ -239,7 +239,7 @@ refusal and safe re-import remedy.
   parsers have hand-built damage tests (`BepDamage`, `CliDamagedSourceTest`,
   `BvizArchiveTest`) which cover the failure modes somebody thought of, and that
   is a weaker guarantee than a fuzzer's.
-- **No dependency vulnerability scan.** Dependencies are locked (ADR-003) and
+- **No dependency vulnerability scan.** Dependencies are locked (ADR-009) and
   were license- and maintenance-reviewed when introduced, but nothing checks
   them against an advisory database on each build.
 - **No review of SQLite's own parser.** An imported database is handed to
@@ -250,3 +250,9 @@ refusal and safe re-import remedy.
 
 The third of those is the largest residual risk in this application, and it is
 inherent to opening somebody else's session at all.
+
+Ordinary CI also omits native packaging, signing/notarization, and the
+host-state real-Bazel sweep. Those are manual release gates, not evidence
+produced by the safe test suite. See [SECURITY.md](../SECURITY.md) for private
+reporting guidance and [packaging.md](packaging.md#release-candidate-checklist)
+for the candidate smoke checklist.

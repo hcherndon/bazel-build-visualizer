@@ -1,7 +1,8 @@
 # Troubleshooting
 
-Grows as the tool grows; Phase 0 covers build/dev issues only. App-runtime
-troubleshooting (capture failures, session recovery) arrives with Phase 2+.
+This guide covers build, capture, import, workspaces, SSH, queries, packaging,
+and recovery for the 0.1.0 codebase. A session's raw capture is preserved, so
+most import failures can be retried after the named problem is corrected.
 
 ## Build
 

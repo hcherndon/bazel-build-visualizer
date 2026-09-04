@@ -157,7 +157,7 @@ Two stronger sub-facts fall out:
 
 Only two payload positions ever reference a named set: `completed.outputGroup[].fileSets` and `namedSetOfFiles.fileSets`. `actionCompleted` never references one, even with `--build_event_publish_all_actions`.
 
-> ⚠️ The `targets-configs` experiment reaches the **opposite operational conclusion** on this exact question, from absence of evidence rather than contrary evidence. See [Contradiction 4](#contradiction-4--is-single-pass-namedsetoffiles-resolution-safe).
+> ⚠️ The `targets-configs` experiment reaches the **opposite operational conclusion** on this exact question, from absence of evidence rather than contrary evidence. See [Contradiction 4](#contradiction-4).
 
 ### O2 — `configuration` always precedes any target event referencing it. Zero violations.
 
@@ -170,7 +170,7 @@ Only two payload positions ever reference a named set: `completed.outputGroup[].
 9.2.0  same
 ```
 
-**Caveat:** this checked `targetCompleted` references only. `action-identity` found that **action** events reference a configuration id (`"system"`) that no `configuration` event ever declares — see [C4](#c4--the-system-configuration-id-is-referenced-but-never-declared).
+**Caveat:** this checked `targetCompleted` references only. `action-identity` found that **action** events reference a configuration id (`"system"`) that no `configuration` event ever declares — see [C4](#c4-system-configuration).
 
 ### O3 — `configured` always precedes `completed`/`aborted` for the same label. Zero violations, zero orphans.
 
@@ -300,6 +300,8 @@ build //pkg:gen_a --build_event_publish_all_actions -> 6.5.0 #cfg=3 none=True  ;
 
 Payload, all four versions: `{"configuration": {}, "id": {"configuration": {"id": "none"}}}`. It is announced as a child of a `progress` event and referenced by **zero** `targetCompleted` events.
 
+<a id="c4-system-configuration"></a>
+
 ### C4 — The `"system"` configuration id is referenced but never declared
 
 `action-identity`, comparing ids declared by `configuration` events against ids referenced by action events, over all runs per version:
@@ -364,10 +366,10 @@ Full event (9.2.0):
 | `completed.success` | cond | cond | cond | cond | **`true` only; absent ⇒ failed** |
 | `completed.outputGroup[].name` | Y | Y | Y | Y | |
 | `completed.outputGroup[].fileSets[]` | Y | Y | Y | Y | repeated; NamedSetOfFiles id refs |
-| `completed.outputGroup[].incomplete` | ⚠ | Y | ⚠ | Y | **contested — see [Contradiction 1](#contradiction-1--outputgroupincomplete)** |
+| `completed.outputGroup[].incomplete` | ⚠ | Y | ⚠ | Y | **contested — see [Contradiction 1](#contradiction-1)** |
 | `completed.importantOutput` | Y | Y | flag | flag | `--legacy_important_outputs` default flipped |
 | `completed.directoryOutput` | Y | Y | Y | Y | never suppressed |
-| `completed.tag` | ⚠ | Y | Y | Y | 7.6.1+ appends synthetic tags — **see [Contradiction 3](#contradiction-3--completedtag-on-650)** |
+| `completed.tag` | ⚠ | Y | Y | Y | 7.6.1+ appends synthetic tags — **see [Contradiction 3](#contradiction-3)** |
 | `completed.testTimeout` | cond | cond | cond | cond | **only under the `test` command** |
 | `completed.testTimeoutSeconds` | cond | cond | cond | cond | ditto |
 | `completed.failureDetail` | cond | cond | cond | cond | on failure |
@@ -1317,6 +1319,8 @@ name='command.profile.gz' uri=file:///Users/…/command-5cb70660-….profile.gz
 
 These are places where two experiments produced findings that cannot both be stated as written. Each is presented with both sides and a resolution *hypothesis* that has **not** been tested. Do not adopt either side as fact.
 
+<a id="contradiction-1"></a>
+
 ### Contradiction 1 — `outputGroup.incomplete`
 
 | Side | Experiment | Evidence |
@@ -1337,6 +1341,8 @@ A third data point from `targets-configs` shows the same field is genuinely opti
 
 Consequence regardless of resolution: `reason` is **nullable** and must map to an explicit `UNKNOWN`, never be defaulted to `INCOMPLETE`.
 
+<a id="contradiction-3"></a>
+
 ### Contradiction 3 — `completed.tag` on 6.5.0
 
 | Side | Experiment | Evidence |
@@ -1345,6 +1351,8 @@ Consequence regardless of resolution: `reason` is **nullable** and must map to a
 | `tag` present on 6.5.0 | `targets-configs` | `tags.py`: `-- 6.5.0  //pkg:pass_test  configured.tag=['test-tag-alpha']  completed.tag=['test-tag-alpha']` |
 
 Untested hypothesis: 6.5.0 emits only *user* tags; the `tests` workspace's targets had no `tags` attribute, so on 6.5.0 the list was empty and proto3-omitted, while 7.6.1+ injects synthetic `small`/`short`/`noflaky`/`nolocal` making it non-empty. If so the version difference is "synthetic tags added in 7.6.1", not "field added in 7.6.1" — and a normalizer built on the `tests` write-up would wrongly record 6.5.0 as unable to report tags. **Not resolved by measurement.**
+
+<a id="contradiction-4"></a>
 
 ### Contradiction 4 — is single-pass NamedSetOfFiles resolution safe?
 

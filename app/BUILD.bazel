@@ -2,9 +2,14 @@
 
 load("@rules_java//java:defs.bzl", "java_binary", "java_library")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//tools:java_test_settings.bzl", "NATIVE_ACCESS_FLAG")
 
-exports_files(["src/main/packaging/bviz.properties"])
+exports_files([
+    "packaging/jpackage.sh",
+    "src/main/packaging/Info.plist",
+    "src/main/packaging/bviz.properties",
+])
 
 java_library(
     name = "app-lib",
@@ -52,10 +57,21 @@ alias(
 test_suite(
     name = "tests",
     tests = [
+        ":release_metadata_test",
         "//app/src/test/java/com/holtherndon/bazelviz/app/cli:tests",
         "//app/src/test/java/com/holtherndon/bazelviz/app/dirs:tests",
         "//app/src/test/java/com/holtherndon/bazelviz/app/logging:tests",
         "//app/src/test/java/com/holtherndon/bazelviz/app:tests",
+    ],
+)
+
+sh_test(
+    name = "release_metadata_test",
+    size = "small",
+    srcs = ["packaging/release_metadata_test.sh"],
+    data = [
+        "packaging/jpackage.sh",
+        "src/main/packaging/Info.plist",
     ],
 )
 
@@ -68,6 +84,7 @@ sh_binary(
     name = "jpackage",
     srcs = ["packaging/jpackage.sh"],
     data = [
+        "src/main/packaging/Info.plist",
         "src/main/packaging/bviz.properties",
         ":app_deploy.jar",
     ],

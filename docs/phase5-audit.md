@@ -1,5 +1,9 @@
 # Phase 5 audit
 
+> Historical audit record. Gradle commands and build references below are
+> nonauthoritative evidence from before ADR-009. The repository is Bazel-only;
+> use README.md and docs/implementation-status.md for current instructions.
+
 The same mechanical checks Phase 4 established, plus the ones running the code
 turned up. **Six findings, all fixed.** Three from the greps, three from
 execution.

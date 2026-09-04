@@ -1,5 +1,9 @@
 # Phase 9 audit
 
+> Historical audit record. Its Gradle commands and pre-release packaging
+> metadata are not current instructions. ADR-009 makes the repository
+> Bazel-only; use README.md and docs/packaging.md for current commands.
+
 The four checks the earlier phases turned into greps, run again. Every finding
 below is fixed.
 
