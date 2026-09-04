@@ -4,7 +4,11 @@ java_library(
     name = "bes",
     srcs = [
         "BesEndpoint.java",
+        "BesHandlerExecutor.java",
         "BesRequestHeader.java",
+        "BesResourceLimits.java",
+        "BesResourceSnapshot.java",
+        "BesResources.java",
         "BesServer.java",
         "BesServerConfig.java",
         "BesStreamKey.java",
@@ -14,6 +18,8 @@ java_library(
         "RawBesEvent.java",
         "RawBytesMarshaller.java",
         "RawEventSink.java",
+        "RawPayloadLease.java",
+        "RetainedPayloadBudget.java",
     ],
     deps = [
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal:journal",

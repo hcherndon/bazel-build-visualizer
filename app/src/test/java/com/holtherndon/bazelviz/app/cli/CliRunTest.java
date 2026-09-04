@@ -2,7 +2,12 @@ package com.holtherndon.bazelviz.app.cli;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.holtherndon.bazelviz.capture.live.BuildOutcome;
+import com.holtherndon.bazelviz.runner.proc.ProcessOutcome;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Optional;
+import java.util.OptionalInt;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -85,5 +90,20 @@ class CliRunTest {
     assertThat(result.out())
         .contains("bbv run [options] -- <bazel command>")
         .contains("describes the capture, not the build");
+  }
+
+  @Test
+  @DisplayName("unknown process and BES outcomes are never described as build failures")
+  void unknownOutcomesStayUnknownInHumanOutput() {
+    ProcessOutcome missingExit =
+        new ProcessOutcome(OptionalInt.empty(), Optional.empty(), Duration.ZERO, Optional.empty());
+    ProcessOutcome besFailure = ProcessOutcome.exited(38, Duration.ZERO);
+
+    assertThat(RunCommand.describeBuild(BuildOutcome.UNKNOWN_PROCESS, missingExit))
+        .contains("outcome unknown")
+        .doesNotContain("build failed");
+    assertThat(RunCommand.describeBuild(BuildOutcome.UNKNOWN_BES_TRANSPORT, besFailure))
+        .contains("outcome unknown")
+        .doesNotContain("build failed");
   }
 }

@@ -4,9 +4,9 @@ import io.grpc.Server;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.Objects;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,7 +39,8 @@ public final class BesServer implements AutoCloseable {
 
   private final BesServerConfig config;
   private final PublishBuildEventService service;
-  private final ExecutorService executor;
+  private final BesResources resources;
+  private final BesHandlerExecutor executor;
 
   private Server server;
   private BesEndpoint endpoint;
@@ -50,16 +51,11 @@ public final class BesServer implements AutoCloseable {
 
   BesServer(RawEventSink sink, BesServerConfig config, PublishBuildEventService.MicrosClock clock) {
     this.config = Objects.requireNonNull(config, "config");
+    this.resources = new BesResources(config.resourceLimits());
     this.service =
         new PublishBuildEventService(
-            Objects.requireNonNull(sink, "sink"), config.maxMessageBytes(), clock);
-    this.executor =
-        Executors.newCachedThreadPool(
-            runnable -> {
-              Thread thread = new Thread(runnable, "bbv-bes-handler");
-              thread.setDaemon(true);
-              return thread;
-            });
+            Objects.requireNonNull(sink, "sink"), config.maxMessageBytes(), clock, resources);
+    this.executor = new BesHandlerExecutor(config.resourceLimits(), resources);
   }
 
   /**
@@ -101,7 +97,17 @@ public final class BesServer implements AutoCloseable {
 
   /** Streams currently being received. */
   public int openStreamCount() {
-    return service.openStreamCount();
+    return resources.activeRpcs();
+  }
+
+  /** Current bounded-resource use and refusal counters. */
+  public BesResourceSnapshot resourceSnapshot() {
+    return resources.snapshot(executor);
+  }
+
+  /** Waits for zero active RPCs to remain stable for the configured period. */
+  public boolean awaitQuiescence(Duration timeout) throws InterruptedException {
+    return resources.awaitQuiescence(timeout);
   }
 
   /**
@@ -114,23 +120,88 @@ public final class BesServer implements AutoCloseable {
    */
   @Override
   public synchronized void close() {
-    if (server == null) {
-      return;
+    if (!shutdownAndAwait()) {
+      log.error(
+          "embedded BES did not terminate its server and handler callbacks within {} after forced"
+              + " shutdown",
+          config.shutdownGrace());
     }
+  }
+
+  /**
+   * Stops the listener and waits, including after a forced shutdown, for every callback to leave.
+   *
+   * @return true only when both the gRPC server and its bounded handler executor terminated
+   */
+  public synchronized boolean shutdownAndAwait() {
+    if (server == null) {
+      return true;
+    }
+    boolean interrupted = Thread.interrupted();
+    boolean serverTerminated;
+    boolean handlersTerminated;
     server.shutdown();
     try {
-      if (!server.awaitTermination(config.shutdownGrace().toMillis(), TimeUnit.MILLISECONDS)) {
+      AwaitResult graceful = awaitServer(server, config.shutdownGrace());
+      interrupted |= graceful.interrupted();
+      serverTerminated = graceful.terminated();
+      if (!serverTerminated) {
         log.info(
             "BES server still had streams open after {}; stopping it anyway",
             config.shutdownGrace());
         server.shutdownNow();
+        AwaitResult forcedServer = awaitServer(server, config.shutdownGrace());
+        interrupted |= forcedServer.interrupted();
+        serverTerminated = forcedServer.terminated();
       }
-    } catch (InterruptedException interrupted) {
-      Thread.currentThread().interrupt();
-      server.shutdownNow();
+      // Server cancellation is what schedules the final stream callbacks. Keep the handler
+      // executor alive until that shutdown has had its bounded chance to terminate the RPCs.
+      executor.shutdown();
+      AwaitResult handlers = awaitExecutor(executor, config.shutdownGrace());
+      interrupted |= handlers.interrupted();
+      handlersTerminated = handlers.terminated();
+      if (!handlersTerminated) {
+        executor.shutdownNow();
+        AwaitResult forcedHandlers = awaitExecutor(executor, config.shutdownGrace());
+        interrupted |= forcedHandlers.interrupted();
+        handlersTerminated = forcedHandlers.terminated();
+      }
     } finally {
-      executor.shutdownNow();
       server = null;
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    return serverTerminated && handlersTerminated;
+  }
+
+  private static AwaitResult awaitServer(Server value, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    boolean interrupted = false;
+    while (true) {
+      try {
+        long remaining = Math.max(0L, deadline - System.nanoTime());
+        return new AwaitResult(
+            value.awaitTermination(remaining, TimeUnit.NANOSECONDS), interrupted);
+      } catch (InterruptedException retry) {
+        interrupted = true;
+      }
     }
   }
+
+  private static AwaitResult awaitExecutor(ThreadPoolExecutor value, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    boolean interrupted = false;
+    while (true) {
+      try {
+        long remaining = Math.max(0L, deadline - System.nanoTime());
+        return new AwaitResult(
+            value.awaitTermination(remaining, TimeUnit.NANOSECONDS), interrupted);
+      } catch (InterruptedException retry) {
+        interrupted = true;
+      }
+    }
+  }
+
+  private record AwaitResult(boolean terminated, boolean interrupted) {}
 }

@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.app.cli;
 
 import com.holtherndon.bazelviz.capture.bes.BesStreamState;
+import com.holtherndon.bazelviz.capture.live.BuildOutcome;
 import com.holtherndon.bazelviz.capture.live.CaptureCoordinator;
 import com.holtherndon.bazelviz.capture.live.CaptureProgressListener;
 import com.holtherndon.bazelviz.capture.live.CaptureRequest;
@@ -248,7 +249,7 @@ final class RunCommand {
             process ->
                 out.println(
                     "build:    "
-                        + describeBuild(result, process)
+                        + describeBuild(result.buildOutcome(), process)
                         + " in "
                         + process.duration().toMillis()
                         + " ms"));
@@ -296,19 +297,18 @@ final class RunCommand {
    * so calling it "failed" blames the user's build for this application's transport. The build's
    * real result is in the event stream, which later phases read.
    */
-  private static String describeBuild(CaptureResult result, ProcessOutcome process) {
-    if (process.wasCancelled()) {
-      return "cancelled (" + process.terminatedBy().orElseThrow() + ")";
-    }
-    if (!result.buildOutcomeKnown()) {
-      return "outcome unknown: bazel exited "
-          + CaptureResult.BES_TRANSPORT_FAILURE_EXIT
-          + ", which reports a build event upload failure and hides the build's own result";
-    }
-    return process.isSuccess()
-        ? "succeeded"
-        : "failed, exit "
-            + process.exitCode().stream().mapToObj(Integer::toString).findFirst().orElse("unknown");
+  static String describeBuild(BuildOutcome outcome, ProcessOutcome process) {
+    return switch (outcome) {
+      case NOT_STARTED -> "not started";
+      case CANCELLED -> "cancelled (" + process.terminatedBy().orElseThrow() + ")";
+      case UNKNOWN_PROCESS ->
+          "outcome unknown: the Bazel process did not return a trustworthy exit";
+      case UNKNOWN_BES_TRANSPORT ->
+          "outcome unknown: the BES transport or capture drain failed; Bazel's exit cannot"
+              + " establish the build result";
+      case SUCCEEDED -> "succeeded";
+      case FAILED -> "failed, exit " + process.exitCode().orElseThrow();
+    };
   }
 
   /**
@@ -350,6 +350,7 @@ final class RunCommand {
               // it did; outcomeKnown is how it finds out that it must read the
               // event stream instead.
               build.put("outcomeKnown", JsonValue.of(result.buildOutcomeKnown()));
+              build.put("outcome", JsonValue.of(result.buildOutcome().name()));
               if (result.buildOutcomeKnown()) {
                 build.put("succeeded", JsonValue.of(process.isSuccess()));
               }

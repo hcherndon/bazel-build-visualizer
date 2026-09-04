@@ -50,9 +50,9 @@ public final class SettableRawEventSink implements RawEventSink {
   }
 
   @Override
-  public void submit(RawBesEvent event, Runnable onJournaled)
+  public void submit(RawBesEvent event, SubmissionCallback callback)
       throws InterruptedException, CaptureRejectedException {
-    require().submit(event, onJournaled);
+    require().submit(event, callback);
   }
 
   @Override

@@ -16,8 +16,10 @@ java_library(
     ],
     deps = JUNIT_DEPS + [
         "//app/src/main/java/com/holtherndon/bazelviz/app/cli:cli",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live:live",
         "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer:importer",
         "//session-format/src/main/java/com/holtherndon/bazelviz/format/session/json:json",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc:proc",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
         "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep:bep",
     ],
