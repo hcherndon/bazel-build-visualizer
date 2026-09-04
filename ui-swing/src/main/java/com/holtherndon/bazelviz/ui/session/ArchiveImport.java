@@ -6,6 +6,8 @@ import com.holtherndon.bazelviz.format.portable.BvizIndex;
 import com.holtherndon.bazelviz.format.portable.BvizLimits;
 import com.holtherndon.bazelviz.format.portable.BvizReader;
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
+import com.holtherndon.bazelviz.format.session.SessionManifest;
+import com.holtherndon.bazelviz.format.session.SessionManifestCodec;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -87,12 +89,10 @@ public final class ArchiveImport {
     Objects.requireNonNull(validation, "validation");
     Objects.requireNonNull(sessionsRoot, "sessionsRoot");
     Objects.requireNonNull(limits, "limits");
-    Path normalizedRoot = sessionsRoot.toAbsolutePath().normalize();
-    Path destination = destinationFor(normalizedRoot, validation.index().sessionId());
-    Files.createDirectories(normalizedRoot);
-    Path realRoot = normalizedRoot.toRealPath();
-    requireBeneath(
-        realRoot, realRoot.resolve(destination.getFileName()), "physical archive destination");
+    Path requestedRoot = sessionsRoot.toAbsolutePath().normalize();
+    Files.createDirectories(requestedRoot);
+    Path realRoot = requestedRoot.toRealPath();
+    Path destination = destinationFor(realRoot, validation.index().sessionId());
     if (Files.exists(destination)) {
       throw new BvizFormatException(
           "this session is already in the library, at "
@@ -107,14 +107,16 @@ public final class ArchiveImport {
     // managed session to catalog reconciliation.
     Path staging =
         requireBeneath(
-            normalizedRoot,
+            realRoot,
             Files.createTempDirectory(
-                normalizedRoot, ".incoming-session-" + validation.index().sessionId() + "-"),
+                realRoot, ".incoming-session-" + validation.index().sessionId() + "-"),
             "archive staging directory");
-    requireBeneath(realRoot, staging.toRealPath(), "physical archive staging directory");
     boolean ok = false;
+    BvizReader.Validation extracted;
     try {
-      BvizReader.extract(validation.archive(), staging, limits);
+      extracted = BvizReader.extract(validation.archive(), staging, limits);
+      requireUnchangedIndex(validation, extracted);
+      requireMatchingManifest(staging, extracted.index());
       Files.move(staging, destination);
       ok = true;
     } finally {
@@ -122,8 +124,41 @@ public final class ArchiveImport {
         deleteRecursively(staging);
       }
     }
-    return new Result(
-        destination, validation.index(), validation.isRedacted(), validation.warnings());
+    return new Result(destination, extracted.index(), extracted.isRedacted(), extracted.warnings());
+  }
+
+  private static void requireUnchangedIndex(
+      BvizReader.Validation first, BvizReader.Validation extracted) throws BvizFormatException {
+    if (!first.index().sessionId().equals(extracted.index().sessionId())) {
+      throw new BvizFormatException(
+          "the archive's session identity changed between validation and extraction;"
+              + " nothing was adopted");
+    }
+    if (!first.index().equals(extracted.index())) {
+      throw new BvizFormatException(
+          "the archive index changed between validation and extraction; nothing was adopted");
+    }
+  }
+
+  private static void requireMatchingManifest(Path staging, BvizIndex index) throws IOException {
+    SessionManifest manifest;
+    try {
+      manifest = SessionManifestCodec.standard().read(staging.resolve("manifest.json"));
+    } catch (IOException malformed) {
+      throw new BvizFormatException(
+          "the extracted archive does not contain a readable session manifest; nothing was"
+              + " adopted",
+          malformed);
+    }
+    String manifestSessionId = manifest.sessionId().toString();
+    if (!manifestSessionId.equals(index.sessionId())) {
+      throw new BvizFormatException(
+          "the extracted manifest identifies session "
+              + manifestSessionId
+              + " but archive.json identifies "
+              + index.sessionId()
+              + "; nothing was adopted");
+    }
   }
 
   /** Resolves one archive destination without trusting the archive's session-id text as a path. */

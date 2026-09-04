@@ -74,7 +74,9 @@ same UUID.
 
 The manifest is small, human-readable JSON and is the only file read to list
 sessions cheaply besides the catalog; catalog and manifest must agree, with
-the manifest winning on conflict (the directory is the artifact).
+the manifest winning on conflict (the directory is the artifact). Its
+`sessionId` uses the canonical lower-case UUID spelling; alternate spellings
+are refused instead of becoming aliases for the same managed session.
 
 `executionLocation` is optional for compatibility with sessions written before
 ADR-011. A new live capture records `kind` (`LOCAL` or `SSH`) and a display
@@ -158,6 +160,8 @@ calls the file is not under this application's control.
 | more than the entry, size or expansion-ratio limits | counted from bytes the decompressor produced, never from the size an entry declares |
 | an archive claiming to be both redacted and complete | the raw capture *is* the unredacted bytes |
 | a session id that is not a canonical UUID | archive text cannot become a path component or acquire an alias spelling |
+| an index that changes between validation and extraction | adoption remains under the UUID lock selected by the first validated index |
+| a manifest whose session id differs from `archive.json` | two authoritative identities cannot safely name one adopted session |
 | a format version this build does not know | refused rather than misread |
 
 Extraction into a directory that already holds files is refused too, and an
@@ -170,6 +174,11 @@ Through a temporary file beside the target, then an atomic rename — and only
 after the archive has been re-read and every checksum verified against what was
 recorded while writing. The space needed is estimated first, from the exact
 source size, which is an upper bound because compression can only help.
+
+The writer snapshots the selected `manifest.json` (including a redacted
+replacement), validates its canonical session id, and streams that same snapshot.
+The archive identity therefore follows the manifest bytes actually included, not
+the source directory name, so a valid renamed session remains exportable.
 
 Entries are written in sorted order with a fixed timestamp, so exporting the
 same session twice produces the same bytes.

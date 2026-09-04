@@ -1,6 +1,6 @@
 package com.holtherndon.bazelviz.format.portable;
 
-import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
+import com.holtherndon.bazelviz.format.session.SessionManifestCodec;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -205,7 +205,14 @@ public final class BvizWriter {
     List<BvizIndex.Entry> entries = new ArrayList<>(sources.size());
     long sourceBytes = 0;
     boolean ok = false;
+    Path manifestSnapshot = null;
     try {
+      Source manifest = manifestSource(sources, sessionRoot);
+      manifestSnapshot = Files.createTempFile(parent, ".bviz-manifest-", ".json");
+      Files.copy(manifest.file(), manifestSnapshot, StandardCopyOption.REPLACE_EXISTING);
+      sources = replaceManifest(sources, manifestSnapshot);
+      String sessionId = sessionIdOf(manifestSnapshot, sessionRoot);
+
       try (OutputStream out = Files.newOutputStream(partial);
           ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
         for (Source source : sources) {
@@ -216,7 +223,7 @@ public final class BvizWriter {
             new BvizIndex(
                 BvizIndex.FORMAT_VERSION,
                 appVersion,
-                sessionIdOf(sessionRoot),
+                sessionId,
                 createdMicros,
                 options.redacted(),
                 options.carriesRaw(),
@@ -234,7 +241,7 @@ public final class BvizWriter {
           new BvizIndex(
               BvizIndex.FORMAT_VERSION,
               appVersion,
-              sessionIdOf(sessionRoot),
+              sessionId,
               createdMicros,
               options.redacted(),
               options.carriesRaw(),
@@ -253,6 +260,9 @@ public final class BvizWriter {
     } finally {
       if (!ok) {
         Files.deleteIfExists(partial);
+      }
+      if (manifestSnapshot != null) {
+        Files.deleteIfExists(manifestSnapshot);
       }
     }
   }
@@ -368,15 +378,36 @@ public final class BvizWriter {
     return List.copyOf(sources);
   }
 
-  private static String sessionIdOf(Path sessionRoot) throws BvizFormatException {
-    return ManagedSessionLayout.sessionIdFromDirectoryName(sessionRoot)
-        .map(Object::toString)
+  private static Source manifestSource(List<Source> sources, Path sessionRoot)
+      throws BvizFormatException {
+    return sources.stream()
+        .filter(source -> source.path().equals("manifest.json"))
+        .findFirst()
         .orElseThrow(
             () ->
                 new BvizFormatException(
-                    "cannot export "
-                        + sessionRoot
-                        + ": its directory name does not contain a canonical session UUID"));
+                    "cannot export " + sessionRoot + ": it has no exportable manifest.json"));
+  }
+
+  private static List<Source> replaceManifest(List<Source> sources, Path snapshot) {
+    List<Source> stable = new ArrayList<>(sources.size());
+    for (Source source : sources) {
+      stable.add(
+          source.path().equals("manifest.json") ? new Source(source.path(), snapshot) : source);
+    }
+    return List.copyOf(stable);
+  }
+
+  private static String sessionIdOf(Path manifest, Path sessionRoot) throws BvizFormatException {
+    try {
+      return SessionManifestCodec.standard().read(manifest).sessionId().toString();
+    } catch (IOException malformed) {
+      throw new BvizFormatException(
+          "cannot export "
+              + sessionRoot
+              + ": the manifest source to be included is invalid or lacks a canonical sessionId",
+          malformed);
+    }
   }
 
   static MessageDigest sha256() {

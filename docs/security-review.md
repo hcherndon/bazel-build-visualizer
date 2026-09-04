@@ -177,7 +177,7 @@ The archive clauses are enforced by `BvizIndex`, `BvizReader`, `BvizPaths`, and
 | Limit entry count | Met | `BvizLimits.maxEntries`, 50,000. |
 | Reject duplicate manifest entries | Met | A path listed twice in the index, or present twice in the Zip, is refused: nothing says which copy a reader would get. |
 | Validate checksums | Met | SHA-256 per entry in `archive.json`, checked against the bytes actually decompressed. A Zip CRC-32 detects accidents and nothing else. |
-| Keep archive adoption beneath the sessions root | Met | `archive.json` accepts only the canonical UUID spelling; adoption normalizes the real managed root and independently proves both its destination and unique staging directory remain descendants before extraction or move. The process mutation coordinator applies the same UUID rule to leases and cleanup locks. |
+| Keep archive adoption beneath the sessions root | Met | `archive.json` accepts only the canonical UUID spelling. Adoption resolves the managed root once and uses that real path for staging, extraction, and the final move. It rejects an index changed after coordinator validation and a manifest/index identity mismatch. The process mutation coordinator applies the same UUID rule to leases and cleanup locks. |
 | Treat imported SQLite as untrusted | **Partially met — see below** | The schema version is validated on open and a mismatch is refused with the remedy. |
 | Never load native code from a session archive | Met | Not by refusing to load it: by never writing it. A `.dylib` is not a session file, so the allow-list refuses the entry. |
 

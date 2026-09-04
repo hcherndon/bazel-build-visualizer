@@ -29,6 +29,7 @@ final class BvizArchiveTest {
 
   private static final long CREATED = 1_700_000_000_000_000L;
   private static final String SESSION_ID = "0193f0aa-1111-7000-8000-000000000000";
+  private static final String OTHER_SESSION_ID = "0193f0aa-1111-7000-8000-000000000001";
 
   @TempDir Path tempDir;
 
@@ -40,7 +41,7 @@ final class BvizArchiveTest {
     Files.createDirectories(session.resolve("raw"));
     Files.createDirectories(session.resolve("indexes"));
     Files.createDirectories(session.resolve("locks"));
-    Files.writeString(session.resolve("manifest.json"), "{\"formatVersion\":1}");
+    Files.writeString(session.resolve("manifest.json"), manifest(SESSION_ID));
     Files.write(session.resolve("session.sqlite"), new byte[] {'S', 'Q', 'L', 'i', 't', 'e'});
     Files.writeString(session.resolve("raw/bes-000001.journal"), "raw event bytes".repeat(20));
     Files.write(session.resolve("indexes/action-forward.csr"), new byte[512]);
@@ -131,6 +132,66 @@ final class BvizArchiveTest {
     // Compression can only help, so the source size bounds the archive.
     Path archive = exportComplete();
     assertThat(Files.size(archive)).isLessThanOrEqualTo(estimate.sourceBytes() + 4096);
+  }
+
+  @Test
+  @DisplayName("export identity comes from the manifest, not the session directory name")
+  void renamedSessionsRemainExportable() throws Exception {
+    Path renamed = tempDir.resolve("session-" + OTHER_SESSION_ID);
+    session = Files.move(session, renamed);
+
+    BvizWriter.Result result =
+        BvizWriter.write(
+            session,
+            tempDir.resolve("renamed.bviz"),
+            BvizWriter.Options.complete("renamed"),
+            "0.1.0",
+            CREATED);
+
+    assertThat(result.index().sessionId()).isEqualTo(SESSION_ID);
+  }
+
+  @Test
+  @DisplayName("a replacement manifest determines the identity written to the archive")
+  void replacementManifestDeterminesExportIdentity() throws Exception {
+    Path replacement = tempDir.resolve("redacted-manifest.json");
+    Files.writeString(replacement, manifest(OTHER_SESSION_ID));
+    Path archive = tempDir.resolve("replacement-manifest.bviz");
+
+    BvizWriter.Result result =
+        BvizWriter.write(
+            session,
+            archive,
+            BvizWriter.Options.redacted("shared", Map.of("manifest.json", replacement)),
+            "0.1.0",
+            CREATED);
+
+    assertThat(result.index().sessionId()).isEqualTo(OTHER_SESSION_ID);
+    Path restored = tempDir.resolve("replacement-restored");
+    BvizReader.extract(archive, restored, BvizLimits.defaults());
+    assertThat(Files.readString(restored.resolve("manifest.json")))
+        .isEqualTo(manifest(OTHER_SESSION_ID));
+  }
+
+  @Test
+  @DisplayName("an invalid manifest identity is refused before archive bytes are streamed")
+  void invalidManifestSessionIdIsRefusedBeforeWriting() throws Exception {
+    Files.writeString(
+        session.resolve("manifest.json"), manifest("0193F0AA-1111-7000-8000-000000000000"));
+    Path archive = tempDir.resolve("invalid-manifest.bviz");
+
+    assertThatThrownBy(
+            () ->
+                BvizWriter.write(
+                    session, archive, BvizWriter.Options.complete("invalid"), "0.1.0", CREATED))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("canonical sessionId");
+    assertThat(Files.exists(archive)).isFalse();
+    assertThat(Files.exists(archive.resolveSibling("invalid-manifest.bviz.partial"))).isFalse();
+    try (var files = Files.list(tempDir)) {
+      assertThat(files.map(path -> path.getFileName().toString()))
+          .noneMatch(name -> name.startsWith(".bviz-manifest-"));
+    }
   }
 
   // --- redaction ---------------------------------------------------------
@@ -454,6 +515,19 @@ final class BvizArchiveTest {
      "redacted":false,"includesRawSources":false,"note":"","entries":[]}
     """
         .formatted(formatVersion, sessionId);
+  }
+
+  private static String manifest(String sessionId) {
+    return """
+    {
+      "formatVersion": 1,
+      "appVersion": "0.1.0",
+      "sessionId": "%s",
+      "createdMicros": %d,
+      "state": "READY"
+    }
+    """
+        .formatted(sessionId, CREATED);
   }
 
   /** An archive whose index is valid and whose entry name is not. */

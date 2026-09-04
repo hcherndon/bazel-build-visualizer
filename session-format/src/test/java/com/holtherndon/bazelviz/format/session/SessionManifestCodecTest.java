@@ -98,6 +98,17 @@ class SessionManifestCodecTest {
   }
 
   @Test
+  void rejectsANonCanonicalSessionIdSpelling() {
+    String source =
+        V1_MANIFEST.replace(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE");
+
+    assertThatThrownBy(() -> codec.readText(source, "non-canonical.json"))
+        .isInstanceOf(SessionFormatException.class)
+        .hasMessageContaining("canonical UUID sessionId");
+  }
+
+  @Test
   void absentOptionalsStayAbsentThroughARoundTrip() throws Exception {
     SessionManifest original = SessionManifest.newSession(ID, "0.1.0", 1_000L).build();
 

@@ -12,6 +12,7 @@ import com.holtherndon.bazelviz.storage.catalog.SessionCatalog;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.CountDownLatch;
@@ -108,7 +109,8 @@ final class SessionMutationCoordinatorTest {
   void concurrentSameUuidArchiveImportsAreSerialized() throws Exception {
     Path source = tempDir.resolve("archive-source/session-0193f0aa-1111-7000-8000-000000000000");
     Files.createDirectories(source);
-    Files.writeString(source.resolve("manifest.json"), "{\"formatVersion\":1}");
+    Files.writeString(
+        source.resolve("manifest.json"), manifest("0193f0aa-1111-7000-8000-000000000000"));
     Files.write(source.resolve("session.sqlite"), new byte[] {'S', 'Q', 'L'});
     Path archive = tempDir.resolve("same-session.bviz");
     BvizWriter.write(source, archive, BvizWriter.Options.complete("race"), "0.1.0", CREATED);
@@ -165,7 +167,7 @@ final class SessionMutationCoordinatorTest {
       }
 
       assertThat(first.get(5, TimeUnit.SECONDS).sessionRoot())
-          .isEqualTo(library.resolve("session-0193f0aa-1111-7000-8000-000000000000"));
+          .isEqualTo(library.toRealPath().resolve("session-0193f0aa-1111-7000-8000-000000000000"));
       assertThatThrownBy(() -> second.get(5, TimeUnit.SECONDS))
           .isInstanceOf(ExecutionException.class)
           .hasRootCauseInstanceOf(BvizFormatException.class);
@@ -178,11 +180,78 @@ final class SessionMutationCoordinatorTest {
     }
   }
 
+  @Test
+  @DisplayName("an archive swapped after coordinator validation cannot escape its original lock")
+  void archiveIdentitySwapIsRefusedBeforeAdoption() throws Exception {
+    Path original = archive("original", ACTIVE, "first");
+    Path replacement = archive("replacement", RECENT, "second");
+    SessionMutationCoordinator coordinator =
+        new SessionMutationCoordinator(
+            (validation, sessionsRoot, limits) -> {
+              Files.copy(replacement, validation.archive(), StandardCopyOption.REPLACE_EXISTING);
+              return ArchiveImport.into(validation, sessionsRoot, limits);
+            });
+    Path library = tempDir.resolve("identity-swap-library");
+
+    assertThatThrownBy(() -> coordinator.importArchive(original, library, BvizLimits.defaults()))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("session identity changed")
+        .hasMessageContaining("nothing was adopted");
+    try (var files = Files.list(library)) {
+      assertThat(files).isEmpty();
+    }
+  }
+
+  @Test
+  @DisplayName("an archive index changed under the same identity is refused after extraction")
+  void sameIdentityArchiveIndexSwapIsRefused() throws Exception {
+    Path original = archive("same-id-original", ACTIVE, "first");
+    Path replacement = archive("same-id-replacement", ACTIVE, "different bytes");
+    SessionMutationCoordinator coordinator =
+        new SessionMutationCoordinator(
+            (validation, sessionsRoot, limits) -> {
+              Files.copy(replacement, validation.archive(), StandardCopyOption.REPLACE_EXISTING);
+              return ArchiveImport.into(validation, sessionsRoot, limits);
+            });
+    Path library = tempDir.resolve("index-swap-library");
+
+    assertThatThrownBy(() -> coordinator.importArchive(original, library, BvizLimits.defaults()))
+        .isInstanceOf(BvizFormatException.class)
+        .hasMessageContaining("archive index changed")
+        .hasMessageContaining("nothing was adopted");
+    try (var files = Files.list(library)) {
+      assertThat(files).isEmpty();
+    }
+  }
+
   private Path sessionDirectory(String uuid) throws IOException {
     Path directory = tempDir.resolve("sessions/session-" + uuid);
     Files.createDirectories(directory);
     Files.writeString(directory.resolve("manifest.json"), "{}");
     return directory;
+  }
+
+  private Path archive(String name, String sessionId, String databaseText) throws Exception {
+    Path source = tempDir.resolve(name + "-source");
+    Files.createDirectories(source);
+    Files.writeString(source.resolve("manifest.json"), manifest(sessionId));
+    Files.writeString(source.resolve("session.sqlite"), databaseText);
+    Path archive = tempDir.resolve(name + ".bviz");
+    BvizWriter.write(source, archive, BvizWriter.Options.complete(name), "0.1.0", CREATED);
+    return archive;
+  }
+
+  private static String manifest(String sessionId) {
+    return """
+    {
+      "formatVersion": 1,
+      "appVersion": "0.1.0",
+      "sessionId": "%s",
+      "createdMicros": %d,
+      "state": "READY"
+    }
+    """
+        .formatted(sessionId, CREATED);
   }
 
   private static CatalogEntry entry(String uuid, Path directory, long openedMicros) {

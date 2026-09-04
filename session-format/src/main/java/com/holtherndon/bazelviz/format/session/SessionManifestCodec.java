@@ -187,7 +187,7 @@ public final class SessionManifestCodec {
     JsonObject migrated = migrations.migrate(root, location);
     try {
       return map(migrated, location);
-    } catch (JsonException e) {
+    } catch (JsonException | IllegalArgumentException e) {
       throw new SessionFormatException(
           "manifest at " + location + " is malformed: " + e.getMessage(), e);
     }
@@ -276,10 +276,11 @@ public final class SessionManifestCodec {
   private static SessionId parseSessionId(String text, String location)
       throws SessionFormatException {
     try {
-      return SessionId.parse(text);
+      return SessionId.parseCanonical(text);
     } catch (IllegalArgumentException e) {
       throw new SessionFormatException(
-          "manifest at " + location + " has an unparseable sessionId '" + text + "'", e);
+          "manifest at " + location + " does not have a canonical UUID sessionId: '" + text + "'",
+          e);
     }
   }
 

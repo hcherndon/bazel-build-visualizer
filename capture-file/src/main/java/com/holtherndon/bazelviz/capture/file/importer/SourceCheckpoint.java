@@ -121,15 +121,22 @@ public record SourceCheckpoint(
     if (!(value instanceof JsonObject object)) {
       throw new ImportFormatException("source checkpoint is not a JSON object");
     }
-    return new SourceCheckpoint(
-        integer(object, KEY_FORMAT_VERSION),
-        number(object, KEY_SOURCE_OFFSET),
-        number(object, KEY_FRAMES_WRITTEN),
-        enumValue(object, KEY_FORMAT, DetectedFormat.class),
-        enumValue(object, KEY_PRESERVATION, SourcePreservation.class),
-        text(object, KEY_ORIGINAL_PATH),
-        text(object, KEY_SHA256),
-        number(object, KEY_BYTE_SIZE));
+    try {
+      return new SourceCheckpoint(
+          integer(object, KEY_FORMAT_VERSION),
+          number(object, KEY_SOURCE_OFFSET),
+          number(object, KEY_FRAMES_WRITTEN),
+          enumValue(object, KEY_FORMAT, DetectedFormat.class),
+          enumValue(object, KEY_PRESERVATION, SourcePreservation.class),
+          text(object, KEY_ORIGINAL_PATH),
+          text(object, KEY_SHA256),
+          number(object, KEY_BYTE_SIZE));
+    } catch (ImportFormatException malformed) {
+      throw malformed;
+    } catch (IllegalArgumentException malformed) {
+      throw new ImportFormatException(
+          "source checkpoint contains an invalid value: " + malformed.getMessage(), malformed);
+    }
   }
 
   private static int integer(JsonObject object, String key) throws ImportFormatException {
