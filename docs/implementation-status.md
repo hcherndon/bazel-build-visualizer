@@ -2680,8 +2680,11 @@ it is a different tab and was not reported.
 
   **Browse Repository** uses the same filesystem abstraction for local and live
   SSH workspaces, loads one directory only when expanded, and states its exact
-  5,000-visible-entry bound. Its regular files open through the existing
-  language-aware 16 MiB viewer/editor. Directory and regular-file rows now use
+  5,000-visible-entry bound. Double-clicking a regular file or selecting it and
+  pressing Enter opens the existing language-aware 16 MiB viewer/editor. The
+  platform menu shortcut plus W closes only the active editor and follows the
+  same unsaved-change confirmation as its title-bar close control. Directory
+  and regular-file rows now use
   a fixed, bundled SVG icon set: known source and data names receive their
   language or format icon, Bazel-family files use the project's green BZL
   document icon, properties use the settings icon, and unknown regular files
