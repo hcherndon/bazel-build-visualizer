@@ -5,6 +5,7 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Pro
 import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
 import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
 import com.holtherndon.bazelviz.core.journal.JournalFormat.SourceKind;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
 import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionFilter;
@@ -339,94 +340,61 @@ final class FakeErrorSession implements SessionSource {
     }
 
     @Override
-    public List<TargetQueries.PackageSummary> packages() {
-      return List.of();
+    public CountedPage<TargetQueries.PackageSummary, String> packagePage(
+        String labelText, Optional<String> afterPath, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<TargetQueries.PackageSummary> packages(String labelText) {
-      return List.of();
+    public CountedPage<TargetRow, TargetQueries.TargetAnchor> targetsInPackagePage(
+        String packagePath,
+        String labelText,
+        Optional<TargetQueries.TargetAnchor> after,
+        int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<TargetRow> targetsInPackage(String packagePath) {
-      return List.of();
+    public CountedPage<TargetRow, TargetQueries.TargetAnchor> targetsByLabelPage(
+        String label, Optional<TargetQueries.TargetAnchor> after, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<TargetRow> targetsInPackage(String packagePath, String labelText) {
-      return List.of();
+    public CountedPage<String, String> topLevelLabelPage(
+        String labelText, Optional<String> after, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<TargetRow> targetsByLabel(String label) {
-      return List.of();
+    public CountedPage<TargetQueries.LabelSummary, String> labelPage(
+        String labelText, Optional<String> after, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public long topLevelTargetLabelCount() {
-      return 0;
+    public CountedPage<TargetQueries.ConfigurationGroup, TargetQueries.ConfigurationAnchor>
+        configurationGroupPage(
+            String label, Optional<TargetQueries.ConfigurationAnchor> after, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public long topLevelTargetLabelCount(String labelText) {
-      return 0;
+    public CountedPage<TargetQueries.ConfiguredTarget, Long> configuredTargetPage(
+        String label, Optional<String> configuration, OptionalLong afterId, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<String> firstTopLevelTargetLabels(int limit) {
-      return List.of();
+    public CountedPage<TargetQueries.Tag, TargetQueries.TagAnchor> tagPage(
+        long targetId, Optional<TargetQueries.TagAnchor> after, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<String> firstTopLevelTargetLabels(String labelText, int limit) {
-      return List.of();
-    }
-
-    @Override
-    public List<String> topLevelTargetLabelsAfter(String label, int limit) {
-      return List.of();
-    }
-
-    @Override
-    public List<String> topLevelTargetLabelsAfter(String labelText, String label, int limit) {
-      return List.of();
-    }
-
-    @Override
-    public long targetLabelCount() {
-      return 0;
-    }
-
-    @Override
-    public long targetLabelCount(String labelText) {
-      return 0;
-    }
-
-    @Override
-    public List<TargetQueries.LabelSummary> firstTargetLabels(int limit) {
-      return List.of();
-    }
-
-    @Override
-    public List<TargetQueries.LabelSummary> firstTargetLabels(String labelText, int limit) {
-      return List.of();
-    }
-
-    @Override
-    public List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit) {
-      return List.of();
-    }
-
-    @Override
-    public List<TargetQueries.LabelSummary> targetLabelsAfter(
-        String labelText, String label, int limit) {
-      return List.of();
-    }
-
-    @Override
-    public List<TargetQueries.ConfiguredTarget> configuredTargetsByLabel(String label) {
-      return List.of();
+    public CountedPage<TargetQueries.OutputGroup, Long> outputGroupPage(
+        long configuredTargetId, OptionalLong afterOrdinal, int limit) {
+      return emptyPage();
     }
 
     @Override
@@ -437,16 +405,6 @@ final class FakeErrorSession implements SessionSource {
     @Override
     public Optional<TargetRow> target(long id) {
       return Optional.empty();
-    }
-
-    @Override
-    public List<TargetQueries.Tag> targetTags(long targetId) {
-      return List.of();
-    }
-
-    @Override
-    public List<TargetQueries.OutputGroup> outputGroups(long configuredTargetId) {
-      return List.of();
     }
 
     @Override
@@ -522,23 +480,27 @@ final class FakeErrorSession implements SessionSource {
     }
 
     @Override
-    public List<TestAttemptRow> testAttempts(long testId) {
-      return List.of();
+    public CountedPage<TestAttemptRow, TestQueries.TestAttemptAnchor> testAttemptPage(
+        long testId, Optional<TestQueries.TestAttemptAnchor> after, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<TestQueries.TestLog> testLogs(long testId) {
-      return List.of();
+    public CountedPage<TestQueries.TestLog, Long> testLogPage(
+        long testId, Optional<Long> afterId, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<AttemptRow> attemptsForAction(long actionId) {
-      return List.of();
+    public CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor> attemptsForActionPage(
+        long actionId, Optional<EnrichmentQueries.AttemptAnchor> after, int limit) {
+      return emptyPage();
     }
 
     @Override
-    public List<AttemptRow> attemptsForLabel(String label) {
-      return List.of();
+    public CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor> attemptsForLabelPage(
+        String label, Optional<EnrichmentQueries.AttemptAnchor> after, int limit) {
+      return emptyPage();
     }
 
     @Override
@@ -575,5 +537,9 @@ final class FakeErrorSession implements SessionSource {
     public void cancelRunningQuery() {
       // Nothing runs long enough to need stopping.
     }
+  }
+
+  private static <T, A> CountedPage<T, A> emptyPage() {
+    return new CountedPage<>(List.of(), 0, 0, Optional.empty());
   }
 }

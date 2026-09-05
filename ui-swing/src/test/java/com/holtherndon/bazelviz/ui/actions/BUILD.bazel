@@ -21,6 +21,7 @@ java_library(
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/table",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
     ],
     visibility = ["//visibility:private"],
 )
@@ -53,10 +54,18 @@ java_junit5_test(
     runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
 )
 
+java_junit5_test(
+    name = "ActionsPageChromeTest",
+    test_class = "com.holtherndon.bazelviz.ui.actions.ActionsPageChromeTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
 test_suite(
     name = "tests",
     tests = [
         ":ActionInspectionTest",
+        ":ActionsPageChromeTest",
         ":ActionsViewEntityActionsTest",
         ":ActionsViewHeaderSortTest",
         ":ActionsViewWiringTest",

@@ -6,6 +6,8 @@ import com.holtherndon.bazelviz.ui.inspect.InspectorHeader;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.theme.CanvasAccessibility;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
@@ -30,6 +32,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -118,7 +121,7 @@ import javax.swing.UIManager;
  * scrolls. The canvas, axis and lane labels all route through that same contract rather than
  * changing meaning at a component boundary.
  */
-public final class TimelineView extends JPanel {
+public final class TimelineView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
 
@@ -190,10 +193,14 @@ public final class TimelineView extends JPanel {
   private final JComboBox<LaneGrouping.SortBy> sortChoice =
       new JComboBox<>(LaneGrouping.SortBy.values());
   private final JComboBox<TimelineColours.Mode> colourChoice = new JComboBox<>();
+  private final JLabel groupLabel = labelFor("Group by", groupChoice);
+  private final JLabel sortLabel = labelFor("Sort", sortChoice);
+  private final JLabel colourLabel = labelFor("Colour", colourChoice);
   private final JCheckBox followBox = new JCheckBox("Follow live", true);
   private final JButton zoomOut = new JButton("−");
   private final JButton zoomIn = new JButton("+");
   private final JButton fitBuild = new JButton("Fit build");
+  private final JPanel localToolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
 
   private final Canvas canvas = new Canvas();
   private final Header header = new Header();
@@ -218,6 +225,7 @@ public final class TimelineView extends JPanel {
   private final JSplitPane contentSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
 
   private TimelineModel model;
+  private PageToolbar pageToolbar;
   private SpanWindow window = SpanWindow.EMPTY;
   private SpanStacking stacking = SpanStacking.EMPTY;
 
@@ -333,17 +341,16 @@ public final class TimelineView extends JPanel {
     fitBuild.setToolTipText("Show the full invocation on the time axis");
     fitBuild.addActionListener(event -> fitBuild());
 
-    JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
-    bar.add(labelFor("Group by", groupChoice));
-    bar.add(groupChoice);
-    bar.add(labelFor("Sort", sortChoice));
-    bar.add(sortChoice);
-    bar.add(labelFor("Colour", colourChoice));
-    bar.add(colourChoice);
-    bar.add(followBox);
-    bar.add(zoomOut);
-    bar.add(zoomIn);
-    bar.add(fitBuild);
+    localToolbar.add(groupLabel);
+    localToolbar.add(groupChoice);
+    localToolbar.add(sortLabel);
+    localToolbar.add(sortChoice);
+    localToolbar.add(colourLabel);
+    localToolbar.add(colourChoice);
+    localToolbar.add(followBox);
+    localToolbar.add(zoomOut);
+    localToolbar.add(zoomIn);
+    localToolbar.add(fitBuild);
 
     // The axis is fixed: it stays put while the lanes scroll under it. The
     // strut is what keeps its x = 0 over the canvas's x = 0 rather than
@@ -397,13 +404,32 @@ public final class TimelineView extends JPanel {
     contentSplit.setContinuousLayout(true);
 
     JPanel body = new JPanel(new BorderLayout());
-    body.add(bar, BorderLayout.NORTH);
+    body.add(localToolbar, BorderLayout.NORTH);
     body.add(contentSplit, BorderLayout.CENTER);
 
     deck.add(empty, "empty");
     deck.add(body, "timeline");
     add(deck, BorderLayout.CENTER);
     cards.show(deck, "empty");
+  }
+
+  /** Moves grouping controls into the shared page toolbar; axis navigation remains local. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = toolbar;
+    toolbar.addAction(groupLabel);
+    toolbar.addAction(groupChoice);
+    toolbar.addAction(sortLabel);
+    toolbar.addAction(sortChoice);
+    toolbar.addAction(colourLabel);
+    toolbar.addAction(colourChoice);
+    syncPageMetadata();
+    localToolbar.revalidate();
+    localToolbar.repaint();
   }
 
   @Override
@@ -621,6 +647,7 @@ public final class TimelineView extends JPanel {
     } else {
       liveTicker.stop();
     }
+    syncPageMetadata();
     repaintAll();
   }
 
@@ -704,6 +731,27 @@ public final class TimelineView extends JPanel {
     hideInspector();
     updateCanvasAccessibleDescription();
     cards.show(deck, "empty");
+    syncPageMetadata();
+  }
+
+  private void syncPageMetadata() {
+    if (pageToolbar == null) {
+      return;
+    }
+    if (model == null) {
+      String reason = empty.getText();
+      String concise =
+          reason.startsWith("No session") || reason.startsWith("No timeline") ? "" : reason;
+      pageToolbar.setMetadata(concise, reason);
+      return;
+    }
+    String concise =
+        EntityFormat.count(model.spanCount())
+            + " spans · "
+            + EntityFormat.count(model.lanes().size())
+            + " lanes";
+    pageToolbar.setMetadata(
+        concise, model.coverageNote().map(note -> concise + " · " + note).orElse(concise));
   }
 
   // ---------------------------------------------------------------- scroll

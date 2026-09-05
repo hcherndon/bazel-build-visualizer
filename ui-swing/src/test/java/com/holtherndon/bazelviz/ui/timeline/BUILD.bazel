@@ -106,6 +106,13 @@ java_junit5_test(
 )
 
 java_junit5_test(
+    name = "TimelinePageChromeTest",
+    test_class = "com.holtherndon.bazelviz.ui.timeline.TimelinePageChromeTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
     name = "TimelineSpanPlacementTest",
     test_class = "com.holtherndon.bazelviz.ui.timeline.TimelineSpanPlacementTest",
     jvm_flags = HEADLESS_TEST_JVM_FLAGS,
@@ -153,6 +160,7 @@ test_suite(
         ":TimelineInspectorTest",
         ":TimelineLiveBandTest",
         ":TimelineLodIndexTest",
+        ":TimelinePageChromeTest",
         ":TimelinePaintIsolationTest",
         ":TimelineSpanPlacementTest",
         ":TimelineTransformTest",

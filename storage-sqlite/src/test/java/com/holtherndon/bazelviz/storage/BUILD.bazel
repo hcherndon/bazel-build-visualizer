@@ -7,6 +7,7 @@ java_library(
     srcs = [
         "BatchedInsertFailureTest.java",
         "BatchedInsertTest.java",
+        "CancellableReadTest.java",
         "SessionDatabaseTest.java",
     ],
     deps = JUNIT_DEPS + [
@@ -37,6 +38,16 @@ java_junit5_test(
 )
 
 java_junit5_test(
+    name = "CancellableReadTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.CancellableReadTest",
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
     name = "SessionDatabaseTest",
     jvm_flags = TEST_JVM_FLAGS,
     runtime_deps = [
@@ -51,6 +62,7 @@ test_suite(
     tests = [
         ":BatchedInsertFailureTest",
         ":BatchedInsertTest",
+        ":CancellableReadTest",
         ":SessionDatabaseTest",
     ],
     visibility = ["//visibility:public"],

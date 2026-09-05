@@ -7,6 +7,7 @@ java_library(
     srcs = glob(["*.java"]),
     deps = [
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",

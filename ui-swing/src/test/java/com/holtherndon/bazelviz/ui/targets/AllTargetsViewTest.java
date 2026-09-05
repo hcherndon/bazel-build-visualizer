@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.targets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries.ConfiguredTarget;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
@@ -12,12 +13,16 @@ import java.awt.Container;
 import java.awt.GraphicsEnvironment;
 import java.awt.Point;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JTextPane;
@@ -88,14 +93,29 @@ final class AllTargetsViewTest {
           view.expandLabelForTest(0);
           return null;
         });
-    await(() -> onEdt(() -> view.configurationTextsForTest(0).size() == 2));
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.configurationTextsForTest(0)
+                        .equals(
+                            List.of(
+                                "Configuration cfg-a  (1 variants)",
+                                "Configuration cfg-b  (1 variants)"))));
     assertThat(onEdt(() -> view.configurationTextsForTest(0)))
-        .containsExactly(
-            "Configuration cfg-a  ·  java_library", "Configuration cfg-b  ·  java_library");
+        .containsExactly("Configuration cfg-a  (1 variants)", "Configuration cfg-b  (1 variants)");
     assertThat(onEdt(() -> view.configurationRefsForTest(0, 0)))
         .contains(
             new EntityRef.TargetLabel("//app:server"),
             new EntityRef.ConfigurationChecksum("cfg-a"));
+    onEdt(
+        () -> {
+          view.expandConfigurationGroupForTest(0, 0);
+          return null;
+        });
+    await(() -> onEdt(() -> view.variantTextsForTest(0, 0).getFirst().contains("java_library")));
+    assertThat(onEdt(() -> view.variantTextsForTest(0, 0)))
+        .containsExactly("cquery row 1  ·  java_library");
     assertThat(edtReads).hasValue(0);
 
     onEdt(
@@ -198,20 +218,275 @@ final class AllTargetsViewTest {
   }
 
   @Test
+  @DisplayName("a new filter cancels every queued configuration expansion")
+  void filterCancelsQueuedConfigurationExpansions() throws Exception {
+    CountDownLatch firstNodeStarted = new CountDownLatch(1);
+    CountDownLatch releaseFirstNode = new CountDownLatch(1);
+    AtomicInteger nodeReads = new AtomicInteger();
+    EntityReader reader =
+        (EntityReader)
+            Proxy.newProxyInstance(
+                EntityReader.class.getClassLoader(),
+                new Class<?>[] {EntityReader.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "labelPage" -> {
+                        String filter = (String) args[0];
+                        yield completePage(
+                            filter.isEmpty()
+                                ? List.of(
+                                    new TargetQueries.LabelSummary("//a:target", 1, 1),
+                                    new TargetQueries.LabelSummary("//b:target", 1, 1))
+                                : List.of(new TargetQueries.LabelSummary("//latest:target", 1, 1)));
+                      }
+                      case "configuredTargetSource" ->
+                          Optional.of(
+                              new TargetQueries.ConfiguredSource(
+                                  "SUCCEEDED", "EXACT", Optional.empty(), Optional.empty()));
+                      case "configurationGroupPage" -> {
+                        if (nodeReads.incrementAndGet() == 1) {
+                          firstNodeStarted.countDown();
+                          awaitRelease(releaseFirstNode);
+                        }
+                        yield completePage(
+                            List.of(new TargetQueries.ConfigurationGroup(Optional.of("cfg"), 1)));
+                      }
+                      case "cancelRunningQuery", "close" -> null;
+                      case "toString" -> "QueuedConfigurationExpansionReader";
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    AllTargetsView view = onEdt(AllTargetsView::new);
+    onEdt(
+        () -> {
+          view.openSession(session(reader));
+          view.activate();
+          return null;
+        });
+    await(() -> onEdt(() -> view.labelCountForTest() == 2));
+
+    onEdt(
+        () -> {
+          view.expandLabelForTest(0);
+          return null;
+        });
+    assertThat(firstNodeStarted.await(10, TimeUnit.SECONDS)).isTrue();
+    onEdt(
+        () -> {
+          view.expandLabelForTest(1);
+          view.applyFilterTextForTest("latest");
+          return null;
+        });
+    releaseFirstNode.countDown();
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.labelCountForTest() == 1
+                        && view.labelTextForTest(0).equals("//latest:target")));
+    onEdt(
+        () -> {
+          view.expandLabelForTest(0);
+          return null;
+        });
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.configurationTextsForTest(0)
+                        .equals(List.of("Configuration cfg  (1 variants)"))));
+
+    assertThat(nodeReads).hasValue(2);
+    onEdt(
+        () -> {
+          view.closeSession();
+          return null;
+        });
+  }
+
+  @Test
+  @DisplayName("reopening the same source rejects the first open callback")
+  void sameSourceReopenRejectsStaleOpen() throws Exception {
+    CountDownLatch firstOpenStarted = new CountDownLatch(1);
+    CountDownLatch releaseFirstOpen = new CountDownLatch(1);
+    CountDownLatch staleReaderClosed = new CountDownLatch(1);
+    AtomicBoolean staleCloseOnEdt = new AtomicBoolean(true);
+    EntityReader oldReader = singleLabelReader("//old:target", staleReaderClosed, staleCloseOnEdt);
+    EntityReader newReader =
+        singleLabelReader("//new:target", new CountDownLatch(0), new AtomicBoolean());
+    AtomicInteger opens = new AtomicInteger();
+    SessionSource sameSource =
+        (SessionSource)
+            Proxy.newProxyInstance(
+                SessionSource.class.getClassLoader(),
+                new Class<?>[] {SessionSource.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "openEntityReader" -> {
+                        int call = opens.incrementAndGet();
+                        if (call == 1) {
+                          firstOpenStarted.countDown();
+                          awaitIgnoringInterrupt(releaseFirstOpen);
+                        }
+                        yield call == 1 || call >= 4 ? oldReader : newReader;
+                      }
+                      case "close" -> null;
+                      case "toString" -> "SameAllTargetsSession";
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    AllTargetsView view = onEdt(AllTargetsView::new);
+    onEdt(
+        () -> {
+          view.openSession(sameSource);
+          view.activate();
+          return null;
+        });
+    assertThat(firstOpenStarted.await(10, TimeUnit.SECONDS)).isTrue();
+    onEdt(
+        () -> {
+          view.openSession(sameSource);
+          view.activate();
+          return null;
+        });
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.labelCountForTest() == 1
+                        && view.labelTextForTest(0).equals("//new:target")));
+
+    releaseFirstOpen.countDown();
+    assertThat(staleReaderClosed.await(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(staleCloseOnEdt)
+        .as("closing the rejected JDBC reader must stay off Swing's event thread")
+        .isFalse();
+    onEdt(
+        () -> {
+          assertThat(view.labelCountForTest()).isEqualTo(1);
+          assertThat(view.labelTextForTest(0)).isEqualTo("//new:target");
+          view.closeSession();
+          return null;
+        });
+  }
+
+  @Test
   @DisplayName("duplicate unavailable checksums stay grouped as variants")
-  void unavailableChecksumsDoNotPretendToBeConfigurations() {
+  void unavailableChecksumsDoNotPretendToBeConfigurations() throws Exception {
     ConfiguredTarget first =
         new ConfiguredTarget(1, "//app:server", Optional.empty(), Optional.of("java_library"));
     ConfiguredTarget duplicate =
         new ConfiguredTarget(2, "//app:server", Optional.empty(), Optional.of("java_library"));
 
-    assertThat(AllTargetsView.groupConfigurations(List.of(first, duplicate)))
-        .singleElement()
-        .satisfies(
-            group -> {
-              assertThat(group.hash()).isEqualTo("unavailable");
-              assertThat(group.rows()).containsExactly(first, duplicate);
-            });
+    AllTargetsView view = onEdt(AllTargetsView::new);
+    onEdt(
+        () -> {
+          view.openSession(session(entityReader(new AtomicInteger(), List.of(first, duplicate))));
+          view.activate();
+          return null;
+        });
+    await(() -> onEdt(() -> view.labelCountForTest() == 2));
+    onEdt(
+        () -> {
+          view.expandLabelForTest(0);
+          return null;
+        });
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.configurationTextsForTest(0)
+                        .equals(List.of("Configuration unavailable  (2 variants)"))));
+    onEdt(
+        () -> {
+          view.expandConfigurationGroupForTest(0, 0);
+          return null;
+        });
+    await(() -> onEdt(() -> view.variantTextsForTest(0, 0).size() == 2));
+    assertThat(onEdt(() -> view.variantTextsForTest(0, 0)))
+        .containsExactly("cquery row 1  ·  java_library", "cquery row 2  ·  java_library");
+    onEdt(
+        () -> {
+          view.closeSession();
+          return null;
+        });
+  }
+
+  @Test
+  @DisplayName("configuration groups and variants remain reachable past one bounded page")
+  void configurationAndVariantPagesExposeLoadNextNodes() throws Exception {
+    List<TargetQueries.ConfigurationGroup> groups = new ArrayList<>();
+    List<ConfiguredTarget> variants = new ArrayList<>();
+    for (int index = 0; index <= AllTargetsView.CONFIGURATION_GROUP_PAGE_SIZE; index++) {
+      groups.add(new TargetQueries.ConfigurationGroup(Optional.of("cfg" + index), 1));
+    }
+    for (int index = 0; index <= AllTargetsView.CONFIGURATION_VARIANT_PAGE_SIZE; index++) {
+      variants.add(row(index + 1L, "//app:server", "cfg0"));
+    }
+    AllTargetsView view = onEdt(AllTargetsView::new);
+    onEdt(
+        () -> {
+          view.openSession(session(pagedConfigurationReader(groups, variants)));
+          view.activate();
+          return null;
+        });
+    await(() -> onEdt(() -> view.labelCountForTest() == 1));
+    onEdt(
+        () -> {
+          view.expandLabelForTest(0);
+          return null;
+        });
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.configurationTextsForTest(0).size()
+                        == AllTargetsView.CONFIGURATION_GROUP_PAGE_SIZE + 1));
+    assertThat(onEdt(() -> view.configurationTextsForTest(0).getLast()))
+        .startsWith("Load next configurations");
+    onEdt(
+        () -> {
+          view.loadNextConfigurationsForTest(0);
+          return null;
+        });
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.configurationTextsForTest(0).size()
+                            == AllTargetsView.CONFIGURATION_GROUP_PAGE_SIZE + 1
+                        && view.configurationTextsForTest(0).stream()
+                            .noneMatch(text -> text.startsWith("Load next"))));
+
+    onEdt(
+        () -> {
+          view.expandConfigurationGroupForTest(0, 0);
+          return null;
+        });
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.variantTextsForTest(0, 0).size()
+                        == AllTargetsView.CONFIGURATION_VARIANT_PAGE_SIZE + 1));
+    assertThat(onEdt(() -> view.variantTextsForTest(0, 0).getLast()))
+        .startsWith("Load next variants");
+    onEdt(
+        () -> {
+          view.loadNextVariantsForTest(0, 0);
+          return null;
+        });
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.variantTextsForTest(0, 0).size()
+                            == AllTargetsView.CONFIGURATION_VARIANT_PAGE_SIZE + 1
+                        && view.variantTextsForTest(0, 0).stream()
+                            .noneMatch(text -> text.startsWith("Load next"))));
+    onEdt(
+        () -> {
+          view.closeSession();
+          return null;
+        });
   }
 
   @Test
@@ -249,7 +524,6 @@ final class AllTargetsViewTest {
                 new Class<?>[] {EntityReader.class},
                 (proxy, method, args) ->
                     switch (method.getName()) {
-                      case "targetLabelCount" -> 0L;
                       case "configuredTargetSource" ->
                           Optional.of(
                               new TargetQueries.ConfiguredSource(
@@ -257,8 +531,8 @@ final class AllTargetsViewTest {
                                   "UNKNOWN",
                                   Optional.empty(),
                                   Optional.of("analysis failed on //bad")));
-                      case "firstTargetLabels", "targetLabelsAfter" -> List.of();
-                      case "close" -> null;
+                      case "labelPage" -> emptyPage();
+                      case "cancelRunningQuery", "close" -> null;
                       case "toString" -> "FailedCqueryEntityReader";
                       default -> throw new UnsupportedOperationException(method.getName());
                     });
@@ -295,26 +569,38 @@ final class AllTargetsViewTest {
             EntityReader.class.getClassLoader(),
             new Class<?>[] {EntityReader.class},
             (proxy, method, args) -> {
-              if (SwingUtilities.isEventDispatchThread()) {
+              if (SwingUtilities.isEventDispatchThread()
+                  && !method.getName().equals("cancelRunningQuery")
+                  && !method.getName().equals("close")) {
                 edtReads.incrementAndGet();
               }
               return switch (method.getName()) {
-                case "targetLabelCount" ->
-                    summaries.stream().filter(summary -> matches(summary.label(), args)).count();
                 case "configuredTargetSource" ->
                     hasSource
                         ? Optional.of(
                             new TargetQueries.ConfiguredSource(
                                 "SUCCEEDED", "EXACT", Optional.empty(), Optional.empty()))
                         : Optional.empty();
-                case "firstTargetLabels" ->
-                    summaries.stream().filter(summary -> matches(summary.label(), args)).toList();
-                case "targetLabelsAfter" -> List.of();
-                case "configuredTargetsByLabel" ->
-                    "//app:server".equals(args[0])
-                        ? serverRows
-                        : List.of(row(3, "//lib:util", "cfg-c"));
-                case "close" -> null;
+                case "labelPage" -> {
+                  String filter = (String) args[0];
+                  List<TargetQueries.LabelSummary> matching =
+                      summaries.stream()
+                          .filter(summary -> filter.isEmpty() || summary.label().contains(filter))
+                          .toList();
+                  yield completePage(matching);
+                }
+                case "configurationGroupPage" ->
+                    completePage(configurationGroups(rowsForLabel((String) args[0], serverRows)));
+                case "configuredTargetPage" -> {
+                  String label = (String) args[0];
+                  @SuppressWarnings("unchecked")
+                  Optional<String> configuration = (Optional<String>) args[1];
+                  yield completePage(
+                      rowsForLabel(label, serverRows).stream()
+                          .filter(target -> target.configuration().equals(configuration))
+                          .toList());
+                }
+                case "cancelRunningQuery", "close" -> null;
                 case "toString" -> "AllTargetsEntityReader";
                 default -> throw new UnsupportedOperationException(method.getName());
               };
@@ -329,30 +615,129 @@ final class AllTargetsViewTest {
             new Class<?>[] {EntityReader.class},
             (proxy, method, args) ->
                 switch (method.getName()) {
-                  case "targetLabelCount" -> {
+                  case "labelPage" -> {
                     String filter = (String) args[0];
                     executedFilters.add(filter);
                     if (filter.equals("slow")) {
                       slowStarted.countDown();
                       awaitRelease(releaseSlow);
                     }
-                    yield 1L;
+                    String name = filter.isEmpty() ? "initial" : filter;
+                    yield completePage(
+                        List.of(new TargetQueries.LabelSummary("//" + name + ":target", 1, 1)));
                   }
                   case "configuredTargetSource" ->
                       Optional.of(
                           new TargetQueries.ConfiguredSource(
                               "SUCCEEDED", "EXACT", Optional.empty(), Optional.empty()));
-                  case "firstTargetLabels" -> {
-                    String filter = (String) args[0];
-                    String name = filter.isEmpty() ? "initial" : filter;
-                    yield List.of(new TargetQueries.LabelSummary("//" + name + ":target", 1, 1));
-                  }
-                  case "targetLabelsAfter" -> List.of();
-                  case "configuredTargetsByLabel" -> List.of(row(1, (String) args[0], "cfg"));
-                  case "close" -> null;
+                  case "configurationGroupPage" ->
+                      completePage(
+                          List.of(new TargetQueries.ConfigurationGroup(Optional.of("cfg"), 1)));
+                  case "configuredTargetPage" ->
+                      completePage(List.of(row(1, (String) args[0], "cfg")));
+                  case "cancelRunningQuery", "close" -> null;
                   case "toString" -> "CoalescingAllTargetsReader";
                   default -> throw new UnsupportedOperationException(method.getName());
                 });
+  }
+
+  private static EntityReader singleLabelReader(
+      String label, CountDownLatch closed, AtomicBoolean closeOnEdt) {
+    return (EntityReader)
+        Proxy.newProxyInstance(
+            EntityReader.class.getClassLoader(),
+            new Class<?>[] {EntityReader.class},
+            (proxy, method, args) ->
+                switch (method.getName()) {
+                  case "configuredTargetSource" ->
+                      Optional.of(
+                          new TargetQueries.ConfiguredSource(
+                              "SUCCEEDED", "EXACT", Optional.empty(), Optional.empty()));
+                  case "labelPage" ->
+                      completePage(List.of(new TargetQueries.LabelSummary(label, 1, 1)));
+                  case "cancelRunningQuery" -> null;
+                  case "close" -> {
+                    closeOnEdt.set(SwingUtilities.isEventDispatchThread());
+                    closed.countDown();
+                    yield null;
+                  }
+                  case "toString" -> "AllTargetsReader(" + label + ")";
+                  default -> throw new UnsupportedOperationException(method.getName());
+                });
+  }
+
+  private static EntityReader pagedConfigurationReader(
+      List<TargetQueries.ConfigurationGroup> groups, List<ConfiguredTarget> variants) {
+    return (EntityReader)
+        Proxy.newProxyInstance(
+            EntityReader.class.getClassLoader(),
+            new Class<?>[] {EntityReader.class},
+            (proxy, method, args) ->
+                switch (method.getName()) {
+                  case "configuredTargetSource" ->
+                      Optional.of(
+                          new TargetQueries.ConfiguredSource(
+                              "SUCCEEDED", "EXACT", Optional.empty(), Optional.empty()));
+                  case "labelPage" ->
+                      completePage(
+                          List.of(
+                              new TargetQueries.LabelSummary(
+                                  "//app:server", groups.size(), variants.size())));
+                  case "configurationGroupPage" ->
+                      configurationPage(groups, optionalArg(args[1]), (int) args[2]);
+                  case "configuredTargetPage" ->
+                      variantPage(variants, (OptionalLong) args[2], (int) args[3]);
+                  case "cancelRunningQuery", "close" -> null;
+                  case "toString" -> "PagedAllTargetsReader";
+                  default -> throw new UnsupportedOperationException(method.getName());
+                });
+  }
+
+  private static CountedPage<TargetQueries.ConfigurationGroup, TargetQueries.ConfigurationAnchor>
+      configurationPage(
+          List<TargetQueries.ConfigurationGroup> rows,
+          Optional<TargetQueries.ConfigurationAnchor> after,
+          int limit) {
+    int start =
+        after
+            .map(
+                boundary -> {
+                  for (int index = 0; index < rows.size(); index++) {
+                    if (rows.get(index).configuration().equals(boundary.configuration())) {
+                      return index + 1;
+                    }
+                  }
+                  throw new AssertionError("unknown configuration anchor " + boundary);
+                })
+            .orElse(0);
+    int end = Math.min(rows.size(), start + limit);
+    List<TargetQueries.ConfigurationGroup> page = rows.subList(start, end);
+    long remaining = rows.size() - end;
+    Optional<TargetQueries.ConfigurationAnchor> next =
+        remaining == 0
+            ? Optional.empty()
+            : Optional.of(TargetQueries.ConfigurationAnchor.of(page.getLast().configuration()));
+    return new CountedPage<>(page, rows.size(), remaining, next);
+  }
+
+  private static CountedPage<ConfiguredTarget, Long> variantPage(
+      List<ConfiguredTarget> rows, OptionalLong after, int limit) {
+    int start = 0;
+    if (after.isPresent()) {
+      while (start < rows.size() && rows.get(start).id() <= after.getAsLong()) {
+        start++;
+      }
+    }
+    int end = Math.min(rows.size(), start + limit);
+    List<ConfiguredTarget> page = rows.subList(start, end);
+    long remaining = rows.size() - end;
+    Optional<Long> next = remaining == 0 ? Optional.empty() : Optional.of(page.getLast().id());
+    return new CountedPage<>(page, rows.size(), remaining, next);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <T> Optional<T> optionalArg(Object argument) {
+    return (Optional<T>) argument;
   }
 
   private static void awaitRelease(CountDownLatch release) {
@@ -366,12 +751,62 @@ final class AllTargetsViewTest {
     }
   }
 
-  private static boolean matches(String label, Object[] arguments) {
-    return arguments == null
-        || arguments.length == 0
-        || !(arguments[0] instanceof String filter)
-        || filter.isEmpty()
-        || label.contains(filter);
+  private static void awaitIgnoringInterrupt(CountDownLatch release) {
+    boolean interrupted = false;
+    while (true) {
+      try {
+        if (!release.await(10, TimeUnit.SECONDS)) {
+          throw new AssertionError("stale open was never released");
+        }
+        break;
+      } catch (InterruptedException ignored) {
+        interrupted = true;
+      }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  private static List<ConfiguredTarget> rowsForLabel(
+      String label, List<ConfiguredTarget> serverRows) {
+    return "//app:server".equals(label) ? serverRows : List.of(row(3, "//lib:util", "cfg-c"));
+  }
+
+  private static List<TargetQueries.ConfigurationGroup> configurationGroups(
+      List<ConfiguredTarget> rows) {
+    List<TargetQueries.ConfigurationGroup> groups = new ArrayList<>();
+    for (ConfiguredTarget row : rows) {
+      int index = -1;
+      for (int candidate = 0; candidate < groups.size(); candidate++) {
+        if (groups.get(candidate).configuration().equals(row.configuration())) {
+          index = candidate;
+          break;
+        }
+      }
+      if (index < 0) {
+        groups.add(new TargetQueries.ConfigurationGroup(row.configuration(), 1));
+      } else {
+        TargetQueries.ConfigurationGroup current = groups.get(index);
+        groups.set(
+            index,
+            new TargetQueries.ConfigurationGroup(current.configuration(), current.variants() + 1));
+      }
+    }
+    groups.sort(
+        Comparator.comparing(
+            TargetQueries.ConfigurationGroup::configuration,
+            Comparator.comparing(
+                optional -> optional.orElse(null), Comparator.nullsFirst(String::compareTo))));
+    return List.copyOf(groups);
+  }
+
+  private static <T> CountedPage<T, String> completePage(List<T> rows) {
+    return new CountedPage<>(rows, rows.size(), 0, Optional.empty());
+  }
+
+  private static <T, A> CountedPage<T, A> emptyPage() {
+    return new CountedPage<>(List.of(), 0, 0, Optional.empty());
   }
 
   private static SessionSource session(EntityReader reader) {

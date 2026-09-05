@@ -1,13 +1,16 @@
 package com.holtherndon.bazelviz.ui.actions;
 
 import com.holtherndon.bazelviz.core.domain.ActionOutcome;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
+import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.ui.files.FileLink;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.inspect.InspectionPagingPanel;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
@@ -17,10 +20,14 @@ import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.nio.file.Path;
@@ -34,6 +41,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import javax.swing.BorderFactory;
@@ -84,7 +92,7 @@ import org.slf4j.LoggerFactory;
  * sort changes — rebuilding the anchor index is a scan, and it happens on the page executor with
  * the table showing its previous contents until the new source is ready.
  */
-public final class ActionsView extends JPanel {
+public final class ActionsView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
 
@@ -96,6 +104,9 @@ public final class ActionsView extends JPanel {
   /** Pages held in the LRU cache; a bounded few thousand rows in memory. */
   private static final int CACHE_PAGES = 24;
 
+  /** Execution-log attempts retained for one selected action at a time. */
+  public static final int ATTEMPT_PAGE_SIZE = 100;
+
   /** Any mnemonic. The combo's first entry. */
   private static final String ANY_MNEMONIC = "All mnemonics";
 
@@ -106,8 +117,10 @@ public final class ActionsView extends JPanel {
   private final EmptyStatePanel emptyState = new EmptyStatePanel(" ");
   private final JTable table = new JTable();
   private final InspectorPanel inspector = new InspectorPanel();
+  private final InspectionPagingPanel inspectionPaging = new InspectionPagingPanel();
   private final JLabel statusLabel = new JLabel(" ");
   private final JLabel captureNote = new JLabel(" ");
+  private final JPanel session = new JPanel(new BorderLayout());
 
   private final JComboBox<String> mnemonicChoice = new JComboBox<>();
   private final JComboBox<String> outcomeChoice = new JComboBox<>();
@@ -176,11 +189,25 @@ public final class ActionsView extends JPanel {
    */
   private final JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
 
+  private PageToolbar pageToolbar;
+  private String pageMetadata = "";
+  private String pageMetadataDetail = "";
+
   /** Bumped on every reload so a slow one cannot overwrite a newer one. */
   private long reloadGeneration;
 
   /** Bumped for every explicit cross-view reveal so stale lookups are ignored. */
   private long revealGeneration;
+
+  /** Bumped whenever the inspected action or its owning session changes. */
+  private long selectionGeneration;
+
+  /** Bumped whenever a session is opened or closed, including reuse of the same source object. */
+  private long sessionGeneration;
+
+  private boolean attemptPageLoading;
+  private Future<?> attemptTask;
+  private Future<?> actionInspectionTask;
 
   /** A reveal waiting for its keyset page to enter the bounded page cache. */
   private PendingTableReveal pendingTableReveal;
@@ -271,11 +298,14 @@ public final class ActionsView extends JPanel {
     tableScroll.setMinimumSize(new Dimension(320, 160));
     inspector.setMinimumSize(new Dimension(300, 160));
 
+    JPanel inspectionPanel = new JPanel(new BorderLayout());
+    inspectionPanel.add(inspector, BorderLayout.CENTER);
+    inspectionPanel.add(inspectionPaging, BorderLayout.SOUTH);
     JSplitPane split =
         new JSplitPane(
             JSplitPane.HORIZONTAL_SPLIT,
             new SectionPane("Actions", tableScroll),
-            new SectionPane("Action details", inspector));
+            new SectionPane("Action details", inspectionPanel));
     split.setResizeWeight(0.68);
 
     JPanel status = new JPanel(new BorderLayout(12, 0));
@@ -284,7 +314,6 @@ public final class ActionsView extends JPanel {
     captureNote.setEnabled(false);
     status.add(captureNote, BorderLayout.CENTER);
 
-    JPanel session = new JPanel(new BorderLayout());
     session.add(buildToolbar(), BorderLayout.NORTH);
     session.add(split, BorderLayout.CENTER);
     session.add(status, BorderLayout.SOUTH);
@@ -293,6 +322,27 @@ public final class ActionsView extends JPanel {
     deck.add(session, CARD_TABLE);
     add(deck, BorderLayout.CENTER);
     showEmpty("No session is open.");
+  }
+
+  /** Moves the page-wide action filters and navigation commands into the common toolbar. */
+  @Override
+  public void installPageToolbar(PageToolbar installed) {
+    Objects.requireNonNull(installed, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = installed;
+    Component[] controls = toolbar.getComponents();
+    for (Component control : controls) {
+      installed.addAction(control);
+    }
+    Container oldParent = toolbar.getParent();
+    if (oldParent != null) {
+      oldParent.remove(toolbar);
+      oldParent.revalidate();
+      oldParent.repaint();
+    }
+    syncPageMetadata();
   }
 
   private JPanel buildToolbar() {
@@ -471,8 +521,7 @@ public final class ActionsView extends JPanel {
     // setVisible alone only invalidates; without this the toolbar, laid
     // out while the chip was invisible, never gives it real bounds and
     // it paints nothing — see the field comment on toolbar.
-    toolbar.revalidate();
-    toolbar.repaint();
+    relayoutLabelChip();
     reload();
   }
 
@@ -482,8 +531,7 @@ public final class ActionsView extends JPanel {
     }
     labelFilter = Optional.empty();
     labelChip.setVisible(false);
-    toolbar.revalidate();
-    toolbar.repaint();
+    relayoutLabelChip();
     reload();
   }
 
@@ -524,7 +572,7 @@ public final class ActionsView extends JPanel {
     if (opened == null || details == null) {
       return;
     }
-    statusLabel.setText("Locating action…");
+    setStatus("Locating action…");
     details.execute(
         () -> {
           Optional<ActionRow> found;
@@ -535,8 +583,7 @@ public final class ActionsView extends JPanel {
             SwingUtilities.invokeLater(
                 () -> {
                   if (generation == revealGeneration && source == opened) {
-                    statusLabel.setText(
-                        "Could not locate action " + actionId + ": " + failure.getMessage());
+                    setStatus("Could not locate action " + actionId + ": " + failure.getMessage());
                   }
                 });
             return;
@@ -547,7 +594,7 @@ public final class ActionsView extends JPanel {
                   return;
                 }
                 if (found.isEmpty()) {
-                  statusLabel.setText("Action " + actionId + " was not found in this session.");
+                  setStatus("Action " + actionId + " was not found in this session.");
                   return;
                 }
                 revealResolvedAction(new PendingReveal(generation, found.orElseThrow()));
@@ -559,12 +606,14 @@ public final class ActionsView extends JPanel {
     emptyState.setText(Objects.requireNonNull(message, "message"));
     showAllButton.setEnabled(false);
     cards.show(deck, CARD_EMPTY);
+    setPageMetadata(message.startsWith("No session") ? "" : message, message);
   }
 
   /** Opens a session and builds the table over it. Returns immediately. */
   public void openSession(SessionSource newSource) {
     Objects.requireNonNull(newSource, "newSource");
     closeSession();
+    long generation = ++sessionGeneration;
     source = newSource;
     pageExecutor = singleThreadExecutor("bbv-actions-pages");
     detailExecutor = singleThreadExecutor("bbv-actions-detail");
@@ -574,41 +623,54 @@ public final class ActionsView extends JPanel {
         () -> {
           try {
             EntityReader reader = newSource.openEntityReader();
-            List<String> mnemonics = new ArrayList<>();
-            reader
-                .mnemonics()
-                .forEach(
-                    count ->
-                        mnemonics.add(
-                            count.mnemonic() + "  (" + EntityFormat.count(count.actions()) + ")"));
-            boolean failuresOnly = reader.overview().actionsAreFailuresOnly();
-            SwingUtilities.invokeLater(
-                () -> {
-                  if (source != newSource) {
-                    reader.close();
-                    return;
-                  }
-                  detailReader = reader;
-                  populateMnemonics(mnemonics);
-                  // Two different qualifications, and the second one is
-                  // always true. Bazel publishes an action event only for an
-                  // action that actually executed, so every cache hit is
-                  // missing from this table on every build -- a warm rebuild
-                  // of one target published one event where the build
-                  // declared two. Saying "N actions" with nothing beside it
-                  // states a total the source cannot support (rule 13).
-                  captureNote.setText(
-                      failuresOnly
-                          ? "--build_event_publish_all_actions was not in effect; Bazel"
-                              + " publishes an event for a successful action only under"
-                              + " that flag, so successful actions may be missing."
-                          : "Actions that were cache hits publish no event, so this is what"
-                              + " executed this invocation, not what the build declared.");
-                  reloadPreservingReveal();
-                });
+            try {
+              List<String> mnemonics = new ArrayList<>();
+              reader
+                  .mnemonics()
+                  .forEach(
+                      count ->
+                          mnemonics.add(
+                              count.mnemonic()
+                                  + "  ("
+                                  + EntityFormat.count(count.actions())
+                                  + ")"));
+              boolean failuresOnly = reader.overview().actionsAreFailuresOnly();
+              SwingUtilities.invokeLater(
+                  () -> {
+                    if (source != newSource || generation != sessionGeneration) {
+                      ViewClose.runAsync("bbv-actions-stale-open-close", reader::close);
+                      return;
+                    }
+                    detailReader = reader;
+                    populateMnemonics(mnemonics);
+                    // Two different qualifications, and the second one is
+                    // always true. Bazel publishes an action event only for an
+                    // action that actually executed, so every cache hit is
+                    // missing from this table on every build -- a warm rebuild
+                    // of one target published one event where the build
+                    // declared two. Saying "N actions" with nothing beside it
+                    // states a total the source cannot support (rule 13).
+                    captureNote.setText(
+                        failuresOnly
+                            ? "--build_event_publish_all_actions was not in effect; Bazel"
+                                + " publishes an event for a successful action only under"
+                                + " that flag, so successful actions may be missing."
+                            : "Actions that were cache hits publish no event, so this is what"
+                                + " executed this invocation, not what the build declared.");
+                    reloadPreservingReveal();
+                  });
+            } catch (RuntimeException failure) {
+              reader.close();
+              throw failure;
+            }
           } catch (RuntimeException failure) {
             log.error("could not open the actions view", failure);
-            SwingUtilities.invokeLater(() -> showEmpty(failure.getMessage()));
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (source == newSource && generation == sessionGeneration) {
+                    showEmpty(failure.getMessage());
+                  }
+                });
           }
         });
   }
@@ -620,9 +682,13 @@ public final class ActionsView extends JPanel {
 
   /** Detaches immediately and completes after this session's accepted reads have stopped. */
   public CompletionStage<Void> closeSessionAsync() {
+    sessionGeneration++;
     filterDebounce.stop();
     revealGeneration++;
     reloadGeneration++;
+    selectionGeneration++;
+    attemptPageLoading = false;
+    cancelAttemptTask();
     pendingTableReveal = null;
     // A label filter belongs to the session it was sent from; the next
     // session must not open pre-narrowed by an invisible leftover.
@@ -633,11 +699,18 @@ public final class ActionsView extends JPanel {
     showAllButton.setEnabled(false);
     table.setModel(new DefaultTableModel());
     inspector.show(Inspection.NONE);
+    inspectionPaging.clear();
     SessionSource closing = source;
     ExecutorService pages = pageExecutor;
     ExecutorService details = detailExecutor;
     EntityReader detail = detailReader;
     EntityReader page = pageReader;
+    if (detail != null) {
+      detail.cancelRunningQuery();
+    }
+    if (page != null) {
+      page.cancelRunningQuery();
+    }
     source = null;
     pageExecutor = null;
     detailExecutor = null;
@@ -870,7 +943,7 @@ public final class ActionsView extends JPanel {
     ActionSort sort = (ActionSort) sortChoice.getSelectedItem();
     boolean descending = descendingBox.isSelected();
     long generation = ++reloadGeneration;
-    statusLabel.setText("Reading…");
+    setStatus("Reading…");
 
     pages.execute(
         () -> {
@@ -883,7 +956,7 @@ public final class ActionsView extends JPanel {
               SwingUtilities.invokeLater(
                   () -> {
                     if (generation != reloadGeneration || source != opened) {
-                      reader.close();
+                      ViewClose.runAsync("bbv-actions-stale-page-close", reader::close);
                       return;
                     }
                     install(built, reader, reveal, moveToStart);
@@ -896,7 +969,7 @@ public final class ActionsView extends JPanel {
             log.error("could not read actions", failure);
             SwingUtilities.invokeLater(
                 () -> {
-                  if (generation == reloadGeneration) {
+                  if (generation == reloadGeneration && source == opened) {
                     showEmpty(failure.getMessage());
                   }
                 });
@@ -933,7 +1006,7 @@ public final class ActionsView extends JPanel {
     graphButton.setEnabled(false);
     timelineButton.setEnabled(false);
     showAllButton.setEnabled(true);
-    statusLabel.setText(describe(built));
+    setStatus(describe(built));
     cards.show(deck, CARD_TABLE);
     if (reveal != null && reveal.generation() == revealGeneration) {
       requestReveal(reveal, built, tableModel);
@@ -1025,8 +1098,7 @@ public final class ActionsView extends JPanel {
     rangeFilter = Optional.empty();
     labelFilter = Optional.empty();
     labelChip.setVisible(false);
-    toolbar.revalidate();
-    toolbar.repaint();
+    relayoutLabelChip();
   }
 
   /** Clears every filter and returns to the full table at its first row. */
@@ -1057,7 +1129,7 @@ public final class ActionsView extends JPanel {
     inspector.show(Inspection.NONE);
     graphButton.setEnabled(false);
     timelineButton.setEnabled(false);
-    statusLabel.setText(describe(rows));
+    setStatus(describe(rows));
     if (model.getRowCount() == 0) {
       return;
     }
@@ -1073,7 +1145,7 @@ public final class ActionsView extends JPanel {
     long pageIndex = rows.pageIndexOf(reveal.row());
     long first = pageIndex * model.pageSize();
     if (first < 0 || first >= model.getRowCount()) {
-      statusLabel.setText("Action " + reveal.row().id() + " was not found in the action list.");
+      setStatus("Action " + reveal.row().id() + " was not found in the action list.");
       return;
     }
     int firstRow = Math.toIntExact(first);
@@ -1105,18 +1177,18 @@ public final class ActionsView extends JPanel {
         table.setRowSelectionInterval(row, row);
         table.scrollRectToVisible(table.getCellRect(row, 0, true));
         if (rowSource != null) {
-          statusLabel.setText(describe(rowSource));
+          setStatus(describe(rowSource));
         }
         return true;
       }
     }
     if (pending.model().isPageLoaded(pending.pageIndex())) {
       pendingTableReveal = null;
-      statusLabel.setText("Action " + pending.actionId() + " was not found in the action list.");
+      setStatus("Action " + pending.actionId() + " was not found in the action list.");
     } else if (pending.model().isPageFailed(pending.pageIndex())) {
       pendingTableReveal = null;
       Throwable failure = pending.model().lastFailure();
-      statusLabel.setText(
+      setStatus(
           "Could not load action "
               + pending.actionId()
               + (failure == null || failure.getMessage() == null
@@ -1124,6 +1196,32 @@ public final class ActionsView extends JPanel {
                   : ": " + failure.getMessage()));
     }
     return false;
+  }
+
+  private void relayoutLabelChip() {
+    Container parent = labelChip.getParent();
+    if (parent != null) {
+      parent.revalidate();
+      parent.repaint();
+    }
+  }
+
+  private void setStatus(String value) {
+    statusLabel.setText(value);
+    String note = captureNote.getText().strip();
+    setPageMetadata(value, note.isEmpty() ? value : value + " · " + note);
+  }
+
+  private void setPageMetadata(String concise, String detail) {
+    pageMetadata = concise;
+    pageMetadataDetail = detail;
+    syncPageMetadata();
+  }
+
+  private void syncPageMetadata() {
+    if (pageToolbar != null) {
+      pageToolbar.setMetadata(pageMetadata, pageMetadataDetail);
+    }
   }
 
   private void populateMnemonics(List<String> mnemonics) {
@@ -1146,7 +1244,15 @@ public final class ActionsView extends JPanel {
   private void selectionChanged() {
     int viewRow = table.getSelectedRow();
     if (viewRow < 0 || tableModel == null) {
+      selectionGeneration++;
+      attemptPageLoading = false;
+      cancelAttemptTask();
+      EntityReader details = detailReader;
+      if (details != null) {
+        details.cancelRunningQuery();
+      }
       inspector.show(Inspection.NONE);
+      inspectionPaging.clear();
       return;
     }
     ActionRow row = tableModel.rowAt(viewRow);
@@ -1157,10 +1263,44 @@ public final class ActionsView extends JPanel {
     }
     // Shown immediately from the row already in hand, so selecting is never
     // waiting on a query.
-    inspector.show(ActionInspection.of(row));
+    long generation = ++selectionGeneration;
+    attemptPageLoading = false;
+    cancelAttemptTask();
+    EntityReader details = detailReader;
+    if (details != null) {
+      details.cancelRunningQuery();
+    }
+    inspector.show(Inspection.NONE);
+    inspectionPaging.clear();
     graphButton.setEnabled(true);
     timelineButton.setEnabled(true);
-    loadAttempts(row);
+    showActionSummaryAsync(row, generation);
+    loadAttempts(row, Optional.empty(), generation);
+  }
+
+  private void showActionSummaryAsync(ActionRow row, long generation) {
+    ExecutorService details = detailExecutor;
+    SessionSource opened = source;
+    if (details == null || opened == null) {
+      return;
+    }
+    actionInspectionTask =
+        details.submit(
+            () -> {
+              Inspection inspection = ActionInspection.of(row);
+              SwingUtilities.invokeLater(
+                  () -> {
+                    int current = table.getSelectedRow();
+                    ActionRow still =
+                        current < 0 || tableModel == null ? null : tableModel.rowAt(current);
+                    if (generation == selectionGeneration
+                        && source == opened
+                        && still != null
+                        && still.id() == row.id()) {
+                      inspector.show(inspection);
+                    }
+                  });
+            });
   }
 
   /**
@@ -1168,39 +1308,75 @@ public final class ActionsView extends JPanel {
    *
    * <p>The attempts are a query, and plan rule 8 forbids querying on the EDT however small the
    * result. The inspector is already showing the action, so this only ever adds to what is on
-   * screen — and a stale answer is discarded by comparing the id, because a user arrowing down the
-   * table fires this faster than SQLite answers.
+   * screen. Inspection construction stays on this worker too. A stale answer is discarded by its
+   * session, selection generation, and id because a user arrowing down the table fires this faster
+   * than SQLite answers.
    */
-  private void loadAttempts(ActionRow row) {
+  private void loadAttempts(
+      ActionRow row, Optional<EnrichmentQueries.AttemptAnchor> after, long generation) {
     ExecutorService details = detailExecutor;
     EntityReader reader = detailReader;
-    if (details == null || reader == null) {
+    SessionSource opened = source;
+    if (details == null || reader == null || opened == null || attemptPageLoading) {
       return;
     }
+    attemptPageLoading = true;
     long wanted = row.id();
-    details.execute(
-        () -> {
-          List<AttemptRow> attempts;
-          try {
-            attempts = reader.attemptsForAction(wanted);
-          } catch (RuntimeException unavailable) {
-            // Enrichment is optional and its absence is not an error for
-            // the actions table. The inspector keeps the action it has.
-            return;
-          }
-          if (attempts.isEmpty()) {
-            return;
-          }
-          SwingUtilities.invokeLater(
-              () -> {
-                int current = table.getSelectedRow();
-                ActionRow still =
-                    current < 0 || tableModel == null ? null : tableModel.rowAt(current);
-                if (still != null && still.id() == wanted) {
-                  inspector.show(ActionInspection.of(still, attempts));
-                }
-              });
-        });
+    attemptTask =
+        details.submit(
+            () -> {
+              CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor> attempts;
+              try {
+                attempts = reader.attemptsForActionPage(wanted, after, ATTEMPT_PAGE_SIZE);
+              } catch (RuntimeException unavailable) {
+                // Enrichment is optional and its absence is not an error for
+                // the actions table. The inspector keeps the action it has.
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (generation == selectionGeneration && source == opened) {
+                        attemptPageLoading = false;
+                      }
+                    });
+                return;
+              }
+              Inspection inspection = ActionInspection.of(row, attempts.rows());
+              SwingUtilities.invokeLater(
+                  () -> {
+                    if (generation != selectionGeneration || source != opened) {
+                      return;
+                    }
+                    attemptPageLoading = false;
+                    int current = table.getSelectedRow();
+                    ActionRow still =
+                        current < 0 || tableModel == null ? null : tableModel.rowAt(current);
+                    if (still != null && still.id() == wanted) {
+                      inspector.show(inspection);
+                      inspectionPaging.setPage(
+                          "attempts",
+                          "Attempts",
+                          attempts,
+                          () ->
+                              attempts
+                                  .nextAnchor()
+                                  .ifPresent(
+                                      anchor ->
+                                          loadAttempts(still, Optional.of(anchor), generation)));
+                    }
+                  });
+            });
+  }
+
+  private void cancelAttemptTask() {
+    Future<?> pending = attemptTask;
+    attemptTask = null;
+    if (pending != null) {
+      pending.cancel(false);
+    }
+    Future<?> pendingInspection = actionInspectionTask;
+    actionInspectionTask = null;
+    if (pendingInspection != null) {
+      pendingInspection.cancel(false);
+    }
   }
 
   private void sizeColumns() {

@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.storage.entities;
 
 import com.holtherndon.bazelviz.core.domain.ActionOutcome;
+import com.holtherndon.bazelviz.storage.SqlCancellation;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -78,18 +79,10 @@ public final class ActionQueries implements AutoCloseable {
     this.connection = Objects.requireNonNull(connection, "connection");
   }
 
-  /** Asks the in-flight query to stop, from another thread. */
+  /** Requests cancellation; the JDBC call runs on a dedicated virtual thread. */
   public void cancel() {
     Statement statement = running;
-    if (statement == null) {
-      return;
-    }
-    try {
-      statement.cancel();
-    } catch (SQLException ignored) {
-      // Already finished, or the driver declines. Either way there is
-      // nothing left to stop and nothing useful to tell the caller.
-    }
+    SqlCancellation.request(statement, "bbv-action-query-cancel");
   }
 
   /** How many actions the session holds, regardless of any filter. */

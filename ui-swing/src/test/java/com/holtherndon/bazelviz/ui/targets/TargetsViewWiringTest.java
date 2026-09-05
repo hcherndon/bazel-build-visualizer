@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.capture.file.importer.BepImporter;
 import com.holtherndon.bazelviz.capture.file.importer.ImportResult;
+import com.holtherndon.bazelviz.core.domain.TargetOutcome;
 import com.holtherndon.bazelviz.format.session.SessionManager;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetRow;
 import com.holtherndon.bazelviz.testsupport.bep.BepBinaryWriter;
@@ -21,11 +23,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import javax.swing.JButton;
@@ -310,7 +315,7 @@ class TargetsViewWiringTest {
     assertThat(onEdt(view::statusForTest)).contains("1 of 1 matching top-level target labels");
 
     SwingUtilities.invokeAndWait(view::showPackagesForTest);
-    await(() -> onEdt(() -> view.statusForTest().contains("matching target rows")));
+    await(() -> onEdt(() -> view.statusForTest().contains("matching packages loaded")));
     assertThat(onEdt(view::packageCountForTest)).isEqualTo(1);
 
     SwingUtilities.invokeAndWait(view::closeSession);
@@ -356,6 +361,69 @@ class TargetsViewWiringTest {
 
   @Test
   @Timeout(30)
+  @DisplayName("a new filter cancels every queued package expansion")
+  void filterCancelsQueuedPackageExpansions() throws Exception {
+    CountDownLatch firstChildStarted = new CountDownLatch(1);
+    CountDownLatch releaseFirstChild = new CountDownLatch(1);
+    AtomicInteger childReads = new AtomicInteger();
+    EntityReader reader =
+        (EntityReader)
+            Proxy.newProxyInstance(
+                EntityReader.class.getClassLoader(),
+                new Class<?>[] {EntityReader.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "packagePage" -> {
+                        String filter = (String) args[0];
+                        yield completePage(
+                            filter.isEmpty()
+                                ? List.of(
+                                    new TargetQueries.PackageSummary("//a", 1, 0, 0),
+                                    new TargetQueries.PackageSummary("//b", 1, 0, 0))
+                                : List.of(new TargetQueries.PackageSummary("//latest", 1, 0, 0)));
+                      }
+                      case "targetsInPackagePage" -> {
+                        if (childReads.incrementAndGet() == 1) {
+                          firstChildStarted.countDown();
+                          awaitRelease(releaseFirstChild);
+                        }
+                        yield new CountedPage<TargetRow, TargetQueries.TargetAnchor>(
+                            List.of(), 0, 0, Optional.empty());
+                      }
+                      case "cancelRunningQuery", "close" -> null;
+                      case "toString" -> "QueuedPackageExpansionReader";
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    TargetsView view =
+        onEdt(
+            () -> {
+              TargetsView created = new TargetsView();
+              created.openSession(session(reader));
+              return created;
+            });
+    await(() -> onEdt(() -> view.packageCountForTest() == 2));
+
+    SwingUtilities.invokeAndWait(() -> view.expandPackageForTest(0));
+    assertThat(firstChildStarted.await(10, TimeUnit.SECONDS)).isTrue();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          view.expandPackageForTest(1);
+          view.applyFilterTextForTest("latest");
+        });
+    releaseFirstChild.countDown();
+
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.packageCountForTest() == 1
+                        && view.packageTextForTest(0).startsWith("//latest")));
+    assertThat(childReads).hasValue(1);
+    SwingUtilities.invokeAndWait(view::closeSession);
+  }
+
+  @Test
+  @Timeout(30)
   @DisplayName("rapid flat-label filters skip pending reads and install only the latest result")
   void rapidFlatFiltersAreCoalesced() throws Exception {
     List<String> executedFilters = new CopyOnWriteArrayList<>();
@@ -393,11 +461,133 @@ class TargetsViewWiringTest {
     SwingUtilities.invokeAndWait(view::closeSession);
   }
 
+  @Test
+  @Timeout(30)
+  @DisplayName("package and child boundaries expose inert Load next nodes")
+  void packageAndChildPagesRemainReachable() throws Exception {
+    List<TargetQueries.PackageSummary> packages = new ArrayList<>();
+    List<TargetRow> targets = new ArrayList<>();
+    for (int index = 0; index <= TargetsView.PACKAGE_PAGE_SIZE; index++) {
+      packages.add(new TargetQueries.PackageSummary("//pkg" + index, 1, 0, 0));
+    }
+    for (int index = 0; index <= TargetsView.PACKAGE_TARGET_PAGE_SIZE; index++) {
+      targets.add(target(index + 1L, "//pkg0:t" + index));
+    }
+    EntityReader reader = pagedTargetReader(packages, targets);
+    TargetsView view =
+        onEdt(
+            () -> {
+              TargetsView created = new TargetsView();
+              created.openSession(session(reader));
+              return created;
+            });
+
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.packageCountForTest() == TargetsView.PACKAGE_PAGE_SIZE
+                        && view.packageLoadNextVisibleForTest()));
+    assertThat(onEdt(view::statusForTest)).contains("200 of 201 packages loaded");
+    SwingUtilities.invokeAndWait(view::loadNextPackagesForTest);
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.packageCountForTest() == TargetsView.PACKAGE_PAGE_SIZE + 1
+                        && !view.packageLoadNextVisibleForTest()));
+
+    SwingUtilities.invokeAndWait(() -> view.expandPackageForTest(0));
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.targetCountForTest(0) == TargetsView.PACKAGE_TARGET_PAGE_SIZE
+                        && view.targetLoadNextVisibleForTest(0)));
+    SwingUtilities.invokeAndWait(() -> view.loadNextTargetsForTest(0));
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.targetCountForTest(0) == TargetsView.PACKAGE_TARGET_PAGE_SIZE + 1
+                        && !view.targetLoadNextVisibleForTest(0)));
+    SwingUtilities.invokeAndWait(view::closeSession);
+  }
+
+  @Test
+  @Timeout(30)
+  @DisplayName("a direct reveal reconciles with its later package page")
+  void directRevealReconcilesOrderingAndPageTallies() throws Exception {
+    List<TargetQueries.PackageSummary> packages = new ArrayList<>();
+    for (int index = 0; index < TargetsView.PACKAGE_PAGE_SIZE; index++) {
+      packages.add(new TargetQueries.PackageSummary(String.format("//p%03d", index), 1, 0, 0));
+    }
+    packages.add(new TargetQueries.PackageSummary("//z", 7, 1, 2));
+    TargetRow revealed = target(9_001, "//z:target");
+    EntityReader reader =
+        (EntityReader)
+            Proxy.newProxyInstance(
+                EntityReader.class.getClassLoader(),
+                new Class<?>[] {EntityReader.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "packagePage" ->
+                          packagePage(packages, optionalArg(args[1]), (int) args[2]);
+                      case "targetsByLabelPage" ->
+                          new CountedPage<>(List.of(revealed), 1, 0, Optional.empty());
+                      case "targetsInPackagePage" ->
+                          new CountedPage<>(List.of(revealed), 1, 0, Optional.empty());
+                      case "tagPage" ->
+                          new CountedPage<TargetQueries.Tag, TargetQueries.TagAnchor>(
+                              List.of(), 0, 0, Optional.empty());
+                      case "outputGroupPage" ->
+                          new CountedPage<TargetQueries.OutputGroup, Long>(
+                              List.of(), 0, 0, Optional.empty());
+                      case "cancelRunningQuery", "close" -> null;
+                      case "toString" -> "DirectRevealTargetReader";
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    TargetsView view =
+        onEdt(
+            () -> {
+              TargetsView created = new TargetsView();
+              created.openSession(session(reader));
+              return created;
+            });
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.packageCountForTest() == TargetsView.PACKAGE_PAGE_SIZE
+                        && view.packageLoadNextVisibleForTest()));
+
+    SwingUtilities.invokeAndWait(() -> view.revealLabel(revealed.label()));
+    await(() -> onEdt(() -> revealed.label().equals(view.selectedLabelForTest())));
+    SwingUtilities.invokeAndWait(view::loadNextPackagesForTest);
+    await(
+        () ->
+            onEdt(
+                () ->
+                    view.packageCountForTest() == TargetsView.PACKAGE_PAGE_SIZE + 1
+                        && !view.packageLoadNextVisibleForTest()));
+
+    assertThat(onEdt(() -> view.packageTextForTest(TargetsView.PACKAGE_PAGE_SIZE)))
+        .startsWith("//z")
+        .doesNotContain("revealed directly");
+    assertThat(onEdt(view::statusForTest)).contains("7 target rows in this page");
+    SwingUtilities.invokeAndWait(view::closeSession);
+  }
+
   /** A target row the session recorded a source event for. */
   private static TargetRow firstTargetWithASourceEvent(SqliteSessionSource opened) {
     try (EntityReader reader = opened.openEntityReader()) {
-      for (TargetQueries.PackageSummary summary : reader.packages()) {
-        for (TargetRow row : reader.targetsInPackage(summary.path())) {
+      CountedPage<TargetQueries.PackageSummary, String> packages =
+          reader.packagePage("", Optional.empty(), TargetsView.PACKAGE_PAGE_SIZE);
+      for (TargetQueries.PackageSummary summary : packages.rows()) {
+        CountedPage<TargetRow, TargetQueries.TargetAnchor> targets =
+            reader.targetsInPackagePage(
+                summary.path(), "", Optional.empty(), TargetsView.PACKAGE_TARGET_PAGE_SIZE);
+        for (TargetRow row : targets.rows()) {
           if (row.bepEventId().isPresent() && row.configurationId().isPresent()) {
             return row;
           }
@@ -424,7 +614,7 @@ class TargetsViewWiringTest {
             new Class<?>[] {EntityReader.class},
             (proxy, method, args) ->
                 switch (method.getName()) {
-                  case "packages" -> {
+                  case "packagePage" -> {
                     String filter = (String) args[0];
                     executedFilters.add(filter);
                     if (filter.equals("slow")) {
@@ -432,9 +622,10 @@ class TargetsViewWiringTest {
                       awaitRelease(releaseSlow);
                     }
                     String name = filter.isEmpty() ? "initial" : filter;
-                    yield List.of(new TargetQueries.PackageSummary("//" + name, 1, 0, 0));
+                    yield completePage(
+                        List.of(new TargetQueries.PackageSummary("//" + name, 1, 0, 0)));
                   }
-                  case "close" -> null;
+                  case "cancelRunningQuery", "close" -> null;
                   case "toString" -> "CoalescingTopLevelTargetsReader";
                   default -> throw new UnsupportedOperationException(method.getName());
                 });
@@ -448,27 +639,103 @@ class TargetsViewWiringTest {
             new Class<?>[] {EntityReader.class},
             (proxy, method, args) ->
                 switch (method.getName()) {
-                  case "packages" ->
-                      List.of(new TargetQueries.PackageSummary("//initial", 1, 0, 0));
-                  case "topLevelTargetLabelCount" -> {
+                  case "packagePage" ->
+                      completePage(List.of(new TargetQueries.PackageSummary("//initial", 1, 0, 0)));
+                  case "topLevelLabelPage" -> {
                     String filter = (String) args[0];
                     executedFilters.add(filter);
                     if (filter.equals("slow")) {
                       slowStarted.countDown();
                       awaitRelease(releaseSlow);
                     }
-                    yield 1L;
-                  }
-                  case "firstTopLevelTargetLabels" -> {
-                    String filter = (String) args[0];
                     String name = filter.isEmpty() ? "initial" : filter;
-                    yield List.of("//" + name + ":target");
+                    yield completePage(List.of("//" + name + ":target"));
                   }
-                  case "topLevelTargetLabelsAfter" -> List.of();
-                  case "close" -> null;
+                  case "cancelRunningQuery", "close" -> null;
                   case "toString" -> "CoalescingFlatTopLevelTargetsReader";
                   default -> throw new UnsupportedOperationException(method.getName());
                 });
+  }
+
+  private static EntityReader pagedTargetReader(
+      List<TargetQueries.PackageSummary> packages, List<TargetRow> targets) {
+    return (EntityReader)
+        Proxy.newProxyInstance(
+            EntityReader.class.getClassLoader(),
+            new Class<?>[] {EntityReader.class},
+            (proxy, method, args) ->
+                switch (method.getName()) {
+                  case "packagePage" -> packagePage(packages, optionalArg(args[1]), (int) args[2]);
+                  case "targetsInPackagePage" ->
+                      targetPage(targets, optionalArg(args[2]), (int) args[3]);
+                  case "cancelRunningQuery", "close" -> null;
+                  case "toString" -> "PagedTopLevelTargetsReader";
+                  default -> throw new UnsupportedOperationException(method.getName());
+                });
+  }
+
+  private static CountedPage<TargetQueries.PackageSummary, String> packagePage(
+      List<TargetQueries.PackageSummary> rows, Optional<String> after, int limit) {
+    int start =
+        after
+            .map(
+                boundary -> {
+                  for (int index = 0; index < rows.size(); index++) {
+                    if (rows.get(index).path().equals(boundary)) {
+                      return index + 1;
+                    }
+                  }
+                  throw new AssertionError("unknown package anchor " + boundary);
+                })
+            .orElse(0);
+    int end = Math.min(rows.size(), start + limit);
+    List<TargetQueries.PackageSummary> page = rows.subList(start, end);
+    long remaining = rows.size() - end;
+    Optional<String> next = remaining == 0 ? Optional.empty() : Optional.of(page.getLast().path());
+    return new CountedPage<>(page, rows.size(), remaining, next);
+  }
+
+  private static CountedPage<TargetRow, TargetQueries.TargetAnchor> targetPage(
+      List<TargetRow> rows, Optional<TargetQueries.TargetAnchor> after, int limit) {
+    int start =
+        after
+            .map(
+                boundary -> {
+                  for (int index = 0; index < rows.size(); index++) {
+                    if (rows.get(index).id() == boundary.targetId()) {
+                      return index + 1;
+                    }
+                  }
+                  throw new AssertionError("unknown target anchor " + boundary);
+                })
+            .orElse(0);
+    int end = Math.min(rows.size(), start + limit);
+    List<TargetRow> page = rows.subList(start, end);
+    long remaining = rows.size() - end;
+    Optional<TargetQueries.TargetAnchor> next =
+        remaining == 0
+            ? Optional.empty()
+            : Optional.of(TargetQueries.TargetAnchor.of(page.getLast()));
+    return new CountedPage<>(page, rows.size(), remaining, next);
+  }
+
+  private static TargetRow target(long id, String label) {
+    return new TargetRow(
+        id,
+        label,
+        Optional.empty(),
+        Optional.of("java_library rule"),
+        Optional.empty(),
+        TargetOutcome.CONFIGURED,
+        Optional.of("cfg"),
+        Optional.of(TargetOutcome.BUILT),
+        OptionalLong.of(id),
+        OptionalLong.of(id));
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <T> Optional<T> optionalArg(Object argument) {
+    return (Optional<T>) argument;
   }
 
   private static SessionSource session(EntityReader reader) {
@@ -483,6 +750,10 @@ class TargetsViewWiringTest {
                   case "toString" -> "CoalescingTopLevelTargetsSession";
                   default -> throw new UnsupportedOperationException(method.getName());
                 });
+  }
+
+  private static <T> CountedPage<T, String> completePage(List<T> rows) {
+    return new CountedPage<>(rows, rows.size(), 0, Optional.empty());
   }
 
   private static void awaitRelease(CountDownLatch release) {

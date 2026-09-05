@@ -26,6 +26,22 @@ class TimelineLodIndexTest {
     };
   }
 
+  private static SpanSource categories(int... categories) {
+    return new SpanSource() {
+      @Override
+      public long spanCount() {
+        return categories.length;
+      }
+
+      @Override
+      public void forEachSpan(SpanConsumer consumer) {
+        for (int category : categories) {
+          consumer.accept(0, 500, category, 0, SpanSource.BYTES_UNKNOWN);
+        }
+      }
+    };
+  }
+
   @Test
   void levelStructureGrowsByPowersOfFourUntilTopLevelFits() {
     // 5 s wall: level 0 (1 ms) has 5000 bins > 2048, level 1 (4 ms) has 1250.
@@ -181,5 +197,30 @@ class TimelineLodIndexTest {
     assertThat(index.overlapMicros(0, 0)).isEqualTo(500);
     assertThat(index.overlapMicros(0, 1)).isEqualTo(500);
     assertThat(index.startCount(0, 0)).isEqualTo(1);
+  }
+
+  @Test
+  void categoryIdsKeepTheirFullIntWidthAndMinusOneAloneMeansUnavailable() {
+    assertThat(TimelineLodIndex.build(categories(32_768), 0, 1_000).uniformCategory(0, 0))
+        .hasValue(32_768);
+    assertThat(TimelineLodIndex.build(categories(65_535), 0, 1_000).uniformCategory(0, 0))
+        .hasValue(65_535);
+    assertThat(TimelineLodIndex.build(categories(65_537), 0, 1_000).uniformCategory(0, 0))
+        .hasValue(65_537);
+    assertThat(TimelineLodIndex.build(categories(1), 0, 1_000).uniformCategory(0, 0)).hasValue(1);
+    assertThat(TimelineLodIndex.build(categories(1, 65_537), 0, 1_000).uniformCategory(0, 0))
+        .isEmpty();
+    assertThat(TimelineLodIndex.build(categories(-1), 0, 1_000).uniformCategory(0, 0)).isEmpty();
+    assertThat(TimelineLodIndex.build(categories(-2), 0, 1_000).uniformCategory(0, 0)).hasValue(-2);
+    assertThat(TimelineLodIndex.build(categories(), 0, 1_000).uniformCategory(0, 0)).isEmpty();
+  }
+
+  @Test
+  void finestBinCapUsesExactConservativeMemoryMath() {
+    assertThat(TimelineLodIndex.MAX_FINEST_BINS).isEqualTo(3_145_728);
+    assertThat(TimelineLodIndex.conservativePeakBytes(TimelineLodIndex.MAX_FINEST_BINS))
+        .isLessThanOrEqualTo(TimelineLodIndex.MAX_PYRAMID_BYTES);
+    assertThat(TimelineLodIndex.conservativePeakBytes(TimelineLodIndex.MAX_FINEST_BINS + 1))
+        .isGreaterThan(TimelineLodIndex.MAX_PYRAMID_BYTES);
   }
 }

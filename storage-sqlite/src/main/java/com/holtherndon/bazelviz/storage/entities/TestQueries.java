@@ -1,6 +1,8 @@
 package com.holtherndon.bazelviz.storage.entities;
 
 import com.holtherndon.bazelviz.core.domain.TestOutcome;
+import com.holtherndon.bazelviz.storage.CancellableRead;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -94,22 +96,20 @@ public final class TestQueries implements AutoCloseable {
 
   private static final String ONE = "SELECT " + COLUMNS + FROM + " WHERE te.id = ?";
 
-  private static final String ATTEMPTS =
-      "SELECT id, test_id, run, shard, attempt, status, cached_locally, start_micros,"
-          + " duration_micros, exit_code, strategy, bep_event_id FROM test_attempts"
-          + " WHERE test_id = ? ORDER BY run ASC, shard ASC, attempt ASC";
-
-  private static final String LOGS =
-      "SELECT name, uri, summary_status, test_attempt_id FROM test_logs"
-          + " WHERE test_id = ? ORDER BY id ASC";
-
   private static final String STATUS_TALLY =
       "SELECT overall_status, COUNT(*) FROM tests GROUP BY overall_status";
 
   private final Connection connection;
+  private final CancellableRead cancellableRead;
 
   public TestQueries(Connection connection) {
     this.connection = Objects.requireNonNull(connection, "connection");
+    cancellableRead = new CancellableRead(connection);
+  }
+
+  /** Cancels an active counted detail-page read. */
+  public void cancel() {
+    cancellableRead.cancel();
   }
 
   public long count() throws SQLException {
@@ -206,51 +206,102 @@ public final class TestQueries implements AutoCloseable {
     }
   }
 
-  /** Every attempt of one test, in run/shard/attempt order. */
-  public List<TestAttemptRow> attempts(long testId) throws SQLException {
-    List<TestAttemptRow> attempts = new ArrayList<>();
-    try (PreparedStatement statement = connection.prepareStatement(ATTEMPTS)) {
-      statement.setLong(1, testId);
-      try (ResultSet rows = statement.executeQuery()) {
-        while (rows.next()) {
-          attempts.add(
-              new TestAttemptRow(
-                  rows.getLong(1),
-                  rows.getLong(2),
-                  rows.getInt(3),
-                  rows.getInt(4),
-                  rows.getInt(5),
-                  outcomeOf(rows.getString(6)),
-                  rows.getInt(7) != 0,
-                  number(rows, 8),
-                  number(rows, 9),
-                  integer(rows, 10),
-                  text(rows, 11),
-                  number(rows, 12)));
-        }
-      }
-    }
-    return attempts;
+  /** One counted attempt page in stable run, shard, attempt and row-id order. */
+  public CountedPage<TestAttemptRow, TestAttemptAnchor> attemptPage(
+      long testId, Optional<TestAttemptAnchor> after, int limit) throws SQLException {
+    Objects.requireNonNull(after, "after");
+    requirePositiveLimit(limit);
+    return cancellableRead.snapshot(
+        scope -> {
+          long total =
+              scope.statement(
+                  "SELECT COUNT(*) FROM test_attempts WHERE test_id = ?",
+                  statement -> {
+                    statement.setLong(1, testId);
+                    return scalar(statement);
+                  });
+          String seek = after.isPresent() ? " AND " + attemptSeek() : "";
+          AttemptPageRows page =
+              scope.statement(
+                  "SELECT id, test_id, run, shard, attempt, status, cached_locally,"
+                      + " start_micros, duration_micros, exit_code, strategy, bep_event_id"
+                      + " FROM test_attempts WHERE test_id = ?"
+                      + seek
+                      + " ORDER BY run ASC, shard ASC, attempt ASC, id ASC LIMIT ?",
+                  statement -> {
+                    int parameter = 1;
+                    statement.setLong(parameter++, testId);
+                    if (after.isPresent()) {
+                      parameter = bindAttemptAnchor(statement, parameter, after.orElseThrow());
+                    }
+                    statement.setInt(parameter, limit);
+                    List<TestAttemptRow> rows = readAttempts(statement);
+                    Optional<TestAttemptAnchor> last =
+                        rows.isEmpty()
+                            ? Optional.empty()
+                            : Optional.of(TestAttemptAnchor.of(rows.getLast()));
+                    return new AttemptPageRows(rows, last);
+                  });
+          Optional<TestAttemptAnchor> boundary = page.last().isPresent() ? page.last() : after;
+          long remaining =
+              boundary.isEmpty()
+                  ? 0
+                  : scope.statement(
+                      "SELECT COUNT(*) FROM test_attempts WHERE test_id = ? AND " + attemptSeek(),
+                      statement -> {
+                        statement.setLong(1, testId);
+                        bindAttemptAnchor(statement, 2, boundary.orElseThrow());
+                        return scalar(statement);
+                      });
+          return new CountedPage<>(
+              page.rows(), total, remaining, remaining == 0 ? Optional.empty() : page.last());
+        });
   }
 
-  /**
-   * Where a test's logs were written.
-   *
-   * <p>These are URIs into the output base, which the next build or a {@code bazel clean} removes.
-   * They are recorded so the session can say where the log was; the content is not captured, and
-   * the inspector says so rather than offering a link that silently does nothing.
-   */
-  public List<TestLog> logs(long testId) throws SQLException {
-    List<TestLog> logs = new ArrayList<>();
-    try (PreparedStatement statement = connection.prepareStatement(LOGS)) {
-      statement.setLong(1, testId);
-      try (ResultSet rows = statement.executeQuery()) {
-        while (rows.next()) {
-          logs.add(new TestLog(text(rows, 1), rows.getString(2), text(rows, 3), number(rows, 4)));
-        }
-      }
-    }
-    return logs;
+  /** One counted test-log page in stable database row-id order. */
+  public CountedPage<TestLog, Long> logPage(long testId, Optional<Long> afterId, int limit)
+      throws SQLException {
+    Objects.requireNonNull(afterId, "afterId");
+    requirePositiveLimit(limit);
+    return cancellableRead.snapshot(
+        scope -> {
+          long total =
+              scope.statement(
+                  "SELECT COUNT(*) FROM test_logs WHERE test_id = ?",
+                  statement -> {
+                    statement.setLong(1, testId);
+                    return scalar(statement);
+                  });
+          LogPageRows page =
+              scope.statement(
+                  "SELECT id, name, uri, summary_status, test_attempt_id FROM test_logs"
+                      + " WHERE test_id = ?"
+                      + (afterId.isPresent() ? " AND id > ?" : "")
+                      + " ORDER BY id ASC LIMIT ?",
+                  statement -> {
+                    int parameter = 1;
+                    statement.setLong(parameter++, testId);
+                    if (afterId.isPresent()) {
+                      statement.setLong(parameter++, afterId.orElseThrow());
+                    }
+                    statement.setInt(parameter, limit);
+                    return readLogPage(statement);
+                  });
+          Optional<Long> boundary = page.lastId().isPresent() ? page.lastId() : afterId;
+          long remaining =
+              boundary.isEmpty()
+                  ? 0
+                  : scope.statement(
+                      "SELECT COUNT(*) FROM test_logs WHERE test_id = ? AND id > ?",
+                      statement -> {
+                        statement.setLong(1, testId);
+                        statement.setLong(2, boundary.orElseThrow());
+                        return scalar(statement);
+                      });
+          Optional<Long> next =
+              remaining == 0 ? Optional.empty() : Optional.of(page.lastId().orElseThrow());
+          return new CountedPage<>(page.rows(), total, remaining, next);
+        });
   }
 
   /** How many tests ended in each status, for the overview. */
@@ -271,6 +322,14 @@ public final class TestQueries implements AutoCloseable {
       String uri,
       Optional<String> summaryStatus,
       OptionalLong testAttemptId) {}
+
+  /** Stable seek key for a test attempt. */
+  public record TestAttemptAnchor(int run, int shard, int attempt, long id) {
+    public static TestAttemptAnchor of(TestAttemptRow row) {
+      Objects.requireNonNull(row, "row");
+      return new TestAttemptAnchor(row.run(), row.shard(), row.attempt(), row.id());
+    }
+  }
 
   /** A status and how many tests ended in it. */
   public record StatusCount(TestOutcome status, long tests) {}
@@ -321,6 +380,90 @@ public final class TestQueries implements AutoCloseable {
       }
     }
     return rows;
+  }
+
+  private static List<TestAttemptRow> readAttempts(PreparedStatement statement)
+      throws SQLException {
+    List<TestAttemptRow> attempts = new ArrayList<>();
+    try (ResultSet rows = statement.executeQuery()) {
+      while (rows.next()) {
+        attempts.add(
+            new TestAttemptRow(
+                rows.getLong(1),
+                rows.getLong(2),
+                rows.getInt(3),
+                rows.getInt(4),
+                rows.getInt(5),
+                outcomeOf(rows.getString(6)),
+                rows.getInt(7) != 0,
+                number(rows, 8),
+                number(rows, 9),
+                integer(rows, 10),
+                text(rows, 11),
+                number(rows, 12)));
+      }
+    }
+    return attempts;
+  }
+
+  private static LogPageRows readLogPage(PreparedStatement statement) throws SQLException {
+    List<TestLog> logs = new ArrayList<>();
+    Optional<Long> lastId = Optional.empty();
+    try (ResultSet rows = statement.executeQuery()) {
+      while (rows.next()) {
+        lastId = Optional.of(rows.getLong(1));
+        logs.add(new TestLog(text(rows, 2), rows.getString(3), text(rows, 4), number(rows, 5)));
+      }
+    }
+    return new LogPageRows(logs, lastId);
+  }
+
+  private static String attemptSeek() {
+    return "(run > ?"
+        + " OR (run = ? AND shard > ?)"
+        + " OR (run = ? AND shard = ? AND attempt > ?)"
+        + " OR (run = ? AND shard = ? AND attempt = ? AND id > ?))";
+  }
+
+  private static int bindAttemptAnchor(
+      PreparedStatement statement, int parameter, TestAttemptAnchor anchor) throws SQLException {
+    statement.setInt(parameter++, anchor.run());
+    statement.setInt(parameter++, anchor.run());
+    statement.setInt(parameter++, anchor.shard());
+    statement.setInt(parameter++, anchor.run());
+    statement.setInt(parameter++, anchor.shard());
+    statement.setInt(parameter++, anchor.attempt());
+    statement.setInt(parameter++, anchor.run());
+    statement.setInt(parameter++, anchor.shard());
+    statement.setInt(parameter++, anchor.attempt());
+    statement.setLong(parameter++, anchor.id());
+    return parameter;
+  }
+
+  private static long scalar(PreparedStatement statement) throws SQLException {
+    try (ResultSet rows = statement.executeQuery()) {
+      return rows.next() ? rows.getLong(1) : 0;
+    }
+  }
+
+  private static void requirePositiveLimit(int limit) {
+    if (limit < 1) {
+      throw new IllegalArgumentException("limit must be positive, got " + limit);
+    }
+  }
+
+  private record AttemptPageRows(List<TestAttemptRow> rows, Optional<TestAttemptAnchor> last) {
+    private AttemptPageRows {
+      rows = List.copyOf(rows);
+      Objects.requireNonNull(last, "last");
+    }
+  }
+
+  private record LogPageRows(List<TestLog> rows, Optional<Long> lastId) {
+    private LogPageRows {
+      rows = List.copyOf(rows);
+      Objects.requireNonNull(lastId, "lastId");
+    }
   }
 
   /** Reads back this application's own enum name, not Bazel's vocabulary. */

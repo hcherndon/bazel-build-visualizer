@@ -27,6 +27,7 @@ java_library(
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/measure:measure",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/source:source",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
     ],
     visibility = ["//visibility:public"],
 )

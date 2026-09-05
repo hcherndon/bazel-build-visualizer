@@ -728,7 +728,7 @@ and every existing version sweep still passes.
 
 | Task | Status |
 |---|---|
-| Build timeline LOD index | Done — Phase 0's pyramid plus the rest of plan 14.3's per-bin fields; 54 bytes a level-0 bin instead of 32, and both benchmark tiers keep full millisecond resolution |
+| Build timeline LOD index | Done — Phase 0's pyramid plus the rest of plan 14.3's per-bin fields; the audited primitive-array payload is 64 bytes per level-0 bin instead of 32, category ids retain their full integer width, and both benchmark tiers keep full millisecond resolution |
 | Implement custom Swing timeline | Done — `TimelineView`, density at broad zoom and exact spans at close, header and lane labels as their own components |
 | Add action and attempt lanes | Done — `SessionSpanSource` streams both; tests are not streamed separately because their window is their attempts' and drawing both would double-count the density |
 | Add grouping and sorting | Done — plan 14.2's eight groupings and five sorts, with honest fallbacks for what a session cannot supply |
@@ -3148,3 +3148,34 @@ it is a different tab and was not reported.
   GPL-with-Classpath-Exception-derived object code in the deploy jar, and a
   bounded test pins its hash and requires the derived sources and Gradle build
   and wrapper entries. No dependency or dependency version changed.
+
+- **Target explorers and entity details use counted, cancellable keyset pages**
+  (2026-09-05). Top Level Targets reads packages and package children in
+  200-row pages; All Targets pages nullable configuration groups and their
+  configured-target variants independently. Synthetic **Load next** tree rows
+  expose every later recorded row without pretending to be targets. A direct
+  target reveal performs an exact one-row lookup, inserts a marked result
+  without walking earlier pages, de-duplicates it when its package page arrives,
+  and preserves the selection across the tree reload.
+
+  Action execution attempts, target tags and output groups, and test attempts,
+  logs, and subprocesses retain bounded 100-row inspection pages. Each control
+  reports its exact recorded total, visible range, and rows outside the current
+  page. Count and rows share one short SQLite read snapshot. Physical statement
+  cancellation, separate query lanes, and session/filter/selection generations
+  prevent replaced reads from installing stale results; SQL and inspection
+  construction remain off Swing's event thread. Missing source data remains
+  distinct from an exact zero.
+
+  Timeline, Actions, Top Level Targets, All Targets, and Tests now use the
+  shared page toolbar for root-level controls and cached metadata, while zoom,
+  paging, and nested inspection controls remain in their owning bodies. Timeline
+  category bins retain full integer ids; only `-1` means unavailable. Its audited
+  primitive-array payload is 64 bytes per finest bin, producing an exact
+  3,145,728-bin cap under the existing 256 MiB payload budget. Array headers and
+  small level metadata are outside that accounting. Duplicate-key,
+  nullable-key, transaction, cancellation, stale-session, synthetic package and
+  configuration page, off-event-thread, toolbar identity/order, and
+  integer-category tests cover the new seams. The ten new page bounds are
+  recorded in `docs/limits.md`; this is a required overlap with the release
+  documentation pass, not a new architectural decision.

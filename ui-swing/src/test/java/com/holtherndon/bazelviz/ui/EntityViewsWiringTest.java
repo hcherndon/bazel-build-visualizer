@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.holtherndon.bazelviz.capture.file.importer.BepImporter;
 import com.holtherndon.bazelviz.capture.file.importer.ImportResult;
 import com.holtherndon.bazelviz.format.session.SessionManager;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.entities.ActionFilter;
 import com.holtherndon.bazelviz.storage.entities.ActionRow;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
@@ -99,13 +100,24 @@ class EntityViewsWiringTest {
       assertThat(walked).hasSize((int) actions.rowCount()).doesNotHaveDuplicates();
 
       // --- targets --------------------------------------------------
-      List<TargetQueries.PackageSummary> packages = reader.packages();
+      List<TargetQueries.PackageSummary> packages = new ArrayList<>();
+      Optional<String> packageAfter = Optional.empty();
+      do {
+        CountedPage<TargetQueries.PackageSummary, String> page =
+            reader.packagePage("", packageAfter, 50);
+        packages.addAll(page.rows());
+        packageAfter = page.nextAnchor();
+      } while (packageAfter.isPresent());
       assertThat(packages).isNotEmpty();
       long targetsInPackages =
           packages.stream().mapToLong(TargetQueries.PackageSummary::targets).sum();
       assertThat(targetsInPackages)
           .isEqualTo(overview.configuredTargets() + overview.targetsNotCompleted());
-      assertThat(reader.targetsInPackage(packages.getFirst().path())).isNotEmpty();
+      assertThat(
+              reader
+                  .targetsInPackagePage(packages.getFirst().path(), "", Optional.empty(), 50)
+                  .rows())
+          .isNotEmpty();
 
       // --- tests ----------------------------------------------------
       TestRowSource tests = TestRowSource.open(reader, 50);
@@ -117,7 +129,7 @@ class EntityViewsWiringTest {
         // flag is true for a failing test, so this must not be derived
         // from it.
         assertThat(test.overallStatus()).isNotNull();
-        assertThat(reader.testAttempts(test.id())).isNotEmpty();
+        assertThat(reader.testAttemptPage(test.id(), Optional.empty(), 50).rows()).isNotEmpty();
       }
 
       // --- failures -------------------------------------------------

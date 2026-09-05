@@ -1,9 +1,15 @@
 package com.holtherndon.bazelviz.ui.tests;
 
+import com.holtherndon.bazelviz.storage.CountedPage;
+import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
+import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
+import com.holtherndon.bazelviz.storage.entities.TestAttemptRow;
+import com.holtherndon.bazelviz.storage.entities.TestQueries;
 import com.holtherndon.bazelviz.storage.entities.TestRow;
 import com.holtherndon.bazelviz.ui.files.FileLink;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.inspect.InspectionPagingPanel;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
@@ -13,6 +19,8 @@ import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.table.PagedTableModel;
 import com.holtherndon.bazelviz.ui.table.TableHeaderInteractions;
 import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
@@ -22,11 +30,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
@@ -51,7 +61,7 @@ import org.slf4j.LoggerFactory;
  * show every failure green — which is the single most consequential thing this view could get
  * wrong.
  */
-public final class TestsView extends JPanel {
+public final class TestsView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
 
@@ -61,11 +71,21 @@ public final class TestsView extends JPanel {
   private static final String CARD_TABLE = "table";
   private static final int CACHE_PAGES = 16;
 
+  /** BEP attempts retained for one selected test at a time. */
+  public static final int TEST_ATTEMPT_PAGE_SIZE = 100;
+
+  /** Test-log links retained for one selected test at a time. */
+  public static final int TEST_LOG_PAGE_SIZE = 100;
+
+  /** Execution-log subprocesses retained for one selected test at a time. */
+  public static final int TEST_SPAWN_PAGE_SIZE = 100;
+
   private final CardLayout cards = new CardLayout();
   private final JPanel deck = new JPanel(cards);
   private final EmptyStatePanel emptyState = new EmptyStatePanel(" ");
   private final JTable table = new JTable();
   private final InspectorPanel inspector = new InspectorPanel();
+  private final InspectionPagingPanel inspectionPaging = new InspectionPagingPanel();
   private final JLabel statusLabel = new JLabel(" ");
 
   /**
@@ -87,12 +107,32 @@ public final class TestsView extends JPanel {
 
   private ExecutorService pageExecutor;
   private ExecutorService detailExecutor;
+  private ExecutorService inspectionExecutor;
   private EntityReader pageReader;
   private EntityReader detailReader;
   private SessionSource source;
   private PagedTableModel<TestRow> tableModel;
   private LongConsumer showEventHandler = eventId -> {};
   private long selectionGeneration;
+
+  /** Bumped whenever a session is opened or closed, including reuse of the same source object. */
+  private long sessionGeneration;
+
+  private Optional<CountedPage<TestAttemptRow, TestQueries.TestAttemptAnchor>> attemptPage =
+      Optional.empty();
+  private Optional<CountedPage<TestQueries.TestLog, Long>> logPage = Optional.empty();
+  private Optional<CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor>> spawnPage =
+      Optional.empty();
+  private boolean attemptPageLoading;
+  private boolean logPageLoading;
+  private boolean spawnPageLoading;
+  private Future<?> attemptTask;
+  private Future<?> logTask;
+  private Future<?> spawnTask;
+  private Future<?> inspectionTask;
+  private PageToolbar pageToolbar;
+  private String pageMetadata = "";
+  private String pageMetadataDetail = "";
 
   public TestsView() {
     super(new BorderLayout());
@@ -118,11 +158,14 @@ public final class TestsView extends JPanel {
     JScrollPane scroll = new JScrollPane(table);
     scroll.setMinimumSize(new Dimension(320, 160));
     inspector.setMinimumSize(new Dimension(300, 160));
+    JPanel inspectionPanel = new JPanel(new BorderLayout());
+    inspectionPanel.add(inspector, BorderLayout.CENTER);
+    inspectionPanel.add(inspectionPaging, BorderLayout.SOUTH);
     JSplitPane split =
         new JSplitPane(
             JSplitPane.HORIZONTAL_SPLIT,
             new SectionPane("Tests", scroll),
-            new SectionPane("Test details", inspector));
+            new SectionPane("Test details", inspectionPanel));
     split.setResizeWeight(0.62);
 
     JPanel status = new JPanel(new BorderLayout());
@@ -137,6 +180,17 @@ public final class TestsView extends JPanel {
     deck.add(session, CARD_TABLE);
     add(deck, BorderLayout.CENTER);
     showEmpty("No session is open.");
+  }
+
+  /** Installs cached test state in the common toolbar; this page has no root-level actions. */
+  @Override
+  public void installPageToolbar(PageToolbar installed) {
+    Objects.requireNonNull(installed, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = installed;
+    syncPageMetadata();
   }
 
   public void onShowSourceEvent(LongConsumer handler) {
@@ -169,37 +223,59 @@ public final class TestsView extends JPanel {
   public void showEmpty(String message) {
     emptyState.setText(Objects.requireNonNull(message, "message"));
     cards.show(deck, CARD_EMPTY);
+    setPageMetadata(message.startsWith("No session") ? "" : message, message);
   }
 
   /** Opens a session and builds the table over it. Returns immediately. */
   public void openSession(SessionSource newSource) {
     Objects.requireNonNull(newSource, "newSource");
     closeSession();
+    long generation = ++sessionGeneration;
     source = newSource;
     pageExecutor = singleThreadExecutor("bbv-tests-pages");
     detailExecutor = singleThreadExecutor("bbv-tests-detail");
+    inspectionExecutor = singleThreadExecutor("bbv-tests-inspection");
     showEmpty("Reading tests…");
     ExecutorService opening = pageExecutor;
     opening.execute(
         () -> {
           try {
             EntityReader pages = newSource.openEntityReader();
-            EntityReader detail = newSource.openEntityReader();
-            TestRowSource rows = TestRowSource.open(pages, TestRowSource.DEFAULT_PAGE_SIZE);
-            SwingUtilities.invokeLater(
-                () -> {
-                  if (source != newSource) {
-                    pages.close();
-                    detail.close();
-                    return;
-                  }
-                  pageReader = pages;
-                  detailReader = detail;
-                  install(rows);
-                });
+            try {
+              EntityReader detail = newSource.openEntityReader();
+              try {
+                TestRowSource rows = TestRowSource.open(pages, TestRowSource.DEFAULT_PAGE_SIZE);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (source != newSource || generation != sessionGeneration) {
+                        ViewClose.runAsync(
+                            "bbv-tests-stale-open-close",
+                            () -> {
+                              pages.close();
+                              detail.close();
+                            });
+                        return;
+                      }
+                      pageReader = pages;
+                      detailReader = detail;
+                      install(rows);
+                    });
+              } catch (RuntimeException failure) {
+                detail.close();
+                throw failure;
+              }
+            } catch (RuntimeException failure) {
+              pages.close();
+              throw failure;
+            }
           } catch (RuntimeException failure) {
             log.error("could not read tests", failure);
-            SwingUtilities.invokeLater(() -> showEmpty(failure.getMessage()));
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (source == newSource && generation == sessionGeneration) {
+                    showEmpty(failure.getMessage());
+                  }
+                });
           }
         });
   }
@@ -210,19 +286,36 @@ public final class TestsView extends JPanel {
 
   /** Detaches immediately and completes after this session's test reads have stopped. */
   public CompletionStage<Void> closeSessionAsync() {
+    sessionGeneration++;
+    selectionGeneration++;
+    cancelDetailTasks();
+    resetDetailPages();
     tableModel = null;
     table.setModel(new DefaultTableModel());
     inspector.show(Inspection.NONE);
+    inspectionPaging.clear();
     ExecutorService pages = pageExecutor;
     ExecutorService details = detailExecutor;
+    ExecutorService inspections = inspectionExecutor;
     EntityReader pageSide = pageReader;
     EntityReader detailSide = detailReader;
+    if (pageSide != null) {
+      pageSide.cancelRunningQuery();
+    }
+    if (detailSide != null) {
+      detailSide.cancelRunningQuery();
+    }
     source = null;
     pageExecutor = null;
     detailExecutor = null;
+    inspectionExecutor = null;
     pageReader = null;
     detailReader = null;
-    if (pages == null && details == null && pageSide == null && detailSide == null) {
+    if (pages == null
+        && details == null
+        && inspections == null
+        && pageSide == null
+        && detailSide == null) {
       return CompletableFuture.completedFuture(null);
     }
     return ViewClose.runAsync(
@@ -230,6 +323,7 @@ public final class TestsView extends JPanel {
         () -> {
           shutdown(pages);
           shutdown(details);
+          shutdown(inspections);
           if (pageSide != null) {
             pageSide.close();
           }
@@ -297,51 +391,265 @@ public final class TestsView extends JPanel {
     // setModel rebuilt the column model with default widths and every
     // column visible; reapply what the user arranged.
     headerInteractions.modelInstalled();
-    statusLabel.setText(
-        EntityFormat.count(rows.rowCount()) + (rows.rowCount() == 1 ? " test" : " tests"));
+    setStatus(EntityFormat.count(rows.rowCount()) + (rows.rowCount() == 1 ? " test" : " tests"));
     cards.show(deck, CARD_TABLE);
   }
 
   private void selectionChanged() {
     int viewRow = table.getSelectedRow();
     if (viewRow < 0 || tableModel == null) {
+      selectionGeneration++;
+      cancelDetailTasks();
+      resetDetailPages();
+      EntityReader details = detailReader;
+      if (details != null) {
+        details.cancelRunningQuery();
+      }
       inspector.show(Inspection.NONE);
+      inspectionPaging.clear();
       return;
     }
     TestRow row = tableModel.rowAt(viewRow);
     if (row == null) {
       return;
     }
-    // The attempts and logs are separate reads, so they happen off the EDT
-    // and the inspector fills in when they land.
     long generation = ++selectionGeneration;
-    ExecutorService details = detailExecutor;
-    EntityReader reader = detailReader;
-    if (details == null || reader == null) {
+    cancelDetailTasks();
+    resetDetailPages();
+    EntityReader details = detailReader;
+    if (details != null) {
+      details.cancelRunningQuery();
+    }
+    inspectionPaging.clear();
+    inspector.show(Inspection.NONE);
+    showTestSummaryAsync(row, generation);
+    loadAttemptPage(row, Optional.empty(), generation);
+    loadLogPage(row, Optional.empty(), generation);
+    loadSpawnPage(row, Optional.empty(), generation);
+  }
+
+  private void showTestSummaryAsync(TestRow row, long generation) {
+    ExecutorService running = inspectionExecutor;
+    SessionSource opened = source;
+    if (running == null || opened == null) {
       return;
     }
-    details.execute(
+    inspectionTask =
+        running.submit(
+            () -> {
+              Inspection inspection = TestInspection.summary(row);
+              SwingUtilities.invokeLater(
+                  () -> {
+                    if (sameSelection(row, opened, generation)) {
+                      inspector.show(inspection);
+                    }
+                  });
+            });
+  }
+
+  private void loadAttemptPage(
+      TestRow row, Optional<TestQueries.TestAttemptAnchor> after, long generation) {
+    ExecutorService details = detailExecutor;
+    EntityReader reader = detailReader;
+    SessionSource opened = source;
+    if (details == null || reader == null || opened == null || attemptPageLoading) {
+      return;
+    }
+    attemptPageLoading = true;
+    attemptTask =
+        details.submit(
+            () -> {
+              try {
+                CountedPage<TestAttemptRow, TestQueries.TestAttemptAnchor> page =
+                    reader.testAttemptPage(row.id(), after, TEST_ATTEMPT_PAGE_SIZE);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (!sameSelection(row, opened, generation)) {
+                        return;
+                      }
+                      attemptPageLoading = false;
+                      attemptPage = Optional.of(page);
+                      renderDetailPagesAsync(row, generation);
+                      inspectionPaging.setPage(
+                          "attempts",
+                          "Attempts",
+                          page,
+                          () ->
+                              page.nextAnchor()
+                                  .ifPresent(
+                                      anchor ->
+                                          loadAttemptPage(row, Optional.of(anchor), generation)));
+                    });
+              } catch (RuntimeException failure) {
+                detailFailed(row, opened, generation, "attempts", failure);
+              }
+            });
+  }
+
+  private void loadLogPage(TestRow row, Optional<Long> after, long generation) {
+    ExecutorService details = detailExecutor;
+    EntityReader reader = detailReader;
+    SessionSource opened = source;
+    if (details == null || reader == null || opened == null || logPageLoading) {
+      return;
+    }
+    logPageLoading = true;
+    logTask =
+        details.submit(
+            () -> {
+              try {
+                CountedPage<TestQueries.TestLog, Long> page =
+                    reader.testLogPage(row.id(), after, TEST_LOG_PAGE_SIZE);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (!sameSelection(row, opened, generation)) {
+                        return;
+                      }
+                      logPageLoading = false;
+                      logPage = Optional.of(page);
+                      renderDetailPagesAsync(row, generation);
+                      inspectionPaging.setPage(
+                          "logs",
+                          "Logs",
+                          page,
+                          () ->
+                              page.nextAnchor()
+                                  .ifPresent(
+                                      anchor -> loadLogPage(row, Optional.of(anchor), generation)));
+                    });
+              } catch (RuntimeException failure) {
+                detailFailed(row, opened, generation, "logs", failure);
+              }
+            });
+  }
+
+  private void loadSpawnPage(
+      TestRow row, Optional<EnrichmentQueries.AttemptAnchor> after, long generation) {
+    ExecutorService details = detailExecutor;
+    EntityReader reader = detailReader;
+    SessionSource opened = source;
+    if (details == null || reader == null || opened == null || spawnPageLoading) {
+      return;
+    }
+    spawnPageLoading = true;
+    spawnTask =
+        details.submit(
+            () -> {
+              try {
+                CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor> page =
+                    reader.attemptsForLabelPage(row.label(), after, TEST_SPAWN_PAGE_SIZE);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (!sameSelection(row, opened, generation)) {
+                        return;
+                      }
+                      spawnPageLoading = false;
+                      spawnPage = Optional.of(page);
+                      renderDetailPagesAsync(row, generation);
+                      inspectionPaging.setPage(
+                          "spawns",
+                          "Subprocesses",
+                          page,
+                          () ->
+                              page.nextAnchor()
+                                  .ifPresent(
+                                      anchor ->
+                                          loadSpawnPage(row, Optional.of(anchor), generation)));
+                    });
+              } catch (RuntimeException failure) {
+                detailFailed(row, opened, generation, "subprocesses", failure);
+              }
+            });
+  }
+
+  private void detailFailed(
+      TestRow row, SessionSource opened, long generation, String detail, RuntimeException failure) {
+    log.warn("could not read {} of test {}", detail, row.label(), failure);
+    SwingUtilities.invokeLater(
         () -> {
-          try {
-            Inspection inspection =
-                TestInspection.of(
-                    row,
-                    reader.testAttempts(row.id()),
-                    reader.testLogs(row.id()),
-                    // The execution log's own record of this test. Reached
-                    // by label because a test spawn matches no action by
-                    // output on any Bazel version (K2).
-                    reader.attemptsForLabel(row.label()));
-            SwingUtilities.invokeLater(
-                () -> {
-                  if (generation == selectionGeneration) {
-                    inspector.show(inspection);
-                  }
-                });
-          } catch (RuntimeException failure) {
-            log.warn("could not read the attempts of test {}", row.label(), failure);
+          if (sameSelection(row, opened, generation)) {
+            switch (detail) {
+              case "attempts" -> attemptPageLoading = false;
+              case "logs" -> logPageLoading = false;
+              default -> spawnPageLoading = false;
+            }
           }
         });
+  }
+
+  private boolean sameSelection(TestRow row, SessionSource opened, long generation) {
+    if (source != opened || generation != selectionGeneration) {
+      return false;
+    }
+    int selected = table.getSelectedRow();
+    TestRow current = selected < 0 || tableModel == null ? null : tableModel.rowAt(selected);
+    return current != null && current.id() == row.id();
+  }
+
+  /** Captures immutable page references on the EDT and builds the inspection on a worker. */
+  private void renderDetailPagesAsync(TestRow row, long generation) {
+    ExecutorService running = inspectionExecutor;
+    SessionSource opened = source;
+    if (running == null || opened == null) {
+      return;
+    }
+    Optional<List<TestAttemptRow>> attempts = attemptPage.map(CountedPage::rows);
+    Optional<List<TestQueries.TestLog>> logs = logPage.map(CountedPage::rows);
+    Optional<List<AttemptRow>> spawns = spawnPage.map(CountedPage::rows);
+    inspectionTask =
+        running.submit(
+            () -> {
+              Inspection inspection = TestInspection.ofLoaded(row, attempts, logs, spawns);
+              SwingUtilities.invokeLater(
+                  () -> {
+                    if (sameSelection(row, opened, generation)) {
+                      inspector.show(inspection);
+                    }
+                  });
+            });
+  }
+
+  private void resetDetailPages() {
+    attemptPage = Optional.empty();
+    logPage = Optional.empty();
+    spawnPage = Optional.empty();
+    attemptPageLoading = false;
+    logPageLoading = false;
+    spawnPageLoading = false;
+  }
+
+  private void cancelDetailTasks() {
+    cancel(attemptTask);
+    cancel(logTask);
+    cancel(spawnTask);
+    cancel(inspectionTask);
+    attemptTask = null;
+    logTask = null;
+    spawnTask = null;
+    inspectionTask = null;
+  }
+
+  private static void cancel(Future<?> task) {
+    if (task != null) {
+      task.cancel(false);
+    }
+  }
+
+  private void setStatus(String value) {
+    statusLabel.setText(value);
+    setPageMetadata(value, value);
+  }
+
+  private void setPageMetadata(String concise, String detail) {
+    pageMetadata = concise;
+    pageMetadataDetail = detail;
+    syncPageMetadata();
+  }
+
+  private void syncPageMetadata() {
+    if (pageToolbar != null) {
+      pageToolbar.setMetadata(pageMetadata, pageMetadataDetail);
+    }
   }
 
   private static ExecutorService singleThreadExecutor(String name) {

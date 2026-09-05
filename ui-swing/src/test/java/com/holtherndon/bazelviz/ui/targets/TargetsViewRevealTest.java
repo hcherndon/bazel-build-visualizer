@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.holtherndon.bazelviz.capture.file.importer.BepImporter;
 import com.holtherndon.bazelviz.capture.file.importer.ImportResult;
 import com.holtherndon.bazelviz.format.session.SessionManager;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetRow;
 import com.holtherndon.bazelviz.testsupport.bep.BepBinaryWriter;
@@ -13,7 +14,7 @@ import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
 import java.awt.GraphicsEnvironment;
 import java.nio.file.Path;
-import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -51,18 +52,26 @@ class TargetsViewRevealTest {
     SqliteSessionSource opened = openImportedSession(temporary);
     String label;
     try (EntityReader reader = opened.openEntityReader()) {
-      List<TargetQueries.PackageSummary> packages = reader.packages();
-      assertThat(packages).isNotEmpty();
-      List<TargetRow> rows = reader.targetsInPackage(packages.getFirst().path());
-      assertThat(rows).isNotEmpty();
-      label = rows.getFirst().label();
+      CountedPage<TargetQueries.PackageSummary, String> packages =
+          reader.packagePage("", Optional.empty(), TargetsView.PACKAGE_PAGE_SIZE);
+      assertThat(packages.rows()).isNotEmpty();
+      CountedPage<TargetRow, TargetQueries.TargetAnchor> rows =
+          reader.targetsInPackagePage(
+              packages.rows().getFirst().path(),
+              "",
+              Optional.empty(),
+              TargetsView.PACKAGE_TARGET_PAGE_SIZE);
+      assertThat(rows.rows()).isNotEmpty();
+      label = rows.rows().getFirst().label();
 
       // The byLabel exposure the reveal is built on answers through the
       // service interface, and exactly, not by substring.
-      List<TargetRow> byLabel = reader.targetsByLabel(label);
-      assertThat(byLabel).isNotEmpty();
-      assertThat(byLabel).allMatch(row -> row.label().equals(label));
-      assertThat(reader.targetsByLabel("//no/such:target")).isEmpty();
+      CountedPage<TargetRow, TargetQueries.TargetAnchor> byLabel =
+          reader.targetsByLabelPage(label, Optional.empty(), TargetsView.PACKAGE_TARGET_PAGE_SIZE);
+      assertThat(byLabel.rows()).isNotEmpty();
+      assertThat(byLabel.rows()).allMatch(row -> row.label().equals(label));
+      assertThat(reader.targetsByLabelPage("//no/such:target", Optional.empty(), 1).rows())
+          .isEmpty();
     }
 
     AtomicReference<TargetsView> held = new AtomicReference<>();

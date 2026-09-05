@@ -1,10 +1,12 @@
 package com.holtherndon.bazelviz.ui.targets;
 
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.entities.TargetQueries;
 import com.holtherndon.bazelviz.storage.entities.TargetRow;
 import com.holtherndon.bazelviz.ui.files.WorkspaceFileResolver;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import com.holtherndon.bazelviz.ui.inspect.InspectionPagingPanel;
 import com.holtherndon.bazelviz.ui.inspect.InspectorPanel;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
@@ -12,15 +14,21 @@ import com.holtherndon.bazelviz.ui.session.EntityReader;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.ViewClose;
 import com.holtherndon.bazelviz.ui.theme.EmptyStatePanel;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -81,7 +89,7 @@ import org.slf4j.LoggerFactory;
  * live or disabled with that reason in its tooltip; none is ever a control that clicks into
  * silence.
  */
-public final class TargetsView extends JPanel {
+public final class TargetsView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
 
@@ -95,6 +103,18 @@ public final class TargetsView extends JPanel {
 
   /** Top-level labels appended by one explicit flat-list page request. */
   public static final int FLAT_LABEL_PAGE_SIZE = 200;
+
+  /** Package summaries read by one stable keyset request. */
+  public static final int PACKAGE_PAGE_SIZE = 200;
+
+  /** Target/configuration rows read for one expanded package request. */
+  public static final int PACKAGE_TARGET_PAGE_SIZE = 200;
+
+  /** Source-qualified tags retained for one selected target. */
+  public static final int TARGET_TAG_PAGE_SIZE = 100;
+
+  /** Ordinal output groups retained for one selected target. */
+  public static final int OUTPUT_GROUP_PAGE_SIZE = 100;
 
   /** Placeholder child that makes a package node expandable before it is loaded. */
   private static final String PENDING = "…";
@@ -115,21 +135,38 @@ public final class TargetsView extends JPanel {
   private final Timer filterDebounce = new Timer(250, event -> applyFilter());
   private final JButton loadMoreLabels = new JButton("Load more targets");
   private final InspectorPanel inspector = new InspectorPanel();
+  private final InspectionPagingPanel inspectionPaging = new InspectionPagingPanel();
   private final JLabel statusLabel = new JLabel(" ");
+  private final JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+  private final JPanel session = new JPanel(new BorderLayout());
 
   /** The header toolbar's buttons, in the order they are shown. */
   private final List<ToolbarAction> toolbarActions = new ArrayList<>();
 
   private ExecutorService executor;
+  private ExecutorService detailExecutor;
+  private ExecutorService inspectionExecutor;
   private EntityReader reader;
+  private EntityReader detailReader;
   private SessionSource source;
   private Future<?> packageTask;
   private Future<?> flatPageTask;
+  private final Map<DefaultMutableTreeNode, Future<?>> childTasks = new IdentityHashMap<>();
+  private Future<?> flatLookupTask;
+  private Future<?> tagTask;
+  private Future<?> outputGroupTask;
+  private Future<?> inspectionTask;
   private LongConsumer showEventHandler = eventId -> {};
   private long selectionGeneration;
   private long filterGeneration;
+
+  /** Bumped whenever a session is opened or closed, including reuse of the same source object. */
+  private long sessionGeneration;
+
   private boolean packageLoading;
   private boolean packageLoaded;
+  private String packageAfterPath;
+  private long packageTotal = -1;
   private boolean flatPageLoading;
   private long flatLabelCount = -1;
   private String flatAfterLabel;
@@ -137,6 +174,9 @@ public final class TargetsView extends JPanel {
   private String packageStatus = " ";
   private String flatStatus = " ";
   private String filterText = "";
+  private PageToolbar pageToolbar;
+  private String pageMetadata = "";
+  private String pageMetadataDetail = "";
 
   /**
    * The shared cross-view navigation actions, once {@link #installEntityActions} has run. Null
@@ -144,17 +184,14 @@ public final class TargetsView extends JPanel {
    */
   private EntityActions entityActions;
 
-  /**
-   * The target a {@link #revealLabel} is waiting to select, once its package's children have
-   * loaded. Null when no reveal is pending. Only ever touched on the EDT.
-   */
-  private Long pendingRevealTargetId;
-
-  /** The package the pending reveal lives in, so another package's load cannot resolve it. */
-  private String pendingRevealPackagePath;
-
   /** Bumped per reveal so a slow lookup cannot land after a newer one. */
   private long revealGeneration;
+
+  private Optional<CountedPage<TargetQueries.Tag, TargetQueries.TagAnchor>> tagPage =
+      Optional.empty();
+  private Optional<CountedPage<TargetQueries.OutputGroup, Long>> outputGroupPage = Optional.empty();
+  private boolean tagPageLoading;
+  private boolean outputGroupPageLoading;
 
   public TargetsView() {
     super(new BorderLayout());
@@ -204,18 +241,20 @@ public final class TargetsView extends JPanel {
     browseDeck.add(treeScroll, BROWSE_PACKAGES);
     browseDeck.add(flatPanel, BROWSE_ALL_TARGETS);
     inspector.setMinimumSize(new Dimension(300, 160));
+    JPanel inspectionPanel = new JPanel(new BorderLayout());
+    inspectionPanel.add(inspector, BorderLayout.CENTER);
+    inspectionPanel.add(inspectionPaging, BorderLayout.SOUTH);
     JSplitPane split =
         new JSplitPane(
             JSplitPane.HORIZONTAL_SPLIT,
             new SectionPane("Top level targets", browseDeck),
-            new SectionPane("Target details", inspector));
+            new SectionPane("Target details", inspectionPanel));
     split.setResizeWeight(0.55);
 
     JPanel status = new JPanel(new BorderLayout());
     status.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
     status.add(statusLabel, BorderLayout.WEST);
 
-    JPanel session = new JPanel(new BorderLayout());
     session.add(buildToolbar(), BorderLayout.NORTH);
     session.add(split, BorderLayout.CENTER);
     session.add(status, BorderLayout.SOUTH);
@@ -226,6 +265,27 @@ public final class TargetsView extends JPanel {
     showEmpty("No session is open.");
   }
 
+  /** Moves page-wide browsing, filtering, and navigation controls into common page chrome. */
+  @Override
+  public void installPageToolbar(PageToolbar installed) {
+    Objects.requireNonNull(installed, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = installed;
+    Component[] controls = toolbar.getComponents();
+    for (Component control : controls) {
+      installed.addAction(control);
+    }
+    Container oldParent = toolbar.getParent();
+    if (oldParent != null) {
+      oldParent.remove(toolbar);
+      oldParent.revalidate();
+      oldParent.repaint();
+    }
+    syncPageMetadata();
+  }
+
   /**
    * The header toolbar: what can be done with the selected target elsewhere in the application.
    *
@@ -234,7 +294,7 @@ public final class TargetsView extends JPanel {
    * time some of it has nothing to act on.
    */
   private JPanel buildToolbar() {
-    JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+    JPanel bar = toolbar;
     JLabel viewLabel = new JLabel("View:");
     viewLabel.setLabelFor(browseMode);
     browseMode.setToolTipText("Group top-level targets by package or show one flat label list.");
@@ -381,17 +441,33 @@ public final class TargetsView extends JPanel {
   public void showEmpty(String message) {
     emptyState.setText(Objects.requireNonNull(message, "message"));
     cards.show(deck, CARD_EMPTY);
+    setPageMetadata(message.startsWith("No session") ? "" : message, message);
   }
 
   /** Opens a session and loads the package level. Returns immediately. */
   public void openSession(SessionSource newSource) {
     Objects.requireNonNull(newSource, "newSource");
     closeSession();
+    long generation = ++sessionGeneration;
     source = newSource;
     executor =
         Executors.newSingleThreadExecutor(
             runnable -> {
               Thread thread = new Thread(runnable, "bbv-targets");
+              thread.setDaemon(true);
+              return thread;
+            });
+    detailExecutor =
+        Executors.newSingleThreadExecutor(
+            runnable -> {
+              Thread thread = new Thread(runnable, "bbv-target-details");
+              thread.setDaemon(true);
+              return thread;
+            });
+    inspectionExecutor =
+        Executors.newSingleThreadExecutor(
+            runnable -> {
+              Thread thread = new Thread(runnable, "bbv-target-inspection");
               thread.setDaemon(true);
               return thread;
             });
@@ -401,13 +477,26 @@ public final class TargetsView extends JPanel {
         () -> {
           try {
             EntityReader opened = newSource.openEntityReader();
+            EntityReader details;
+            try {
+              details = newSource.openEntityReader();
+            } catch (RuntimeException failure) {
+              opened.close();
+              throw failure;
+            }
             SwingUtilities.invokeLater(
                 () -> {
-                  if (source != newSource) {
-                    opened.close();
+                  if (source != newSource || generation != sessionGeneration) {
+                    ViewClose.runAsync(
+                        "bbv-targets-stale-open-close",
+                        () -> {
+                          opened.close();
+                          details.close();
+                        });
                     return;
                   }
                   reader = opened;
+                  detailReader = details;
                   cards.show(deck, CARD_TREE);
                   switchBrowseMode();
                 });
@@ -415,7 +504,7 @@ public final class TargetsView extends JPanel {
             log.error("could not read targets", failure);
             SwingUtilities.invokeLater(
                 () -> {
-                  if (source == newSource) {
+                  if (source == newSource && generation == sessionGeneration) {
                     showEmpty("Could not read targets: " + failure.getMessage());
                   }
                 });
@@ -429,19 +518,20 @@ public final class TargetsView extends JPanel {
 
   /** Detaches immediately and completes after this session's target reads have stopped. */
   public CompletionStage<Void> closeSessionAsync() {
+    sessionGeneration++;
     filterDebounce.stop();
     filterGeneration++;
     selectionGeneration++;
     filterText = "";
     labelFilter.setText("");
     filterDebounce.stop();
-    pendingRevealTargetId = null;
-    pendingRevealPackagePath = null;
     revealGeneration++;
     root.removeAllChildren();
     treeModel.reload();
     packageLoading = false;
     packageLoaded = false;
+    packageAfterPath = null;
+    packageTotal = -1;
     flatRoot.removeAllChildren();
     flatTreeModel.reload();
     flatPageLoading = false;
@@ -452,34 +542,52 @@ public final class TargetsView extends JPanel {
     flatStatus = " ";
     loadMoreLabels.setEnabled(false);
     inspector.show(Inspection.NONE);
+    inspectionPaging.clear();
+    cancelDetailTasks();
+    resetDetailPages();
     // Whatever was selected is gone with the tree, and the toolbar must
     // not keep offering jumps for a target that is no longer on screen.
     updateToolbar();
     cancelTask(packageTask, true);
     cancelTask(flatPageTask, true);
+    cancelChildTasks(true);
     packageTask = null;
     flatPageTask = null;
     ExecutorService stopping = executor;
+    ExecutorService stoppingDetails = detailExecutor;
+    ExecutorService stoppingInspections = inspectionExecutor;
     EntityReader closing = reader;
+    EntityReader closingDetails = detailReader;
+    if (closing != null) {
+      closing.cancelRunningQuery();
+    }
+    if (closingDetails != null) {
+      closingDetails.cancelRunningQuery();
+    }
     source = null;
     executor = null;
+    detailExecutor = null;
+    inspectionExecutor = null;
     reader = null;
-    if (stopping == null && closing == null) {
+    detailReader = null;
+    if (stopping == null
+        && stoppingDetails == null
+        && stoppingInspections == null
+        && closing == null
+        && closingDetails == null) {
       return CompletableFuture.completedFuture(null);
     }
     return ViewClose.runAsync(
         "bbv-targets-close",
         () -> {
-          if (stopping != null) {
-            stopping.shutdownNow();
-            try {
-              stopping.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-              Thread.currentThread().interrupt();
-            }
-          }
+          shutdown(stopping);
+          shutdown(stoppingDetails);
+          shutdown(stoppingInspections);
           if (closing != null) {
             closing.close();
+          }
+          if (closingDetails != null) {
+            closingDetails.close();
           }
         });
   }
@@ -488,8 +596,8 @@ public final class TargetsView extends JPanel {
    * Shows one target by its label: the package path expanded, the target's row selected and
    * inspected — random access by label, where the tree is otherwise browsed top-down.
    *
-   * <p>The label is looked up off the EDT ({@code targetsByLabel}), because the package path shown
-   * in the tree is the one the database derived and deriving it here again would be a second
+   * <p>The label is looked up off the EDT ({@code targetsByLabelPage}), because the package path
+   * shown in the tree is the one the database derived and deriving it here again would be a second
    * definition that could drift. A label this session never declared changes nothing but the status
    * line, which says so — cross-view navigation arrives here with labels parsed out of events, and
    * an event can name a label no target row carries.
@@ -510,111 +618,105 @@ public final class TargetsView extends JPanel {
       return;
     }
     long generation = ++revealGeneration;
+    long openedSessionGeneration = sessionGeneration;
+    SessionSource opened = source;
     running.execute(
         () -> {
           try {
-            List<TargetRow> rows = current.targetsByLabel(label);
+            CountedPage<TargetRow, TargetQueries.TargetAnchor> rows =
+                current.targetsByLabelPage(label, Optional.empty(), 1);
             SwingUtilities.invokeLater(
                 () -> {
-                  if (generation != revealGeneration) {
+                  if (generation != revealGeneration
+                      || opened != source
+                      || openedSessionGeneration != sessionGeneration) {
                     return;
                   }
-                  if (rows.isEmpty()) {
-                    statusLabel.setText("No target named " + label + " in this session.");
+                  if (rows.rows().isEmpty()) {
+                    setStatus("No target named " + label + " in this session.");
                     return;
                   }
-                  revealRow(rows.getFirst());
+                  revealRow(rows.rows().getFirst());
                 });
           } catch (RuntimeException failure) {
             log.warn("could not look up {}", label, failure);
             SwingUtilities.invokeLater(
                 () -> {
-                  if (generation == revealGeneration) {
-                    statusLabel.setText("Could not look up " + label + ": " + failure.getMessage());
+                  if (generation == revealGeneration
+                      && opened == source
+                      && openedSessionGeneration == sessionGeneration) {
+                    setStatus("Could not look up " + label + ": " + failure.getMessage());
                   }
                 });
           }
         });
   }
 
-  /** EDT: expands the row's package and selects the row, loading it first if needed. */
+  /** EDT: inserts a marked direct result without walking any prior package page. */
   private void revealRow(TargetRow row) {
-    DefaultMutableTreeNode packageNode = null;
-    for (int i = 0; i < root.getChildCount(); i++) {
-      DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
-      if (child.getUserObject() instanceof PackageNode candidate
-          && candidate.summary.path().equals(row.packagePath())) {
-        packageNode = child;
-        break;
-      }
-    }
+    DefaultMutableTreeNode packageNode = findPackage(row.packagePath());
     if (packageNode == null) {
-      // The row exists and its package is not in the tree: the two
-      // reads disagree, most plausibly because the session grew between
-      // them. Saying so beats selecting nothing silently.
-      statusLabel.setText(
-          "The package "
-              + row.packagePath()
-              + " is not in the tree; reopen the session to refresh it.");
-      return;
+      packageNode =
+          new DefaultMutableTreeNode(
+              new PackageNode(new TargetQueries.PackageSummary(row.packagePath(), 0, 0, 0), true));
+      packageNode.add(new DefaultMutableTreeNode(PENDING));
+      root.add(packageNode);
     }
-    pendingRevealTargetId = row.id();
-    pendingRevealPackagePath = row.packagePath();
-    PackageNode node = (PackageNode) packageNode.getUserObject();
-    if (node.loaded && !hasPendingPlaceholder(packageNode)) {
-      // Already populated; select right away.
-      selectPendingIn(packageNode);
-    } else {
-      // Expanding triggers loadChildren, whose arrival completes the
-      // reveal. Expanding an already-expanding node is harmless.
-      tree.expandPath(new TreePath(packageNode.getPath()));
+    DefaultMutableTreeNode targetNode = findTarget(packageNode, row.id());
+    if (targetNode == null) {
+      targetNode = new DefaultMutableTreeNode(new TargetNode(row, true));
+      packageNode.insert(targetNode, 0);
     }
-  }
-
-  private static boolean hasPendingPlaceholder(DefaultMutableTreeNode packageNode) {
-    return packageNode.getChildCount() == 1
-        && PENDING.equals(((DefaultMutableTreeNode) packageNode.getChildAt(0)).getUserObject());
-  }
-
-  /** EDT: selects the pending reveal's target under {@code packageNode}, if both exist. */
-  private void selectPendingIn(DefaultMutableTreeNode packageNode) {
-    Long wanted = pendingRevealTargetId;
-    if (wanted == null) {
-      return;
-    }
-    // Another package loading — a user browsing while a reveal is in
-    // flight — must not resolve, or fail, a reveal that lives elsewhere.
-    if (!(packageNode.getUserObject() instanceof PackageNode loaded)
-        || !loaded.summary.path().equals(pendingRevealPackagePath)) {
-      return;
-    }
-    for (int i = 0; i < packageNode.getChildCount(); i++) {
-      DefaultMutableTreeNode child = (DefaultMutableTreeNode) packageNode.getChildAt(i);
-      if (child.getUserObject() instanceof TargetNode targetNode && targetNode.row.id() == wanted) {
-        pendingRevealTargetId = null;
-        pendingRevealPackagePath = null;
-        TreePath path = new TreePath(child.getPath());
-        tree.expandPath(new TreePath(packageNode.getPath()));
-        tree.setSelectionPath(path);
-        tree.scrollPathToVisible(path);
-        return;
-      }
-    }
-    // The package loaded and the row is not among its children: the reads
-    // disagree (a live session can grow between them). Say so.
-    pendingRevealTargetId = null;
-    pendingRevealPackagePath = null;
-    statusLabel.setText(
-        "The target is no longer in its package's rows;" + " reopen the session to refresh it.");
+    treeModel.reload(packageNode);
+    TreePath packagePath = new TreePath(packageNode.getPath());
+    TreePath targetPath = new TreePath(targetNode.getPath());
+    tree.expandPath(packagePath);
+    tree.setSelectionPath(targetPath);
+    tree.scrollPathToVisible(targetPath);
+    setStatus("Revealed " + row.label() + " directly; package paging remains unchanged.");
   }
 
   /** Visible for testing: the package nodes currently in the tree. */
   int packageCountForTest() {
-    return root.getChildCount();
+    return Math.toIntExact(packageNodeCount());
   }
 
   String packageTextForTest(int index) {
     return root.getChildAt(index).toString();
+  }
+
+  boolean packageLoadNextVisibleForTest() {
+    return childWithLoadKind(root, LoadKind.PACKAGES) != null;
+  }
+
+  void loadNextPackagesForTest() {
+    selectLoadNextForTest(root, LoadKind.PACKAGES);
+  }
+
+  void expandPackageForTest(int index) {
+    DefaultMutableTreeNode node = (DefaultMutableTreeNode) root.getChildAt(index);
+    tree.expandPath(new TreePath(node.getPath()));
+  }
+
+  int targetCountForTest(int packageIndex) {
+    DefaultMutableTreeNode node = (DefaultMutableTreeNode) root.getChildAt(packageIndex);
+    int count = 0;
+    for (int index = 0; index < node.getChildCount(); index++) {
+      if (((DefaultMutableTreeNode) node.getChildAt(index)).getUserObject() instanceof TargetNode) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  boolean targetLoadNextVisibleForTest(int packageIndex) {
+    DefaultMutableTreeNode node = (DefaultMutableTreeNode) root.getChildAt(packageIndex);
+    return childWithLoadKind(node, LoadKind.TARGETS) != null;
+  }
+
+  void loadNextTargetsForTest(int packageIndex) {
+    DefaultMutableTreeNode node = (DefaultMutableTreeNode) root.getChildAt(packageIndex);
+    selectLoadNextForTest(node, LoadKind.TARGETS);
   }
 
   /** Visible for testing: the selected target row's label, or null. */
@@ -634,7 +736,7 @@ public final class TargetsView extends JPanel {
     }
   }
 
-  /** Reads filtered package summaries off the EDT. Children remain lazy. */
+  /** Reads one stable package page off the EDT. Children remain lazy. */
   private void loadPackages() {
     EntityReader current = reader;
     ExecutorService running = executor;
@@ -643,17 +745,19 @@ public final class TargetsView extends JPanel {
       return;
     }
     packageLoading = true;
+    Optional<String> after = Optional.ofNullable(packageAfterPath);
     String requestedFilter = filterText;
     long generation = filterGeneration;
     packageStatus = requestedFilter.isEmpty() ? "Reading targets…" : "Filtering target labels…";
     if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
-      statusLabel.setText(packageStatus);
+      setStatus(packageStatus);
     }
     packageTask =
         running.submit(
             () -> {
               try {
-                List<TargetQueries.PackageSummary> packages = current.packages(requestedFilter);
+                CountedPage<TargetQueries.PackageSummary, String> packages =
+                    current.packagePage(requestedFilter, after, PACKAGE_PAGE_SIZE);
                 SwingUtilities.invokeLater(
                     () -> installPackages(opened, generation, requestedFilter, packages));
               } catch (RuntimeException failure) {
@@ -664,7 +768,7 @@ public final class TargetsView extends JPanel {
                         packageLoading = false;
                         packageStatus = "Could not read targets: " + failure.getMessage();
                         if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
-                          statusLabel.setText(packageStatus);
+                          setStatus(packageStatus);
                         }
                       }
                     });
@@ -676,42 +780,79 @@ public final class TargetsView extends JPanel {
       SessionSource opened,
       long generation,
       String requestedFilter,
-      List<TargetQueries.PackageSummary> packages) {
+      CountedPage<TargetQueries.PackageSummary, String> page) {
     if (source != opened || generation != filterGeneration) {
       return;
     }
     packageLoading = false;
     packageLoaded = true;
-    root.removeAllChildren();
+    TargetRow selectedBeforeReload = selectedRow();
+    removeLoadNextChild(root);
     long targets = 0;
     long failed = 0;
     long notCompleted = 0;
-    for (TargetQueries.PackageSummary summary : packages) {
-      DefaultMutableTreeNode node = new DefaultMutableTreeNode(new PackageNode(summary));
-      node.add(new DefaultMutableTreeNode(PENDING));
-      root.add(node);
+    int firstInserted = root.getChildCount();
+    for (TargetQueries.PackageSummary summary : page.rows()) {
       targets += summary.targets();
       failed += summary.failed();
       notCompleted += summary.notCompleted();
+      DefaultMutableTreeNode existing = findPackage(summary.path());
+      if (existing != null) {
+        ((PackageNode) existing.getUserObject()).update(summary);
+        packageAfterPath = summary.path();
+        continue;
+      }
+      DefaultMutableTreeNode node = new DefaultMutableTreeNode(new PackageNode(summary));
+      node.add(new DefaultMutableTreeNode(PENDING));
+      root.add(node);
+      packageAfterPath = summary.path();
     }
-    treeModel.reload();
-    if (packages.isEmpty()) {
+    sortPackageNodes();
+    packageTotal = page.totalRows();
+    page.nextAnchor()
+        .ifPresent(
+            anchor ->
+                root.add(
+                    new DefaultMutableTreeNode(
+                        new LoadNextNode(
+                            "Load next packages ("
+                                + EntityFormat.count(page.remainingRows())
+                                + " remaining)",
+                            LoadKind.PACKAGES))));
+    treeModel.reload(root);
+    if (selectedBeforeReload != null) {
+      DefaultMutableTreeNode selectedPackage = findPackage(selectedBeforeReload.packagePath());
+      DefaultMutableTreeNode selectedNode =
+          selectedPackage == null ? null : findTarget(selectedPackage, selectedBeforeReload.id());
+      if (selectedNode != null) {
+        TreePath packagePath = new TreePath(selectedPackage.getPath());
+        TreePath targetPath = new TreePath(selectedNode.getPath());
+        tree.expandPath(packagePath);
+        tree.setSelectionPath(targetPath);
+        tree.scrollPathToVisible(targetPath);
+      }
+    }
+    if (root.getChildCount() == 0) {
       packageStatus =
           requestedFilter.isEmpty()
               ? "This session recorded no targets."
               : "No top-level target labels match \"" + requestedFilter + "\".";
       if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
-        statusLabel.setText(packageStatus);
+        setStatus(packageStatus);
         inspector.show(Inspection.NONE);
       }
       return;
     }
+    long visiblePackages = packageNodeCount();
     StringBuilder status =
         new StringBuilder()
+            .append(EntityFormat.count(visiblePackages))
+            .append(" of ")
+            .append(EntityFormat.count(packageTotal))
+            .append(requestedFilter.isEmpty() ? " packages loaded" : " matching packages loaded")
+            .append(" · ")
             .append(EntityFormat.count(targets))
-            .append(requestedFilter.isEmpty() ? " target rows in " : " matching target rows in ")
-            .append(EntityFormat.count(packages.size()))
-            .append(packages.size() == 1 ? " package" : " packages");
+            .append(" target rows in this page");
     if (failed > 0) {
       status.append("  ·  ").append(EntityFormat.count(failed)).append(" failed");
     }
@@ -724,8 +865,62 @@ public final class TargetsView extends JPanel {
     packageStatus = status.toString();
     cards.show(deck, CARD_TREE);
     if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
-      statusLabel.setText(packageStatus);
-      selectionChanged();
+      setStatus(packageStatus);
+      if (firstInserted == 0) {
+        selectionChanged();
+      }
+    }
+  }
+
+  private long packageNodeCount() {
+    long count = 0;
+    for (int index = 0; index < root.getChildCount(); index++) {
+      if (((DefaultMutableTreeNode) root.getChildAt(index)).getUserObject()
+          instanceof PackageNode) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Keeps directly revealed packages in the same alphabetical order as keyset-loaded rows. */
+  private void sortPackageNodes() {
+    List<DefaultMutableTreeNode> packages = new ArrayList<>();
+    for (int index = 0; index < root.getChildCount(); index++) {
+      DefaultMutableTreeNode node = (DefaultMutableTreeNode) root.getChildAt(index);
+      if (node.getUserObject() instanceof PackageNode) {
+        packages.add(node);
+      }
+    }
+    packages.sort(
+        (left, right) ->
+            ((PackageNode) left.getUserObject())
+                .summary
+                .path()
+                .compareTo(((PackageNode) right.getUserObject()).summary.path()));
+    root.removeAllChildren();
+    for (DefaultMutableTreeNode node : packages) {
+      root.add(node);
+    }
+  }
+
+  private DefaultMutableTreeNode findPackage(String path) {
+    for (int index = 0; index < root.getChildCount(); index++) {
+      DefaultMutableTreeNode node = (DefaultMutableTreeNode) root.getChildAt(index);
+      if (node.getUserObject() instanceof PackageNode packageNode
+          && packageNode.summary.path().equals(path)) {
+        return node;
+      }
+    }
+    return null;
+  }
+
+  private static void removeLoadNextChild(DefaultMutableTreeNode parent) {
+    for (int index = parent.getChildCount() - 1; index >= 0; index--) {
+      if (((DefaultMutableTreeNode) parent.getChildAt(index)).getUserObject()
+          instanceof LoadNextNode) {
+        parent.remove(index);
+      }
     }
   }
 
@@ -734,12 +929,12 @@ public final class TargetsView extends JPanel {
     BrowseMode mode = (BrowseMode) browseMode.getSelectedItem();
     if (mode == BrowseMode.ALL_TARGETS) {
       browseCards.show(browseDeck, BROWSE_ALL_TARGETS);
-      statusLabel.setText(flatStatus);
+      setStatus(flatStatus);
       ensureFlatPage();
       flatSelectionChanged();
     } else {
       browseCards.show(browseDeck, BROWSE_PACKAGES);
-      statusLabel.setText(packageStatus);
+      setStatus(packageStatus);
       ensurePackageResults();
       selectionChanged();
     }
@@ -756,15 +951,23 @@ public final class TargetsView extends JPanel {
     filterGeneration++;
     cancelTask(packageTask, false);
     cancelTask(flatPageTask, false);
+    cancelChildTasks(false);
+    if (reader != null) {
+      reader.cancelRunningQuery();
+    }
+    cancelDetailTasks();
+    if (detailReader != null) {
+      detailReader.cancelRunningQuery();
+    }
     packageTask = null;
     flatPageTask = null;
     selectionGeneration++;
     revealGeneration++;
-    pendingRevealTargetId = null;
-    pendingRevealPackagePath = null;
 
     packageLoading = false;
     packageLoaded = false;
+    packageAfterPath = null;
+    packageTotal = -1;
     root.removeAllChildren();
     treeModel.reload();
     packageStatus = next.isEmpty() ? "Reading targets…" : "Filtering target labels…";
@@ -778,6 +981,8 @@ public final class TargetsView extends JPanel {
     flatStatus = next.isEmpty() ? "Reading top-level target labels…" : "Filtering target labels…";
 
     inspector.show(Inspection.NONE);
+    inspectionPaging.clear();
+    resetDetailPages();
     loadMoreLabels.setEnabled(false);
     updateToolbar();
     if (reader != null) {
@@ -835,7 +1040,7 @@ public final class TargetsView extends JPanel {
             ? "Reading top-level target labels…"
             : "Reading more target labels…";
     if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
-      statusLabel.setText(flatStatus);
+      setStatus(flatStatus);
     }
     String boundary = flatAfterLabel;
     String requestedFilter = filterText;
@@ -844,17 +1049,11 @@ public final class TargetsView extends JPanel {
         running.submit(
             () -> {
               try {
-                long total =
-                    flatLabelCount < 0
-                        ? current.topLevelTargetLabelCount(requestedFilter)
-                        : flatLabelCount;
-                List<String> labels =
-                    boundary == null
-                        ? current.firstTopLevelTargetLabels(requestedFilter, FLAT_LABEL_PAGE_SIZE)
-                        : current.topLevelTargetLabelsAfter(
-                            requestedFilter, boundary, FLAT_LABEL_PAGE_SIZE);
+                CountedPage<String, String> labels =
+                    current.topLevelLabelPage(
+                        requestedFilter, Optional.ofNullable(boundary), FLAT_LABEL_PAGE_SIZE);
                 SwingUtilities.invokeLater(
-                    () -> installFlatPage(opened, generation, requestedFilter, total, labels));
+                    () -> installFlatPage(opened, generation, requestedFilter, labels));
               } catch (RuntimeException failure) {
                 log.warn("could not read the flat top-level target list", failure);
                 SwingUtilities.invokeLater(
@@ -863,7 +1062,7 @@ public final class TargetsView extends JPanel {
                         flatPageLoading = false;
                         flatStatus = "Could not read target labels: " + failure.getMessage();
                         if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
-                          statusLabel.setText(flatStatus);
+                          setStatus(flatStatus);
                         }
                       }
                     });
@@ -875,38 +1074,35 @@ public final class TargetsView extends JPanel {
       SessionSource opened,
       long generation,
       String requestedFilter,
-      long total,
-      List<String> labels) {
+      CountedPage<String, String> page) {
     if (source != opened || generation != filterGeneration) {
       return;
     }
-    for (String label : labels) {
+    for (String label : page.rows()) {
       flatRoot.add(new DefaultMutableTreeNode(new FlatLabelNode(label)));
     }
-    if (!labels.isEmpty()) {
-      flatAfterLabel = labels.getLast();
-    }
-    flatLabelCount = total;
+    page.nextAnchor().ifPresent(anchor -> flatAfterLabel = anchor);
+    flatLabelCount = page.totalRows();
     flatPageLoading = false;
     flatTreeModel.reload();
     long loaded = flatRoot.getChildCount();
     flatStatus =
-        total == 0 && !requestedFilter.isEmpty()
+        page.totalRows() == 0 && !requestedFilter.isEmpty()
             ? "No top-level target labels match \"" + requestedFilter + "\"."
             : EntityFormat.count(loaded)
                 + " of "
-                + EntityFormat.count(total)
+                + EntityFormat.count(page.totalRows())
                 + (requestedFilter.isEmpty()
                     ? " distinct top-level target labels loaded"
                     : " matching top-level target labels loaded");
-    boolean hasMore = loaded < total;
+    boolean hasMore = page.nextAnchor().isPresent();
     loadMoreLabels.setEnabled(hasMore);
     loadMoreLabels.setToolTipText(
         hasMore
             ? "Append the next " + FLAT_LABEL_PAGE_SIZE + " top-level labels."
             : "Every top-level target label is loaded.");
     if (browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
-      statusLabel.setText(flatStatus);
+      setStatus(flatStatus);
     }
   }
 
@@ -920,65 +1116,71 @@ public final class TargetsView extends JPanel {
             ? null
             : ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
     if (!(value instanceof FlatLabelNode flat)) {
+      selectionGeneration++;
+      cancelDetailTasks();
+      resetDetailPages();
       selectedFlatTarget = null;
       inspector.show(Inspection.NONE);
+      inspectionPaging.clear();
       updateToolbar();
       return;
     }
     selectedFlatTarget = new SelectedTarget(flat.label, OptionalLong.empty());
     updateToolbar();
     inspector.show(Inspection.NONE);
+    inspectionPaging.clear();
+    cancelDetailTasks();
+    resetDetailPages();
     long generation = ++selectionGeneration;
-    EntityReader current = reader;
-    ExecutorService running = executor;
+    EntityReader current = detailReader;
+    ExecutorService running = detailExecutor;
+    SessionSource opened = source;
     if (current == null || running == null) {
       return;
     }
-    running.execute(
-        () -> {
-          try {
-            List<TargetRow> rows = current.targetsByLabel(flat.label);
-            Inspection inspection;
-            OptionalLong sourceEvent = OptionalLong.empty();
-            if (rows.size() == 1) {
-              TargetRow row = rows.getFirst();
-              inspection =
-                  TargetInspection.of(
-                      row,
-                      current.targetTags(row.id()),
-                      row.configuredTargetId().isPresent()
-                          ? current.outputGroups(row.configuredTargetId().getAsLong())
-                          : List.of());
-              sourceEvent = row.bepEventId();
-            } else {
-              inspection = flatInspection(flat.label, rows);
-            }
-            OptionalLong finalSourceEvent = sourceEvent;
-            SwingUtilities.invokeLater(
-                () -> {
-                  if (generation == selectionGeneration
-                      && browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
-                    selectedFlatTarget = new SelectedTarget(flat.label, finalSourceEvent);
-                    inspector.show(inspection);
-                    updateToolbar();
-                  }
-                });
-          } catch (RuntimeException failure) {
-            log.warn("could not describe top-level target {}", flat.label, failure);
-          }
-        });
+    flatLookupTask =
+        running.submit(
+            () -> {
+              try {
+                CountedPage<TargetRow, TargetQueries.TargetAnchor> rows =
+                    current.targetsByLabelPage(flat.label, Optional.empty(), 1);
+                OptionalLong sourceEvent = OptionalLong.empty();
+                TargetRow only = rows.totalRows() == 1 ? rows.rows().getFirst() : null;
+                Inspection inspection =
+                    only == null
+                        ? flatInspection(flat.label, rows.totalRows())
+                        : TargetInspection.of(only, List.of(), List.of());
+                if (only != null) {
+                  TargetRow row = only;
+                  sourceEvent = row.bepEventId();
+                }
+                OptionalLong finalSourceEvent = sourceEvent;
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (source == opened
+                          && generation == selectionGeneration
+                          && browseMode.getSelectedItem() == BrowseMode.ALL_TARGETS) {
+                        selectedFlatTarget = new SelectedTarget(flat.label, finalSourceEvent);
+                        inspector.show(inspection);
+                        updateToolbar();
+                        if (only != null) {
+                          loadTargetDetails(only, generation);
+                        }
+                      }
+                    });
+              } catch (RuntimeException failure) {
+                log.warn("could not describe top-level target {}", flat.label, failure);
+              }
+            });
   }
 
-  private static Inspection flatInspection(String label, List<TargetRow> rows) {
-    long configurations =
-        rows.stream().flatMap(row -> row.configurationId().stream()).distinct().count();
+  private static Inspection flatInspection(String label, long rows) {
     return new Inspection.Builder(label)
-        .subtitle(EntityFormat.count(rows.size()) + " recorded variants")
+        .subtitle(EntityFormat.count(rows) + " recorded variants")
         .ref(new EntityRef.TargetLabel(label))
         .section("Top-level target")
         .field("Label", label)
-        .field("Rows recorded", EntityFormat.count(rows.size()))
-        .field("Configurations reported", EntityFormat.count(configurations))
+        .field("Rows recorded", EntityFormat.count(rows))
         .field("Inspect individually", "Switch to Packages and expand its package")
         .build();
   }
@@ -991,10 +1193,12 @@ public final class TargetsView extends JPanel {
    * node that refused to open while loading would feel broken.
    */
   private void loadChildren(DefaultMutableTreeNode node) {
-    if (!(node.getUserObject() instanceof PackageNode packageNode) || packageNode.loaded) {
+    if (!(node.getUserObject() instanceof PackageNode packageNode)
+        || packageNode.loading
+        || (packageNode.started && packageNode.after.isEmpty())) {
       return;
     }
-    packageNode.loaded = true;
+    packageNode.loading = true;
     ExecutorService running = executor;
     EntityReader current = reader;
     if (running == null || current == null) {
@@ -1003,43 +1207,88 @@ public final class TargetsView extends JPanel {
     SessionSource opened = source;
     String requestedFilter = filterText;
     long generation = filterGeneration;
-    running.execute(
-        () -> {
-          try {
-            List<TargetRow> rows =
-                current.targetsInPackage(packageNode.summary.path(), requestedFilter);
-            SwingUtilities.invokeLater(
-                () -> {
-                  if (source != opened || generation != filterGeneration) {
-                    return;
-                  }
-                  node.removeAllChildren();
-                  for (TargetRow row : rows) {
-                    node.add(new DefaultMutableTreeNode(new TargetNode(row)));
-                  }
-                  treeModel.nodeStructureChanged(node);
-                  // A reveal that expanded this package is waiting for
-                  // exactly this arrival.
-                  selectPendingIn(node);
-                });
-          } catch (RuntimeException failure) {
-            log.warn("could not read targets in {}", packageNode.summary.path(), failure);
-            SwingUtilities.invokeLater(
-                () -> {
-                  if (source != opened || generation != filterGeneration) {
-                    return;
-                  }
-                  node.removeAllChildren();
-                  node.add(
-                      new DefaultMutableTreeNode("could not be read: " + failure.getMessage()));
-                  treeModel.nodeStructureChanged(node);
-                });
-          }
-        });
+    Optional<TargetQueries.TargetAnchor> after = packageNode.after;
+    Future<?> childTask =
+        running.submit(
+            () -> {
+              try {
+                CountedPage<TargetRow, TargetQueries.TargetAnchor> page =
+                    current.targetsInPackagePage(
+                        packageNode.summary.path(),
+                        requestedFilter,
+                        after,
+                        PACKAGE_TARGET_PAGE_SIZE);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      childTasks.remove(node);
+                      if (source != opened
+                          || generation != filterGeneration
+                          || node.getParent() != root) {
+                        return;
+                      }
+                      packageNode.loading = false;
+                      packageNode.started = true;
+                      TargetRow selectedBeforeReload = selectedRow();
+                      Long selectedId =
+                          selectedBeforeReload == null ? null : selectedBeforeReload.id();
+                      removePendingChild(node);
+                      removeLoadNextChild(node);
+                      for (TargetRow row : page.rows()) {
+                        if (findTarget(node, row.id()) == null) {
+                          node.add(new DefaultMutableTreeNode(new TargetNode(row, false)));
+                        }
+                      }
+                      packageNode.after = page.nextAnchor();
+                      packageNode.total = page.totalRows();
+                      page.nextAnchor()
+                          .ifPresent(
+                              ignored ->
+                                  node.add(
+                                      new DefaultMutableTreeNode(
+                                          new LoadNextNode(
+                                              "Load next targets ("
+                                                  + EntityFormat.count(page.remainingRows())
+                                                  + " remaining)",
+                                              LoadKind.TARGETS))));
+                      treeModel.nodeStructureChanged(node);
+                      if (selectedId != null) {
+                        DefaultMutableTreeNode selectedNode = findTarget(node, selectedId);
+                        if (selectedNode != null) {
+                          TreePath packagePath = new TreePath(node.getPath());
+                          TreePath targetPath = new TreePath(selectedNode.getPath());
+                          tree.expandPath(packagePath);
+                          tree.setSelectionPath(targetPath);
+                          tree.scrollPathToVisible(targetPath);
+                        }
+                      }
+                    });
+              } catch (RuntimeException failure) {
+                log.warn("could not read targets in {}", packageNode.summary.path(), failure);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      childTasks.remove(node);
+                      if (source != opened
+                          || generation != filterGeneration
+                          || node.getParent() != root) {
+                        return;
+                      }
+                      packageNode.loading = false;
+                      removePendingChild(node);
+                      removeLoadNextChild(node);
+                      node.add(
+                          new DefaultMutableTreeNode("could not be read: " + failure.getMessage()));
+                      treeModel.nodeStructureChanged(node);
+                    });
+              }
+            });
+    childTasks.put(node, childTask);
   }
 
   private void selectionChanged() {
     if (browseMode.getSelectedItem() != BrowseMode.PACKAGES) {
+      return;
+    }
+    if (activateLoadNextSelection()) {
       return;
     }
     // Before any query: the toolbar states what the new selection can and
@@ -1048,38 +1297,274 @@ public final class TargetsView extends JPanel {
     updateToolbar();
     TargetRow row = selectedRow();
     if (row == null) {
+      selectionGeneration++;
+      cancelDetailTasks();
+      resetDetailPages();
+      if (detailReader != null) {
+        detailReader.cancelRunningQuery();
+      }
       inspector.show(Inspection.NONE);
+      inspectionPaging.clear();
       return;
     }
     long generation = ++selectionGeneration;
-    ExecutorService running = executor;
-    EntityReader current = reader;
-    if (running == null || current == null) {
+    cancelDetailTasks();
+    resetDetailPages();
+    if (detailReader != null) {
+      detailReader.cancelRunningQuery();
+    }
+    inspectionPaging.clear();
+    inspector.show(Inspection.NONE);
+    renderTargetDetailsAsync(row, generation);
+    loadTargetDetails(row, generation);
+  }
+
+  private void loadTargetDetails(TargetRow row, long generation) {
+    loadTagPage(row, Optional.empty(), generation);
+    if (row.configuredTargetId().isPresent()) {
+      loadOutputGroupPage(row, OptionalLong.empty(), generation);
+    } else {
+      outputGroupPage = Optional.of(new CountedPage<>(List.of(), 0, 0, Optional.empty()));
+      renderTargetDetailsAsync(row, generation);
+      inspectionPaging.setPage(
+          "output-groups", "Output groups", outputGroupPage.orElseThrow(), () -> {});
+    }
+  }
+
+  private void loadTagPage(
+      TargetRow row, Optional<TargetQueries.TagAnchor> after, long generation) {
+    ExecutorService running = detailExecutor;
+    EntityReader current = detailReader;
+    SessionSource opened = source;
+    if (running == null || current == null || opened == null || tagPageLoading) {
       return;
     }
+    tagPageLoading = true;
+    tagTask =
+        running.submit(
+            () -> {
+              try {
+                CountedPage<TargetQueries.Tag, TargetQueries.TagAnchor> page =
+                    current.tagPage(row.id(), after, TARGET_TAG_PAGE_SIZE);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (!sameTargetSelection(row, opened, generation)) {
+                        return;
+                      }
+                      tagPageLoading = false;
+                      tagPage = Optional.of(page);
+                      renderTargetDetailsAsync(row, generation);
+                      inspectionPaging.setPage(
+                          "tags",
+                          "Tags",
+                          page,
+                          () ->
+                              page.nextAnchor()
+                                  .ifPresent(
+                                      anchor -> loadTagPage(row, Optional.of(anchor), generation)));
+                    });
+              } catch (RuntimeException failure) {
+                log.warn("could not read tags of target {}", row.label(), failure);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (sameTargetSelection(row, opened, generation)) {
+                        tagPageLoading = false;
+                      }
+                    });
+              }
+            });
+  }
+
+  private void loadOutputGroupPage(TargetRow row, OptionalLong after, long generation) {
+    ExecutorService running = detailExecutor;
+    EntityReader current = detailReader;
     SessionSource opened = source;
-    running.execute(
-        () -> {
-          try {
-            Inspection inspection =
-                TargetInspection.of(
-                    row,
-                    current.targetTags(row.id()),
-                    row.configuredTargetId().isPresent()
-                        ? current.outputGroups(row.configuredTargetId().getAsLong())
-                        : List.of());
-            SwingUtilities.invokeLater(
-                () -> {
-                  if (source == opened
-                      && generation == selectionGeneration
-                      && browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
-                    inspector.show(inspection);
-                  }
-                });
-          } catch (RuntimeException failure) {
-            log.warn("could not describe target {}", row.label(), failure);
-          }
-        });
+    if (running == null || current == null || opened == null || outputGroupPageLoading) {
+      return;
+    }
+    outputGroupPageLoading = true;
+    outputGroupTask =
+        running.submit(
+            () -> {
+              try {
+                CountedPage<TargetQueries.OutputGroup, Long> page =
+                    current.outputGroupPage(
+                        row.configuredTargetId().orElseThrow(), after, OUTPUT_GROUP_PAGE_SIZE);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (!sameTargetSelection(row, opened, generation)) {
+                        return;
+                      }
+                      outputGroupPageLoading = false;
+                      outputGroupPage = Optional.of(page);
+                      renderTargetDetailsAsync(row, generation);
+                      inspectionPaging.setPage(
+                          "output-groups",
+                          "Output groups",
+                          page,
+                          () ->
+                              page.nextAnchor()
+                                  .ifPresent(
+                                      anchor ->
+                                          loadOutputGroupPage(
+                                              row, OptionalLong.of(anchor), generation)));
+                    });
+              } catch (RuntimeException failure) {
+                log.warn("could not read output groups of target {}", row.label(), failure);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (sameTargetSelection(row, opened, generation)) {
+                        outputGroupPageLoading = false;
+                      }
+                    });
+              }
+            });
+  }
+
+  private boolean sameTargetSelection(TargetRow row, SessionSource opened, long generation) {
+    if (source != opened || generation != selectionGeneration) {
+      return false;
+    }
+    if (browseMode.getSelectedItem() == BrowseMode.PACKAGES) {
+      TargetRow selected = selectedRow();
+      return selected != null && selected.id() == row.id();
+    }
+    return selectedFlatTarget != null && selectedFlatTarget.label().equals(row.label());
+  }
+
+  /** Captures immutable page references on the EDT and builds the inspection on a worker. */
+  private void renderTargetDetailsAsync(TargetRow row, long generation) {
+    ExecutorService running = inspectionExecutor;
+    SessionSource opened = source;
+    if (running == null || opened == null) {
+      return;
+    }
+    List<TargetQueries.Tag> tags = tagPage.map(CountedPage::rows).orElse(List.of());
+    List<TargetQueries.OutputGroup> outputGroups =
+        outputGroupPage.map(CountedPage::rows).orElse(List.of());
+    inspectionTask =
+        running.submit(
+            () -> {
+              Inspection inspection = TargetInspection.of(row, tags, outputGroups);
+              SwingUtilities.invokeLater(
+                  () -> {
+                    if (sameTargetSelection(row, opened, generation)) {
+                      inspector.show(inspection);
+                    }
+                  });
+            });
+  }
+
+  private void resetDetailPages() {
+    tagPage = Optional.empty();
+    outputGroupPage = Optional.empty();
+    tagPageLoading = false;
+    outputGroupPageLoading = false;
+  }
+
+  private void cancelDetailTasks() {
+    cancelTask(flatLookupTask, false);
+    cancelTask(tagTask, false);
+    cancelTask(outputGroupTask, false);
+    cancelTask(inspectionTask, false);
+    flatLookupTask = null;
+    tagTask = null;
+    outputGroupTask = null;
+    inspectionTask = null;
+  }
+
+  /** Cancels every queued package expansion when its session or filter is replaced. */
+  private void cancelChildTasks(boolean mayInterrupt) {
+    for (Future<?> childTask : childTasks.values()) {
+      childTask.cancel(mayInterrupt);
+    }
+    childTasks.clear();
+  }
+
+  private static void shutdown(ExecutorService executor) {
+    if (executor == null) {
+      return;
+    }
+    executor.shutdownNow();
+    try {
+      executor.awaitTermination(5, TimeUnit.SECONDS);
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  private boolean activateLoadNextSelection() {
+    TreePath path = tree.getSelectionPath();
+    if (path == null) {
+      return false;
+    }
+    DefaultMutableTreeNode selected = (DefaultMutableTreeNode) path.getLastPathComponent();
+    if (!(selected.getUserObject() instanceof LoadNextNode loadNext)) {
+      return false;
+    }
+    tree.clearSelection();
+    inspector.show(Inspection.NONE);
+    inspectionPaging.clear();
+    if (loadNext.kind() == LoadKind.PACKAGES) {
+      loadPackages();
+    } else if (selected.getParent() instanceof DefaultMutableTreeNode parent) {
+      loadChildren(parent);
+    }
+    return true;
+  }
+
+  private static void removePendingChild(DefaultMutableTreeNode node) {
+    for (int index = node.getChildCount() - 1; index >= 0; index--) {
+      if (PENDING.equals(((DefaultMutableTreeNode) node.getChildAt(index)).getUserObject())) {
+        node.remove(index);
+      }
+    }
+  }
+
+  private static DefaultMutableTreeNode findTarget(DefaultMutableTreeNode packageNode, long id) {
+    for (int index = 0; index < packageNode.getChildCount(); index++) {
+      DefaultMutableTreeNode node = (DefaultMutableTreeNode) packageNode.getChildAt(index);
+      if (node.getUserObject() instanceof TargetNode target && target.row.id() == id) {
+        return node;
+      }
+    }
+    return null;
+  }
+
+  private static DefaultMutableTreeNode childWithLoadKind(
+      DefaultMutableTreeNode parent, LoadKind kind) {
+    for (int index = 0; index < parent.getChildCount(); index++) {
+      DefaultMutableTreeNode child = (DefaultMutableTreeNode) parent.getChildAt(index);
+      if (child.getUserObject() instanceof LoadNextNode loadNext && loadNext.kind() == kind) {
+        return child;
+      }
+    }
+    return null;
+  }
+
+  private void selectLoadNextForTest(DefaultMutableTreeNode parent, LoadKind kind) {
+    DefaultMutableTreeNode child = childWithLoadKind(parent, kind);
+    if (child == null) {
+      throw new IllegalStateException("no " + kind + " page remains");
+    }
+    tree.setSelectionPath(new TreePath(child.getPath()));
+  }
+
+  private void setStatus(String value) {
+    statusLabel.setText(value);
+    setPageMetadata(value, value);
+  }
+
+  private void setPageMetadata(String concise, String detail) {
+    pageMetadata = concise;
+    pageMetadataDetail = detail;
+    syncPageMetadata();
+  }
+
+  private void syncPageMetadata() {
+    if (pageToolbar != null) {
+      pageToolbar.setMetadata(pageMetadata, pageMetadataDetail);
+    }
   }
 
   /**
@@ -1254,15 +1739,32 @@ public final class TargetsView extends JPanel {
 
   /** A package row in the tree. */
   private static final class PackageNode {
-    private final TargetQueries.PackageSummary summary;
-    private boolean loaded;
+    private TargetQueries.PackageSummary summary;
+    private boolean revealedOnly;
+    private boolean loading;
+    private boolean started;
+    private Optional<TargetQueries.TargetAnchor> after = Optional.empty();
+    private long total = -1;
 
     PackageNode(TargetQueries.PackageSummary summary) {
+      this(summary, false);
+    }
+
+    PackageNode(TargetQueries.PackageSummary summary, boolean revealedOnly) {
       this.summary = summary;
+      this.revealedOnly = revealedOnly;
+    }
+
+    private void update(TargetQueries.PackageSummary updated) {
+      summary = updated;
+      revealedOnly = false;
     }
 
     @Override
     public String toString() {
+      if (revealedOnly) {
+        return summary.path() + "  (revealed directly; package page not loaded)";
+      }
       StringBuilder text =
           new StringBuilder(summary.path())
               .append("  (")
@@ -1280,14 +1782,21 @@ public final class TargetsView extends JPanel {
   /** A target row in the tree. */
   private static final class TargetNode {
     private final TargetRow row;
+    private final boolean revealed;
 
     TargetNode(TargetRow row) {
+      this(row, false);
+    }
+
+    TargetNode(TargetRow row, boolean revealed) {
       this.row = row;
+      this.revealed = revealed;
     }
 
     @Override
     public String toString() {
-      StringBuilder text = new StringBuilder(row.targetName());
+      StringBuilder text =
+          new StringBuilder(revealed ? "Revealed · " : "").append(row.targetName());
       row.aspect().ifPresent(aspect -> text.append(" (aspect ").append(aspect).append(')'));
       // The outcome of building it, or -- when it never got that far --
       // what analysis said. The two are different questions and the node
@@ -1298,6 +1807,23 @@ public final class TargetsView extends JPanel {
                   .map(Enum::name)
                   .orElseGet(() -> row.analysisOutcome().name() + ", not completed"));
       return text.toString();
+    }
+  }
+
+  private enum LoadKind {
+    PACKAGES,
+    TARGETS
+  }
+
+  private record LoadNextNode(String text, LoadKind kind) {
+    private LoadNextNode {
+      Objects.requireNonNull(text, "text");
+      Objects.requireNonNull(kind, "kind");
+    }
+
+    @Override
+    public String toString() {
+      return text;
     }
   }
 }

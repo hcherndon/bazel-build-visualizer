@@ -1,0 +1,26 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_library(
+    name = "tests_lib",
+    srcs = ["EnrichmentQueriesTest.java"],
+    testonly = True,
+    deps = JUNIT_DEPS + [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich:enrich",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
+    ],
+)
+
+java_junit5_test(
+    name = "EnrichmentQueriesTest",
+    test_class = "com.holtherndon.bazelviz.storage.enrich.EnrichmentQueriesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [":EnrichmentQueriesTest"],
+)
