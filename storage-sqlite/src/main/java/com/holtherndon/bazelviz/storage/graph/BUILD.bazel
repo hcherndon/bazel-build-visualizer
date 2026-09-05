@@ -6,6 +6,7 @@ java_library(
         "ActionEdgeDeriver.java",
         "GraphIndexBuilder.java",
         "GraphQueries.java",
+        "GraphSessionResources.java",
         "GraphStaging.java",
     ],
     deps = [

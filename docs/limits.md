@@ -29,7 +29,7 @@ uses a marker instead of proportional width.
 | Detailed graph edges | `com.holtherndon.bazelviz.analysis.GraphExtract.DEFAULT_EDGE_LIMIT` | 200000 | As above. |
 | Node-limit spinner floor | `com.holtherndon.bazelviz.ui.graph.GraphCanvasPanel.MIN_NODE_LIMIT` | 1 | The spinner will not go lower: a limit of zero draws nothing and would read as "the graph is empty", which is a claim about the build rather than the setting. |
 | Node-limit spinner ceiling | `com.holtherndon.bazelviz.ui.graph.GraphCanvasPanel.MAX_NODE_LIMIT` | 5000000 | The spinner will not go higher. Matches the largest planned graph (Tier 3, five million nodes); an unbounded control would read as "no limit", which is a claim plan 13.6 forbids. |
-| Cluster boxes | `com.holtherndon.bazelviz.analysis.GraphClustering.DEFAULT_CLUSTER_LIMIT` | 2000 | The Graph card exposes this as its Group budget. Grouping refuses with the exact group count and offers either a larger budget or another explicit grouping dimension. Nothing is truncated; package and mnemonic are not falsely ordered as universally coarser than one another. |
+| Cluster boxes | `com.holtherndon.bazelviz.analysis.GraphClustering.DEFAULT_CLUSTER_LIMIT` | 2000 | The Graph card exposes this as its Group budget. Grouping stops at the first proven excess and reports the truthful lower bound `limit + 1`, without retaining every distinct key merely to count a refusal. It offers either a larger budget or another explicit grouping dimension. Nothing is truncated; package and mnemonic are not falsely ordered as universally coarser than one another. |
 | Far-hierarchy branches per horizontal pixel | `com.holtherndon.bazelviz.ui.graph.GraphCanvas.FAR_HIERARCHY_BRANCHES_PER_PIXEL` | 2 | At overview scale, the hierarchy draws at most this many evenly distributed primary branches per horizontal pixel. The same line budget bounds cross-links revealed for one selected node when the rest are decluttered. The canvas states exactly how many branches or selected links are simplified; zooming in restores each one. The graph model and export remain complete. |
 | Find dropdown matches | `com.holtherndon.bazelviz.ui.graph.GraphExplorerView.FIND_LIMIT` | 12 | The Graph card's Find field lists at most this many as-you-type matches; when there are more, the dropdown's last row says only the first N are listed and typing narrows. Choosing an entry lands on that exact node — nothing is chosen silently. |
 | Browse listing entries | `com.holtherndon.bazelviz.ui.graph.GraphExplorerView.BROWSE_LIMIT` | 500 | The Graph card's Browse panel lists at most this many nodes per filter. The summary states "only the first N matches are listed" and the tree root names the graph's total, so a truncated listing cannot read as a complete one. |
@@ -81,6 +81,32 @@ Decluttered edges omit cross-links until one incident node is selected, state
 the exact hidden count, and can be changed to All dependencies at any time. A
 multi-node marquee never bypasses the overview budget by revealing the union of
 every selected node's links.
+
+## Graph resource limits
+
+These bounds protect one open session as a whole. The aggregate budget includes
+mapped index files, retained graph renderings and models, extraction-aligned
+metadata, and charged traversal/layout scratch. A component-specific cap below
+is part of that aggregate allowance, not memory in addition to it. This is not
+a whole-process native-memory cap: each independently open graph reader keeps a
+fixed 1 MiB SQLite page cache outside the graph budget, while its temporary
+b-trees are forced to files.
+
+| Limit | Constant | Default | When reached |
+|---|---|---:|---|
+| Aggregate graph resources per open session, bytes | `com.holtherndon.bazelviz.graph.GraphResourceBudget.DEFAULT_SESSION_BYTES` | 1073741824 | An exact-boundary request is admitted. A larger request is refused before allocation or mapping; the visible error names the requested bytes, the session limit, total retained bytes, and retained purposes. Closing or evicting a retained model or layout, returning from a scoped traversal callback, or closing the session releases the corresponding charge. |
+| Native SQLite page cache per graph reader, KiB | `com.holtherndon.bazelviz.storage.SessionDatabase.GRAPH_READER_PAGE_CACHE_KIB` | 1024 | Each graph-only JDBC reader keeps this fixed native cache outside the aggregate Java/mapping budget; graph temporary b-trees are file-backed. |
+| Mapped graph indexes retained per open session | `com.holtherndon.bazelviz.graph.GraphIndexCache.MAX_CACHED_INDEXES` | 2 | The cache evicts the least-recently-used idle mapping. A leased mapping is never closed underneath a traversal. Acquiring a forward/reverse pair is atomic; if neither enough budget nor an idle entry is available, both are refused and no one-sided lease escapes. |
+| Retained graph-layout cache, bytes | `com.holtherndon.bazelviz.ui.graph.GraphLayoutService.MAX_CACHE_BYTES` | 134217728 | A rendering larger than this is delivered but not cached. Otherwise least-recently-used renderings are released until the cache is within the cap. Every cached byte is also charged to the aggregate session budget above. |
+| Retained graph-layout cache entries | `com.holtherndon.bazelviz.ui.graph.GraphLayoutService.MAX_CACHE_ENTRIES` | 12 | Least-recently-used request keys are released above this count even when their rendering is tiny, empty, or unavailable. The count cap and byte cap apply together, so zero-byte results cannot grow the cache without bound. |
+| Interactive marquee selected nodes | `com.holtherndon.bazelviz.ui.graph.GraphCanvas.MAX_MARQUEE_SELECTION` | 10000 | A drag rectangle retains at most this many node positions. If more matches may remain, the selection summary states that only the bounded subset is selected. |
+| Interactive marquee examined candidates | `com.holtherndon.bazelviz.ui.graph.GraphCanvas.MAX_MARQUEE_CANDIDATES` | 50000 | A drag rectangle examines at most this many spatial-index candidates on the EDT. Reaching either marquee bound stops the query and reports the partial selection; it never presents the subset as complete. |
+| Retained computed critical-path estimate, bytes per action | `com.holtherndon.bazelviz.analysis.CriticalPath.RETAINED_BYTES_PER_NODE` | 32 | One result slot per duration source remains charged for the open session. An unexpected generation change is refused until the immutable session is reopened, so an older delivered result is never uncharged while its arrays remain reachable. This is a conservative primitive-array estimate, not a result-data limit. |
+| Peak computed critical-path estimate, bytes per action | `com.holtherndon.bazelviz.analysis.CriticalPath.PEAK_BYTES_PER_NODE` | 64 | Critical-path computation reserves this conservative peak before loading durations or allocating traversal and schedule arrays. Refusal is reported as a resource-budget refusal, not index corruption. |
+| Fixed critical-path estimate overhead, bytes | `com.holtherndon.bazelviz.analysis.CriticalPath.ESTIMATE_OVERHEAD_BYTES` | 1024 | Covers array headers and rounding beyond the conservative per-action estimate. It is part of the same aggregate session reservation. |
+| CSR descriptor header, bytes | `com.holtherndon.bazelviz.graph.CsrFile.HEADER_BYTES` | 40 | The complete fixed header is read and validated before body mapping or allocation. This is an on-disk format size rather than an extra memory allowance. |
+| One CSR read-only mapping segment, bytes | `com.holtherndon.bazelviz.graph.CsrFile.MAP_SEGMENT_BYTES` | 268435456 | A larger CSR body is mapped as several read-only `MemorySegment` regions. It is not copied into graph-sized heap arrays. The fixed header and exact file length are validated before any body region is mapped. |
+| CSR construction/checksum buffer, bytes | `com.holtherndon.bazelviz.graph.CsrFile.WRITE_BUFFER_BYTES` | 1048576 | Offsets and targets stream through fixed positional buffers, and checksum calculation during construction uses the same fixed buffer size. A completed file is forced and atomically renamed; a failed build never publishes its temporary prefix. |
 
 ## Query and traversal limits
 

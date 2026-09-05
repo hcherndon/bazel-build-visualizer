@@ -60,6 +60,13 @@ so it cannot recreate or connect to a Workspace that discovery did not emit.
 Private saved-profile state is removed only after profile removal is saved, and
 orphan cleanup is skipped when the profile store cannot be trusted.
 
+Saved Query-library SQL is sensitive too: it can contain target labels, paths,
+literal values, and comments. The `.sql` files and `index.json` live under the
+same application settings root and are never added to a session or export.
+Updates are serialized between app windows, but the current direct writes and
+multi-file operations are not crash-atomic or transactional. Keep a separate
+copy of important saved queries until that deferred durability work lands.
+
 Workspace Discovery is an explicit exception to treating settings as inert
 data. The optional saved script is executable local configuration and runs
 directly according to its shebang at graphical startup and on request. It has
@@ -95,6 +102,12 @@ historical remote session data never reconnects to its recorded host, starts a
 terminal or executes its command. Remote file links work only while a user has
 an explicit live connection.
 
+The late bounded-inspection batch is not in this tree. A decoded raw Events
+payload, an individual Query result cell/result spool, or ANSI-normalized Errors
+detail can therefore retain more imported text than intended. Those values may
+also contain secrets. Until t6 lands, inspect only trusted sessions and avoid
+opening or querying known oversized text/blob values.
+
 Post-build aquery and cquery commands run on the same explicit execution host as
 the primary Bazel command. They query the requested targets' transitive
 dependency closure and may therefore record internal dependency labels that
@@ -102,6 +115,13 @@ were not typed on the original command line. Their exact argv and output paths
 are shown before launch and retained in the session. Remote protobuf output is
 streamed through a non-TTY SSH channel into local managed files; neither query
 executes text found inside imported data.
+
+The existing remote transfer has a per-file ceiling, but the execution-log,
+JSON trace-profile, `aquery`, and `cquery` parsers do not yet have the proposed
+source, expansion, record, fan-out, and work bounds. Local auxiliary output also
+does not use the retained bounded staging design. The t3 hardening branch is
+blocked and unmerged, so treat auxiliary files as trusted input; manual post-hoc
+attachment is not currently exposed.
 
 Terminal starts automatically when a user navigates to its tab with a Workspace
 selected. For a local Workspace its bytes stay in a local login-shell PTY. For
@@ -183,6 +203,13 @@ counts, the format/validation enums, and label value-kind enum remain intact;
 `starlark_profile_metadata.validation_detail` is redacted as free text. The raw
 `starlark-cpu.pprof.gz` is faithful source data and is omitted from a redacted
 archive under the same rule as every other raw capture.
+
+Schema v10 adds only a structural partial unique index over non-null
+`declared_actions.node_index`; it introduces no new sensitive column. A valid
+v9 database is advanced only by a writable capture/import migration. Opening an
+already-finished managed session does not run that migration or rebuild graph
+indexes and refuses the older schema. The general session connection is not yet
+physically read-only; that separate t2 hardening remains blocked and unmerged.
 
 Saved Workspaces are also sensitive local settings: labels, local or remote
 directories, Bazel paths, and an SSH destination or Host alias can disclose
@@ -300,6 +327,11 @@ a redacted `.bviz` has no `raw/` directory and the reader refuses an archive
 that claims to be both redacted and complete. The consequence is stated when
 one is opened: its enrichments cannot be re-run and its database cannot be
 rebuilt from source bytes.
+
+Besides its generated `archive.json`, a redacted archive contains exactly the
+redacted `manifest.json` and `session.sqlite`. Its staging API rejects any
+replacement name outside that pair, so an index, checkpoint, or other source
+file cannot accidentally ride beside the redacted database.
 
 ### The report is the promise, not the redaction
 

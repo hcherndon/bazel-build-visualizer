@@ -696,14 +696,17 @@ public final class CaptureCoordinator implements AutoCloseable {
       // on the import path, where it used to be the only caller.
       reportNormalizationAnomalies(entities, events, pipeline, warnings);
       finalizeIndexesQuietly(entities, events, warnings);
+      // The ingest writers own the writer connection's transaction mode. Release them before
+      // enrichment and graph construction so those independent finalizers start from an idle
+      // auto-commit connection and may select their own stable transaction/temp-store policy.
+      closeQuietly(entities, "entity writer", warnings);
+      closeQuietly(events, "event writer", warnings);
       // After the indexes, because correlation joins actions by their
       // primary output. Before the database closes, because that is the
       // connection the imports write through.
       enrichQuietly(database, executedPlan, layout, warnings);
       queryGraphsQuietly(database, executedPlan, layout, warnings);
       cleanupRemoteStagingQuietly(executedPlan, warnings, remoteOutputsToPreserve);
-      closeQuietly(entities, "entity writer", warnings);
-      closeQuietly(events, "event writer", warnings);
       closeQuietly(streams, "stream registry", warnings);
       closeQuietly(database, "session database", warnings);
       terminal = finalizeSession(session, terminal, summary, outcome, warnings);

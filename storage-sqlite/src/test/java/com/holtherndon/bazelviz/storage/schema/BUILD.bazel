@@ -6,6 +6,7 @@ java_library(
     name = "tests_lib",
     srcs = [
         "MigrationRunnerTest.java",
+        "SchemaV10Test.java",
         "SchemaV2Test.java",
         "SchemaV4Test.java",
         "SchemaV5Test.java",
@@ -19,6 +20,16 @@ java_library(
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
     ],
     testonly = True,
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "SchemaV10Test",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [
+        ":tests_lib",
+    ] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.storage.schema.SchemaV10Test",
     visibility = ["//visibility:public"],
 )
 
@@ -106,6 +117,7 @@ test_suite(
     name = "tests",
     tests = [
         ":MigrationRunnerTest",
+        ":SchemaV10Test",
         ":SchemaV2Test",
         ":SchemaV4Test",
         ":SchemaV5Test",

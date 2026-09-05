@@ -3,6 +3,7 @@ package com.holtherndon.bazelviz.storage.graph;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.core.graph.GraphKind;
+import com.holtherndon.bazelviz.graph.CsrFile;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
@@ -111,15 +112,16 @@ final class ConfiguredTargetGraphTest {
   @DisplayName("the forward index is dependency-to-depender, like the action graph's")
   void forwardMeansProducerToConsumer() throws Exception {
     builder().buildConfiguredTargets();
-    CsrGraph forward = builder().loadConfiguredTargets("FORWARD").orElseThrow();
-
-    // Node numbering is label_id order: bin=0, core=1, base=2. base feeds
-    // core feeds bin, so forward walks base -> core -> bin.
-    assertThat(forward.degree(2)).isEqualTo(1);
-    List<Integer> fedByBase = neighbours(forward, 2);
-    assertThat(fedByBase).containsExactly(1);
-    assertThat(neighbours(forward, 1)).containsExactly(0);
-    assertThat(forward.degree(0)).isZero();
+    try (CsrGraph forward =
+        CsrFile.open(builder().configuredTargetsDescriptor("FORWARD").orElseThrow())) {
+      // Node numbering is label_id order: bin=0, core=1, base=2. base feeds
+      // core feeds bin, so forward walks base -> core -> bin.
+      assertThat(forward.degree(2)).isEqualTo(1);
+      List<Integer> fedByBase = neighbours(forward, 2);
+      assertThat(fedByBase).containsExactly(1);
+      assertThat(neighbours(forward, 1)).containsExactly(0);
+      assertThat(forward.degree(0)).isZero();
+    }
   }
 
   @Test
@@ -129,7 +131,7 @@ final class ConfiguredTargetGraphTest {
     exec("DELETE FROM configured_target_nodes");
 
     assertThat(builder().buildConfiguredTargets()).isEmpty();
-    assertThat(queries().forwardIndex(GraphKind.CONFIGURED_TARGETS)).isEmpty();
+    assertThat(queries().indexDescriptor(GraphKind.CONFIGURED_TARGETS, true)).isEmpty();
   }
 
   @Test
@@ -157,15 +159,15 @@ final class ConfiguredTargetGraphTest {
 
     // Reverse of "core feeds bin" is "core needs base".
     List<GraphQueries.GraphNode> needs =
-        queries.neighbours(GraphKind.CONFIGURED_TARGETS, core, false, 10);
+        queries.neighbours(GraphKind.CONFIGURED_TARGETS, core, false, 10).orElseThrow();
     List<GraphQueries.GraphNode> neededBy =
-        queries.neighbours(GraphKind.CONFIGURED_TARGETS, core, true, 10);
+        queries.neighbours(GraphKind.CONFIGURED_TARGETS, core, true, 10).orElseThrow();
 
     assertThat(needs).extracting(node -> node.label().orElseThrow()).containsExactly("//lib:base");
     assertThat(neededBy)
         .extracting(node -> node.label().orElseThrow())
         .containsExactly("//app:bin");
-    assertThat(queries.degree(GraphKind.CONFIGURED_TARGETS, core, true)).isEqualTo(1);
+    assertThat(queries.degree(GraphKind.CONFIGURED_TARGETS, core, true)).hasValue(1);
   }
 
   @Test
@@ -173,10 +175,13 @@ final class ConfiguredTargetGraphTest {
   void pathsWorkOverLabels() throws Exception {
     builder().buildConfiguredTargets();
 
-    var result = queries().path(GraphKind.CONFIGURED_TARGETS, 2, 0, 10_000).orElseThrow();
+    int[] path =
+        queries()
+            .withPath(
+                GraphKind.CONFIGURED_TARGETS, 2, 0, 10_000, result -> result.found().orElseThrow())
+            .orElseThrow();
 
-    assertThat(result.found()).isPresent();
-    assertThat(result.found().orElseThrow()).containsExactly(2, 1, 0);
+    assertThat(path).containsExactly(2, 1, 0);
   }
 
   @Test

@@ -238,7 +238,7 @@ final class ConfiguredTargetImporterTest {
     Path indexDirectory = tempDir.resolve("indexes");
     GraphIndexBuilder indexes = new GraphIndexBuilder(connection, indexDirectory);
     GraphIndexBuilder.Result previous = indexes.buildConfiguredTargets().orElseThrow();
-    assertThat(indexes.loadConfiguredTargets("FORWARD")).isPresent();
+    assertThat(indexes.configuredTargetsDescriptor("FORWARD")).isPresent();
 
     Path garbage = tempDir.resolve("replacement-garbage.proto");
     Files.write(garbage, new byte[] {(byte) 0xff, (byte) 0xff, (byte) 0xff});
@@ -249,7 +249,7 @@ final class ConfiguredTargetImporterTest {
     assertThat(result.succeeded()).isFalse();
     assertThat(scalar("SELECT count(*) FROM graph_indexes" + " WHERE kind = 'CONFIGURED_TARGETS'"))
         .isZero();
-    assertThat(indexes.loadConfiguredTargets("FORWARD")).isEmpty();
+    assertThat(indexes.configuredTargetsDescriptor("FORWARD")).isEmpty();
     // Registry invalidation is sufficient; the next successful build
     // atomically replaces this now-orphaned file.
     assertThat(previous.forwardFile()).exists();

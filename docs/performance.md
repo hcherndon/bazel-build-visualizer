@@ -58,6 +58,28 @@ evicted at the retention cap are removed from the document prefix by the same
 offset index instead of triggering repeated full rebuilds. No render-throughput
 or large-output latency figure has been measured, so none is claimed.
 
+**Release-hardening note (2026-09-05).** The bounded archive preflight/catalog,
+auxiliary enrichment/query ingestion, and Query/Events/Errors inspection
+batches are blocked and unmerged. Therefore this document makes no bounded-
+memory claim for hostile ZIP central directories, oversized local auxiliary
+files or query output, arbitrary oversized SQL result cells, complete raw-event
+materialization, or Errors transcript normalization. Their focused branch
+measurements, where any exist, are not measurements of this tree.
+
+**Production graph-resource note (2026-09-05).** An open session now admits
+mapped CSR files, retained graph renderings/models/metadata, and charged graph
+scratch under one 1 GiB aggregate budget. Index headers are sized without
+mapping bodies; bodies are read through at most 256 MiB read-only segments and
+are not copied into graph-sized heap arrays. The index cache retains at most two
+mappings and evicts only idle entries. The layout cache contributes at most
+128 MiB and 12 request keys to the same aggregate allowance. Refusal happens
+before the applicable allocation and reports exact requested, limit, retained
+and purpose accounting.
+This is a structural bound, not a Tier 3 construction or UI measurement.
+It is not a whole-process native-memory ceiling: every independently opened
+graph reader has a fixed 1 MiB SQLite page cache outside the graph budget, and
+uses file-backed temporary b-trees.
+
 ## Benchmark tiers (plan 20.1)
 
 Authoritative constants live in
@@ -94,7 +116,7 @@ the rows marked Phase 0 are in scope for the Phase 0 exit criteria.
 | 6 | A cached action-table page appears within 100 ms | **met** — table cache max 25.0 µs; keyset pages 0.75–1.13 ms at 5,000,000 actions, at every depth |
 | 7 | An uncached indexed page normally appears within 500 ms | **met** — 0.6 ms for the first page of a 5,000,000-action session opened from cold |
 | 8 | Opening an already indexed Tier 3 session shows its overview within five seconds without loading all actions | **met — 9.6 ms** from cold, on a 1.5 GB, 5,000,000-action database |
-| 9 | Application-managed heap remains below 4 GB for Tier 3 | **partial** — capture measured 0.48 GB resident at 50,000,000 events (0.96 GB with the larger page cache). CSR retained arrays measured 176 MB at Tier 2; ~880 MB at Tier 3 is a linear estimate, not a Tier 3 graph measurement. |
+| 9 | Application-managed heap remains below 4 GB for Tier 3 | **partial** — capture measured 0.48 GB resident at 50,000,000 events (0.96 GB with the larger page cache). The production graph path now has a 1 GiB aggregate per-session admission budget and segmented mappings, but that is a structural refusal boundary, not a Tier 3 heap measurement. The old CSR-array estimate below remains an estimate of the Phase 0 spike. |
 | 10 | No routine EDT pause exceeds 100 ms | **structurally supported, not measured end to end** — `EdtDisciplineTest` requires database-reaching components to own a worker; paint-isolation tests keep connections and executors out of painted views. Frame p95s measure only the rendering spikes. |
 | 11 | Long queries are cancellable | **met** — `SessionReader.cancelRunningQuery`, `GraphLayoutService.cancel`, and every layout returns a placement of nothing rather than a partial one |
 | 12 | Session finalization can resume after application restart | **met** — an import interrupted at 145,000 of 300,000 events resumes to a state identical to a clean import |
@@ -224,7 +246,9 @@ The analytic 8x memory advantage over an object-per-edge representation is the
 quantitative justification for ADR-006/007. Extrapolating Tier 2's 176 MB
 linearly, Tier 3 (100M edges) lands near 880 MB for both directions. That
 estimate is below the 4 GB objective but does not prove a Tier 3 graph fits;
-the memory-mapped CSR files of plan 13.2 remain necessary rather than optional.
+it describes the Phase 0 heap-array spike, not the current production reader.
+Production uses segmented mapped files and the aggregate admission contract
+described above.
 
 Caveat: the synthetic edge generator biases producers to within 4096 indices
 of the consumer, which equals the spike's cluster size, so only ~c-1
@@ -733,6 +757,23 @@ states the exact simplified count; zooming in restores every branch. While a
 drag is in progress the canvas
 drops labels and, above 20,000 edges, edges too, which is what plan 17.7's
 "disable expensive detail while actively panning" is for.
+
+### Production graph admission is bounded, not newly benchmarked
+
+The current index builder streams separately ordered forward and reverse SQL
+rows through fixed 1 MiB positional buffers, forces each generation file, and
+publishes the pair together. It validates assigned action node indices as the
+dense sequence `0..count-1` before construction; schema v10 also rejects
+duplicate non-null indices. Opening first reads a 40-byte descriptor and checks
+the exact file-length arithmetic. Only an admitted index maps, and it maps in
+read-only segments no larger than 256 MiB.
+
+Graph extraction/layout/model estimates use checked arithmetic and reserve both
+retained and peak scratch bytes before allocating. Extraction-aligned metadata
+loads only after the bounded node set is known. A cache hit is still charged;
+cache eviction releases its reservation. None of these structural tests supply
+a new frame-time, construction-time, resident-set, or Tier 3 result, so the
+measurements earlier in this section remain the only numbers claimed.
 
 ## Phase 8: the metric catalog and the finding rules
 

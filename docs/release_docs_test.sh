@@ -24,9 +24,34 @@ fi
 grep -Fq '## 0.1.0 — 2026-09-04' "$changelog" ||
     fail "CHANGELOG has no 0.1.0 release entry"
 grep -Fq '## 0.1.0 support' "$readme" || fail "README has no 0.1.0 support section"
+grep -Fq 'Three late hardening batches remain blocked' "$readme" ||
+    fail "README does not disclose the unmerged hardening batches"
+grep -Fq 'Saved Query-library' "$readme" ||
+    fail "README does not disclose saved Query-library durability"
 grep -Fq '## Report a vulnerability' "$security" ||
     fail "SECURITY has no reporting guidance"
 grep -Fq '### Query' "$docs/user-guide.md" || fail "user guide has no Query section"
+for blocker in \
+    'Archive import and catalog recovery' \
+    'Auxiliary enrichment and query ingestion' \
+    'Query, Events, and Errors inspection'; do
+    grep -Fq "$blocker" "$docs/implementation-status.md" ||
+        fail "implementation status omits release blocker: $blocker"
+done
+grep -Fq 'Manual execution-log attachment (planned)' "$docs/capture-sources.md" ||
+    fail "capture sources still imply manual execution-log attachment is available"
+grep -Fq 'No current UI or service API' "$docs/capture-sources.md" ||
+    fail "capture sources do not state the manual-attachment boundary"
+grep -Fq 'Schema v10 — graph node-index integrity' "$docs/database-schema.md" ||
+    fail "database schema docs do not describe schema v10"
+grep -Fq 'GraphLayoutService.MAX_CACHE_ENTRIES' "$docs/limits.md" ||
+    fail "limits docs omit the graph layout entry cap"
+grep -Fq 'The shared page toolbar holds Graph' "$docs/user-guide.md" ||
+    fail "user guide does not explain Graph toolbar ownership"
+grep -Fq 'done is met in 33 of 37 items, not 37 of 37' "$docs/implementation-status.md" ||
+    fail "implementation status miscounts the section 25 release criteria"
+grep -Fq 'security checks have known open blockers' "$docs/implementation-status.md" ||
+    fail "implementation status counts blocked security checks as complete"
 
 [[ "$(grep -Ec '^!\[' "$readme")" -eq 3 ]] ||
     fail "README must contain exactly three screenshot placeholders"
@@ -82,6 +107,22 @@ grep -Fq '(troubleshooting.md#timeline-pinch-does-not-zoom-on-macos)' \
     "$docs/user-guide.md" || fail "user guide does not link the macOS pinch fix"
 grep -Fq '### Timeline pinch does not zoom on macOS' "$docs/troubleshooting.md" ||
     fail "troubleshooting guide has no macOS pinch anchor"
+grep -Fq 'select it and press Enter' "$docs/user-guide.md" ||
+    fail "user guide does not document repository Enter-to-open"
+grep -Fq 'Command+W on macOS' "$docs/user-guide.md" ||
+    fail "user guide does not document native editor close"
+for manual_gate in \
+    'signed, notarized, and stapled' \
+    'Gatekeeper and Finder' \
+    'local and SSH Terminal' \
+    'packaged Query and cancellation' \
+    'artifact SHA-256' \
+    'supervised real-Bazel' \
+    'parser fuzz' \
+    'dependency-advisory'; do
+    grep -Fq "$manual_gate" "$docs/packaging.md" ||
+        fail "packaging guide omits manual gate: $manual_gate"
+done
 grep -Fq 'pure-Java Swing icon adapter' "$docs/implementation-status.md" ||
     fail "implementation status does not qualify the pure-Java icon adapter"
 grep -Fq 'FlatLaf core separately carries seven Windows, Linux and macOS native' \

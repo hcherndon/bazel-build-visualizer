@@ -10,9 +10,15 @@ import com.holtherndon.bazelviz.analysis.FindingRules;
 import com.holtherndon.bazelviz.analysis.FindingThresholds;
 import com.holtherndon.bazelviz.analysis.GroupAggregate;
 import com.holtherndon.bazelviz.analysis.InvocationMetrics;
+import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.core.source.DataSource;
+import com.holtherndon.bazelviz.graph.GraphResourceBudget;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
+import com.holtherndon.bazelviz.storage.graph.GraphIndexBuilder;
+import com.holtherndon.bazelviz.storage.graph.GraphQueries;
+import com.holtherndon.bazelviz.storage.graph.GraphSessionResources;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -314,6 +320,63 @@ final class MetricQueriesTest {
         .contains("Bazel-reported critical path")
         .contains("Visualizer-computed dependency critical path")
         .contains("no imported action graph");
+  }
+
+  @Test
+  @DisplayName("critical-path budget refusal stays distinct from an unreadable index")
+  void criticalPathBudgetRefusalIsVisibleAndReleased() throws Exception {
+    exec(
+        "INSERT INTO graph_sources"
+            + " (id, kind, state, configuration_match, target_scope, declared_actions,"
+            + " correlated_actions, unresolved_artifacts, unresolved_depset_references)"
+            + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT', 'EXACT_BEP_TARGETS',"
+            + " 5, 5, 0, 0)");
+    for (int node = 0; node < 5; node++) {
+      exec(
+          "INSERT INTO declared_actions (id, source_id, graph_id, action_id, node_index) VALUES ("
+              + (node + 1)
+              + ", 1, "
+              + node
+              + ", "
+              + (node + 1)
+              + ", "
+              + node
+              + ")");
+      if (node > 0) {
+        exec(
+            "INSERT INTO action_edges (producer_id, consumer_id, derivation) VALUES ("
+                + node
+                + ", "
+                + (node + 1)
+                + ", 'DECLARED')");
+      }
+    }
+    Path indexes = tempDir.resolve("metric-indexes");
+    GraphIndexBuilder.Result built =
+        new GraphIndexBuilder(connection, indexes).build(EdgeDerivation.DECLARED).orElseThrow();
+    long mappedBytes = Files.size(built.forwardFile());
+    GraphResourceBudget budget = new GraphResourceBudget(mappedBytes);
+    GraphSessionResources resources = new GraphSessionResources(budget);
+    try {
+      GraphQueries graph = new GraphQueries(database.newGraphReadConnection(), indexes, resources);
+      try (MetricQueries metrics = new MetricQueries(database.newReadConnection(), graph)) {
+        SessionMetrics result =
+            metrics.collect(
+                MetricQueries.Request.everything(CriticalPath.DurationSource.BEP_ACTION));
+
+        assertThat(result.invocation().criticalPaths().derived()).isEmpty();
+        assertThat(result.invocation().criticalPaths().derivedUnavailableReason())
+            .hasValueSatisfying(
+                reason ->
+                    assertThat(reason)
+                        .contains("refused by the graph resource budget")
+                        .doesNotContain("index could not be read"));
+        assertThat(budget.snapshot().retainedBytes()).isEqualTo(mappedBytes);
+      }
+    } finally {
+      resources.close();
+    }
+    assertThat(budget.snapshot().retainedBytes()).isZero();
   }
 
   @Test

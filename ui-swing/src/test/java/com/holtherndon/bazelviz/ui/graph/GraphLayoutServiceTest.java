@@ -1,22 +1,27 @@
 package com.holtherndon.bazelviz.ui.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
+import com.holtherndon.bazelviz.graph.GraphResourceBudget;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.graph.GraphIndexBuilder;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
+import com.holtherndon.bazelviz.storage.graph.GraphSessionResources;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -57,7 +62,7 @@ final class GraphLayoutServiceTest {
     exec(
         connection,
         "INSERT INTO graph_sources (id, kind, state, configuration_match)"
-            + " VALUES (1, 'AQUERY', 'COMPLETE', 'EXACT')");
+            + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT')");
     exec(connection, "INSERT INTO mnemonics (id, value) VALUES (1, 'Javac'), (2, 'Genrule')");
     for (int i = 0; i < 6; i++) {
       String label = (i < 3 ? "//a:" : "//b:") + "target" + i;
@@ -186,6 +191,206 @@ final class GraphLayoutServiceTest {
   }
 
   @Test
+  @DisplayName("closing discards a queued owned preparation and releases its charge once")
+  void closeDiscardsQueuedOwnedPreparation() throws Exception {
+    CountDownLatch workerEntered = new CountDownLatch(1);
+    CountDownLatch holdWorker = new CountDownLatch(1);
+    service.prepare(
+        () -> {
+          workerEntered.countDown();
+          holdWorker.await(10, TimeUnit.SECONDS);
+          return null;
+        },
+        ignored -> {},
+        failure -> {});
+    assertThat(workerEntered.await(10, TimeUnit.SECONDS)).isTrue();
+
+    GraphResourceBudget budget = new GraphResourceBudget(32);
+    GraphResourceBudget.Reservation reservation = budget.reserve(32, "queued model input");
+    AtomicInteger closeCalls = new AtomicInteger();
+    AtomicInteger workCalls = new AtomicInteger();
+    AutoCloseable owner =
+        () -> {
+          closeCalls.incrementAndGet();
+          reservation.close();
+        };
+    service.prepareOwned(
+        owner,
+        () -> {
+          workCalls.incrementAndGet();
+          return null;
+        },
+        ignored -> {},
+        failure -> {});
+
+    service.close();
+
+    holdWorker.countDown();
+    assertThat(workCalls).hasValue(0);
+    assertThat(closeCalls).hasValue(1);
+    assertThat(budget.snapshot().retainedBytes()).isZero();
+  }
+
+  @Test
+  @DisplayName("close does not finish while active graph work still owns the reader")
+  void closeWaitsForActiveWorkerTermination() throws Exception {
+    CountDownLatch workerEntered = new CountDownLatch(1);
+    CountDownLatch workerInterrupted = new CountDownLatch(1);
+    CountDownLatch releaseWorker = new CountDownLatch(1);
+    service.prepare(
+        () -> {
+          workerEntered.countDown();
+          while (releaseWorker.getCount() != 0) {
+            try {
+              releaseWorker.await();
+            } catch (InterruptedException cancelled) {
+              workerInterrupted.countDown();
+            }
+          }
+          return null;
+        },
+        ignored -> {},
+        failure -> {});
+    assertThat(workerEntered.await(10, TimeUnit.SECONDS)).isTrue();
+
+    CompletableFuture<Void> closing = CompletableFuture.runAsync(service::close);
+    assertThat(workerInterrupted.await(10, TimeUnit.SECONDS)).isTrue();
+    CompletableFuture<Void> concurrentClose = CompletableFuture.runAsync(service::close);
+    assertThat(closing).isNotDone();
+    assertThat(concurrentClose).isNotDone();
+
+    releaseWorker.countDown();
+    closing.get(10, TimeUnit.SECONDS);
+    concurrentClose.get(10, TimeUnit.SECONDS);
+    assertThat(closing).isCompleted();
+    assertThat(concurrentClose).isCompleted();
+  }
+
+  @Test
+  @DisplayName("a dropped weight-to-restyle handoff keeps and then releases both owners")
+  void droppedWeightRestyleOwnsBothStages() throws Exception {
+    GraphLayoutService.Rendered rendered =
+        await(
+            GraphLayoutService.Request.around(
+                GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 2, 1));
+    AtomicReference<GraphModel> prepared = new AtomicReference<>();
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    CountDownLatch modelReady = new CountDownLatch(1);
+    service.prepareModel(
+        rendered,
+        model -> {
+          prepared.set(model);
+          modelReady.countDown();
+        },
+        error -> {
+          failure.set(error);
+          modelReady.countDown();
+        });
+    assertThat(modelReady.await(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(failure.get()).isNull();
+    GraphModel model = prepared.get();
+
+    CountDownLatch weightsReady = new CountDownLatch(1);
+    CountDownLatch workerEntered = new CountDownLatch(1);
+    CountDownLatch holdWorker = new CountDownLatch(1);
+    AtomicReference<GraphLayoutService.WeightSet> weights = new AtomicReference<>();
+    service.weights(
+        GraphKind.DECLARED_ACTIONS,
+        GraphWeight.IMMEDIATE_DEPS,
+        model.lease(),
+        set -> {
+          weights.set(set);
+          service.prepare(
+              () -> {
+                workerEntered.countDown();
+                holdWorker.await(10, TimeUnit.SECONDS);
+                return null;
+              },
+              ignored -> {},
+              failure::set);
+          weightsReady.countDown();
+        },
+        error -> {
+          failure.set(error);
+          weightsReady.countDown();
+        });
+    assertThat(weightsReady.await(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(failure.get()).isNull();
+    assertThat(workerEntered.await(10, TimeUnit.SECONDS)).isTrue();
+
+    AtomicInteger restyleRuns = new AtomicInteger();
+    AtomicInteger installed = new AtomicInteger();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          GraphLayoutService.WeightSet set = weights.get();
+          GraphModel.Lease modelLease = model.lease();
+          AutoCloseable inputs =
+              () -> {
+                set.close();
+                modelLease.close();
+              };
+          service.prepareOwned(
+              inputs,
+              () -> {
+                restyleRuns.incrementAndGet();
+                try (inputs) {
+                  return modelLease
+                      .model()
+                      .withWeights(set.weight(), set.values(), set.truncated(), set.note());
+                }
+              },
+              styled -> {
+                installed.incrementAndGet();
+                styled.close();
+              },
+              failure::set);
+          model.close();
+        });
+
+    assertThat(queries.resourceBudget().snapshot().retainedByPurpose())
+        .containsKeys(
+            "retained graph model and spatial index", "retained extraction-aligned graph weights");
+    service.close();
+    holdWorker.countDown();
+
+    assertThat(restyleRuns).hasValue(0);
+    assertThat(installed).hasValue(0);
+    assertThat(failure.get()).isNull();
+    assertThat(queries.resourceBudget().snapshot().retainedByPurpose())
+        .doesNotContainKeys(
+            "retained graph model and spatial index", "retained extraction-aligned graph weights");
+  }
+
+  @Test
+  @DisplayName("submitting after close reports rejection on EDT instead of throwing")
+  void submitAfterCloseReportsOnEdt() throws Exception {
+    service.close();
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicBoolean callbackWasEdt = new AtomicBoolean(false);
+    CountDownLatch done = new CountDownLatch(1);
+
+    assertThatCode(
+            () ->
+                service.submit(
+                    GraphLayoutService.Request.around(
+                        GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 1),
+                    rendered -> {
+                      rendered.close();
+                      done.countDown();
+                    },
+                    error -> {
+                      failure.set(error);
+                      callbackWasEdt.set(SwingUtilities.isEventDispatchThread());
+                      done.countDown();
+                    }))
+        .doesNotThrowAnyException();
+
+    assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(failure.get()).isInstanceOf(RejectedExecutionException.class);
+    assertThat(callbackWasEdt).isTrue();
+  }
+
+  @Test
   @DisplayName("a newer model preparation suppresses the stale preparation callback")
   void stalePreparationDoesNotInstall() throws Exception {
     CountDownLatch started = new CountDownLatch(1);
@@ -251,10 +456,58 @@ final class GraphLayoutServiceTest {
     GraphLayoutService.Rendered first = await(request);
     GraphLayoutService.Rendered second = await(request);
 
-    // Same instance, not merely equal: the cache returned it rather than
-    // laying the graph out again.
-    assertThat(second).isSameAs(first);
+    // Each caller gets a separate closeable reference, while the expensive
+    // extraction and layout are shared from the cache.
+    assertThat(second).isNotSameAs(first);
+    assertThat(second.extract()).isSameAs(first.extract());
+    assertThat(second.layout()).isSameAs(first.layout());
     assertThat(service.cachedCount()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("aggregate graph-budget refusal is visible and releases every provisional charge")
+  void aggregateBudgetRefusalIsVisibleAndReleased() throws Exception {
+    long mappedPairBytes =
+        Math.addExact(
+            queries.indexDescriptor(GraphKind.DECLARED_ACTIONS, true).orElseThrow().fileBytes(),
+            queries.indexDescriptor(GraphKind.DECLARED_ACTIONS, false).orElseThrow().fileBytes());
+    GraphResourceBudget budget = new GraphResourceBudget(mappedPairBytes);
+    GraphSessionResources resources = new GraphSessionResources(budget);
+    GraphQueries constrainedQueries =
+        new GraphQueries(database.newGraphReadConnection(), tempDir.resolve("indexes"), resources);
+    GraphLayoutService constrained = new GraphLayoutService(constrainedQueries);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicBoolean deliveredOnEdt = new AtomicBoolean(false);
+    CountDownLatch done = new CountDownLatch(1);
+    try {
+      constrained.submit(
+          GraphLayoutService.Request.around(
+              GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, 1),
+          rendered -> {
+            rendered.close();
+            done.countDown();
+          },
+          error -> {
+            failure.set(error);
+            deliveredOnEdt.set(SwingUtilities.isEventDispatchThread());
+            done.countDown();
+          });
+
+      assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(failure.get())
+          .isInstanceOf(GraphResourceBudget.RefusedException.class)
+          .hasMessageContaining("session budget is " + mappedPairBytes + " bytes")
+          .hasMessageContaining("retained");
+      assertThat(deliveredOnEdt).isTrue();
+      assertThat(budget.snapshot().retainedBytes()).isEqualTo(mappedPairBytes);
+      assertThat(budget.snapshot().retainedByPurpose().keySet())
+          .allMatch(purpose -> purpose.startsWith("mapped graph index"));
+    } finally {
+      constrained.close();
+      constrainedQueries.close();
+      resources.close();
+    }
+    assertThat(budget.snapshot().retainedBytes()).isZero();
   }
 
   @Test
@@ -279,13 +532,13 @@ final class GraphLayoutServiceTest {
   @Test
   @DisplayName("the cache does not grow without bound")
   void cacheIsBounded() throws Exception {
-    for (int depth = 1; depth <= GraphLayoutService.CACHE_ENTRIES + 5; depth++) {
+    for (int depth = 1; depth <= GraphLayoutService.MAX_CACHE_ENTRIES + 5; depth++) {
       await(
           GraphLayoutService.Request.around(
               GraphKind.DECLARED_ACTIONS, GraphExtract.Mode.NEIGHBOURHOOD, 0, depth));
     }
 
-    assertThat(service.cachedCount()).isEqualTo(GraphLayoutService.CACHE_ENTRIES);
+    assertThat(service.cachedCount()).isEqualTo(GraphLayoutService.MAX_CACHE_ENTRIES);
   }
 
   @Test
@@ -329,7 +582,7 @@ final class GraphLayoutServiceTest {
     GraphLayoutService.Rendered raised = await(tight.withClusterLimit(2));
 
     assertThat(refused.refused()).isTrue();
-    assertThat(refused.description()).contains("2 groups").contains("more than the 1");
+    assertThat(refused.description()).contains("more than the 1").doesNotContain("2 groups");
     assertThat(raised.refused()).isFalse();
     assertThat(raised.clustering().clusters()).hasSize(2);
   }

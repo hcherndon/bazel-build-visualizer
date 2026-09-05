@@ -7,8 +7,8 @@ and where the credentials live.
 
 The supported 0.1.0 package target is Apple Silicon macOS. An unsigned Apple
 Silicon development image has been built and launched on macOS 26.6.2. No
-signed and notarized 0.1.0 candidate has passed the release checklist below,
-so the repository does not yet claim a generally installable release.
+signed, notarized, and stapled 0.1.0 candidate has passed the release checklist
+below, so the repository does not yet claim a generally installable release.
 
 Intel macOS packaging is unavailable in 0.1.0: the repository pins arm64
 protobuf and gRPC code generators for every macOS build. Linux can run the
@@ -221,27 +221,37 @@ on an Intel host.
 
 These are manual release gates; they have not all passed for 0.1.0 yet.
 
-1. On a clean Apple Silicon macOS host, select JDK 25, set
+1. Confirm `docs/implementation-status.md` no longer lists the t2, t3, or t6
+   hardening work as blocked and unmerged. Run the safe Bazel build/test gate,
+   a recorded parser fuzz campaign, and a dependency-advisory review against
+   the locked runtime closure. Focused branch results do not satisfy this step.
+2. On a clean Apple Silicon macOS host, select JDK 25, set
    `BBV_MAC_SIGNING_IDENTITY` to the intended Developer ID identity, and build
    the deploy jar and DMG with `bazel run //app:jpackage -- --type=dmg`. An
    unsigned DMG is a development artifact, not a release candidate.
-2. Inspect the finished `Info.plist`: short version `0.1.0`, bundle version `1`,
+3. Inspect the finished `Info.plist`: short version `0.1.0`, bundle version `1`,
    the `.bviz` association, and no unsupported minimum-macOS claim. Inspect the
    launcher configuration for all required JVM options.
-3. Before submission, run `codesign --verify --strict` on the DMG and
+4. Before submission, run `codesign --verify --strict` on the DMG and
    `codesign --verify --deep --strict` on the mounted application, then inspect
    both with `codesign --display --verbose=4`. Confirm the expected Developer
    ID identity; stop if either artifact is unsigned or signed by another identity.
-4. Smoke the signed candidate: run its launcher and `--version`, open the GUI,
-   import a known session, double-click a `.bviz` file, and exercise both local
-   and authorized-SSH Terminal text, resize, and alternate-screen behavior.
-5. Set `BBV_MAC_NOTARY_PROFILE` and run `bazel run //app:notarize`. That script
+5. Smoke the signed candidate through Gatekeeper and Finder: run its launcher
+   and `--version`, open the GUI, import a known session, and double-click a
+   `.bviz` file. Exercise the local and SSH Terminal text, resize, and
+   alternate-screen paths. Run a packaged Query and cancellation check against
+   the imported session.
+6. Set `BBV_MAC_NOTARY_PROFILE` and run `bazel run //app:notarize`. That script
    submits the already-signed DMG and staples the result; it does not sign it.
-6. Hash the final stapled artifact. On a clean machine, verify Gatekeeper,
-   install through Finder, and repeat every smoke in steps 2–4 against that
-   exact final artifact. Do not mutate or repackage it afterward.
-7. Record the host, JDK, final artifact hash, signing/notarization evidence, and
-   results. Publish only the exact candidate that passed every applicable step.
+7. Verify that the candidate is signed, notarized, and stapled. Record its final
+   artifact SHA-256. On a clean machine, verify Gatekeeper,
+   install through Finder, and repeat the inspections and smoke in steps 3–5
+   against that exact final artifact. Do not mutate or repackage it afterward.
+8. Run the selected Bazel compatibility targets as supervised real-Bazel
+   coverage, one version at a time with the required positive `bazel-sweep`
+   filter. Record the host, JDK, final artifact hash, signing/notarization
+   evidence, and results. Publish only the exact candidate that passed every
+   applicable step.
 
 ## What is not here
 

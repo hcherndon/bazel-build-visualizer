@@ -82,6 +82,35 @@ final class GraphSpatialIndexTest {
   }
 
   @Test
+  @DisplayName("a rectangle query stops at exact retained-hit and candidate budgets")
+  void boundedCullingStopsWithoutClaimingCompleteness() {
+    GraphLayout.Result layout = gridOf(20);
+    GraphSpatialIndex index = GraphSpatialIndex.of(layout);
+    double[] box = layout.bounds().orElseThrow();
+
+    GraphSpatialIndex.BoundedSelection hitLimited =
+        index.withinBounded(box[0], box[1], box[2], box[3], 7, 20, position -> true);
+    assertThat(hitLimited.positions()).hasSize(7);
+    assertThat(hitLimited.examinedCandidates()).isEqualTo(8);
+    assertThat(hitLimited.truncated()).isTrue();
+
+    GraphSpatialIndex.BoundedSelection candidateLimited =
+        index.withinBounded(box[0], box[1], box[2], box[3], 20, 5, position -> false);
+    assertThat(candidateLimited.positions()).isEmpty();
+    assertThat(candidateLimited.examinedCandidates()).isEqualTo(5);
+    assertThat(candidateLimited.truncated()).isTrue();
+
+    GraphLayout.Result exactLayout = gridOf(7);
+    double[] exactBox = exactLayout.bounds().orElseThrow();
+    GraphSpatialIndex.BoundedSelection exact =
+        GraphSpatialIndex.of(exactLayout)
+            .withinBounded(
+                exactBox[0], exactBox[1], exactBox[2], exactBox[3], 7, 7, position -> true);
+    assertThat(exact.positions()).hasSize(7);
+    assertThat(exact.truncated()).isFalse();
+  }
+
+  @Test
   @DisplayName("hit testing finds the nearest node and nothing beyond the radius")
   void hitTesting() {
     GraphLayout.Result layout = gridOf(100);

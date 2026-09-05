@@ -17,6 +17,7 @@ import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.KeyboardFocusManager;
 import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
@@ -56,9 +57,10 @@ final class GraphCanvasTest {
   }
 
   private static GraphLayoutService.Rendered rendered(int nodes) {
-    GraphExtract.Result extract = GraphExtract.whole(chain(nodes), 1_000, 1_000);
+    int limit = Math.max(1_000, nodes + 1);
+    GraphExtract.Result extract = GraphExtract.whole(chain(nodes), limit, limit);
     return new GraphLayoutService.Rendered(
-        GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 1_000, 1_000),
+        GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, limit, limit),
         extract,
         GraphLayout.layered(extract, RUNNING),
         null,
@@ -585,6 +587,39 @@ final class GraphCanvasTest {
   }
 
   @Test
+  @DisplayName("marquee selection is bounded and says when only a subset was selected")
+  void marqueeSelectionIsBoundedAndTruthful() {
+    int nodes = GraphCanvas.MAX_MARQUEE_SELECTION + 1;
+    CsrGraph loose = CsrBuilder.build(nodes, visitor -> {});
+    GraphExtract.Result extract = GraphExtract.whole(loose, nodes + 1, 1);
+    GraphModel model =
+        GraphModel.of(
+            new GraphLayoutService.Rendered(
+                GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, nodes + 1, 1),
+                extract,
+                GraphLayout.grid(extract, RUNNING),
+                null,
+                extract.describe()),
+            null,
+            allTimed(nodes));
+    GraphCanvas canvas = new GraphCanvas();
+    canvas.setSize(800, 600);
+    canvas.setModel(model);
+
+    mouse(canvas, MouseEvent.MOUSE_PRESSED, -100, -100, InputEvent.SHIFT_DOWN_MASK);
+    mouse(canvas, MouseEvent.MOUSE_DRAGGED, 900, 700, InputEvent.SHIFT_DOWN_MASK);
+    mouse(canvas, MouseEvent.MOUSE_RELEASED, 900, 700, InputEvent.SHIFT_DOWN_MASK);
+
+    assertThat(canvas.selectedPositions()).hasSize(GraphCanvas.MAX_MARQUEE_SELECTION);
+    assertThat(canvas.selectionLimitNote())
+        .isPresent()
+        .get(InstanceOfAssertFactories.STRING)
+        .contains("only this bounded subset is selected")
+        .contains(String.valueOf(GraphCanvas.MAX_MARQUEE_SELECTION));
+    model.close();
+  }
+
+  @Test
   @DisplayName("setting a new model clears the old selection")
   void modelChangeClearsSelection() {
     GraphCanvas canvas = new GraphCanvas();
@@ -616,9 +651,13 @@ final class GraphCanvasTest {
   }
 
   private static void mouse(GraphCanvas canvas, int id, int x, int y) {
+    mouse(canvas, id, x, y, 0);
+  }
+
+  private static void mouse(GraphCanvas canvas, int id, int x, int y, int modifiers) {
     canvas.dispatchEvent(
         new MouseEvent(
-            canvas, id, System.currentTimeMillis(), 0, x, y, 1, false, MouseEvent.BUTTON1));
+            canvas, id, System.currentTimeMillis(), modifiers, x, y, 1, false, MouseEvent.BUTTON1));
   }
 
   private static int screenXOf(GraphCanvas canvas, int position) {

@@ -44,6 +44,17 @@ final class BfsTest {
   }
 
   @Test
+  void budgetStatusRequiresProofOfAnotherReachableNode() {
+    Bfs.RunResult exhausted = new Bfs(diamond()).runWithStatus(0, 1, Integer.MAX_VALUE, null);
+    Bfs.RunResult complete = new Bfs(diamond()).runWithStatus(5, 1, Integer.MAX_VALUE, null);
+
+    assertThat(exhausted.visited()).isEqualTo(1);
+    assertThat(exhausted.budgetReached()).isTrue();
+    assertThat(complete.visited()).isEqualTo(1);
+    assertThat(complete.budgetReached()).isFalse();
+  }
+
+  @Test
   void depthLimitStopsTraversal() {
     assertThat(visitOrder(diamond(), 0, Long.MAX_VALUE, 0)).containsExactly(0);
     assertThat(visitOrder(diamond(), 0, Long.MAX_VALUE, 1)).containsExactly(0, 1, 2);
@@ -80,6 +91,8 @@ final class BfsTest {
   @Test
   void zeroBudgetVisitsNothing() {
     assertThat(new Bfs(diamond()).run(0, 0, Integer.MAX_VALUE)).isZero();
+    assertThat(new Bfs(diamond()).runWithStatus(0, 0, Integer.MAX_VALUE, null).budgetReached())
+        .isTrue();
   }
 
   @Test

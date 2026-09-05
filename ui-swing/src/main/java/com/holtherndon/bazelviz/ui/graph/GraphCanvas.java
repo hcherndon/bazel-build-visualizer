@@ -63,6 +63,12 @@ import javax.swing.UIManager;
  */
 public final class GraphCanvas extends JComponent {
 
+  /** Maximum nodes retained by one interactive marquee selection. */
+  public static final int MAX_MARQUEE_SELECTION = 10_000;
+
+  /** Maximum spatial candidates examined synchronously by one marquee selection. */
+  public static final int MAX_MARQUEE_CANDIDATES = 50_000;
+
   private static final long serialVersionUID = 1L;
 
   /** Node radius in world units. The layouts space nodes 44 apart. */
@@ -153,6 +159,8 @@ public final class GraphCanvas extends JComponent {
 
   /** Selected layout positions, in the order they were selected. */
   private final Set<Integer> selection = new LinkedHashSet<>();
+
+  private String selectionLimitNote = "";
 
   /** Cross-links revealed by the current selection, computed only when it changes. */
   private int revealedCrossLinks;
@@ -264,8 +272,13 @@ public final class GraphCanvas extends JComponent {
 
   /** Replaces what is drawn and fits it to the window. */
   public void setModel(GraphModel model) {
+    GraphModel previous = this.model;
     this.model = model == null ? GraphModel.empty() : model;
+    if (previous != this.model) {
+      previous.close();
+    }
     selection.clear();
+    selectionLimitNote = "";
     revealedCrossLinks = 0;
     hover = -1;
     // A new layout means new positions; offsets against the old ones
@@ -288,7 +301,11 @@ public final class GraphCanvas extends JComponent {
    * positions are layout indices.
    */
   public void restyle(GraphModel model) {
+    GraphModel previous = this.model;
     this.model = model == null ? GraphModel.empty() : model;
+    if (previous != this.model) {
+      previous.close();
+    }
     updateAccessibleDescription();
     repaint();
   }
@@ -532,9 +549,15 @@ public final class GraphCanvas extends JComponent {
     return positions;
   }
 
+  /** Why the last marquee selection is only a bounded subset, or empty when it completed. */
+  public Optional<String> selectionLimitNote() {
+    return selectionLimitNote.isEmpty() ? Optional.empty() : Optional.of(selectionLimitNote);
+  }
+
   /** Selects one node by its layout position, replacing the selection. */
   public void select(int position) {
     selection.clear();
+    selectionLimitNote = "";
     if (position >= 0 && position < model.size()) {
       selection.add(position);
     }
@@ -667,6 +690,7 @@ public final class GraphCanvas extends JComponent {
   /** Replaces the selection with several positions, for marquee behavior tests. */
   void selectPositionsForTesting(int... positions) {
     selection.clear();
+    selectionLimitNote = "";
     for (int position : positions) {
       if (position >= 0 && position < model.size()) {
         selection.add(position);
@@ -1508,6 +1532,7 @@ public final class GraphCanvas extends JComponent {
         marquee = new Rectangle(marqueeStart);
         return;
       }
+      selectionLimitNote = "";
       OptionalInt hit = positionAt(event.getX(), event.getY());
       if (hit.isPresent()) {
         boolean add = event.isControlDown() || event.isMetaDown();
@@ -1581,15 +1606,29 @@ public final class GraphCanvas extends JComponent {
         double right = transform.worldX(marquee.x + marquee.width);
         double bottom = transform.worldY(marquee.y + marquee.height);
         selection.clear();
-        for (int position : model.index().within(left, top, right, bottom)) {
-          // The index holds laid-out positions; a dragged node is
-          // selected by where it is now, below, not where it was.
-          if (dragOffsets.isEmpty() || !dragOffsets.containsKey(position)) {
-            selection.add(position);
-          }
+        GraphSpatialIndex.BoundedSelection bounded =
+            model
+                .index()
+                .withinBounded(
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    MAX_MARQUEE_SELECTION,
+                    MAX_MARQUEE_CANDIDATES,
+                    position -> dragOffsets.isEmpty() || !dragOffsets.containsKey(position));
+        for (int position : bounded.positions()) {
+          selection.add(position);
         }
+        boolean truncated = bounded.truncated();
+        int examined = bounded.examinedCandidates();
         GraphLayout.Result layout = model.layout();
         for (int position : dragOffsets.keySet()) {
+          if (examined == MAX_MARQUEE_CANDIDATES || selection.size() == MAX_MARQUEE_SELECTION) {
+            truncated = true;
+            break;
+          }
+          examined++;
           if (position < model.size()
               && nodeX(layout, position) >= left
               && nodeX(layout, position) <= right
@@ -1598,6 +1637,14 @@ public final class GraphCanvas extends JComponent {
             selection.add(position);
           }
         }
+        selectionLimitNote =
+            truncated
+                ? "Marquee selection stopped at "
+                    + MAX_MARQUEE_SELECTION
+                    + " selected nodes or "
+                    + MAX_MARQUEE_CANDIDATES
+                    + " examined candidates; only this bounded subset is selected."
+                : "";
         notifySelectionChanged();
       }
       marquee = null;

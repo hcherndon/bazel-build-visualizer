@@ -26,6 +26,25 @@ import java.util.Optional;
  */
 public final class ShortestPath {
 
+  /** Conservative peak for full-node parents/frontiers and a maximally long cloned result path. */
+  public static long peakBytes(long nodeCount) {
+    // Two parent arrays, both frontier generations, path assembly bags/copies, and the Result's
+    // defensive copy can coexist at the successful return boundary.
+    return estimated(nodeCount, 48, 2_048);
+  }
+
+  /** Conservative retained size of the path and its defensive clone during construction. */
+  public static long retainedBytes(long nodeCount, long visitBudget) {
+    return estimated(Math.min(nodeCount, Math.max(0, visitBudget)), 8, 256);
+  }
+
+  private static long estimated(long count, long bytesPerNode, long overhead) {
+    if (count < 0 || count > Integer.MAX_VALUE - 1L) {
+      throw new IllegalArgumentException("unsupported shortest-path node count " + count);
+    }
+    return Math.addExact(Math.multiplyExact(count, bytesPerNode), overhead);
+  }
+
   /** No node; distinct from node 0. */
   private static final int NONE = -1;
 
@@ -54,13 +73,21 @@ public final class ShortestPath {
    * @param maxNodes how many nodes may be visited before giving up
    */
   public Result find(int from, int to, long maxNodes) {
+    if (maxNodes < 0) {
+      throw new IllegalArgumentException("maxNodes must be non-negative");
+    }
     int nodeCount = Math.toIntExact(forward.nodeCount());
     if (from < 0 || from >= nodeCount || to < 0 || to >= nodeCount) {
       throw new IndexOutOfBoundsException(
           "node out of range: " + from + " -> " + to + " of " + nodeCount);
     }
     if (from == to) {
-      return new Result(Outcome.FOUND, new int[] {from}, 1);
+      return maxNodes == 0
+          ? new Result(Outcome.BUDGET_EXHAUSTED, new int[0], 0)
+          : new Result(Outcome.FOUND, new int[] {from}, 1);
+    }
+    if (maxNodes < 2) {
+      return new Result(Outcome.BUDGET_EXHAUSTED, new int[0], maxNodes);
     }
 
     int[] parentForward = filled(nodeCount);
@@ -84,31 +111,30 @@ public final class ShortestPath {
 
       IntBag next = new IntBag();
       for (int node : frontier) {
-        int[] meeting = {NONE};
-        graph.forEachNeighbor(
-            node,
-            neighbor -> {
-              if (parents[neighbor] != NONE) {
-                return;
-              }
-              parents[neighbor] = node;
-              if (otherParents[neighbor] != NONE) {
-                meeting[0] = neighbor;
-              }
-              next.add(neighbor);
-            });
-        if (meeting[0] != NONE) {
-          return new Result(
-              Outcome.FOUND,
-              assemble(meeting[0], parentForward, parentBackward, from, to),
-              visited + next.size());
+        long end = graph.neighborsEnd(node);
+        for (long edge = graph.neighborsBegin(node); edge < end; edge++) {
+          int neighbor = graph.neighborAt(edge);
+          if (parents[neighbor] != NONE) {
+            continue;
+          }
+          if (otherParents[neighbor] != NONE) {
+            // This node was already charged as visited by the other search. Recording the joining
+            // parent does not consume another node from the caller's exact discovery budget.
+            parents[neighbor] = node;
+            return new Result(
+                Outcome.FOUND,
+                assemble(neighbor, parentForward, parentBackward, from, to),
+                visited);
+          }
+          if (visited == maxNodes) {
+            // Stop at the first discovery that would exceed the exact budget. In particular, do
+            // not finish scanning a high-fanout adjacency and materialize an oversized frontier.
+            return new Result(Outcome.BUDGET_EXHAUSTED, new int[0], visited);
+          }
+          parents[neighbor] = node;
+          next.add(neighbor);
+          visited++;
         }
-      }
-      visited += next.size();
-      if (visited > maxNodes) {
-        // Not "no path": the search stopped early, and saying otherwise
-        // would present a budget as a fact about the graph.
-        return new Result(Outcome.BUDGET_EXHAUSTED, new int[0], visited);
       }
       if (expandForward) {
         frontierForward = next.toArray();

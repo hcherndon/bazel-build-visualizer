@@ -54,7 +54,7 @@ final class Phase7ExitCriteriaTest {
     exec(
         connection,
         "INSERT INTO graph_sources (id, kind, state, configuration_match)"
-            + " VALUES (1, 'AQUERY', 'COMPLETE', 'EXACT')");
+            + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT')");
     exec(connection, "INSERT INTO mnemonics (id, value) VALUES (1, 'Javac'), (2, 'Genrule')");
     for (int i = 0; i < ACTIONS; i++) {
       exec(
@@ -98,11 +98,7 @@ final class Phase7ExitCriteriaTest {
     service = new GraphLayoutService(queries);
     panel = new GraphCanvasPanel();
     panel.setSize(900, 700);
-    panel.attach(
-        service,
-        queries.labelsByNodeIndex(),
-        queries.durationsByNodeIndex(false, GraphModel.UNKNOWN_DURATION),
-        queries.actionIdsByNodeIndex());
+    panel.attach(service);
   }
 
   @AfterEach
@@ -156,7 +152,7 @@ final class Phase7ExitCriteriaTest {
     assertThat(model.extract().isComplete()).isTrue();
     assertThat(panel.canvas().detail()).isEqualTo(GraphCanvas.Detail.NEAR);
     for (int i = 0; i < model.size(); i++) {
-      assertThat(model.displayLabelAt(i)).startsWith("//pkg");
+      assertThat(model.displayLabelAt(i)).isIn("Javac", "Genrule");
     }
     assertThat(panel.isOverLimitShown()).isFalse();
   }

@@ -57,6 +57,11 @@ pair of examples (`actions_with_labels`, `mnemonic_totals`) resolves the
 `labels`/`mnemonics` interning tables, which is the join everyone writes
 first.
 
+The saved-query/view library is not part of the session database. Its
+process-wide lock serializes app windows, but its direct `.sql` and `index.json`
+writes are not crash-atomic and a multi-file update is not transactional. That
+durability work remains deferred for 0.1.0.
+
 ## Catalog database (`catalog.db`)
 
 | Table | Purpose |
@@ -291,6 +296,22 @@ and symbol ids for direct use in the Query page. Pprof location and function
 ids are meaningful only inside one process/profile and are never compared
 between sessions. Sample frames preserve pprof's leaf-first ordinal; call nodes
 reverse that order for root-to-leaf drawing.
+
+### Schema v10 — graph node-index integrity
+
+Schema v10 adds the partial covering index
+`ix_declared_actions_node_index` over non-null
+`declared_actions.node_index` values. Assigned indices are unique, while any
+number of actions may remain unassigned as `NULL`. The ordered index lets graph
+opening stream the assigned population and require the exact dense sequence
+`0..count-1` before it allocates node-indexed state or maps a CSR body.
+
+Writable capture/import initialization migrates a valid v9 database to v10
+transactionally. A legacy database with duplicate assigned indices refuses that
+migration and remains at v9; a gap is legal to SQLite but is still refused by
+the streamed dense-population check before graph use. Opening an already-finished
+managed session remains read-only in intent and does not migrate it: an older
+schema is refused with guidance to re-import its preserved source bytes.
 
 ## Sensitive-field inventory
 

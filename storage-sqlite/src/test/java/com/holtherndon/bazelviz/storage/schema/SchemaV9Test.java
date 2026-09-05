@@ -28,7 +28,7 @@ final class SchemaV9Test {
       assertThat(throughV8().migrate(database)).isEqualTo(8);
       exec(connection, "INSERT INTO strings (value) VALUES ('kept')");
 
-      assertThat(MigrationRunner.standard().migrate(database)).isEqualTo(9);
+      assertThat(MigrationRunner.standard().migrate(database)).isEqualTo(10);
 
       assertThat(scalar(connection, "SELECT count(*) FROM strings")).isEqualTo(1);
       assertThat(objects(connection, "table"))

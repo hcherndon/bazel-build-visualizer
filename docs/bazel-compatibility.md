@@ -215,6 +215,14 @@ confirmed by running builds with them.
 
 Four behaviours the planner depends on:
 
+Flag availability is not importer support. Managed capture selects compact
+execution logs where available and binary logs otherwise. The JSON execution-log
+flag is recorded because Bazel exposes it, but JSON execution logs are not a
+supported analysis source and the current importer does not yet reject them
+explicitly at its boundary. Manual attachment of execution logs or trace
+profiles is not implemented. The proposed bounded auxiliary-ingestion changes
+remain blocked and unmerged.
+
 **The three execution-log formats are mutually exclusive from Bazel 7.** Naming
 two is a command-line error that fails the build before analysis. On 6.5.0 the
 same command succeeds and writes both files.
@@ -296,6 +304,28 @@ that had several alive at once has crashed a laptop. The fixture caps each at
 `-Xmx1g` with `max_idle_secs=15` and the test is parameterized rather than
 parallel, so exactly one is alive at a time. A single-version end-to-end capture
 stays in the default suite.
+
+These rows are historical compatibility evidence, not a smoke of the final
+0.1.0 package or the full current source candidate. The release owner must rerun
+the selected-version tests deliberately and supervised; ordinary CI does not
+perform that host-state gate.
+
+## Session and graph-index compatibility
+
+The current session database schema is v10. Writable creation/import migration
+can advance a valid v9 database transactionally; duplicate non-null
+`declared_actions.node_index` values reject the migration and leave v9 intact.
+Opening an already-finished managed session does not migrate it and refuses an
+older schema with re-import guidance.
+
+New graph-index pairs use generation-named files and require matching
+generation token, source, build timestamp, node count, and edge count. Legacy
+fixed-name forward and reverse files do not carry proof that they are one pair.
+Where a writable v10 migration preserves them, a validated single direction may
+still answer descriptor, neighbour, and degree requests. Pair-dependent path,
+neighbourhood, metric, and weight analysis reports unavailable until a fresh
+import or managed build creates a generation-matched pair. Opening historical
+data never rebuilds an index in place.
 
 ## Known version limitations
 

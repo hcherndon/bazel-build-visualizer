@@ -5,17 +5,21 @@ import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.analysis.GraphWeights;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
+import com.holtherndon.bazelviz.graph.Bfs;
+import com.holtherndon.bazelviz.graph.CsrFile;
 import com.holtherndon.bazelviz.graph.CsrGraph;
+import com.holtherndon.bazelviz.graph.GraphResourceBudget;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.sql.SQLException;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -49,16 +53,13 @@ import org.slf4j.LoggerFactory;
  */
 public final class GraphLayoutService implements AutoCloseable {
 
-  private static final Logger log = LoggerFactory.getLogger(GraphLayoutService.class);
+  /** Maximum aggregate charge owned by retained layout cache entries. */
+  public static final long MAX_CACHE_BYTES = 134_217_728L;
 
-  /**
-   * How many finished layouts to keep.
-   *
-   * <p>Small: each entry holds two double arrays the size of its extraction, so a dozen 50,000-node
-   * layouts is around ten megabytes. Enough that stepping back and forth between two views is
-   * instant, not so many that the cache becomes the memory problem.
-   */
-  static final int CACHE_ENTRIES = 12;
+  /** Maximum request keys retained even when their renderings are tiny or unavailable. */
+  public static final int MAX_CACHE_ENTRIES = 12;
+
+  private static final Logger log = LoggerFactory.getLogger(GraphLayoutService.class);
 
   private final GraphQueries queries;
   private final ExecutorService worker =
@@ -69,18 +70,12 @@ public final class GraphLayoutService implements AutoCloseable {
             return thread;
           });
 
-  private final Map<Request, Rendered> cache =
-      new LinkedHashMap<>(CACHE_ENTRIES * 2, 0.75f, true) {
-        private static final long serialVersionUID = 1L;
+  private final Map<Request, Rendered> cache = new LinkedHashMap<>(4, 0.75f, true);
+  private long cachedBytes;
 
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<Request, Rendered> eldest) {
-          return size() > CACHE_ENTRIES;
-        }
-      };
-
-  private AtomicBoolean inFlight = new AtomicBoolean(false);
-  private AtomicBoolean preparationInFlight = new AtomicBoolean(false);
+  private volatile AtomicBoolean inFlight = new AtomicBoolean(false);
+  private volatile AtomicBoolean preparationInFlight = new AtomicBoolean(false);
+  private final AtomicBoolean closed = new AtomicBoolean(false);
 
   public GraphLayoutService(GraphQueries queries) {
     this.queries = queries;
@@ -96,33 +91,61 @@ public final class GraphLayoutService implements AutoCloseable {
    * @param onError called on the EDT when the graph could not be read
    */
   public void submit(Request request, Consumer<Rendered> onDone, Consumer<Throwable> onError) {
-    Rendered hit;
-    synchronized (cache) {
-      hit = cache.get(request);
-    }
-    if (hit != null) {
-      SwingUtilities.invokeLater(() -> onDone.accept(hit));
+    if (rejectClosed(onError)) {
       return;
     }
-
-    // Whatever was running is now answering a question the user has moved
-    // on from.
     inFlight.set(true);
     preparationInFlight.set(true);
     AtomicBoolean cancelled = new AtomicBoolean(false);
     inFlight = cancelled;
+    preparationInFlight = cancelled;
+    Rendered hit;
+    synchronized (cache) {
+      Rendered cached = cache.get(request);
+      hit = cached == null ? null : cached.retain();
+    }
+    if (hit != null) {
+      SwingUtilities.invokeLater(
+          () -> {
+            if (cancelled.get()) {
+              hit.close();
+            } else {
+              onDone.accept(hit);
+            }
+          });
+      return;
+    }
 
-    worker.execute(
+    executeOwned(
         () -> {
           try {
             Rendered rendered = compute(request, cancelled);
             if (cancelled.get()) {
+              rendered.close();
               return;
             }
-            synchronized (cache) {
-              cache.put(request, rendered);
+            Rendered delivery = rendered;
+            if (rendered.retainedBytes() <= MAX_CACHE_BYTES) {
+              synchronized (cache) {
+                Rendered old = cache.put(request, rendered);
+                if (old != null) {
+                  cachedBytes -= old.retainedBytes();
+                  old.close();
+                }
+                cachedBytes = Math.addExact(cachedBytes, rendered.retainedBytes());
+                trimCache();
+                delivery = rendered.retain();
+              }
             }
-            SwingUtilities.invokeLater(() -> onDone.accept(rendered));
+            Rendered handedOff = delivery;
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (cancelled.get()) {
+                    handedOff.close();
+                  } else {
+                    onDone.accept(handedOff);
+                  }
+                });
           } catch (RuntimeException | IOException | SQLException failure) {
             if (cancelled.get()) {
               return;
@@ -130,7 +153,20 @@ public final class GraphLayoutService implements AutoCloseable {
             log.warn("graph layout failed for {}", request, failure);
             SwingUtilities.invokeLater(() -> onError.accept(failure));
           }
-        });
+        },
+        () -> {},
+        onError);
+  }
+
+  private void trimCache() {
+    var entries = cache.entrySet().iterator();
+    while ((cachedBytes > MAX_CACHE_BYTES || cache.size() > MAX_CACHE_ENTRIES)
+        && entries.hasNext()) {
+      Rendered evicted = entries.next().getValue();
+      entries.remove();
+      cachedBytes -= evicted.retainedBytes();
+      evicted.close();
+    }
   }
 
   /**
@@ -141,35 +177,43 @@ public final class GraphLayoutService implements AutoCloseable {
    */
   public void estimate(
       Request request, Consumer<LimitEstimate> onDone, Consumer<Throwable> onError) {
-    worker.execute(
+    executeOwned(
         () -> {
           try {
-            Optional<CsrGraph> forward = queries.forwardIndex(request.graph());
-            LimitEstimate estimate =
-                forward
-                    .map(
-                        graph ->
-                            LimitEstimate.of(
-                                request.mode(),
-                                graph.nodeCount(),
-                                graph.edgeCount(),
-                                request.nodeLimit(),
-                                request.edgeLimit()))
-                    .orElseGet(
+            CsrFile.Descriptor forward =
+                queries
+                    .indexDescriptor(request.graph(), true)
+                    .orElseThrow(
                         () ->
-                            LimitEstimate.of(
-                                request.mode(), 0, 0, request.nodeLimit(), request.edgeLimit()));
-            SwingUtilities.invokeLater(() -> onDone.accept(estimate));
+                            new GraphUnavailableException(
+                                "No trustworthy "
+                                    + request.graph().displayName()
+                                    + " index is available to estimate."));
+            LimitEstimate estimate =
+                LimitEstimate.of(
+                    request.mode(),
+                    forward.header().nodeCount(),
+                    forward.header().edgeCount(),
+                    request.nodeLimit(),
+                    request.edgeLimit());
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onDone.accept(estimate);
+                  }
+                });
           } catch (RuntimeException | IOException | SQLException failure) {
             log.warn("could not size the graph for {}", request, failure);
-            SwingUtilities.invokeLater(() -> onError.accept(failure));
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onError.accept(failure);
+                  }
+                });
           }
-        });
-  }
-
-  /** Work to run against the session's graph, off the event thread. */
-  public interface GraphWork<T> {
-    T runOn(CsrGraph forward) throws Exception;
+        },
+        () -> {},
+        onError);
   }
 
   /** Work that prepares an immutable view model without reading the graph. */
@@ -186,24 +230,45 @@ public final class GraphLayoutService implements AutoCloseable {
    * ceiling.
    */
   public <T> void prepare(Preparation<T> work, Consumer<T> onDone, Consumer<Throwable> onError) {
+    prepareInternal(work, () -> {}, onDone, onError);
+  }
+
+  /**
+   * Like {@link #prepare}, but closes the input owner if cancellation prevents the work running.
+   */
+  public <T> void prepareOwned(
+      AutoCloseable owner, Preparation<T> work, Consumer<T> onDone, Consumer<Throwable> onError) {
+    prepareInternal(work, () -> closeIfOwned(owner), onDone, onError);
+  }
+
+  private <T> void prepareInternal(
+      Preparation<T> work,
+      Runnable discardBeforeRun,
+      Consumer<T> onDone,
+      Consumer<Throwable> onError) {
     preparationInFlight.set(true);
     AtomicBoolean cancelled = new AtomicBoolean(false);
     preparationInFlight = cancelled;
-    worker.execute(
+    executeOwned(
         () -> {
           if (cancelled.get()) {
+            discardBeforeRun.run();
             return;
           }
           try {
             T result = work.run();
-            if (!cancelled.get()) {
-              SwingUtilities.invokeLater(
-                  () -> {
-                    if (!cancelled.get()) {
-                      onDone.accept(result);
-                    }
-                  });
+            if (cancelled.get()) {
+              closeIfOwned(result);
+              return;
             }
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (cancelled.get()) {
+                    closeIfOwned(result);
+                  } else {
+                    onDone.accept(result);
+                  }
+                });
           } catch (Exception failure) {
             if (!cancelled.get()) {
               log.warn("graph model preparation failed", failure);
@@ -215,32 +280,181 @@ public final class GraphLayoutService implements AutoCloseable {
                   });
             }
           }
-        });
+        },
+        discardBeforeRun,
+        onError);
   }
 
-  /**
-   * Runs work against the session's forward index on the layout thread.
-   *
-   * <p>The escape hatch for the things that need the whole graph rather than a drawing of it —
-   * chiefly the complete export, which streams five million edges to a file and must not do so on
-   * the event thread. Keeping it here keeps every route to the graph on one thread.
-   */
-  public <T> void onGraph(
-      GraphKind graph, GraphWork<T> work, Consumer<T> onDone, Consumer<Throwable> onError) {
-    worker.execute(
+  private static void closeIfOwned(Object value) {
+    if (value instanceof AutoCloseable closeable) {
+      try {
+        closeable.close();
+      } catch (Exception ignored) {
+        // Cancellation cleanup has no useful recovery path.
+      }
+    }
+  }
+
+  /** Loads extraction-aligned metadata and prepares a charged model on the graph worker. */
+  public void prepareModel(
+      Rendered rendered, Consumer<GraphModel> onDone, Consumer<Throwable> onError) {
+    preparationInFlight.set(true);
+    AtomicBoolean cancelled = new AtomicBoolean(false);
+    preparationInFlight = cancelled;
+    executeOwned(
+        () -> {
+          if (cancelled.get()) {
+            rendered.close();
+            return;
+          }
+          boolean renderingOwned = true;
+          try {
+            GraphModel model;
+            if (rendered.isCluster()) {
+              model = GraphModel.of(rendered, null, null, null);
+            } else {
+              GraphQueries.NodeMetadata metadata =
+                  queries.metadata(rendered.request().graph(), rendered.layout().nodes());
+              model = GraphModel.ofAligned(rendered, metadata);
+            }
+            renderingOwned = false;
+            if (cancelled.get()) {
+              model.close();
+              return;
+            }
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (cancelled.get()) {
+                    model.close();
+                  } else {
+                    onDone.accept(model);
+                  }
+                });
+          } catch (RuntimeException | IOException | SQLException failure) {
+            if (renderingOwned) {
+              rendered.close();
+            }
+            if (!cancelled.get()) {
+              log.warn("graph model preparation failed", failure);
+              SwingUtilities.invokeLater(
+                  () -> {
+                    if (!cancelled.get()) {
+                      onError.accept(failure);
+                    }
+                  });
+            }
+          }
+        },
+        rendered::close,
+        onError);
+  }
+
+  private void executeOwned(
+      Runnable task, Runnable discardBeforeRun, Consumer<Throwable> onRejected) {
+    OwnedTask owned = new OwnedTask(task, discardBeforeRun);
+    try {
+      if (closed.get()) {
+        throw new RejectedExecutionException("graph layout service is closed");
+      }
+      worker.execute(owned);
+    } catch (RejectedExecutionException rejected) {
+      owned.discard();
+      SwingUtilities.invokeLater(() -> onRejected.accept(rejected));
+    }
+  }
+
+  private boolean rejectClosed(Consumer<Throwable> onRejected) {
+    if (!closed.get()) {
+      return false;
+    }
+    RejectedExecutionException rejected =
+        new RejectedExecutionException("graph layout service is closed");
+    SwingUtilities.invokeLater(() -> onRejected.accept(rejected));
+    return true;
+  }
+
+  /** Exports one already-admitted visible model without mapping an unrelated whole CSR index. */
+  public void exportVisible(
+      GraphModel.Lease modelLease,
+      Path target,
+      GraphExport.Format format,
+      Consumer<GraphExport.Result> onDone,
+      Consumer<Throwable> onError) {
+    executeOwned(
+        () -> {
+          try (modelLease) {
+            GraphExport.Result result = GraphExport.visible(modelLease.model(), target, format);
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onDone.accept(result);
+                  }
+                });
+          } catch (RuntimeException | IOException failure) {
+            log.warn("visible graph export failed", failure);
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onError.accept(failure);
+                  }
+                });
+          }
+        },
+        modelLease::close,
+        onError);
+  }
+
+  /** Streams one complete graph export with metadata read in dense order under the graph lease. */
+  public void exportComplete(
+      GraphKind graph,
+      Path target,
+      GraphExport.Format format,
+      String nodeNoun,
+      Consumer<GraphExport.Result> onDone,
+      Consumer<Throwable> onError) {
+    executeOwned(
         () -> {
           try {
-            Optional<CsrGraph> forward = queries.forwardIndex(graph);
-            if (forward.isEmpty()) {
-              throw new IllegalStateException("this session has no " + graph.displayName());
+            Optional<GraphExport.Result> result =
+                queries.withIndex(
+                    graph,
+                    true,
+                    index ->
+                        GraphExport.whole(
+                            index,
+                            visitor -> {
+                              try {
+                                queries.forEachNodeMetadata(graph, visitor::node);
+                              } catch (SQLException failure) {
+                                throw new IOException(
+                                    "could not stream complete graph metadata", failure);
+                              }
+                            },
+                            target,
+                            format,
+                            nodeNoun));
+            if (result.isEmpty()) {
+              throw new GraphUnavailableException(
+                  "No trustworthy " + graph.displayName() + " index is available to export.");
             }
-            T result = work.runOn(forward.get());
-            SwingUtilities.invokeLater(() -> onDone.accept(result));
-          } catch (Exception failure) {
-            log.warn("graph work failed", failure);
-            SwingUtilities.invokeLater(() -> onError.accept(failure));
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onDone.accept(result.orElseThrow());
+                  }
+                });
+          } catch (RuntimeException | IOException | SQLException failure) {
+            log.warn("complete graph export failed", failure);
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onError.accept(failure);
+                  }
+                });
           }
-        });
+        },
+        () -> {},
+        onError);
   }
 
   /**
@@ -250,8 +464,50 @@ public final class GraphLayoutService implements AutoCloseable {
    * @param truncated true when a budget stopped the computation early
    * @param note the computation's own sentence for the legend, or empty
    */
-  public record WeightSet(
-      GraphWeight weight, Map<Integer, Long> valueByNode, boolean truncated, String note) {}
+  public static final class WeightSet implements AutoCloseable {
+    private final GraphWeight weight;
+    private final long[] values;
+    private final boolean truncated;
+    private final String note;
+    private GraphResourceBudget.Reservation retained;
+
+    private WeightSet(
+        GraphWeight weight,
+        long[] values,
+        boolean truncated,
+        String note,
+        GraphResourceBudget.Reservation retained) {
+      this.weight = weight;
+      this.values = values;
+      this.truncated = truncated;
+      this.note = note;
+      this.retained = retained;
+    }
+
+    public GraphWeight weight() {
+      return weight;
+    }
+
+    public long[] values() {
+      return values;
+    }
+
+    public boolean truncated() {
+      return truncated;
+    }
+
+    public String note() {
+      return note;
+    }
+
+    @Override
+    public void close() {
+      if (retained != null) {
+        retained.close();
+        retained = null;
+      }
+    }
+  }
 
   /**
    * Computes the selected weight for an extraction, off the event thread.
@@ -265,28 +521,59 @@ public final class GraphLayoutService implements AutoCloseable {
   public void weights(
       GraphKind graph,
       GraphWeight weight,
-      GraphExtract.Result extract,
+      GraphModel.Lease modelLease,
       Consumer<WeightSet> onDone,
       Consumer<Throwable> onError) {
-    worker.execute(
+    executeOwned(
         () -> {
-          try {
-            GraphWeights.Result computed = computeWeights(graph, weight, extract);
-            Map<Integer, Long> byNode = new HashMap<>();
-            List<Integer> nodes = extract.nodes();
-            for (int i = 0; i < nodes.size(); i++) {
-              long value = computed.values()[i];
-              if (value >= 0) {
-                byNode.put(nodes.get(i), value);
-              }
+          GraphResourceBudget.Reservation retained = null;
+          try (modelLease) {
+            GraphExtract.Result extract = modelLease.model().extract();
+            long nodes = extract.nodes().size();
+            long edges = extract.edges().size();
+            long retainedBytes = estimate("retained graph weights", 1_024, nodes, 16, 0, 0);
+            long scratchBytes =
+                estimate("graph weight computation scratch", 8_192, nodes, 256, edges, 128);
+            List<GraphResourceBudget.Reservation> reservations =
+                reserveWithCacheEviction(
+                    List.of(
+                        new GraphResourceBudget.Request(
+                            retainedBytes, "retained extraction-aligned graph weights"),
+                        new GraphResourceBudget.Request(
+                            scratchBytes, "graph weight computation scratch")));
+            retained = reservations.get(0);
+            GraphWeights.Result computed;
+            try (GraphResourceBudget.Reservation scratch = reservations.get(1)) {
+              computed = computeWeights(graph, weight, extract);
             }
-            WeightSet set = new WeightSet(weight, byNode, computed.truncated(), computed.note());
-            SwingUtilities.invokeLater(() -> onDone.accept(set));
+            WeightSet set =
+                new WeightSet(
+                    weight, computed.values(), computed.truncated(), computed.note(), retained);
+            retained = null;
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (closed.get()) {
+                    set.close();
+                  } else {
+                    onDone.accept(set);
+                  }
+                });
           } catch (RuntimeException | IOException | SQLException failure) {
             log.warn("weight computation failed for {} over {}", weight, graph, failure);
-            SwingUtilities.invokeLater(() -> onError.accept(failure));
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onError.accept(failure);
+                  }
+                });
+          } finally {
+            if (retained != null) {
+              retained.close();
+            }
           }
-        });
+        },
+        modelLease::close,
+        onError);
   }
 
   private GraphWeights.Result computeWeights(
@@ -296,15 +583,16 @@ public final class GraphLayoutService implements AutoCloseable {
     switch (weight) {
       case IMMEDIATE_DEPS, INPUT_COUNT:
         {
-          Optional<CsrGraph> reverse = queries.reverseIndex(graph);
+          Optional<GraphWeights.Result> reverse =
+              queries.withIndex(
+                  graph, false, index -> GraphWeights.immediateDegrees(index, extract.nodes()));
           if (reverse.isEmpty()) {
             return GraphWeights.unavailable(
                 size,
                 "This session has no reverse index for this graph,"
                     + " so dependency counts are unavailable.");
           }
-          GraphWeights.Result counted =
-              GraphWeights.immediateDegrees(reverse.get(), extract.nodes());
+          GraphWeights.Result counted = reverse.orElseThrow();
           return weight == GraphWeight.INPUT_COUNT
               ? new GraphWeights.Result(
                   counted.values(),
@@ -316,14 +604,16 @@ public final class GraphLayoutService implements AutoCloseable {
         }
       case IMMEDIATE_RDEPS:
         {
-          Optional<CsrGraph> forward = queries.forwardIndex(graph);
+          Optional<GraphWeights.Result> forward =
+              queries.withIndex(
+                  graph, true, index -> GraphWeights.immediateDegrees(index, extract.nodes()));
           if (forward.isEmpty()) {
             return GraphWeights.unavailable(
                 size,
                 "This session has no index for this graph,"
                     + " so dependent counts are unavailable.");
           }
-          return GraphWeights.immediateDegrees(forward.get(), extract.nodes());
+          return forward.orElseThrow();
         }
       case TRANSITIVE_DEPS, TRANSITIVE_RDEPS:
         return GraphWeights.subgraphTransitiveCounts(
@@ -337,13 +627,8 @@ public final class GraphLayoutService implements AutoCloseable {
             return GraphWeights.unavailable(
                 size, "A target label has no output, so nothing here" + " has an output size.");
           }
-          long[] sizes = queries.outputSizesByNodeIndex(GraphWeights.UNKNOWN);
-          long[] values = new long[size];
-          for (int i = 0; i < size; i++) {
-            int node = extract.nodes().get(i);
-            values[i] = node >= 0 && node < sizes.length ? sizes[node] : GraphWeights.UNKNOWN;
-          }
-          return new GraphWeights.Result(values, false, "");
+          return new GraphWeights.Result(
+              queries.outputSizes(extract.nodes(), GraphWeights.UNKNOWN), false, "");
         }
       case DURATION:
       default:
@@ -361,23 +646,60 @@ public final class GraphLayoutService implements AutoCloseable {
    * with nothing at all rather than a zero.
    */
   public void globalTransitiveCount(
-      GraphKind graph, int node, boolean forwards, Consumer<GraphWeights.BudgetedCount> onDone) {
-    worker.execute(
+      GraphKind graph,
+      int node,
+      boolean forwards,
+      Consumer<GraphWeights.BudgetedCount> onDone,
+      Consumer<Throwable> onError) {
+    executeOwned(
         () -> {
           try {
-            Optional<CsrGraph> index =
-                forwards ? queries.forwardIndex(graph) : queries.reverseIndex(graph);
-            if (index.isEmpty()) {
+            Optional<GraphWeights.BudgetedCount> counted =
+                queries.withIndex(
+                    graph,
+                    forwards,
+                    index -> {
+                      try (GraphResourceBudget.Reservation admitted =
+                          queries
+                              .resourceBudget()
+                              .reserve(
+                                  Bfs.peakBytes(
+                                      index.nodeCount(),
+                                      GraphWeights.GLOBAL_TRANSITIVE_NODE_BUDGET),
+                                  "whole-graph transitive traversal scratch")) {
+                        return GraphWeights.globalTransitiveCount(
+                            index, node, GraphWeights.GLOBAL_TRANSITIVE_NODE_BUDGET);
+                      }
+                    });
+            if (counted.isEmpty()) {
+              SwingUtilities.invokeLater(
+                  () -> {
+                    if (!closed.get()) {
+                      onError.accept(
+                          new GraphUnavailableException(
+                              "No trustworthy graph index is available for this traversal."));
+                    }
+                  });
               return;
             }
-            GraphWeights.BudgetedCount counted =
-                GraphWeights.globalTransitiveCount(
-                    index.get(), node, GraphWeights.GLOBAL_TRANSITIVE_NODE_BUDGET);
-            SwingUtilities.invokeLater(() -> onDone.accept(counted));
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onDone.accept(counted.orElseThrow());
+                  }
+                });
           } catch (RuntimeException | IOException | SQLException failure) {
-            log.debug("whole-graph transitive count failed", failure);
+            log.warn("whole-graph transitive count failed", failure);
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (!closed.get()) {
+                    onError.accept(failure);
+                  }
+                });
           }
-        });
+        },
+        () -> {},
+        onError);
   }
 
   /**
@@ -400,11 +722,15 @@ public final class GraphLayoutService implements AutoCloseable {
     AtomicBoolean cancelled = new AtomicBoolean(false);
     inFlight = cancelled;
 
-    worker.execute(
+    executeOwned(
         () -> {
           try {
-            Optional<CsrGraph> forward = queries.forwardIndex(request.graph());
-            if (forward.isEmpty()) {
+            Optional<Rendered> extracted =
+                queries.withIndex(
+                    request.graph(),
+                    true,
+                    forward -> computePath(request, nodes, cancelled, forward));
+            if (extracted.isEmpty()) {
               Rendered nothing = Rendered.unavailable(request);
               if (!cancelled.get()) {
                 SwingUtilities.invokeLater(
@@ -416,17 +742,19 @@ public final class GraphLayoutService implements AutoCloseable {
               }
               return;
             }
-            GraphExtract.Result extract =
-                GraphExtract.path(
-                    forward.get(), nodes, request.mode(), request.nodeLimit(), request.edgeLimit());
-            GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
+            Rendered rendered = extracted.orElseThrow();
             if (cancelled.get()) {
+              rendered.close();
               return;
             }
-            Rendered rendered =
-                new Rendered(
-                    request, extract, layout, null, extract.describe(nounFor(request.graph())));
-            SwingUtilities.invokeLater(() -> onDone.accept(rendered));
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (cancelled.get()) {
+                    rendered.close();
+                  } else {
+                    onDone.accept(rendered);
+                  }
+                });
           } catch (RuntimeException | IOException | SQLException failure) {
             if (cancelled.get()) {
               return;
@@ -434,7 +762,46 @@ public final class GraphLayoutService implements AutoCloseable {
             log.warn("path layout failed for {}", request, failure);
             SwingUtilities.invokeLater(() -> onError.accept(failure));
           }
-        });
+        },
+        () -> {},
+        onError);
+  }
+
+  private Rendered computePath(
+      Request request, List<Integer> nodes, AtomicBoolean cancelled, CsrGraph forward)
+      throws IOException {
+    long pathNodes = nodes.size();
+    long pathEdges = Math.max(0, pathNodes - 1);
+    long retainedBytes = estimate("retained path rendering", 4_096, pathNodes, 128, pathEdges, 96);
+    long scratchBytes = estimate("path layout scratch", 8_192, pathNodes, 256, pathEdges, 128);
+    List<GraphResourceBudget.Reservation> reservations =
+        reserveWithCacheEviction(
+            List.of(
+                new GraphResourceBudget.Request(retainedBytes, "retained path rendering"),
+                new GraphResourceBudget.Request(scratchBytes, "path extraction and layout")));
+    GraphResourceBudget.Reservation retained = reservations.get(0);
+    try (GraphResourceBudget.Reservation scratch = reservations.get(1)) {
+      GraphExtract.Result extract =
+          GraphExtract.path(
+              forward, nodes, request.mode(), request.nodeLimit(), request.edgeLimit());
+      GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
+      Rendered rendered =
+          Rendered.charged(
+              request,
+              extract,
+              layout,
+              null,
+              extract.describe(nounFor(request.graph())),
+              queries.resourceBudget(),
+              retainedBytes,
+              retained);
+      retained = null;
+      return rendered;
+    } finally {
+      if (retained != null) {
+        retained.close();
+      }
+    }
   }
 
   /** Stops the running request without submitting another. */
@@ -445,21 +812,93 @@ public final class GraphLayoutService implements AutoCloseable {
 
   private Rendered compute(Request request, AtomicBoolean cancelled)
       throws IOException, SQLException {
-    Optional<CsrGraph> forward = queries.forwardIndex(request.graph());
-    if (forward.isEmpty()) {
-      return Rendered.unavailable(request);
+    Optional<Rendered> rendered;
+    if (request.mode() == GraphExtract.Mode.NEIGHBOURHOOD) {
+      rendered =
+          queries.withIndexPair(
+              request.graph(), (forward, reverse) -> compute(request, cancelled, forward, reverse));
+    } else if (request.mode() == GraphExtract.Mode.DEPENDENCIES) {
+      rendered =
+          queries.withIndex(
+              request.graph(), false, reverse -> compute(request, cancelled, null, reverse));
+    } else {
+      rendered =
+          queries.withIndex(
+              request.graph(), true, forward -> compute(request, cancelled, forward, null));
     }
-    CsrGraph graph = forward.get();
+    return rendered.orElseGet(() -> Rendered.unavailable(request));
+  }
+
+  private Rendered compute(
+      Request request, AtomicBoolean cancelled, CsrGraph graph, CsrGraph reverse)
+      throws SQLException, IOException {
+    CsrGraph counted = graph == null ? reverse : graph;
+    long retainedBytes = retainedRenderingBytes(request, counted);
+    long scratchBytes = scratchBytes(request, counted);
+    List<GraphResourceBudget.Reservation> reservations =
+        reserveWithCacheEviction(
+            List.of(
+                new GraphResourceBudget.Request(retainedBytes, "retained graph rendering"),
+                new GraphResourceBudget.Request(scratchBytes, "graph extraction and layout")));
+    GraphResourceBudget.Reservation retained = reservations.get(0);
+    try (GraphResourceBudget.Reservation scratch = reservations.get(1)) {
+      Rendered rendered =
+          computeAdmitted(request, cancelled, graph, reverse, retainedBytes, retained);
+      retained = null;
+      return rendered;
+    } finally {
+      if (retained != null) {
+        retained.close();
+      }
+    }
+  }
+
+  private Rendered computeAdmitted(
+      Request request,
+      AtomicBoolean cancelled,
+      CsrGraph graph,
+      CsrGraph reverse,
+      long retainedBytes,
+      GraphResourceBudget.Reservation retained)
+      throws SQLException, IOException {
 
     if (request.mode() == GraphExtract.Mode.CLUSTERS) {
-      String[] keys = clusterKeys(request.graph(), request.clusterBy());
-      GraphClustering.Result clustering =
-          GraphClustering.cluster(
-              graph, keys, request.clusterBy(), request.clusterLimit(), cancelled);
-      GraphExtract.Result extract = clustering.asExtract();
-      GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
-      return new Rendered(
-          request, extract, layout, clustering, clustering.describe(nounFor(request.graph())));
+      try (GraphQueries.ClusterKeyData keyData =
+          clusterKeys(request.graph(), request.clusterBy(), Math.toIntExact(graph.nodeCount()))) {
+        String[] keys = keyData.keys();
+        if (request.clusterBy() == GraphClustering.By.PACKAGE) {
+          for (int node = 0; node < keys.length; node++) {
+            keys[node] = GraphClustering.packageOf(keys[node]);
+          }
+        }
+        GraphClustering.Result clustering =
+            GraphClustering.cluster(
+                graph, keys, request.clusterBy(), request.clusterLimit(), cancelled);
+        GraphExtract.Result extract = clustering.asExtract();
+        GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
+        if (clustering.clusters().isEmpty()) {
+          return Rendered.charged(
+              request,
+              extract,
+              layout,
+              clustering,
+              clustering.describe(nounFor(request.graph())),
+              queries.resourceBudget(),
+              retainedBytes,
+              retained);
+        }
+        long totalRetained = Math.addExact(retainedBytes, keyData.retainedBytes());
+        return Rendered.charged(
+            request,
+            extract,
+            layout,
+            clustering,
+            clustering.describe(nounFor(request.graph())),
+            queries.resourceBudget(),
+            totalRetained,
+            retained,
+            keyData.transferReservation());
+      }
     }
 
     GraphExtract.Result extract =
@@ -470,7 +909,7 @@ public final class GraphLayoutService implements AutoCloseable {
           // and the trees showed a leaf compile as depending on the linker.
           case DEPENDENCIES ->
               GraphExtract.dependencies(
-                  reverse(request),
+                  reverse,
                   request.sourceNode(),
                   request.maxDepth(),
                   request.nodeLimit(),
@@ -485,7 +924,7 @@ public final class GraphLayoutService implements AutoCloseable {
           case NEIGHBOURHOOD ->
               GraphExtract.neighbourhood(
                   graph,
-                  reverse(request),
+                  reverse,
                   request.sourceNode(),
                   request.maxDepth(),
                   request.nodeLimit(),
@@ -501,7 +940,87 @@ public final class GraphLayoutService implements AutoCloseable {
           case CLUSTERS -> throw new IllegalStateException("handled above");
         };
     GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
-    return new Rendered(request, extract, layout, null, extract.describe(nounFor(request.graph())));
+    return Rendered.charged(
+        request,
+        extract,
+        layout,
+        null,
+        extract.describe(nounFor(request.graph())),
+        queries.resourceBudget(),
+        retainedBytes,
+        retained);
+  }
+
+  private static long retainedRenderingBytes(Request request, CsrGraph graph) throws IOException {
+    long nodes;
+    long edges;
+    if (request.mode() == GraphExtract.Mode.CLUSTERS) {
+      nodes = Math.min(graph.nodeCount(), request.clusterLimit());
+      edges = Math.min(graph.edgeCount(), square(request.clusterLimit()));
+    } else {
+      nodes = Math.min(graph.nodeCount(), request.nodeLimit());
+      edges = Math.min(graph.edgeCount(), request.edgeLimit());
+    }
+    return estimate("retained graph rendering", 4_096, nodes, 128, edges, 96);
+  }
+
+  private static long scratchBytes(Request request, CsrGraph graph) throws IOException {
+    if (request.mode() == GraphExtract.Mode.CLUSTERS) {
+      long possibleClusterEdges = Math.min(graph.edgeCount(), square(request.clusterLimit()));
+      return estimate(
+          "graph clustering scratch", 8_192, graph.nodeCount(), 192, possibleClusterEdges, 160);
+    }
+    long nodes = Math.min(graph.nodeCount(), request.nodeLimit());
+    long edges = Math.min(graph.edgeCount(), request.edgeLimit());
+    return estimate("graph extraction and layout scratch", 8_192, nodes, 256, edges, 128);
+  }
+
+  private static long square(long value) throws IOException {
+    try {
+      return Math.multiplyExact(value, value);
+    } catch (ArithmeticException overflow) {
+      throw new IOException("graph cluster limit is too large to account safely", overflow);
+    }
+  }
+
+  private static long estimate(
+      String purpose,
+      long fixed,
+      long firstCount,
+      long firstBytes,
+      long secondCount,
+      long secondBytes)
+      throws IOException {
+    try {
+      return Math.addExact(
+          fixed,
+          Math.addExact(
+              Math.multiplyExact(firstCount, firstBytes),
+              Math.multiplyExact(secondCount, secondBytes)));
+    } catch (ArithmeticException overflow) {
+      throw new IOException(purpose + " is too large to account safely", overflow);
+    }
+  }
+
+  private List<GraphResourceBudget.Reservation> reserveWithCacheEviction(
+      List<GraphResourceBudget.Request> requests) throws GraphResourceBudget.RefusedException {
+    while (true) {
+      try {
+        return queries.resourceBudget().reserveAll(requests);
+      } catch (GraphResourceBudget.RefusedException refused) {
+        Rendered evicted;
+        synchronized (cache) {
+          var entries = cache.entrySet().iterator();
+          if (!entries.hasNext()) {
+            throw refused;
+          }
+          evicted = entries.next().getValue();
+          entries.remove();
+          cachedBytes -= evicted.retainedBytes();
+        }
+        evicted.close();
+      }
+    }
   }
 
   /** What one node of a graph is, for every sentence a drawing carries. */
@@ -509,38 +1028,61 @@ public final class GraphLayoutService implements AutoCloseable {
     return graph == GraphKind.CONFIGURED_TARGETS ? "target" : "action";
   }
 
-  private CsrGraph reverse(Request request) throws IOException, SQLException {
-    return queries
-        .reverseIndex(request.graph())
-        .orElseThrow(
-            () ->
-                new IllegalStateException(
-                    "the reverse index for " + request.graph() + " was never built"));
+  /** A missing or untrusted index is unavailable, never an exact empty graph. */
+  public static final class GraphUnavailableException extends IOException {
+    private static final long serialVersionUID = 1L;
+
+    GraphUnavailableException(String message) {
+      super(message);
+    }
   }
 
-  private String[] clusterKeys(GraphKind graph, GraphClustering.By by) throws SQLException {
+  private GraphQueries.ClusterKeyData clusterKeys(
+      GraphKind graph, GraphClustering.By by, int expectedNodes) throws SQLException, IOException {
     // The label graph's answer to "mnemonic" is the rule class: the
     // coarsest useful kind grouping a target has.
-    return switch (by) {
-      case MNEMONIC ->
-          graph == GraphKind.CONFIGURED_TARGETS
-              ? queries.ruleClassesByNodeIndex()
-              : queries.mnemonicsByNodeIndex();
-      case TARGET -> queries.labelsByNodeIndex(graph);
-      case PACKAGE -> {
-        String[] labels = queries.labelsByNodeIndex(graph);
-        for (int i = 0; i < labels.length; i++) {
-          labels[i] = GraphClustering.packageOf(labels[i]);
+    GraphQueries.ClusterKeySource source =
+        switch (by) {
+          case MNEMONIC ->
+              graph == GraphKind.CONFIGURED_TARGETS
+                  ? GraphQueries.ClusterKeySource.RULE_CLASS
+                  : GraphQueries.ClusterKeySource.MNEMONIC;
+          case TARGET, PACKAGE -> GraphQueries.ClusterKeySource.LABEL;
+        };
+    while (true) {
+      try {
+        return queries.clusterKeys(graph, source, expectedNodes, by == GraphClustering.By.PACKAGE);
+      } catch (GraphResourceBudget.RefusedException refused) {
+        if (!evictOldestCached()) {
+          throw refused;
         }
-        yield labels;
       }
-    };
+    }
+  }
+
+  private boolean evictOldestCached() {
+    Rendered evicted;
+    synchronized (cache) {
+      var entries = cache.entrySet().iterator();
+      if (!entries.hasNext()) {
+        return false;
+      }
+      evicted = entries.next().getValue();
+      entries.remove();
+      cachedBytes -= evicted.retainedBytes();
+    }
+    evicted.close();
+    return true;
   }
 
   /** Empties the cache; for when the session's indexes have been rebuilt. */
   public void invalidate() {
     synchronized (cache) {
+      for (Rendered rendered : cache.values()) {
+        rendered.close();
+      }
       cache.clear();
+      cachedBytes = 0;
     }
   }
 
@@ -551,15 +1093,55 @@ public final class GraphLayoutService implements AutoCloseable {
   }
 
   @Override
-  public void close() {
+  public synchronized void close() {
+    if (!closed.compareAndSet(false, true)) {
+      return;
+    }
     cancel();
-    worker.shutdownNow();
-    try {
-      if (!worker.awaitTermination(2, TimeUnit.SECONDS)) {
-        log.warn("the graph layout thread did not stop within two seconds");
+    List<Runnable> dropped = worker.shutdownNow();
+    for (Runnable runnable : dropped) {
+      if (runnable instanceof OwnedTask owned) {
+        owned.discard();
       }
-    } catch (InterruptedException interrupted) {
+    }
+    boolean interrupted = false;
+    while (!worker.isTerminated()) {
+      try {
+        if (!worker.awaitTermination(2, TimeUnit.SECONDS)) {
+          log.warn("still waiting for the graph layout thread to stop");
+        }
+      } catch (InterruptedException waiting) {
+        interrupted = true;
+      }
+    }
+    invalidate();
+    if (interrupted) {
       Thread.currentThread().interrupt();
+    }
+  }
+
+  /** Executor task with explicit ownership for work discarded before it starts. */
+  private static final class OwnedTask implements Runnable {
+    private final Runnable task;
+    private final Runnable discard;
+    private final AtomicBoolean claimed = new AtomicBoolean(false);
+
+    private OwnedTask(Runnable task, Runnable discard) {
+      this.task = task;
+      this.discard = discard;
+    }
+
+    @Override
+    public void run() {
+      if (claimed.compareAndSet(false, true)) {
+        task.run();
+      }
+    }
+
+    private void discard() {
+      if (claimed.compareAndSet(false, true)) {
+        discard.run();
+      }
     }
   }
 
@@ -664,12 +1246,125 @@ public final class GraphLayoutService implements AutoCloseable {
    * @param description the sentence the view shows beside the drawing, which plan 13.6 requires to
    *     name the totals whether or not anything was omitted
    */
-  public record Rendered(
-      Request request,
-      GraphExtract.Result extract,
-      GraphLayout.Result layout,
-      GraphClustering.Result clustering,
-      String description) {
+  public static final class Rendered implements AutoCloseable {
+
+    private final Request request;
+    private final GraphExtract.Result extract;
+    private final GraphLayout.Result layout;
+    private final GraphClustering.Result clustering;
+    private final String description;
+    private final GraphResourceBudget budget;
+    private final long retainedBytes;
+    private final SharedCharge charge;
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    /** Uncharged constructor for fixed, test-owned renderings. */
+    public Rendered(
+        Request request,
+        GraphExtract.Result extract,
+        GraphLayout.Result layout,
+        GraphClustering.Result clustering,
+        String description) {
+      this(request, extract, layout, clustering, description, null, 0, null);
+    }
+
+    private Rendered(
+        Request request,
+        GraphExtract.Result extract,
+        GraphLayout.Result layout,
+        GraphClustering.Result clustering,
+        String description,
+        GraphResourceBudget budget,
+        long retainedBytes,
+        SharedCharge charge) {
+      this.request = request;
+      this.extract = extract;
+      this.layout = layout;
+      this.clustering = clustering;
+      this.description = description;
+      this.budget = budget;
+      this.retainedBytes = retainedBytes;
+      this.charge = charge;
+    }
+
+    private static Rendered charged(
+        Request request,
+        GraphExtract.Result extract,
+        GraphLayout.Result layout,
+        GraphClustering.Result clustering,
+        String description,
+        GraphResourceBudget budget,
+        long retainedBytes,
+        GraphResourceBudget.Reservation reservation) {
+      return new Rendered(
+          request,
+          extract,
+          layout,
+          clustering,
+          description,
+          budget,
+          retainedBytes,
+          new SharedCharge(reservation));
+    }
+
+    private static Rendered charged(
+        Request request,
+        GraphExtract.Result extract,
+        GraphLayout.Result layout,
+        GraphClustering.Result clustering,
+        String description,
+        GraphResourceBudget budget,
+        long retainedBytes,
+        GraphResourceBudget.Reservation first,
+        GraphResourceBudget.Reservation second) {
+      return new Rendered(
+          request,
+          extract,
+          layout,
+          clustering,
+          description,
+          budget,
+          retainedBytes,
+          new SharedCharge(List.of(first, second)));
+    }
+
+    public Request request() {
+      return request;
+    }
+
+    public GraphExtract.Result extract() {
+      return extract;
+    }
+
+    public GraphLayout.Result layout() {
+      return layout;
+    }
+
+    public GraphClustering.Result clustering() {
+      return clustering;
+    }
+
+    public String description() {
+      return description;
+    }
+
+    long retainedBytes() {
+      return retainedBytes;
+    }
+
+    GraphResourceBudget budget() {
+      return budget;
+    }
+
+    /** A separately closeable reference for a cache, callback or model owner. */
+    Rendered retain() {
+      if (charge == null) {
+        return new Rendered(request, extract, layout, clustering, description);
+      }
+      charge.retain();
+      return new Rendered(
+          request, extract, layout, clustering, description, budget, retainedBytes, charge);
+    }
 
     static Rendered unavailable(Request request) {
       String explanation =
@@ -706,6 +1401,45 @@ public final class GraphLayoutService implements AutoCloseable {
 
     public boolean isCluster() {
       return clustering != null;
+    }
+
+    @Override
+    public void close() {
+      if (closed.compareAndSet(false, true) && charge != null) {
+        charge.release();
+      }
+    }
+  }
+
+  private static final class SharedCharge {
+    private final List<GraphResourceBudget.Reservation> reservations;
+    private int references = 1;
+
+    SharedCharge(GraphResourceBudget.Reservation reservation) {
+      this(List.of(reservation));
+    }
+
+    SharedCharge(List<GraphResourceBudget.Reservation> reservations) {
+      this.reservations = List.copyOf(reservations);
+    }
+
+    synchronized void retain() {
+      if (references == 0) {
+        throw new IllegalStateException("rendered graph charge is already released");
+      }
+      references++;
+    }
+
+    synchronized void release() {
+      if (references <= 0) {
+        throw new IllegalStateException("rendered graph charge released more than once");
+      }
+      references--;
+      if (references == 0) {
+        for (GraphResourceBudget.Reservation reservation : reservations) {
+          reservation.close();
+        }
+      }
     }
   }
 }

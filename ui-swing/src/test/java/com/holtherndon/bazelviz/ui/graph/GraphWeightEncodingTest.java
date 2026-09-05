@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -21,6 +20,13 @@ final class GraphWeightEncodingTest {
 
   /** A three-node chain 0 → 1 → 2, laid out linearly. */
   private static GraphModel chainModel() {
+    return chainModel(
+        new long[] {
+          GraphModel.UNKNOWN_DURATION, GraphModel.UNKNOWN_DURATION, GraphModel.UNKNOWN_DURATION,
+        });
+  }
+
+  private static GraphModel chainModel(long[] durations) {
     GraphExtract.Result extract =
         new GraphExtract.Result(
             GraphExtract.Mode.NEIGHBOURHOOD,
@@ -36,12 +42,7 @@ final class GraphWeightEncodingTest {
         GraphLayout.run(GraphLayout.Kind.LINEAR, extract, new AtomicBoolean(false));
     GraphLayoutService.Rendered rendered =
         new GraphLayoutService.Rendered(null, extract, layout, null, "three nodes");
-    return GraphModel.of(
-        rendered,
-        new String[] {"//a:zero", "//a:one", "//a:two"},
-        new long[] {
-          GraphModel.UNKNOWN_DURATION, GraphModel.UNKNOWN_DURATION, GraphModel.UNKNOWN_DURATION,
-        });
+    return GraphModel.of(rendered, new String[] {"//a:zero", "//a:one", "//a:two"}, durations);
   }
 
   private static int positionOf(GraphModel model, int node) {
@@ -53,12 +54,15 @@ final class GraphWeightEncodingTest {
     throw new AssertionError("node " + node + " is not drawn");
   }
 
+  private static long[] weights() {
+    return new long[] {0, GraphModel.UNKNOWN_DURATION, 4};
+  }
+
   @Test
   @DisplayName("the selected weight drives radius and colour; positions do not move")
   void weightDrivesRadiusAndColour() {
     GraphModel base = chainModel();
-    GraphModel weighted =
-        base.withWeights(GraphWeight.IMMEDIATE_DEPS, Map.of(0, 0L, 2, 4L), false, "");
+    GraphModel weighted = base.withWeights(GraphWeight.IMMEDIATE_DEPS, weights(), false, "");
 
     int zero = positionOf(weighted, 0);
     int two = positionOf(weighted, 2);
@@ -80,7 +84,7 @@ final class GraphWeightEncodingTest {
   @DisplayName("an unknown weight is grey at base size, never the smallest coldest node")
   void unknownIsNotZero() {
     GraphModel weighted =
-        chainModel().withWeights(GraphWeight.IMMEDIATE_DEPS, Map.of(0, 0L, 2, 4L), false, "");
+        chainModel().withWeights(GraphWeight.IMMEDIATE_DEPS, weights(), false, "");
 
     int one = positionOf(weighted, 1);
 
@@ -91,10 +95,25 @@ final class GraphWeightEncodingTest {
   }
 
   @Test
+  @DisplayName("known zero weights and durations remain distinct from all unknown")
+  void knownZeroIsNotUnknown() {
+    GraphModel zeroWeights =
+        chainModel().withWeights(GraphWeight.IMMEDIATE_DEPS, new long[] {0, 0, 0}, false, "");
+    GraphModel zeroDuration =
+        chainModel(new long[] {0, GraphModel.UNKNOWN_DURATION, GraphModel.UNKNOWN_DURATION});
+
+    assertThat(zeroWeights.maxWeight()).hasValue(0);
+    assertThat(zeroWeights.unweightedCount()).isZero();
+    assertThat(zeroDuration.slowestDuration()).hasValue(0);
+    assertThat(zeroDuration.untimedCount()).isEqualTo(2);
+    assertThat(chainModel().slowestDuration()).isEmpty();
+  }
+
+  @Test
   @DisplayName("edge thickness follows the known endpoints' weights")
   void edgeThicknessFollowsWeights() {
     GraphModel weighted =
-        chainModel().withWeights(GraphWeight.IMMEDIATE_DEPS, Map.of(0, 0L, 2, 4L), false, "");
+        chainModel().withWeights(GraphWeight.IMMEDIATE_DEPS, weights(), false, "");
 
     // Edge 0→1: one known endpoint at the bottom of the scale — thinnest.
     // Edge 1→2: one known endpoint at the top — thickest.
@@ -119,7 +138,7 @@ final class GraphWeightEncodingTest {
   @DisplayName("switching back to duration restores the duration encoding")
   void durationRoundTrips() {
     GraphModel weighted =
-        chainModel().withWeights(GraphWeight.IMMEDIATE_DEPS, Map.of(0, 0L, 2, 4L), false, "");
+        chainModel().withWeights(GraphWeight.IMMEDIATE_DEPS, weights(), false, "");
 
     GraphModel back = weighted.withDurationWeight();
 

@@ -64,6 +64,14 @@ explicitly, and an imported BEP file has no need for `exports/`. Files marked
 with a later phase are listed to show where they will live, not to imply they
 are written today.
 
+The current session schema is v10. Its partial unique index rejects duplicate
+non-null `declared_actions.node_index` values; graph opening also streams the
+ordered values and requires a dense `0..count-1` population before any
+node-indexed allocation. Writable capture/import initialization migrates a valid
+v9 database transactionally. Duplicate assigned indices reject that migration
+and leave the database at v9; an already-finished v9 managed session is not
+migrated merely because a user opens it and must be re-imported instead.
+
 The catalog database is an application-level concern and lives under the
 application-support root (`catalog/`), not inside any session directory.
 Cleanup and archive adoption are coordinated above the catalog by session UUID.
@@ -133,6 +141,12 @@ indexes/…                    # rebuildable, carried so an opened archive works
 checkpoints/…
 ```
 
+A redacted export has an intentionally smaller shape: besides the generated
+`archive.json`, its indexed payload is exactly a redacted `manifest.json` and
+`session.sqlite`. The writer accepts exactly those two staged replacement names;
+it does not copy `raw/`, indexes, checkpoints, or another source-tree file into
+the redacted archive.
+
 `locks/` is never exported: a lock is a statement about this machine's running
 processes and means nothing anywhere else. `exports/` is not exported either —
 those are derived artifacts the user already has, and carrying them would widen
@@ -151,6 +165,12 @@ An archive is untrusted input (plan 22.4). The reader validates end to end —
 decompressing every entry and discarding the bytes — before extraction writes
 anything, and runs the same checks again while writing, because between the two
 calls the file is not under this application's control.
+
+The current checks begin after Java has constructed `ZipFile`; they do not yet
+preflight and bound the central-directory metadata before that parser opens the
+archive. This is a release blocker for hostile archives, despite the enforced
+entry, expanded-byte, ratio, checksum, and path checks below. Treat imported
+archives as trusted until the retained preflight fix passes review and lands.
 
 | Refused | Why |
 |---|---|

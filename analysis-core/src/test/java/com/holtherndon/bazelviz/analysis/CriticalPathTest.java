@@ -13,6 +13,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -389,6 +390,22 @@ final class CriticalPathTest {
     assertThat(result.unorderedNodes()).hasSize(nodes);
     assertThat(result.unorderedNodes().get(0)).isZero();
     assertThat(result.unorderedNodes().get(nodes - 1)).isEqualTo(nodes - 1);
+  }
+
+  @Test
+  @DisplayName("an interrupted critical-path worker stops before graph traversal")
+  void interruptionCancelsComputation() {
+    Thread.currentThread().interrupt();
+    try {
+      assertThatThrownBy(
+              () ->
+                  CriticalPath.compute(
+                      diamond(), DIAMOND_WEIGHTS, CriticalPath.DurationSource.BEP_ACTION))
+          .isInstanceOf(CancellationException.class)
+          .hasMessageContaining("cancelled");
+    } finally {
+      Thread.interrupted();
+    }
   }
 
   @Test

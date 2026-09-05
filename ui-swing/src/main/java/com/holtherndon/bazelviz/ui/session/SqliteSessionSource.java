@@ -12,6 +12,7 @@ import com.holtherndon.bazelviz.storage.events.EventQueries;
 import com.holtherndon.bazelviz.storage.events.EventSummary;
 import com.holtherndon.bazelviz.storage.events.RawLocation;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
+import com.holtherndon.bazelviz.storage.graph.GraphSessionResources;
 import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
 import com.holtherndon.bazelviz.storage.query.AdHocQueries;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
@@ -52,6 +53,7 @@ public final class SqliteSessionSource implements SessionSource {
   private final SessionInfo info;
   private final SessionDatabase database;
   private final Path journalDirectory;
+  private final GraphSessionResources graphResources;
   private final List<SqliteSessionReader> readers = new CopyOnWriteArrayList<>();
   private final List<EntityReader> entityReaders = new CopyOnWriteArrayList<>();
   private final List<QueryReader> queryReaders = new CopyOnWriteArrayList<>();
@@ -64,6 +66,7 @@ public final class SqliteSessionSource implements SessionSource {
     this.info = info;
     this.database = database;
     this.journalDirectory = journalDirectory;
+    this.graphResources = new GraphSessionResources();
   }
 
   /**
@@ -228,13 +231,14 @@ public final class SqliteSessionSource implements SessionSource {
     }
     Connection connection;
     try {
-      connection = database.newReadConnection();
+      connection = database.newGraphReadConnection();
     } catch (SQLException e) {
       throw new SessionDataException("cannot open a read connection to " + root, e);
     }
     // The CSR index files live beside the database, in the directory the
     // session layout already reserves for them.
-    return new GraphQueries(connection, ManagedSessionLayout.at(root).indexesDirectory());
+    return new GraphQueries(
+        connection, ManagedSessionLayout.at(root).indexesDirectory(), graphResources);
   }
 
   @Override
@@ -353,6 +357,7 @@ public final class SqliteSessionSource implements SessionSource {
       }
     }
     starlarkReaders.clear();
+    graphResources.close();
     try {
       database.close();
     } catch (SQLException e) {

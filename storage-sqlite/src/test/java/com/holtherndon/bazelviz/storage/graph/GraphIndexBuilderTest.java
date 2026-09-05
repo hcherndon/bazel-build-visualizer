@@ -8,6 +8,7 @@ import com.holtherndon.bazelviz.graph.CsrFile;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
@@ -15,6 +16,7 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -86,14 +88,17 @@ final class GraphIndexBuilderTest {
     assertThat(built.orElseThrow().nodeCount()).isEqualTo(4);
     assertThat(built.orElseThrow().edgeCount()).isEqualTo(4);
 
-    CsrGraph forward = builder.load(EdgeDerivation.DECLARED, "FORWARD").orElseThrow();
-    CsrGraph reverse = builder.load(EdgeDerivation.DECLARED, "REVERSE").orElseThrow();
-    assertThat(forward.edgeCount()).isEqualTo(reverse.edgeCount());
-    // The diamond, exactly: node 0 feeds 1 and 2; node 3 is fed by both.
-    assertThat(forward.degree(0)).isEqualTo(2);
-    assertThat(forward.degree(3)).isZero();
-    assertThat(reverse.degree(3)).isEqualTo(2);
-    assertThat(reverse.degree(0)).isZero();
+    try (CsrGraph forward =
+            CsrFile.open(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD").orElseThrow());
+        CsrGraph reverse =
+            CsrFile.open(builder.descriptor(EdgeDerivation.DECLARED, "REVERSE").orElseThrow())) {
+      assertThat(forward.edgeCount()).isEqualTo(reverse.edgeCount());
+      // The diamond, exactly: node 0 feeds 1 and 2; node 3 is fed by both.
+      assertThat(forward.degree(0)).isEqualTo(2);
+      assertThat(forward.degree(3)).isZero();
+      assertThat(reverse.degree(3)).isEqualTo(2);
+      assertThat(reverse.degree(0)).isZero();
+    }
     assertThat(
             scalar(
                 "SELECT count(*) FROM graph_indexes"
@@ -123,8 +128,8 @@ final class GraphIndexBuilderTest {
 
     exec("UPDATE graph_sources SET state = 'FAILED' WHERE id = 1");
 
-    assertThat(builder.load(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
-    assertThat(builder.load(EdgeDerivation.DECLARED, "REVERSE")).isEmpty();
+    assertThat(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
+    assertThat(builder.descriptor(EdgeDerivation.DECLARED, "REVERSE")).isEmpty();
   }
 
   @Test
@@ -135,7 +140,7 @@ final class GraphIndexBuilderTest {
     GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
 
     assertThat(builder.build(EdgeDerivation.DECLARED)).isEmpty();
-    assertThat(builder.load(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
+    assertThat(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
   }
 
   @Test
@@ -143,8 +148,8 @@ final class GraphIndexBuilderTest {
   void unregisteredIndexIsEmpty() throws Exception {
     GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
 
-    assertThat(builder.load(EdgeDerivation.OBSERVED, "FORWARD")).isEmpty();
-    assertThat(builder.loadConfiguredTargets("FORWARD")).isEmpty();
+    assertThat(builder.descriptor(EdgeDerivation.OBSERVED, "FORWARD")).isEmpty();
+    assertThat(builder.configuredTargetsDescriptor("FORWARD")).isEmpty();
   }
 
   @Test
@@ -155,7 +160,7 @@ final class GraphIndexBuilderTest {
 
     Files.delete(built.forwardFile());
 
-    assertThat(builder.load(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
+    assertThat(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
   }
 
   @Test
@@ -170,7 +175,7 @@ final class GraphIndexBuilderTest {
 
     // A stale index is worse than none: it answers, and its answers look
     // like the others.
-    assertThatThrownBy(() -> builder.load(EdgeDerivation.DECLARED, "FORWARD"))
+    assertThatThrownBy(() -> builder.descriptor(EdgeDerivation.DECLARED, "FORWARD"))
         .isInstanceOf(GraphIndexBuilder.StaleIndexException.class)
         .hasMessageContaining("stale");
   }
@@ -186,20 +191,114 @@ final class GraphIndexBuilderTest {
         .putInt(12, CsrFile.REVERSE_DIRECTION_FLAG);
     Files.write(built.forwardFile(), bytes);
 
-    assertThatThrownBy(() -> builder.load(EdgeDerivation.DECLARED, "FORWARD"))
+    assertThatThrownBy(() -> builder.descriptor(EdgeDerivation.DECLARED, "FORWARD"))
         .isInstanceOf(GraphIndexBuilder.StaleIndexException.class)
         .hasMessageContaining("stale");
+  }
+
+  @Test
+  @DisplayName("negative, gapped, and sparse near-int-max node indexes fail before publication")
+  void nonDenseNodeIndexesAreRefusedBeforePublication() throws Exception {
+    GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
+
+    for (long[] indexes :
+        List.of(new long[] {-1}, new long[] {0, 2}, new long[] {Integer.MAX_VALUE - 1L})) {
+      replaceNodeIndices(indexes);
+
+      assertThatThrownBy(() -> builder.build(EdgeDerivation.DECLARED))
+          .isInstanceOf(IOException.class)
+          .hasMessageContaining("unique and dense");
+      assertThat(scalar("SELECT count(*) FROM graph_indexes")).isZero();
+      assertThat(csrFiles()).isEmpty();
+    }
+  }
+
+  @Test
+  @DisplayName("one generation names and registers both directions")
+  void pairCarriesOneGeneration() throws Exception {
+    GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
+
+    GraphIndexBuilder.Result result = builder.build(EdgeDerivation.DECLARED).orElseThrow();
+
+    String forward = result.forwardFile().getFileName().toString();
+    String reverse = result.reverseFile().getFileName().toString();
+    assertThat(forward).startsWith("declared-forward-").endsWith(".csr");
+    assertThat(reverse).startsWith("declared-reverse-").endsWith(".csr");
+    assertThat(forward.substring("declared-forward-".length()))
+        .isEqualTo(reverse.substring("declared-reverse-".length()));
+    assertThat(builder.descriptorPair(EdgeDerivation.DECLARED.name())).isPresent();
+  }
+
+  @Test
+  @DisplayName("a mixed generation is refused even when counts and checksums agree")
+  void mixedGenerationIsRefused() throws Exception {
+    GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
+    GraphIndexBuilder.Result result = builder.build(EdgeDerivation.DECLARED).orElseThrow();
+    Path mismatched = indexDirectory.resolve("declared-reverse-different-generation.csr");
+    Files.copy(result.reverseFile(), mismatched);
+    exec(
+        "UPDATE graph_indexes SET file_name = '"
+            + mismatched.getFileName()
+            + "' WHERE kind = 'DECLARED' AND direction = 'REVERSE'");
+
+    assertThatThrownBy(() -> builder.descriptor(EdgeDerivation.DECLARED, "FORWARD"))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("different generations");
+  }
+
+  @Test
+  @DisplayName("a failed reverse-row publication leaves the old pair loadable")
+  void failedPairPublicationPreservesOldPair() throws Exception {
+    GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
+    GraphIndexBuilder.Result old = builder.build(EdgeDerivation.DECLARED).orElseThrow();
+    exec(
+        "CREATE TRIGGER fail_reverse_graph_registration"
+            + " BEFORE UPDATE ON graph_indexes"
+            + " WHEN NEW.kind = 'DECLARED' AND NEW.direction = 'REVERSE'"
+            + " BEGIN SELECT RAISE(ABORT, 'injected reverse registration failure'); END");
+
+    assertThatThrownBy(() -> builder.build(EdgeDerivation.DECLARED))
+        .isInstanceOf(SQLException.class)
+        .hasMessageContaining("injected reverse registration failure");
+
+    assertThat(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD").orElseThrow().path())
+        .isEqualTo(old.forwardFile().toAbsolutePath().normalize());
+    assertThat(builder.descriptor(EdgeDerivation.DECLARED, "REVERSE").orElseThrow().path())
+        .isEqualTo(old.reverseFile().toAbsolutePath().normalize());
+    assertThat(csrFiles()).containsExactlyInAnyOrder(old.forwardFile(), old.reverseFile());
+  }
+
+  @Test
+  @DisplayName("the graph index directory itself may not be a symlink")
+  void symlinkedIndexDirectoryIsRefused() throws Exception {
+    Path external = tempDir.resolve("external-indexes");
+    Files.createDirectory(external);
+    Files.createSymbolicLink(indexDirectory, external);
+
+    assertThatThrownBy(
+            () -> new GraphIndexBuilder(connection, indexDirectory).build(EdgeDerivation.DECLARED))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("real directory")
+        .hasMessageContaining("symlink");
+    try (var files = Files.list(external)) {
+      assertThat(files.toList()).isEmpty();
+    }
+    assertThat(scalar("SELECT count(*) FROM graph_indexes")).isZero();
   }
 
   @Test
   @DisplayName("rebuilding re-registers in place; the registry never grows a second row")
   void rebuildReplacesTheRegistration() throws Exception {
     GraphIndexBuilder builder = new GraphIndexBuilder(connection, indexDirectory);
-    builder.build(EdgeDerivation.DECLARED);
-    builder.build(EdgeDerivation.DECLARED);
+    GraphIndexBuilder.Result old = builder.build(EdgeDerivation.DECLARED).orElseThrow();
+    GraphIndexBuilder.Result replacement = builder.build(EdgeDerivation.DECLARED).orElseThrow();
 
     assertThat(scalar("SELECT count(*) FROM graph_indexes WHERE kind = 'DECLARED'")).isEqualTo(2);
-    assertThat(builder.load(EdgeDerivation.DECLARED, "FORWARD")).isPresent();
+    assertThat(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD")).isPresent();
+    assertThat(old.forwardFile()).doesNotExist();
+    assertThat(old.reverseFile()).doesNotExist();
+    assertThat(csrFiles())
+        .containsExactlyInAnyOrder(replacement.forwardFile(), replacement.reverseFile());
   }
 
   // ------------------------------------------------------------- plumbing
@@ -214,6 +313,34 @@ final class GraphIndexBuilderTest {
     try (Statement statement = connection.createStatement();
         var rows = statement.executeQuery(sql)) {
       return rows.next() ? rows.getLong(1) : 0;
+    }
+  }
+
+  private void replaceNodeIndices(long... indexes) throws SQLException {
+    exec("DELETE FROM action_edges");
+    exec("DELETE FROM declared_actions");
+    for (int i = 0; i < indexes.length; i++) {
+      exec(
+          "INSERT INTO declared_actions (id, source_id, graph_id, label_id, node_index) VALUES ("
+              + (100 + i)
+              + ", 1, "
+              + (100 + i)
+              + ", 1, "
+              + indexes[i]
+              + ")");
+    }
+  }
+
+  private List<Path> csrFiles() throws Exception {
+    if (!Files.isDirectory(indexDirectory)) {
+      return List.of();
+    }
+    try (var files = Files.list(indexDirectory)) {
+      return files
+          .filter(path -> path.getFileName().toString().endsWith(".csr"))
+          .map(path -> path.toAbsolutePath().normalize())
+          .sorted()
+          .toList();
     }
   }
 }

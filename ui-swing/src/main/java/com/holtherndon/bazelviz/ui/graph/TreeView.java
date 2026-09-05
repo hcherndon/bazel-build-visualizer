@@ -17,6 +17,7 @@ import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.lang.reflect.InvocationTargetException;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,9 +28,12 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.DefaultComboBoxModel;
@@ -131,6 +135,7 @@ public final class TreeView extends JPanel implements PageChrome {
   private ExecutorService worker;
   private GraphQueries queries;
   private long generation;
+  private CompletionStage<Void> closeFence = CompletableFuture.completedFuture(null);
 
   /**
    * The graph every control on this card is talking about.
@@ -239,8 +244,25 @@ public final class TreeView extends JPanel implements PageChrome {
 
   /** Opens this session's graph, off the EDT. */
   public void openSession(SessionSource source) {
-    closeSession();
+    Objects.requireNonNull(source, "source");
+    CompletionStage<Void> retired = closeSessionAsync();
     long wanted = ++generation;
+    retired.whenComplete(
+        (unused, failure) ->
+            SwingUtilities.invokeLater(
+                () -> {
+                  if (wanted != generation) {
+                    return;
+                  }
+                  if (failure != null) {
+                    log.debug("the previous tree session did not close", failure);
+                    return;
+                  }
+                  startOpen(source, wanted);
+                }));
+  }
+
+  private void startOpen(SessionSource source, long wanted) {
     ExecutorService executor =
         Executors.newSingleThreadExecutor(
             runnable -> {
@@ -251,24 +273,56 @@ public final class TreeView extends JPanel implements PageChrome {
     worker = executor;
     executor.execute(
         () -> {
-          GraphQueries opened;
+          GraphQueries opened = null;
           List<GraphQueries.GraphSource> sources;
           try {
             opened = source.openGraphQueries();
             sources = opened.sources();
           } catch (RuntimeException | SQLException failure) {
+            closeQuietly(opened);
             log.debug("no graph for this session", failure);
             return;
           }
-          SwingUtilities.invokeLater(
+          GraphQueries candidate = opened;
+          AtomicBoolean transferred = new AtomicBoolean(false);
+          CountDownLatch handoffFinished = new CountDownLatch(1);
+          boolean interrupted = false;
+          Runnable handoff =
               () -> {
-                if (wanted != generation) {
-                  closeQuietly(opened);
-                  return;
+                try {
+                  if (wanted != generation || worker != executor) {
+                    return;
+                  }
+                  installSources(sources);
+                  queries = candidate;
+                  transferred.set(true);
+                } finally {
+                  handoffFinished.countDown();
                 }
-                queries = opened;
-                installSources(sources);
-              });
+              };
+          try {
+            SwingUtilities.invokeAndWait(handoff);
+          } catch (InterruptedException shutdown) {
+            // invokeAndWait already posted the handoff. Wait for its ownership decision so the
+            // close fence cannot finish while reader cleanup is merely queued on the EDT.
+            interrupted = true;
+            while (handoffFinished.getCount() != 0) {
+              try {
+                handoffFinished.await();
+              } catch (InterruptedException repeated) {
+                interrupted = true;
+              }
+            }
+          } catch (InvocationTargetException installFailure) {
+            log.debug("dependency tree UI installation failed", installFailure.getCause());
+          } finally {
+            if (!transferred.get()) {
+              closeQuietly(candidate);
+            }
+            if (interrupted) {
+              Thread.currentThread().interrupt();
+            }
+          }
         });
   }
 
@@ -290,22 +344,38 @@ public final class TreeView extends JPanel implements PageChrome {
     sourceChoice.setModel(new DefaultComboBoxModel<>());
     clearTrees();
     showCard("empty");
+    CompletionStage<Void> currentClose;
     if (executor == null && open == null) {
-      return CompletableFuture.completedFuture(null);
+      currentClose = CompletableFuture.completedFuture(null);
+    } else {
+      currentClose =
+          ViewClose.runAsync(
+              "bbv-tree-close",
+              () -> {
+                boolean interrupted = false;
+                if (executor != null) {
+                  executor.shutdownNow();
+                  while (!executor.isTerminated()) {
+                    try {
+                      if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        log.debug("still waiting for dependency tree session cleanup");
+                      }
+                    } catch (InterruptedException shutdown) {
+                      interrupted = true;
+                    }
+                  }
+                }
+                closeQuietly(open);
+                if (interrupted) {
+                  Thread.currentThread().interrupt();
+                }
+              });
     }
-    return ViewClose.runAsync(
-        "bbv-tree-close",
-        () -> {
-          if (executor != null) {
-            executor.shutdownNow();
-            try {
-              executor.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-              Thread.currentThread().interrupt();
-            }
-          }
-          closeQuietly(open);
-        });
+    CompletableFuture<Void> combined =
+        CompletableFuture.allOf(
+            closeFence.toCompletableFuture(), currentClose.toCompletableFuture());
+    closeFence = combined;
+    return combined;
   }
 
   void installSources(List<GraphQueries.GraphSource> sources) {
@@ -376,9 +446,9 @@ public final class TreeView extends JPanel implements PageChrome {
     }
     GraphKind kind = shownGraph;
     onWorker(
-        work -> {
+        (work, onEdt) -> {
           List<GraphQueries.GraphNode> found = work.search(kind, "%" + pattern + "%", 1);
-          SwingUtilities.invokeLater(
+          onEdt.deliver(
               () -> {
                 if (found.isEmpty()) {
                   pathResult.setText(
@@ -407,10 +477,10 @@ public final class TreeView extends JPanel implements PageChrome {
     // naming the graph that is actually shown.
     selectSource(GraphKind.DECLARED_ACTIONS);
     onWorker(
-        work -> {
+        (work, onEdt) -> {
           OptionalLong nodeIndex = work.nodeForAction(actionId);
           if (nodeIndex.isEmpty()) {
-            SwingUtilities.invokeLater(
+            onEdt.deliver(
                 () -> {
                   clearTrees();
                   pathResult.setText(
@@ -421,7 +491,7 @@ public final class TreeView extends JPanel implements PageChrome {
           }
           Optional<GraphQueries.GraphNode> found =
               work.node(Math.toIntExact(nodeIndex.getAsLong()));
-          found.ifPresent(node -> SwingUtilities.invokeLater(() -> showNode(node)));
+          found.ifPresent(node -> onEdt.deliver(() -> showNode(node)));
         });
   }
 
@@ -445,7 +515,7 @@ public final class TreeView extends JPanel implements PageChrome {
       return;
     }
     onWorker(
-        work -> {
+        (work, onEdt) -> {
           for (GraphKind kind : candidates) {
             OptionalInt index = work.nodeForLabel(kind, label);
             if (index.isEmpty()) {
@@ -456,7 +526,7 @@ public final class TreeView extends JPanel implements PageChrome {
               continue;
             }
             GraphQueries.GraphNode node = found.orElseThrow();
-            SwingUtilities.invokeLater(
+            onEdt.deliver(
                 () -> {
                   // Selecting the source first is what makes the node index
                   // mean what it meant when it was looked up; a session that
@@ -475,7 +545,7 @@ public final class TreeView extends JPanel implements PageChrome {
                 });
             return;
           }
-          SwingUtilities.invokeLater(
+          onEdt.deliver(
               () -> {
                 clearTrees();
                 pathResult.setText("No node in this session's graphs is named " + label + ".");
@@ -540,23 +610,27 @@ public final class TreeView extends JPanel implements PageChrome {
     }
     GraphKind kind = shownGraph;
     onWorker(
-        work -> {
+        (work, onEdt) -> {
           List<GraphQueries.GraphNode> start = work.search(kind, "%" + from + "%", 1);
           List<GraphQueries.GraphNode> end = work.search(kind, "%" + to + "%", 1);
           String text;
           if (start.isEmpty() || end.isEmpty()) {
             text = "One of those is not in the graph.";
           } else {
-            Optional<ShortestPath.Result> result =
-                work.path(
-                    kind, start.getFirst().nodeIndex(), end.getFirst().nodeIndex(), PATH_BUDGET);
+            Optional<String> result =
+                work.withPath(
+                    kind,
+                    start.getFirst().nodeIndex(),
+                    end.getFirst().nodeIndex(),
+                    PATH_BUDGET,
+                    ShortestPath.Result::describe);
             // describe() is the one place that distinguishes "no path" from
             // "the search gave up", which are different answers and only
             // one of them is a fact about the build. Drawing a found path
             // is the Graph card's job; this card states it.
-            text = result.map(ShortestPath.Result::describe).orElse("There is no index to search.");
+            text = result.orElse("There is no index to search.");
           }
-          SwingUtilities.invokeLater(
+          onEdt.deliver(
               () -> {
                 pathResult.setText(text);
                 pathResult.setToolTipText(PlainText.tooltip(text));
@@ -598,11 +672,18 @@ public final class TreeView extends JPanel implements PageChrome {
       boolean forwards = !dependencies;
       GraphKind kind = shownGraph;
       onWorker(
-          work -> {
-            List<GraphQueries.GraphNode> children =
+          (work, onEdt) -> {
+            Optional<List<GraphQueries.GraphNode>> children =
                 work.neighbours(kind, ref.node.nodeIndex(), forwards, CHILD_LIMIT);
-            int degree = work.degree(kind, ref.node.nodeIndex(), forwards);
-            SwingUtilities.invokeLater(() -> fill(parent, children, degree));
+            OptionalInt degree = work.degree(kind, ref.node.nodeIndex(), forwards);
+            onEdt.deliver(
+                () -> {
+                  if (children.isEmpty() || degree.isEmpty()) {
+                    unavailable(parent);
+                  } else {
+                    fill(parent, children.orElseThrow(), degree.getAsInt());
+                  }
+                });
           });
     }
 
@@ -631,6 +712,13 @@ public final class TreeView extends JPanel implements PageChrome {
             new DefaultMutableTreeNode(
                 dependencies ? "nothing it depends on" : "nothing depends on it"));
       }
+      JTree tree = dependencies ? TreeView.this.dependencies : dependents;
+      ((DefaultTreeModel) tree.getModel()).nodeStructureChanged(parent);
+    }
+
+    private void unavailable(DefaultMutableTreeNode parent) {
+      parent.removeAllChildren();
+      parent.add(new DefaultMutableTreeNode("dependency index unavailable"));
       JTree tree = dependencies ? TreeView.this.dependencies : dependents;
       ((DefaultTreeModel) tree.getModel()).nodeStructureChanged(parent);
     }
@@ -673,24 +761,41 @@ public final class TreeView extends JPanel implements PageChrome {
 
   // ---------------------------------------------------------------- plumbing
 
+  private interface EdtDelivery {
+    void deliver(Runnable delivery);
+  }
+
   private interface GraphWork {
-    void run(GraphQueries queries) throws Exception;
+    void run(GraphQueries queries, EdtDelivery onEdt) throws Exception;
   }
 
   private void onWorker(GraphWork work) {
     ExecutorService executor = worker;
     GraphQueries open = queries;
+    long wanted = generation;
     if (executor == null || open == null) {
       return;
     }
-    executor.execute(
-        () -> {
-          try {
-            work.run(open);
-          } catch (Exception failure) {
-            log.debug("graph query failed", failure);
-          }
-        });
+    try {
+      executor.execute(
+          () -> {
+            try {
+              work.run(
+                  open,
+                  delivery ->
+                      SwingUtilities.invokeLater(
+                          () -> {
+                            if (wanted == generation && queries == open) {
+                              delivery.run();
+                            }
+                          }));
+            } catch (Exception failure) {
+              log.debug("graph query failed", failure);
+            }
+          });
+    } catch (RejectedExecutionException closed) {
+      log.debug("dependency tree session closed before graph work started");
+    }
   }
 
   private void showCard(String name) {

@@ -1,9 +1,11 @@
 package com.holtherndon.bazelviz.storage.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
+import com.holtherndon.bazelviz.graph.GraphResourceBudget;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import java.nio.file.Path;
@@ -14,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -89,6 +92,19 @@ final class GraphQueriesTest {
   void closeDatabase() throws Exception {
     // queries shares the writer connection; closing the database is enough.
     database.close();
+  }
+
+  @Test
+  @DisplayName("snapshot cleanup closes an owned result wrapped by the optional index API")
+  void cleanupClosesOptionalOwnedResult() {
+    AtomicInteger closes = new AtomicInteger();
+    AutoCloseable owner = closes::incrementAndGet;
+    SQLException cleanup = new SQLException("rollback failed");
+
+    GraphQueries.closeOwnedResult(Optional.of(owner), cleanup);
+
+    assertThat(closes).hasValue(1);
+    assertThat(cleanup.getSuppressed()).isEmpty();
   }
 
   @Test
@@ -189,37 +205,133 @@ final class GraphQueriesTest {
   @Test
   @DisplayName("forward neighbours are what a node feeds; reverse are what feeds it")
   void neighboursFollowTheIndexDirection() throws Exception {
-    List<GraphQueries.GraphNode> fed = queries.neighbours(EdgeDerivation.DECLARED, 2, true, 10);
+    List<GraphQueries.GraphNode> fed =
+        queries.neighbours(EdgeDerivation.DECLARED, 2, true, 10).orElseThrow();
     List<GraphQueries.GraphNode> feeding =
-        queries.neighbours(EdgeDerivation.DECLARED, 2, false, 10);
+        queries.neighbours(EdgeDerivation.DECLARED, 2, false, 10).orElseThrow();
 
     // The chain is t0 -> t1 -> t2 -> t3 -> t4 in producer-to-consumer
     // order: t2 feeds t3 and is fed by t1.
     assertThat(fed).extracting(GraphQueries.GraphNode::nodeIndex).containsExactly(3);
     assertThat(feeding).extracting(GraphQueries.GraphNode::nodeIndex).containsExactly(1);
-    assertThat(queries.degree(EdgeDerivation.DECLARED, 2, true)).isEqualTo(1);
-    assertThat(queries.degree(EdgeDerivation.DECLARED, 0, false)).isZero();
+    assertThat(queries.degree(EdgeDerivation.DECLARED, 2, true)).hasValue(1);
+    assertThat(queries.degree(EdgeDerivation.DECLARED, 0, false)).hasValue(0);
   }
 
   @Test
   @DisplayName("a graph with no index answers empty lists, never a guess")
   void missingIndexAnswersEmpty() throws Exception {
     // OBSERVED was never derived or built in this fixture.
-    assertThat(queries.forwardIndex(EdgeDerivation.OBSERVED)).isEmpty();
+    assertThat(queries.indexDescriptor(GraphKind.OBSERVED_EXECUTION, true)).isEmpty();
     assertThat(queries.neighbours(EdgeDerivation.OBSERVED, 2, true, 10)).isEmpty();
-    assertThat(queries.degree(EdgeDerivation.OBSERVED, 2, true)).isZero();
-    assertThat(queries.path(EdgeDerivation.OBSERVED, 0, 4, 1000)).isEmpty();
+    assertThat(queries.degree(EdgeDerivation.OBSERVED, 2, true)).isEmpty();
+    assertThat(queries.withPath(EdgeDerivation.OBSERVED, 0, 4, 1000, result -> result.describe()))
+        .isEmpty();
     // And graph kinds that never have a CSR index refuse the same way.
-    assertThat(queries.forwardIndex(GraphKind.BEP_EVENTS)).isEmpty();
+    assertThat(queries.indexDescriptor(GraphKind.BEP_EVENTS, true)).isEmpty();
   }
 
   @Test
   @DisplayName("a path is found within budget and walked end to end")
   void pathsAreFound() throws Exception {
-    var result = queries.path(EdgeDerivation.DECLARED, 0, 4, 100_000).orElseThrow();
+    int[] path =
+        queries
+            .withPath(
+                EdgeDerivation.DECLARED, 0, 4, 100_000, result -> result.found().orElseThrow())
+            .orElseThrow();
 
-    assertThat(result.found()).isPresent();
-    assertThat(result.found().orElseThrow()).startsWith(0).endsWith(4);
+    assertThat(path).startsWith(0).endsWith(4);
+  }
+
+  @Test
+  @DisplayName("shortest-path scratch is refused before allocation and fully released")
+  void pathBudgetRefusalIsScoped() throws Exception {
+    long pairBytes =
+        Math.addExact(
+            queries.indexDescriptor(GraphKind.DECLARED_ACTIONS, true).orElseThrow().fileBytes(),
+            queries.indexDescriptor(GraphKind.DECLARED_ACTIONS, false).orElseThrow().fileBytes());
+    GraphResourceBudget budget = new GraphResourceBudget(pairBytes);
+    GraphSessionResources resources = new GraphSessionResources(budget);
+    try (GraphQueries constrained =
+        new GraphQueries(
+            database.newGraphReadConnection(), tempDir.resolve("indexes"), resources)) {
+      assertThatThrownBy(
+              () ->
+                  constrained.withPath(
+                      EdgeDerivation.DECLARED, 0, 4, 100_000, result -> result.describe()))
+          .isInstanceOf(GraphResourceBudget.RefusedException.class)
+          .hasMessageContaining("shortest-path scratch")
+          .hasMessageContaining("session budget is " + pairBytes + " bytes");
+      assertThat(budget.snapshot().retainedBytes()).isEqualTo(pairBytes);
+    } finally {
+      resources.close();
+    }
+    assertThat(budget.snapshot().retainedBytes()).isZero();
+  }
+
+  @Test
+  @DisplayName("two graph readers share one session mapping and release it with the session")
+  void graphReadersShareSessionMapping() throws Exception {
+    GraphResourceBudget budget = new GraphResourceBudget(1_000_000);
+    GraphSessionResources resources = new GraphSessionResources(budget);
+    try (Connection firstConnection = database.newGraphReadConnection();
+        Connection secondConnection = database.newGraphReadConnection();
+        GraphQueries first =
+            new GraphQueries(firstConnection, tempDir.resolve("indexes"), resources);
+        GraphQueries second =
+            new GraphQueries(secondConnection, tempDir.resolve("indexes"), resources)) {
+      boolean shared =
+          first
+              .withIndex(
+                  EdgeDerivation.DECLARED,
+                  true,
+                  firstGraph ->
+                      second
+                          .withIndex(
+                              EdgeDerivation.DECLARED,
+                              true,
+                              secondGraph -> secondGraph == firstGraph)
+                          .orElseThrow())
+              .orElseThrow();
+
+      assertThat(shared).isTrue();
+      assertThat(resources.cache().cachedCount()).isEqualTo(1);
+      assertThat(budget.snapshot().retainedBytes()).isPositive();
+    } finally {
+      resources.close();
+    }
+    assertThat(budget.snapshot().retainedBytes()).isZero();
+  }
+
+  @Test
+  @DisplayName("an open session never uncharges an older result generation")
+  void changedResultGenerationIsRefusedWithoutReleasingOldResult() throws Exception {
+    GraphResourceBudget budget = new GraphResourceBudget(100);
+    GraphSessionResources resources = new GraphSessionResources(budget);
+    try {
+      resources.retainResult(
+          "critical-path", "generation-one", String.class, "old", budget.reserve(10, "old"));
+
+      assertThatThrownBy(
+              () ->
+                  resources.retainResult(
+                      "critical-path",
+                      "generation-two",
+                      String.class,
+                      "new",
+                      budget.reserve(20, "new")))
+          .isInstanceOf(GraphSessionResources.SessionChangedException.class)
+          .hasMessageContaining("generation changed while open");
+      assertThatThrownBy(
+              () -> resources.retainedResult("critical-path", "generation-two", String.class))
+          .isInstanceOf(GraphSessionResources.SessionChangedException.class);
+      assertThat(resources.retainedResult("critical-path", "generation-one", String.class))
+          .contains("old");
+      assertThat(budget.snapshot().retainedBytes()).isEqualTo(10);
+    } finally {
+      resources.close();
+    }
+    assertThat(budget.snapshot().retainedBytes()).isZero();
   }
 
   @Test
@@ -384,8 +496,10 @@ final class GraphQueriesTest {
     // measured; nodes 2..4 declare no primary output at all.
     exec("INSERT INTO artifacts (id, path, size_bytes)" + " VALUES (11, 'bin/t0.out', 2048)");
     exec("INSERT INTO artifacts (id, path) VALUES (12, 'bin/t1.out')");
+    exec("INSERT INTO artifacts (id, path, size_bytes) VALUES (13, 'bin/t2.out', -5)");
     exec("UPDATE declared_actions SET primary_output_id = 11 WHERE id = 1");
     exec("UPDATE declared_actions SET primary_output_id = 12 WHERE id = 2");
+    exec("UPDATE declared_actions SET primary_output_id = 13 WHERE id = 3");
 
     long[] sizes = queries.outputSizesByNodeIndex(-1);
 
@@ -395,6 +509,7 @@ final class GraphQueriesTest {
     // different facts, and the join must keep them apart.
     assertThat(sizes[1]).isEqualTo(-1);
     assertThat(sizes[2]).isEqualTo(-1);
+    assertThat(queries.outputSizes(List.of(0, 1, 2), -1)).containsExactly(2_048, -1, -1);
   }
 
   @Test

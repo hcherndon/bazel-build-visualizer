@@ -4397,6 +4397,7 @@ public final class MainWindow extends JFrame {
     installPageChrome(NavEntry.STARLARK_PROFILE, starlarkProfileView);
     installPageChrome(NavEntry.CONFIGURATIONS, configurationsView);
     installPageChrome(NavEntry.TREE, treeView);
+    installPageChrome(NavEntry.GRAPH, graphExplorerView);
     installPageChrome(NavEntry.FINDINGS, findingsView);
 
     PageToolbar console = pageToolbars.get(NavEntry.BUILD);

@@ -16,7 +16,9 @@ After probing the selected local or SSH Bazel, the launch review adds:
 
 The flag remains disableable in launch review. An explicit user flag is never
 replaced; the plan instead explains that its file can be imported separately
-when manual attachment is supported. For SSH Workspaces, Bazel writes into the
+when manual attachment is supported. That attachment is not implemented in
+0.1.0; only the application-planned managed profile is imported. For SSH
+Workspaces, Bazel writes into the
 private remote staging directory and the completed gzip file returns through
 the same bounded SFTP path as the execution log and JSON trace profile. Capture
 finalization still attempts that transfer after an interruption. If an existing

@@ -6,6 +6,8 @@ import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.ViewClose;
+import com.holtherndon.bazelviz.ui.theme.PageChrome;
+import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.WrapLayout;
 import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
@@ -14,18 +16,20 @@ import java.awt.CardLayout;
 import java.awt.Component;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.lang.reflect.InvocationTargetException;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongConsumer;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
@@ -65,7 +69,7 @@ import org.slf4j.LoggerFactory;
  * and the graph-source selector that names which graph is on screen. The Tree card keeps its own
  * selector: two cards, two statements about what is being read, each visible where it applies.
  */
-public final class GraphExplorerView extends JPanel {
+public final class GraphExplorerView extends JPanel implements PageChrome {
 
   private static final long serialVersionUID = 1L;
 
@@ -96,6 +100,12 @@ public final class GraphExplorerView extends JPanel {
   private final JTextField search = new JTextField(18);
   private final JPopupMenu findPopup = new JPopupMenu();
   private final JToggleButton browse = new JToggleButton("Browse nodes…");
+  private final JLabel sourceLabel = labelFor("Graph source", sourceChoice, "graph.sourceLabel");
+  private final JLabel findLabel = labelFor("Find node", search, "graph.findNodeLabel");
+  private final JButton open = button("Open", "graph.openNode", this::showSearched);
+  private final JPanel rootControls =
+      row(sourceLabel, sourceChoice, findLabel, search, open, browse, sourceHelp);
+  private final JPanel localTop = new JPanel();
   private final GraphNodeBrowser browser = new GraphNodeBrowser();
   private final JTextArea status = WrappingLabel.create(" ");
   private final JLabel empty =
@@ -107,11 +117,13 @@ public final class GraphExplorerView extends JPanel {
 
   private ExecutorService worker;
   private GraphQueries queries;
+  private GraphQueries layoutQueries;
   private GraphLayoutService layouts;
   private long generation;
   private boolean graphLoading;
   private String graphLoadFailure;
   private List<Integer> pendingCriticalPath;
+  private PageToolbar pageToolbar;
 
   /** Guards stale find answers; read and written on the EDT only. */
   private long findGeneration;
@@ -200,30 +212,20 @@ public final class GraphExplorerView extends JPanel {
     browser.onNodeChosen(this::browseChosen);
     browser.onFilterChanged(text -> refreshBrowser());
 
-    JPanel top = new JPanel();
-    top.setName("graph.dataHeader");
-    top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
-    top.setBorder(
+    localTop.setName("graph.dataHeader");
+    localTop.setLayout(new BoxLayout(localTop, BoxLayout.Y_AXIS));
+    localTop.setBorder(
         BorderFactory.createCompoundBorder(
             BorderFactory.createEmptyBorder(2, 8, 1, 8),
             BorderFactory.createTitledBorder("Graph data")));
-    JPanel controls =
-        row(
-            labelFor("Graph source", sourceChoice, "graph.sourceLabel"),
-            sourceChoice,
-            sourceHelp,
-            labelFor("Find node", search, "graph.findNodeLabel"),
-            search,
-            button("Open", "graph.openNode", this::showSearched),
-            browse);
-    controls.setName("graph.dataControls");
-    top.add(controls);
-    top.add(sourceDetail);
-    top.add(warning);
-    top.add(status);
+    rootControls.setName("graph.dataControls");
+    localTop.add(rootControls);
+    localTop.add(sourceDetail);
+    localTop.add(warning);
+    localTop.add(status);
 
     JPanel body = new JPanel(new BorderLayout());
-    body.add(top, BorderLayout.NORTH);
+    body.add(localTop, BorderLayout.NORTH);
     body.add(browser, BorderLayout.WEST);
     body.add(canvasPanel, BorderLayout.CENTER);
 
@@ -231,6 +233,28 @@ public final class GraphExplorerView extends JPanel {
     deck.add(body, "graph");
     add(deck, BorderLayout.CENTER);
     showCard("empty");
+  }
+
+  /** Moves only the graph source and node-finding actions into the shared page chrome. */
+  @Override
+  public void installPageToolbar(PageToolbar toolbar) {
+    Objects.requireNonNull(toolbar, "toolbar");
+    if (pageToolbar != null) {
+      return;
+    }
+    pageToolbar = toolbar;
+    rootControls.remove(sourceHelp);
+    localTop.remove(rootControls);
+    localTop.add(row(sourceHelp), 0);
+    toolbar.addAction(sourceLabel);
+    toolbar.addAction(sourceChoice);
+    toolbar.addAction(findLabel);
+    toolbar.addAction(search);
+    toolbar.addAction(open);
+    toolbar.addAction(browse);
+    syncPageMetadata();
+    localTop.revalidate();
+    localTop.repaint();
   }
 
   /**
@@ -252,6 +276,7 @@ public final class GraphExplorerView extends JPanel {
     graphLoadFailure = null;
     empty.setText("Loading dependency graph…");
     showCard("empty");
+    syncPageMetadata();
     ExecutorService executor =
         Executors.newSingleThreadExecutor(
             runnable -> {
@@ -263,27 +288,29 @@ public final class GraphExplorerView extends JPanel {
     executor.execute(
         () -> {
           GraphQueries candidate = null;
+          GraphQueries layoutCandidate = null;
           List<GraphQueries.GraphSource> sources;
-          String[] labels;
-          String[] displayLabels;
-          long[] durations;
-          Map<Integer, Long> actionIds;
-          String[] targetLabels;
           try {
             candidate = source.openGraphQueries();
             sources = candidate.sources();
-            // Fetched here, once, because the canvas must never need a name
-            // or a duration during a paint (plan 17.7). A few queries for
-            // the whole session, not one per frame. The display labels —
-            // "Mnemonic — output basename" per action — are composed here
-            // too, off the event thread, for the same reason.
-            labels = candidate.labelsByNodeIndex();
-            displayLabels = candidate.displayLabelsByNodeIndex();
-            durations = candidate.durationsByNodeIndex(false, GraphModel.UNKNOWN_DURATION);
-            actionIds = candidate.actionIdsByNodeIndex();
-            targetLabels = candidate.labelsByNodeIndex(GraphKind.CONFIGURED_TARGETS);
+            if (executor.isShutdown()) {
+              closeQuietly(candidate);
+              return;
+            }
+            // The navigation worker and layout worker run concurrently. JDBC connections are not
+            // shared across them; SqliteSessionSource still gives both readers one graph budget
+            // and mapped-index cache.
+            layoutCandidate = source.openGraphQueries();
+            if (layoutCandidate == candidate) {
+              throw new IllegalStateException(
+                  "the session source returned one graph reader for two worker threads");
+            }
+            if (executor.isShutdown()) {
+              closeDistinctQuietly(candidate, layoutCandidate);
+              return;
+            }
           } catch (RuntimeException | SQLException failure) {
-            closeQuietly(candidate);
+            closeDistinctQuietly(candidate, layoutCandidate);
             log.debug("no graph for this session", failure);
             String message =
                 failure.getMessage() == null
@@ -299,31 +326,70 @@ public final class GraphExplorerView extends JPanel {
                   pendingCriticalPath = null;
                   empty.setText("The dependency graph could not be opened: " + message);
                   showCard("empty");
+                  syncPageMetadata();
                 });
             return;
           }
           GraphQueries opened = candidate;
-          GraphLayoutService service = new GraphLayoutService(opened);
-          SwingUtilities.invokeLater(
-              () -> {
-                if (wanted != generation) {
-                  closeInBackground(service, opened);
-                  return;
+          GraphQueries openedForLayouts = layoutCandidate;
+          GraphLayoutService service = null;
+          AtomicBoolean transferred = new AtomicBoolean(false);
+          boolean interrupted = false;
+          try {
+            service = new GraphLayoutService(openedForLayouts);
+            GraphLayoutService openedService = service;
+            CountDownLatch handoffFinished = new CountDownLatch(1);
+            Runnable handoff =
+                () -> {
+                  try {
+                    if (wanted != generation) {
+                      return;
+                    }
+                    queries = opened;
+                    layoutQueries = openedForLayouts;
+                    layouts = openedService;
+                    transferred.set(true);
+                    graphLoading = false;
+                    graphLoadFailure = null;
+                    canvasPanel.attach(openedService);
+                    installSources(sources);
+                    List<Integer> pending = pendingCriticalPath;
+                    pendingCriticalPath = null;
+                    if (pending != null) {
+                      drawCriticalPath(pending);
+                    }
+                  } finally {
+                    handoffFinished.countDown();
+                  }
+                };
+            try {
+              SwingUtilities.invokeAndWait(handoff);
+            } catch (InterruptedException shutdown) {
+              // invokeAndWait has already posted the handoff. Wait for its ownership decision so
+              // closeSessionAsync cannot complete while these readers are merely queued for later
+              // cleanup on the EDT.
+              interrupted = true;
+              while (handoffFinished.getCount() != 0) {
+                try {
+                  handoffFinished.await();
+                } catch (InterruptedException repeated) {
+                  interrupted = true;
                 }
-                queries = opened;
-                layouts = service;
-                graphLoading = false;
-                graphLoadFailure = null;
-                canvasPanel.attach(service, labels, durations, actionIds);
-                canvasPanel.attachActionDisplayLabels(displayLabels);
-                canvasPanel.attachLabelGraph(targetLabels);
-                installSources(sources);
-                List<Integer> pending = pendingCriticalPath;
-                pendingCriticalPath = null;
-                if (pending != null) {
-                  drawCriticalPath(pending);
-                }
-              });
+              }
+            } catch (InvocationTargetException installFailure) {
+              log.debug("dependency graph UI installation failed", installFailure.getCause());
+            }
+          } finally {
+            if (!transferred.get()) {
+              if (service != null) {
+                service.close();
+              }
+              closeDistinctQuietly(openedForLayouts, opened);
+            }
+            if (interrupted) {
+              Thread.currentThread().interrupt();
+            }
+          }
         });
   }
 
@@ -339,6 +405,8 @@ public final class GraphExplorerView extends JPanel {
     worker = null;
     GraphQueries open = queries;
     queries = null;
+    GraphQueries openForLayouts = layoutQueries;
+    layoutQueries = null;
     GraphLayoutService openLayouts = layouts;
     layouts = null;
     canvasPanel.detach();
@@ -356,7 +424,8 @@ public final class GraphExplorerView extends JPanel {
     findPopup.setVisible(false);
     browser.clear();
     showCard("empty");
-    if (executor == null && openLayouts == null && open == null) {
+    syncPageMetadata();
+    if (executor == null && openLayouts == null && open == null && openForLayouts == null) {
       return CompletableFuture.completedFuture(null);
     }
     return ViewClose.runAsync(
@@ -365,7 +434,9 @@ public final class GraphExplorerView extends JPanel {
           if (executor != null) {
             executor.shutdownNow();
             try {
-              executor.awaitTermination(5, TimeUnit.SECONDS);
+              while (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                log.debug("still waiting for dependency graph session cleanup");
+              }
             } catch (InterruptedException interrupted) {
               Thread.currentThread().interrupt();
             }
@@ -373,7 +444,7 @@ public final class GraphExplorerView extends JPanel {
           if (openLayouts != null) {
             openLayouts.close();
           }
-          closeQuietly(open);
+          closeDistinctQuietly(openForLayouts, open);
         });
   }
 
@@ -390,6 +461,7 @@ public final class GraphExplorerView extends JPanel {
     GraphSourceSummary.preferred(loadable).ifPresent(sourceChoice::setSelectedItem);
     sourceChanged();
     showCard("graph");
+    syncPageMetadata();
   }
 
   private void sourceChanged() {
@@ -419,6 +491,7 @@ public final class GraphExplorerView extends JPanel {
     findTruncated = false;
     findPopup.setVisible(false);
     refreshBrowser();
+    syncPageMetadata();
   }
 
   /**
@@ -840,6 +913,33 @@ public final class GraphExplorerView extends JPanel {
     status.setVisible(!status.getText().isBlank());
   }
 
+  private void syncPageMetadata() {
+    if (pageToolbar == null) {
+      return;
+    }
+    if (graphLoading) {
+      pageToolbar.setMetadata("Loading dependency graph…");
+      return;
+    }
+    if (graphLoadFailure != null) {
+      pageToolbar.setMetadata("Graph unavailable", graphLoadFailure);
+      return;
+    }
+    GraphQueries.GraphSource selected = (GraphQueries.GraphSource) sourceChoice.getSelectedItem();
+    if (selected == null) {
+      pageToolbar.setMetadata("");
+      return;
+    }
+    String count =
+        selected.declaredActions().isPresent()
+            ? " · " + selected.declaredActions().getAsLong() + " nodes"
+            : "";
+    pageToolbar.setMetadata(
+        selected.state() + count,
+        GraphSourceSummary.describe(selected)
+            + GraphSourceSummary.warning(selected).map(value -> " · " + value).orElse(""));
+  }
+
   private interface GraphWork {
     void run(GraphQueries queries) throws Exception;
   }
@@ -875,19 +975,11 @@ public final class GraphExplorerView extends JPanel {
     }
   }
 
-  private static CompletionStage<Void> closeInBackground(
-      GraphLayoutService openLayouts, GraphQueries open) {
-    if (openLayouts == null && open == null) {
-      return CompletableFuture.completedFuture(null);
+  private static void closeDistinctQuietly(GraphQueries first, GraphQueries second) {
+    closeQuietly(first);
+    if (second != first) {
+      closeQuietly(second);
     }
-    return ViewClose.runAsync(
-        "bbv-graph-close",
-        () -> {
-          if (openLayouts != null) {
-            openLayouts.close();
-          }
-          closeQuietly(open);
-        });
   }
 
   private static JPanel row(Component... components) {

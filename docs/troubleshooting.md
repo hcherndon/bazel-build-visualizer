@@ -103,6 +103,15 @@ the old local selection and up to 20 SSH connection records. Command history
 and other launcher preferences remain in that legacy file; it is not the
 source of truth for Workspaces after migration.
 
+### A saved Query or view disappeared after an interrupted write
+
+Saved Query-library `.sql` files and `index.json` are local settings. A
+process-wide lock serializes app windows, but current direct writes are not
+crash-atomic and multi-file changes are not transactional. Stop other app
+instances before recovery, preserve the settings directory, and restore the
+missing SQL from your own copy. Captured session databases are separate and are
+not removed by a damaged saved-query index.
+
 Discovered Workspace definitions are never saved, but their Bazel executable
 override and bounded command history live separately under
 `settings/discovered-workspace-history/`. Those launch preferences are
@@ -315,8 +324,9 @@ not terminal.
 
 ### "session … was indexed by an older build" / "written by a newer build"
 
-The session's schema does not match this build's. Opening is read-only and does
-not migrate, because a view is not a licence to rewrite the file you opened.
+The session's schema does not match this build's. The schema check refuses it
+without migrating or rebuilding graph indexes. General session opening is not
+yet physically read-only; the t2 hardening for that remains blocked.
 
 For an older session: import its source again. The raw events are preserved, so
 nothing is lost by rebuilding. For a newer one: open it with the build that
@@ -330,6 +340,11 @@ an entry name that escapes the archive, an expansion limit. All of these mean
 the file is not what it claims to be — a truncated download is the common
 innocent cause.
 
+For this source candidate, those checks start after Java constructs `ZipFile`.
+Central-directory metadata is not yet bounded before the ZIP parser opens it,
+and the retained preflight fix remains blocked. Do not open an archive from an
+untrusted source until that release blocker lands.
+
 "This session is already in the library" means exactly that; open the copy the
 message names rather than importing a second one.
 
@@ -337,11 +352,22 @@ message names rather than importing a second one.
 
 Above 50,000 nodes or 200,000 edges the canvas refuses rather than freezing, and
 offers four things: draw it anyway, narrow the query, group it, or export the
-whole graph. The exact totals are on screen. Nothing has been sampled or
-dropped.
+full graph. The exact totals are on screen. Nothing has been sampled or dropped.
+Every option still uses the session's aggregate 1 GiB graph budget. If a request
+is refused, the message names its requested bytes, the limit, and retained bytes
+by purpose; close another graph result or session, narrow the request, or open a
+session with a smaller graph rather than treating the refusal as an empty graph.
 
-Grouping by mnemonic always works — there are only ever a few dozen — and is the
-right answer when grouping by package is itself too large.
+Grouping by mnemonic normally yields only a few dozen groups and is the first
+thing to try when package grouping is itself too large. It still needs an
+admitted index and explicitly reports a resource refusal.
+
+If a migrated legacy session can show degrees or one-direction neighbours but
+cannot find a path or draw a two-direction neighbourhood, its fixed-name CSR
+files do not prove that forward and reverse came from the same build. Ordinary
+opening does not repair or silently rebuild those indexes. A fresh import/build
+must create a generation-matched pair; do not treat this as proof that the
+general session connection is physically read-only.
 
 ### A view says a source is missing
 
@@ -351,6 +377,12 @@ failed enrichment: the exit status, an error excerpt, whether it can be retried,
 and **which metrics are unavailable as a result**. That last line is the one to
 read — knowing the profile import failed does not tell you that you have
 therefore lost the critical path.
+
+Execution logs, JSON trace profiles, and Starlark CPU profiles are currently
+attached only through an application-planned managed capture. There is no
+manual post-hoc attachment UI or API. The auxiliary importers also lack the
+proposed complete source/expansion/record/work bounds, so treat separately
+supplied auxiliary files as unsupported and untrusted.
 
 ### Numbers that look wrong
 

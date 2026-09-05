@@ -98,6 +98,29 @@ public final class SessionDatabase implements AutoCloseable {
   }
 
   /**
+   * Opens a reader for graph validation and metadata. SQLite may need large legacy-database sorts
+   * for these operations, so temporary b-trees are file-backed and cannot bypass the graph heap
+   * admission policy as unbounded native memory.
+   */
+  public Connection newGraphReadConnection() throws SQLException {
+    Connection connection = newReadConnection();
+    boolean ok = false;
+    try (Statement statement = connection.createStatement()) {
+      // Graph bodies, models and operation scratch have their own aggregate budget. Keep the
+      // native SQLite page cache for each independently opened graph reader small and fixed so it
+      // cannot become a second graph-sized allowance outside that admission boundary.
+      statement.execute("PRAGMA cache_size=-" + GRAPH_READER_PAGE_CACHE_KIB);
+      statement.execute("PRAGMA temp_store=FILE");
+      ok = true;
+      return connection;
+    } finally {
+      if (!ok) {
+        connection.close();
+      }
+    }
+  }
+
+  /**
    * Opens a connection that is incapable of writing, for statements this codebase did not author
    * (plan rules 15 and 22.4).
    *
@@ -189,6 +212,9 @@ public final class SessionDatabase implements AutoCloseable {
    * every connection a session opens.
    */
   private static final int PAGE_CACHE_KIB = 128 * 1024;
+
+  /** Native SQLite page cache retained by each graph-only read connection. */
+  private static final int GRAPH_READER_PAGE_CACHE_KIB = 1_024;
 
   /** WAL pages between automatic checkpoints; 4,000 pages is about 16 MB. */
   private static final int WAL_AUTOCHECKPOINT_PAGES = 4_000;

@@ -17,13 +17,19 @@ import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.awt.Component;
 import java.awt.Container;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import javax.swing.JLabel;
 import javax.swing.JTextArea;
@@ -252,6 +258,48 @@ final class TreeViewSourceTest {
     assertThat(view.detailLabel().getText()).contains("A node is one target label");
   }
 
+  @Test
+  @DisplayName("replacement waits for active graph work and drops its stale tree delivery")
+  void replacementFencesActiveGraphWorkAndDropsStaleDelivery() throws Exception {
+    view.closeSessionAsync().toCompletableFuture().get(10, TimeUnit.SECONDS);
+    BlockingGraphSource stale = new BlockingGraphSource();
+    GraphOnlySource replacement = new GraphOnlySource();
+    try {
+      SwingUtilities.invokeAndWait(() -> view.openSession(stale));
+      awaitCondition(() -> view.sourceSelector().getItemCount() == 2, "the blocking source");
+
+      stale.armNextQuery();
+      searchOnEdt("t1");
+      stale.awaitQuery();
+
+      AtomicReference<CompletableFuture<Void>> closing = new AtomicReference<>();
+      SwingUtilities.invokeAndWait(
+          () -> {
+            closing.set(view.closeSessionAsync().toCompletableFuture());
+            view.openSession(replacement);
+          });
+      SwingUtilities.invokeAndWait(() -> {});
+
+      assertThat(closing.get()).isNotDone();
+      assertThat(stale.connection().isClosed()).isFalse();
+      assertThat(view.sourceSelector().getItemCount())
+          .as("the replacement waits for the old reader's termination fence")
+          .isZero();
+
+      stale.releaseQuery();
+      closing.get().get(10, TimeUnit.SECONDS);
+      awaitCondition(
+          () -> view.sourceSelector().getItemCount() == 2, "the replacement source to install");
+
+      assertThat(stale.connection().isClosed()).isTrue();
+      assertThat(rootLabel(view.dependenciesTree()))
+          .as("the old search callback cannot overwrite the replacement session")
+          .isEqualTo("Dependencies");
+    } finally {
+      stale.releaseQuery();
+    }
+  }
+
   // ------------------------------------------------------------- plumbing
 
   private void searchOnEdt(String pattern) throws Exception {
@@ -336,7 +384,7 @@ final class TreeViewSourceTest {
   }
 
   /** A session source that answers only the graph question. */
-  private final class GraphOnlySource implements SessionSource {
+  private class GraphOnlySource implements SessionSource {
 
     @Override
     public GraphQueries openGraphQueries() {
@@ -380,6 +428,67 @@ final class TreeViewSourceTest {
     @Override
     public void close() {
       // The view closes the readers it opened; nothing else to release.
+    }
+  }
+
+  private final class BlockingGraphSource extends GraphOnlySource {
+
+    private final AtomicBoolean blockNextQuery = new AtomicBoolean();
+    private final CountDownLatch queryEntered = new CountDownLatch(1);
+    private final CountDownLatch releaseQuery = new CountDownLatch(1);
+    private Connection connection;
+
+    @Override
+    public GraphQueries openGraphQueries() {
+      try {
+        Connection delegate = database.newReadConnection();
+        connection =
+            (Connection)
+                Proxy.newProxyInstance(
+                    Connection.class.getClassLoader(),
+                    new Class<?>[] {Connection.class},
+                    (proxy, method, arguments) -> {
+                      if (method.getName().equals("prepareStatement")
+                          && blockNextQuery.compareAndSet(true, false)) {
+                        queryEntered.countDown();
+                        boolean interrupted = false;
+                        while (releaseQuery.getCount() != 0) {
+                          try {
+                            releaseQuery.await();
+                          } catch (InterruptedException cancelled) {
+                            interrupted = true;
+                          }
+                        }
+                        if (interrupted) {
+                          Thread.currentThread().interrupt();
+                        }
+                      }
+                      try {
+                        return method.invoke(delegate, arguments);
+                      } catch (InvocationTargetException failure) {
+                        throw failure.getCause();
+                      }
+                    });
+        return new GraphQueries(connection, tempDir.resolve("indexes"));
+      } catch (SQLException failure) {
+        throw new IllegalStateException(failure);
+      }
+    }
+
+    void armNextQuery() {
+      blockNextQuery.set(true);
+    }
+
+    void awaitQuery() throws InterruptedException {
+      assertThat(queryEntered.await(10, TimeUnit.SECONDS)).isTrue();
+    }
+
+    void releaseQuery() {
+      releaseQuery.countDown();
+    }
+
+    Connection connection() {
+      return connection;
     }
   }
 }

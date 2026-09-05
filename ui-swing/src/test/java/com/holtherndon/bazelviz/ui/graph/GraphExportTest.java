@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
@@ -10,8 +11,10 @@ import com.holtherndon.bazelviz.graph.CsrGraph;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -302,6 +305,104 @@ final class GraphExportTest {
   }
 
   @Test
+  @DisplayName("cancelling CSV edge staging leaves both preceding files untouched")
+  void csvStagesBothFilesBeforePublishingEither() throws IOException {
+    Path nodes = tempDir.resolve("all-nodes.csv");
+    Path edges = tempDir.resolve("all-edges.csv");
+    Files.writeString(nodes, "old nodes");
+    Files.writeString(edges, "old edges");
+
+    try {
+      assertThatThrownBy(
+              () ->
+                  GraphExport.whole(
+                      chain(2),
+                      visitor -> {
+                        visitor.node(0, "//pkg:zero", -1);
+                        visitor.node(1, "//pkg:one", -1);
+                        Thread.currentThread().interrupt();
+                      },
+                      tempDir.resolve("all.csv"),
+                      GraphExport.Format.CSV,
+                      "action"))
+          .isInstanceOf(IOException.class)
+          .hasMessageContaining("cancelled");
+    } finally {
+      Thread.interrupted();
+    }
+
+    assertThat(Files.readString(nodes)).isEqualTo("old nodes");
+    assertThat(Files.readString(edges)).isEqualTo("old edges");
+    assertThat(exportScratchFiles()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("a second CSV publication failure restores both preceding files")
+  void csvPairPublicationRollsBackBothFiles() throws IOException {
+    Path nodes = tempDir.resolve("pair-nodes.csv");
+    Path edges = tempDir.resolve("pair-edges.csv");
+    Path stagedNodes = tempDir.resolve("new-nodes.partial");
+    Path stagedEdges = tempDir.resolve("new-edges.partial");
+    Files.writeString(nodes, "old nodes");
+    Files.writeString(edges, "old edges");
+    Files.writeString(stagedNodes, "new nodes");
+    Files.writeString(stagedEdges, "new edges");
+    AtomicInteger publications = new AtomicInteger();
+
+    assertThatThrownBy(
+            () ->
+                GraphExport.publishCsvPair(
+                    stagedNodes,
+                    nodes,
+                    stagedEdges,
+                    edges,
+                    (source, target) -> {
+                      if (publications.incrementAndGet() == 2) {
+                        throw new IOException("injected second publication failure");
+                      }
+                      Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+                    }))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("second publication failure");
+
+    assertThat(Files.readString(nodes)).isEqualTo("old nodes");
+    assertThat(Files.readString(edges)).isEqualTo("old edges");
+    assertThat(exportScratchFiles()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("a failed first-time CSV pair publication leaves neither final file")
+  void csvPairPublicationRemovesNewHalfPair() throws IOException {
+    Path nodes = tempDir.resolve("new-pair-nodes.csv");
+    Path edges = tempDir.resolve("new-pair-edges.csv");
+    Path stagedNodes = tempDir.resolve("new-pair-nodes.partial");
+    Path stagedEdges = tempDir.resolve("new-pair-edges.partial");
+    Files.writeString(stagedNodes, "new nodes");
+    Files.writeString(stagedEdges, "new edges");
+    AtomicInteger publications = new AtomicInteger();
+
+    assertThatThrownBy(
+            () ->
+                GraphExport.publishCsvPair(
+                    stagedNodes,
+                    nodes,
+                    stagedEdges,
+                    edges,
+                    (source, target) -> {
+                      if (publications.incrementAndGet() == 2) {
+                        throw new IOException("injected second publication failure");
+                      }
+                      Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+                    }))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("second publication failure");
+
+    assertThat(nodes).doesNotExist();
+    assertThat(edges).doesNotExist();
+    assertThat(exportScratchFiles()).isEmpty();
+  }
+
+  @Test
   @DisplayName("exporting over an existing file replaces it")
   void exportsAreRepeatable() throws IOException {
     Path target = tempDir.resolve("visible.dot");
@@ -330,6 +431,15 @@ final class GraphExportTest {
     for (GraphExport.Format format : GraphExport.Format.values()) {
       assertThat(format.displayName()).isNotBlank().doesNotContain("_");
       assertThat(format.extension()).startsWith(".");
+    }
+  }
+
+  private List<String> exportScratchFiles() throws IOException {
+    try (var entries = Files.list(tempDir)) {
+      return entries
+          .map(path -> path.getFileName().toString())
+          .filter(name -> name.contains("partial") || name.contains("backup"))
+          .toList();
     }
   }
 }
