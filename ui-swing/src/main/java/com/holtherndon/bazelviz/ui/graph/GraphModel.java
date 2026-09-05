@@ -3,6 +3,8 @@ package com.holtherndon.bazelviz.ui.graph;
 import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
+import com.holtherndon.bazelviz.graph.GraphResourceBudget;
+import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import java.awt.Color;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -35,7 +37,7 @@ import java.util.Set;
  * coloured as unknown rather than as instant, because "this action took no time" and "nothing
  * measured this action" look identical on a heat scale and mean opposite things.
  */
-public final class GraphModel {
+public final class GraphModel implements AutoCloseable {
 
   /** The duration array's sentinel for "nothing measured this". */
   public static final long UNKNOWN_DURATION = -1;
@@ -53,6 +55,7 @@ public final class GraphModel {
   private final String[] ownerLabels;
   private final String[] canvasLabels;
   private final long[] durations;
+  private final long[] actionIds;
   private final GraphSpatialIndex index;
   private final long slowestDuration;
 
@@ -68,6 +71,8 @@ public final class GraphModel {
 
   private final long[] weightValues;
   private final long maxWeight;
+  private final boolean anyKnownWeight;
+  private final boolean anyTimedDuration;
   private final boolean weightTruncated;
   private final String weightNote;
   private final double[] radiusScales;
@@ -85,6 +90,8 @@ public final class GraphModel {
   private final int[][] edgePositions;
 
   private final HierarchyInfo hierarchy;
+  private final SharedModelCharge retainedCharge;
+  private boolean closed;
 
   /**
    * @param labels one per drawn node, positionally aligned with the layout; null where the session
@@ -97,6 +104,7 @@ public final class GraphModel {
       String[] ownerLabels,
       String[] canvasLabels,
       long[] durations,
+      long[] actionIds,
       GraphSpatialIndex index,
       long slowestDuration,
       int[][] edgePositions,
@@ -104,12 +112,14 @@ public final class GraphModel {
       GraphWeight weight,
       long[] weightValues,
       boolean weightTruncated,
-      String weightNote) {
+      String weightNote,
+      GraphResourceBudget.Reservation retainedCharge) {
     this.rendered = rendered;
     this.labels = labels;
     this.ownerLabels = ownerLabels;
     this.canvasLabels = canvasLabels;
     this.durations = durations;
+    this.actionIds = actionIds;
     this.index = index;
     this.slowestDuration = slowestDuration;
     this.edgePositions = edgePositions;
@@ -117,12 +127,23 @@ public final class GraphModel {
     this.weight = weight;
     this.weightValues = weightValues;
     long max = 0;
+    boolean knownWeight = false;
     for (long value : weightValues) {
-      max = Math.max(max, value);
+      if (value != UNKNOWN_DURATION) {
+        knownWeight = true;
+        max = Math.max(max, value);
+      }
     }
     this.maxWeight = max;
+    this.anyKnownWeight = knownWeight;
+    boolean timedDuration = false;
+    for (long duration : durations) {
+      timedDuration |= duration != UNKNOWN_DURATION;
+    }
+    this.anyTimedDuration = timedDuration;
     this.weightTruncated = weightTruncated;
     this.weightNote = weightNote == null ? "" : weightNote;
+    this.retainedCharge = retainedCharge == null ? null : new SharedModelCharge(retainedCharge);
     this.radiusScales = radiusScalesFor(weightValues, max);
     this.edgeBuckets = edgeBucketsFor(edgePositions, weightValues, max);
     int highest = 0;
@@ -145,6 +166,36 @@ public final class GraphModel {
     return of(rendered, labelByNodeIndex, null, durationByNodeIndex);
   }
 
+  /** Builds from metadata already aligned to the bounded extraction, never to the whole graph. */
+  static GraphModel ofAligned(
+      GraphLayoutService.Rendered rendered, GraphQueries.NodeMetadata metadata) {
+    Objects.requireNonNull(rendered, "rendered");
+    Objects.requireNonNull(metadata, "metadata");
+    ModelAdmission admission = null;
+    try {
+      admission = admitAligned(rendered, metadata.displayLabels(), metadata.ownerLabels());
+      GraphModel model =
+          build(
+              rendered,
+              metadata.displayLabels(),
+              metadata.ownerLabels(),
+              metadata.durations(),
+              metadata.actionIds(),
+              true,
+              admission.retained());
+      admission.transfer();
+      return model;
+    } catch (RuntimeException failure) {
+      rendered.close();
+      throw failure;
+    } finally {
+      if (admission != null) {
+        admission.close();
+      }
+      metadata.close();
+    }
+  }
+
   /**
    * Prepares a drawing with an action name and its owning target kept distinct.
    *
@@ -158,11 +209,45 @@ public final class GraphModel {
       String[] ownerByNodeIndex,
       long[] durationByNodeIndex) {
     Objects.requireNonNull(rendered, "rendered");
+    ModelAdmission admission = null;
+    try {
+      admission = admit(rendered, labelByNodeIndex, ownerByNodeIndex);
+      GraphModel model =
+          build(
+              rendered,
+              labelByNodeIndex,
+              ownerByNodeIndex,
+              durationByNodeIndex,
+              null,
+              false,
+              admission.retained());
+      admission.transfer();
+      return model;
+    } catch (RuntimeException failure) {
+      rendered.close();
+      throw failure;
+    } finally {
+      if (admission != null) {
+        admission.close();
+      }
+    }
+  }
+
+  private static GraphModel build(
+      GraphLayoutService.Rendered rendered,
+      String[] labelByNodeIndex,
+      String[] ownerByNodeIndex,
+      long[] durationByNodeIndex,
+      long[] actionIdByNodeIndex,
+      boolean aligned,
+      GraphResourceBudget.Reservation retainedCharge) {
     List<Integer> nodes = rendered.layout().nodes();
     String[] labels = new String[nodes.size()];
     String[] owners = new String[nodes.size()];
     String[] canvasLabels = new String[nodes.size()];
     long[] durations = new long[nodes.size()];
+    long[] actionIds = new long[nodes.size()];
+    Arrays.fill(actionIds, -1);
     long slowest = 0;
 
     for (int i = 0; i < nodes.size(); i++) {
@@ -176,21 +261,25 @@ public final class GraphModel {
         canvasLabels[i] = labels[i];
         durations[i] = UNKNOWN_DURATION;
       } else {
+        int metadataIndex = aligned ? i : node;
         labels[i] =
-            labelByNodeIndex != null && node < labelByNodeIndex.length
-                ? labelByNodeIndex[node]
+            labelByNodeIndex != null && metadataIndex < labelByNodeIndex.length
+                ? labelByNodeIndex[metadataIndex]
                 : null;
         owners[i] =
-            ownerByNodeIndex != null && node < ownerByNodeIndex.length
-                ? ownerByNodeIndex[node]
+            ownerByNodeIndex != null && metadataIndex < ownerByNodeIndex.length
+                ? ownerByNodeIndex[metadataIndex]
                 : null;
         canvasLabels[i] = canvasLabel(labels[i], owners[i]);
         long duration =
-            durationByNodeIndex != null && node < durationByNodeIndex.length
-                ? durationByNodeIndex[node]
+            durationByNodeIndex != null && metadataIndex < durationByNodeIndex.length
+                ? durationByNodeIndex[metadataIndex]
                 : UNKNOWN_DURATION;
         durations[i] = duration;
         slowest = Math.max(slowest, duration);
+        if (actionIdByNodeIndex != null && metadataIndex < actionIdByNodeIndex.length) {
+          actionIds[i] = actionIdByNodeIndex[metadataIndex];
+        }
       }
     }
     int[][] edges = edgesAsPositions(rendered);
@@ -201,6 +290,7 @@ public final class GraphModel {
         owners,
         canvasLabels,
         durations,
+        actionIds,
         GraphSpatialIndex.of(rendered.layout()),
         slowest,
         edges,
@@ -208,7 +298,8 @@ public final class GraphModel {
         GraphWeight.DURATION,
         durations,
         false,
-        "");
+        "",
+        retainedCharge);
   }
 
   /**
@@ -218,54 +309,98 @@ public final class GraphModel {
    * model — the weight drives visual encoding only, so re-selecting a weight is a re-render and
    * never a re-layout.
    *
-   * @param valueByNode the weight per graph node index; nodes absent from the map are unknown,
-   *     drawn grey at base size, never as zero
+   * @param alignedValues the weight per rendered position; unknown entries are drawn grey at base
+   *     size, never as zero
    */
   public GraphModel withWeights(
-      GraphWeight newWeight, Map<Integer, Long> valueByNode, boolean truncated, String note) {
-    List<Integer> nodes = rendered.layout().nodes();
-    long[] values = new long[nodes.size()];
-    Arrays.fill(values, UNKNOWN_DURATION);
-    if (!isCluster()) {
-      for (int i = 0; i < nodes.size(); i++) {
-        Long value = valueByNode.get(nodes.get(i));
-        if (value != null && value >= 0) {
-          values[i] = value;
-        }
+      GraphWeight newWeight, long[] alignedValues, boolean truncated, String note) {
+    GraphLayoutService.Rendered retainedRendering = rendered.retain();
+    ModelAdmission admission = null;
+    try {
+      admission =
+          admitRestyle(
+              retainedRendering,
+              size(),
+              edgePositions[0].length,
+              retainedStringBytes(labels, ownerLabels, canvasLabels));
+      List<Integer> nodes = rendered.layout().nodes();
+      if (alignedValues.length != nodes.size()) {
+        throw new IllegalArgumentException(
+            "weight values must align with the rendered node positions");
+      }
+      long[] values = new long[nodes.size()];
+      if (!isCluster()) {
+        System.arraycopy(alignedValues, 0, values, 0, values.length);
+      } else {
+        Arrays.fill(values, UNKNOWN_DURATION);
+      }
+      GraphModel model =
+          new GraphModel(
+              retainedRendering,
+              labels,
+              ownerLabels,
+              canvasLabels,
+              durations,
+              actionIds,
+              index,
+              slowestDuration,
+              edgePositions,
+              hierarchy,
+              newWeight,
+              values,
+              truncated,
+              note,
+              admission.retained());
+      admission.transfer();
+      return model;
+    } catch (RuntimeException failure) {
+      retainedRendering.close();
+      throw failure;
+    } finally {
+      if (admission != null) {
+        admission.close();
       }
     }
-    return new GraphModel(
-        rendered,
-        labels,
-        ownerLabels,
-        canvasLabels,
-        durations,
-        index,
-        slowestDuration,
-        edgePositions,
-        hierarchy,
-        newWeight,
-        values,
-        truncated,
-        note);
   }
 
   /** Back to the duration encoding, sharing everything but the weight. */
   public GraphModel withDurationWeight() {
-    return new GraphModel(
-        rendered,
-        labels,
-        ownerLabels,
-        canvasLabels,
-        durations,
-        index,
-        slowestDuration,
-        edgePositions,
-        hierarchy,
-        GraphWeight.DURATION,
-        durations,
-        false,
-        "");
+    GraphLayoutService.Rendered retainedRendering = rendered.retain();
+    ModelAdmission admission = null;
+    try {
+      admission =
+          admitRestyle(
+              retainedRendering,
+              size(),
+              edgePositions[0].length,
+              retainedStringBytes(labels, ownerLabels, canvasLabels));
+      GraphModel model =
+          new GraphModel(
+              retainedRendering,
+              labels,
+              ownerLabels,
+              canvasLabels,
+              durations,
+              actionIds,
+              index,
+              slowestDuration,
+              edgePositions,
+              hierarchy,
+              GraphWeight.DURATION,
+              durations,
+              false,
+              "",
+              admission.retained());
+      admission.transfer();
+      return model;
+    } catch (RuntimeException failure) {
+      retainedRendering.close();
+      throw failure;
+    } finally {
+      if (admission != null) {
+        admission.close();
+      }
+    }
   }
 
   /** An empty drawing, for before a session is open. */
@@ -284,6 +419,7 @@ public final class GraphModel {
         new String[0],
         new String[0],
         new long[0],
+        new long[0],
         GraphSpatialIndex.of(nothing.layout()),
         0,
         new int[][] {new int[0], new int[0]},
@@ -291,7 +427,294 @@ public final class GraphModel {
         GraphWeight.DURATION,
         new long[0],
         false,
-        "");
+        "",
+        null);
+  }
+
+  private static ModelAdmission admit(
+      GraphLayoutService.Rendered rendered, String[] labels, String[] owners) {
+    GraphResourceBudget budget = rendered.budget();
+    if (budget == null) {
+      return ModelAdmission.none();
+    }
+    long nodes = rendered.layout().size();
+    long edges = rendered.extract().edges().size();
+    long stringBytes = metadataStringBytes(rendered, labels, owners);
+    long retained = estimateModelBytes(8_192, nodes, 160, edges, 64, stringBytes);
+    long scratch = estimateModelBytes(8_192, nodes, 160, edges, 48, 0);
+    try {
+      List<GraphResourceBudget.Reservation> reservations =
+          budget.reserveAll(
+              List.of(
+                  new GraphResourceBudget.Request(
+                      retained, "retained graph model and spatial index"),
+                  new GraphResourceBudget.Request(scratch, "graph model preparation scratch")));
+      return new ModelAdmission(reservations.get(0), reservations.get(1));
+    } catch (GraphResourceBudget.RefusedException refused) {
+      throw new ModelRefusedException(refused.getMessage(), refused);
+    }
+  }
+
+  private static ModelAdmission admitAligned(
+      GraphLayoutService.Rendered rendered, String[] labels, String[] owners) {
+    GraphResourceBudget budget = rendered.budget();
+    if (budget == null) {
+      return ModelAdmission.none();
+    }
+    long nodes = rendered.layout().size();
+    long edges = rendered.extract().edges().size();
+    long retained =
+        estimateModelBytes(
+            8_192, nodes, 160, edges, 64, alignedMetadataStringBytes(labels, owners));
+    long scratch = estimateModelBytes(8_192, nodes, 160, edges, 48, 0);
+    try {
+      List<GraphResourceBudget.Reservation> reservations =
+          budget.reserveAll(
+              List.of(
+                  new GraphResourceBudget.Request(
+                      retained, "retained graph model and spatial index"),
+                  new GraphResourceBudget.Request(scratch, "graph model preparation scratch")));
+      return new ModelAdmission(reservations.get(0), reservations.get(1));
+    } catch (GraphResourceBudget.RefusedException refused) {
+      throw new ModelRefusedException(refused.getMessage(), refused);
+    }
+  }
+
+  private static ModelAdmission admitRestyle(
+      GraphLayoutService.Rendered rendered, long nodes, long edges, long stringBytes) {
+    GraphResourceBudget budget = rendered.budget();
+    if (budget == null) {
+      return ModelAdmission.none();
+    }
+    // Restyled models share the original arrays. Charge their full conservative retained size so
+    // replacing and closing the original model cannot make still-live shared arrays unaccounted.
+    long retained = estimateModelBytes(8_192, nodes, 160, edges, 64, stringBytes);
+    long scratch = estimateModelBytes(1_024, nodes, 16, edges, 1, 0);
+    try {
+      List<GraphResourceBudget.Reservation> reservations =
+          budget.reserveAll(
+              List.of(
+                  new GraphResourceBudget.Request(retained, "retained graph weight rendering"),
+                  new GraphResourceBudget.Request(scratch, "graph weight rendering scratch")));
+      return new ModelAdmission(reservations.get(0), reservations.get(1));
+    } catch (GraphResourceBudget.RefusedException refused) {
+      throw new ModelRefusedException(refused.getMessage(), refused);
+    }
+  }
+
+  private static long metadataStringBytes(
+      GraphLayoutService.Rendered rendered, String[] labels, String[] owners) {
+    long bytes = 0;
+    for (int position = 0; position < rendered.layout().size(); position++) {
+      int node = rendered.layout().nodes().get(position);
+      if (rendered.isCluster()) {
+        GraphClustering.Cluster cluster = rendered.clustering().clusters().get(node);
+        bytes =
+            addStringLengthBytes(
+                bytes, cluster.displayName().length() + 4L + decimalDigits(cluster.nodeCount()));
+      } else {
+        String label = null;
+        String owner = null;
+        if (labels != null && node >= 0 && node < labels.length) {
+          label = labels[node];
+          bytes = addStringBytes(bytes, label);
+        }
+        if (owners != null && node >= 0 && node < owners.length) {
+          owner = owners[node];
+          bytes = addStringBytes(bytes, owner);
+        }
+        if (owner != null && !owner.equals(label)) {
+          int labelLength = label == null ? "(name not recorded)".length() : label.length();
+          bytes =
+              addStringLengthBytes(
+                  bytes, labelLength + "  ·  target ".length() + (long) owner.length());
+        }
+      }
+    }
+    return bytes;
+  }
+
+  private static long retainedStringBytes(String[]... arrays) {
+    long bytes = 0;
+    for (String[] values : arrays) {
+      for (String value : values) {
+        bytes = addStringBytes(bytes, value);
+      }
+    }
+    return bytes;
+  }
+
+  private static long alignedMetadataStringBytes(String[] labels, String[] owners) {
+    long bytes = retainedStringBytes(labels, owners);
+    for (int index = 0; index < labels.length; index++) {
+      String label = labels[index];
+      String owner = owners[index];
+      if (owner != null && !owner.equals(label)) {
+        int labelLength = label == null ? "(name not recorded)".length() : label.length();
+        bytes =
+            addStringLengthBytes(
+                bytes, labelLength + "  ·  target ".length() + (long) owner.length());
+      }
+    }
+    return bytes;
+  }
+
+  private static long addStringBytes(long total, String value) {
+    if (value == null) {
+      return total;
+    }
+    return addStringLengthBytes(total, value.length());
+  }
+
+  private static long addStringLengthBytes(long total, long characters) {
+    try {
+      return Math.addExact(total, Math.addExact(48, Math.multiplyExact(characters, 2L)));
+    } catch (ArithmeticException overflow) {
+      throw new ModelRefusedException(
+          "Graph model strings are too large to account safely.", overflow);
+    }
+  }
+
+  private static int decimalDigits(int value) {
+    return Integer.toString(value).length();
+  }
+
+  private static long estimateModelBytes(
+      long fixed, long nodes, long nodeBytes, long edges, long edgeBytes, long stringBytes) {
+    try {
+      return Math.addExact(
+          Math.addExact(fixed, stringBytes),
+          Math.addExact(
+              Math.multiplyExact(nodes, nodeBytes), Math.multiplyExact(edges, edgeBytes)));
+    } catch (ArithmeticException overflow) {
+      throw new ModelRefusedException("Graph model is too large to account safely.", overflow);
+    }
+  }
+
+  /** Keeps this model and its rendering charged while queued asynchronous work reads them. */
+  synchronized Lease lease() {
+    if (closed) {
+      throw new IllegalStateException("graph model is closed");
+    }
+    GraphLayoutService.Rendered rendering = rendered.retain();
+    if (retainedCharge != null) {
+      retainedCharge.retain();
+    }
+    return new Lease(this, rendering, retainedCharge);
+  }
+
+  @Override
+  public synchronized void close() {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    rendered.close();
+    if (retainedCharge != null) {
+      retainedCharge.release();
+    }
+  }
+
+  /** A separately closeable reference to one immutable model. */
+  static final class Lease implements AutoCloseable {
+    private final GraphModel model;
+    private final GraphLayoutService.Rendered rendering;
+    private final SharedModelCharge charge;
+    private boolean closed;
+
+    private Lease(
+        GraphModel model, GraphLayoutService.Rendered rendering, SharedModelCharge charge) {
+      this.model = model;
+      this.rendering = rendering;
+      this.charge = charge;
+    }
+
+    GraphModel model() {
+      if (closed) {
+        throw new IllegalStateException("graph model lease is closed");
+      }
+      return model;
+    }
+
+    @Override
+    public synchronized void close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      rendering.close();
+      if (charge != null) {
+        charge.release();
+      }
+    }
+  }
+
+  private static final class SharedModelCharge {
+    private final GraphResourceBudget.Reservation reservation;
+    private int references = 1;
+
+    private SharedModelCharge(GraphResourceBudget.Reservation reservation) {
+      this.reservation = reservation;
+    }
+
+    synchronized void retain() {
+      if (references == 0) {
+        throw new IllegalStateException("graph model charge is released");
+      }
+      references++;
+    }
+
+    synchronized void release() {
+      if (references <= 0) {
+        throw new IllegalStateException("graph model charge released more than once");
+      }
+      references--;
+      if (references == 0) {
+        reservation.close();
+      }
+    }
+  }
+
+  /** Visible refusal raised before model or spatial arrays are allocated. */
+  public static final class ModelRefusedException extends RuntimeException {
+    private static final long serialVersionUID = 1L;
+
+    ModelRefusedException(String message, Throwable cause) {
+      super(message, cause);
+    }
+  }
+
+  private static final class ModelAdmission implements AutoCloseable {
+    private GraphResourceBudget.Reservation retained;
+    private final GraphResourceBudget.Reservation scratch;
+
+    ModelAdmission(
+        GraphResourceBudget.Reservation retained, GraphResourceBudget.Reservation scratch) {
+      this.retained = retained;
+      this.scratch = scratch;
+    }
+
+    static ModelAdmission none() {
+      return new ModelAdmission(null, null);
+    }
+
+    GraphResourceBudget.Reservation retained() {
+      return retained;
+    }
+
+    void transfer() {
+      retained = null;
+    }
+
+    @Override
+    public void close() {
+      if (scratch != null) {
+        scratch.close();
+      }
+      if (retained != null) {
+        retained.close();
+      }
+    }
   }
 
   public GraphLayout.Result layout() {
@@ -357,10 +780,23 @@ public final class GraphModel {
     return owner == null || owner.equals(labels[position]) ? Optional.empty() : Optional.of(owner);
   }
 
+  /** Target label for entity navigation, whether it is also the node's display name or not. */
+  public Optional<String> targetLabelAt(int position) {
+    String owner = ownerLabels[position];
+    String label = owner == null ? labels[position] : owner;
+    return label == null || label.isBlank() ? Optional.empty() : Optional.of(label);
+  }
+
   /** How long a node took, or empty when nothing measured it. */
   public OptionalLong durationAt(int position) {
     long duration = durations[position];
     return duration == UNKNOWN_DURATION ? OptionalLong.empty() : OptionalLong.of(duration);
+  }
+
+  /** Executed action behind a drawn action node, when correlation recorded one. */
+  public OptionalLong actionIdAt(int position) {
+    long actionId = actionIds[position];
+    return actionId < 0 ? OptionalLong.empty() : OptionalLong.of(actionId);
   }
 
   /**
@@ -394,7 +830,7 @@ public final class GraphModel {
 
   /** The largest drawn weight, or empty when nothing here has one. */
   public OptionalLong maxWeight() {
-    return maxWeight <= 0 ? OptionalLong.empty() : OptionalLong.of(maxWeight);
+    return anyKnownWeight ? OptionalLong.of(maxWeight) : OptionalLong.empty();
   }
 
   /** How many drawn nodes have no weight value; the legend has to admit it. */
@@ -450,7 +886,7 @@ public final class GraphModel {
 
   /** The slowest drawn node, or empty when nothing here was timed. */
   public OptionalLong slowestDuration() {
-    return slowestDuration <= 0 ? OptionalLong.empty() : OptionalLong.of(slowestDuration);
+    return anyTimedDuration ? OptionalLong.of(slowestDuration) : OptionalLong.empty();
   }
 
   /** How many drawn nodes nothing timed; what the legend has to admit to. */

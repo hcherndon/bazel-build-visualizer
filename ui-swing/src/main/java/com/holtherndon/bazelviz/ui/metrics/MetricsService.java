@@ -6,8 +6,8 @@ import com.holtherndon.bazelviz.analysis.FindingRules;
 import com.holtherndon.bazelviz.analysis.FindingThresholds;
 import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
 import com.holtherndon.bazelviz.storage.metrics.SessionMetrics;
-import com.holtherndon.bazelviz.ui.lifecycle.ExecutorClose;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
+import com.holtherndon.bazelviz.ui.session.ViewClose;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -15,6 +15,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import javax.swing.SwingUtilities;
@@ -104,6 +105,9 @@ public final class MetricsService implements AutoCloseable {
             return;
           }
           try (MetricQueries queries = source.openMetricQueries()) {
+            if (generation.get() != mine) {
+              return;
+            }
             CriticalPath.DurationSource durations = queries.bestDurationSource();
             SessionMetrics metrics = queries.collect(MetricQueries.Request.everything(durations));
             List<Finding> findings = FindingRules.run(metrics.findingInputs(using));
@@ -151,11 +155,28 @@ public final class MetricsService implements AutoCloseable {
     closeAsync().toCompletableFuture().join();
   }
 
-  /** Cancels collection without blocking the EDT and reports incomplete teardown. */
+  /** Cancels collection without blocking the EDT and settles only after its reader is released. */
   public synchronized CompletionStage<Void> closeAsync() {
     cancel();
     if (closeStage == null) {
-      closeStage = ExecutorClose.cancelAsync(worker, "bbv-metrics").toCompletableFuture();
+      worker.shutdownNow();
+      closeStage =
+          ViewClose.runAsync(
+                  "bbv-metrics-close",
+                  () -> {
+                    boolean interrupted = false;
+                    while (!worker.isTerminated()) {
+                      try {
+                        worker.awaitTermination(2, TimeUnit.SECONDS);
+                      } catch (InterruptedException waiting) {
+                        interrupted = true;
+                      }
+                    }
+                    if (interrupted) {
+                      Thread.currentThread().interrupt();
+                    }
+                  })
+              .toCompletableFuture();
     }
     return closeStage;
   }

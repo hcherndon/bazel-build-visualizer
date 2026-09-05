@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -161,7 +162,7 @@ final class GraphClusteringTest {
   }
 
   @Test
-  @DisplayName("too many clusters is refused with the exact count, not truncated")
+  @DisplayName("too many clusters is refused at a truthful bounded lower limit")
   void tooManyClustersIsRefused() {
     String[] everyNodeItsOwn = twoPackages();
 
@@ -170,9 +171,9 @@ final class GraphClusteringTest {
 
     assertThat(result.hitLimit()).isTrue();
     assertThat(result.clusters()).isEmpty();
-    assertThat(result.clusterCount()).isEqualTo(6);
+    assertThat(result.clusterCount()).isEqualTo(4);
     assertThat(result.describe())
-        .contains("6 groups")
+        .contains("more than the 3")
         .contains("Nothing is hidden")
         .contains("coarser");
     GraphExtract.Result extract = result.asExtract();
@@ -233,6 +234,31 @@ final class GraphClusteringTest {
     assertThat(result.cancelled()).isTrue();
     assertThat(result.clusters()).isEmpty();
     assertThat(result.hitLimit()).isFalse();
+  }
+
+  @Test
+  @DisplayName("cancellation is checked inside one high-fanout neighbour slice")
+  void highFanoutCancellationIsPrompt() {
+    CsrGraph highFanout =
+        CsrBuilder.build(
+            2,
+            visitor -> {
+              for (int edge = 0; edge < 200_000; edge++) {
+                visitor.edge(0, 1);
+              }
+            });
+    AtomicInteger checks = new AtomicInteger();
+
+    GraphClustering.Result result =
+        GraphClustering.cluster(
+            highFanout,
+            new String[] {"//a", "//b"},
+            GraphClustering.By.PACKAGE,
+            100,
+            () -> checks.incrementAndGet() >= 3);
+
+    assertThat(result.cancelled()).isTrue();
+    assertThat(checks).hasValue(3);
   }
 
   @Test

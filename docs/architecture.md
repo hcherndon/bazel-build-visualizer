@@ -32,7 +32,7 @@ repository-wide formatting entry point; it skips nested repositories.
 | `session-format` | The managed session directory layout (docs/session-format.md): what files a session contains, journal file format, manifest read/write, integrity checks, and the portable `.bviz` archive (`format.portable`) that carries one to another machine. The only module that knows paths inside a session. |
 | `storage-sqlite` | Explicit-SQL persistence (ADR-006): per-session database and app catalog database (ADR-005), schema DDL and migrations, paged query APIs that return primitive arrays, streamed CSV/JSON table exports, and the redaction column inventory that `SessionRedactionTest` checks against the schema. Depends on `analysis-core`, following plan 6.1's split: the aggregate and metric types are analysis-core's, the streaming that fills them is this module's. |
 | `enrichment` | Post-build enrichers that add data the BEP stream lacks (execution log correlation, timing profile merge, external metadata), each re-runnable against the journal. |
-| `graph-core` | Memory-mapped CSR graph index format (ADR-006): builders that stream edges into on-disk CSR files, and read-side traversal primitives over mapped buffers. |
+| `graph-core` | Segmented, read-only mapped CSR graph indexes (ADR-006): header-only descriptors, fixed-buffer streaming builders, scoped index leases, the per-session aggregate graph budget, and traversal primitives that read mapped regions without copying a whole CSR into heap. |
 | `analysis-core` | Algorithms and metrics over the indexes: critical path, graph extraction, clustering, layout, quantile sketches, the concurrency sweep, the metric catalog and the finding rules. Depends on `core-model` and `graph-core` only — **not** on `storage-sqlite`, which is what keeps every formula testable without a database and callable from either side. A caller supplies the arrays; this module supplies the answers. |
 | `ui-swing` | All Swing code: window shell, FlatLaf theming, and the custom-painted heavy views (virtualized table, timeline, graph canvas). Talks to services only through background executors (see threading model). |
 | `app` | Entry point and composition root: wires modules together, owns `main`, the Logback rolling-file backend and jpackage packaging. The UI sees only the backend-neutral logging runtime interface. |
@@ -68,11 +68,23 @@ graph" is never an acceptable label.
 
 Two navigation cards read these graphs (since the 2026-08-24 Graph/Tree
 split): **Tree** (`TreeView`) browses dependencies and reverse dependencies
-one level at a time and finds paths, at any graph size; **Graph**
+one level at a time and finds paths under the session graph budget; **Graph**
 (`GraphExplorerView`) draws bounded extracts on the canvas with selectable
 node weights. Each card carries its own graph-source selector naming which of
 the representations above is on screen; see `docs/graph-model.md` for the
 weight definitions and their budgets.
+
+One `GraphSessionResources` belongs to each open session. Its 1 GiB aggregate
+budget admits mapped index bytes, graph renderings/models and charged scratch
+before allocation. Its access-ordered cache retains at most two idle-or-leased
+index mappings and evicts only idle entries. Header-only estimates do not map
+CSR bodies; body access is segmented and scoped to a lease. The layout cache's
+128 MiB and 12-entry caps are part of the same allowance. Refusal text carries
+exact requested, limit and retained-by-purpose bytes instead of presenting
+missing work as an empty graph. This is a graph Java/mapping budget, not a
+whole-process native-memory cap: every separately opened graph reader has one
+fixed 1 MiB SQLite page cache outside it, and uses file-backed temporary
+b-trees.
 
 ## Session state machine
 
@@ -115,10 +127,20 @@ journal:
    its source.
 6. **Index** — `graph-core` writes the CSR dependency indexes and temporal
    indexes as mmap files; SQLite gets its secondary indexes.
-7. **Ready** — the UI opens read-only views over SQLite + mmap indexes.
+7. **Ready** — the UI opens read-oriented services over SQLite and scoped,
+   read-only mapped indexes.
 
 Decode/normalize proceed incrementally during capture for live views;
 stages 5-6 run after `BUILD_FINISHED`.
+
+The ad hoc Query connection is physically `SQLITE_OPEN_READONLY` and also uses
+`PRAGMA query_only`. Opening an already-finished managed session is logically
+read-only and refuses an older or newer schema with re-import or upgrade
+guidance, but its current connection is not physically read-only: it opens the
+normal database connection before checking the schema. Writable capture/import
+database initialization runs the forward migrations through v10. Replacing the
+finished-session path without writer pragmas or migration is a remaining
+release-hardening blocker, not a property claimed by "read-oriented" above.
 
 ## Execution boundary and SSH workspaces
 
@@ -246,7 +268,8 @@ that remote loopback URI. It writes the execution log, profile and any BEP
 fallback into a unique mode-0700 directory under remote `/tmp`; after the
 primary command, SFTP copies each planned file into the managed session's
 local `raw/` directory before import. Aquery and cquery use non-TTY channels so
-their protobuf bytes can stream directly into bounded local files. Their
+their protobuf bytes stream directly into local files; those files do not yet
+have an output-size ceiling because t3 remains blocked. Their
 `aquery.query` and `cquery.query` scope files travel in the other direction
 through SFTP.
 

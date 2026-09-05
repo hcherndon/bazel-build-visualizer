@@ -17,9 +17,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.File;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -147,23 +145,6 @@ public final class GraphCanvasPanel extends JPanel {
 
   private GraphLayoutService service;
   private GraphKind shownGraph = GraphKind.DECLARED_ACTIONS;
-  private String[] actionLabels;
-
-  /**
-   * Per-action display names — "Mnemonic — output basename" — for the two action graphs, or null
-   * when the caller supplied none.
-   *
-   * <p>Separate from {@link #actionLabels} because the two answer different questions: the target
-   * label is what an action belongs to (what the complete export's {@code label} column must keep
-   * meaning), the display name is what distinguishes one of the target's actions from another on
-   * the canvas — where every action under one label reading as the same string was the exact
-   * complaint.
-   */
-  private String[] actionDisplayLabels;
-
-  private long[] actionDurations;
-  private String[] labelGraphLabels;
-  private long[] labelGraphDurations;
   private int rootNode = -1;
 
   /** True while {@link #raiseLimits} writes the spinner, so it does not echo. */
@@ -183,7 +164,6 @@ public final class GraphCanvasPanel extends JPanel {
    */
   private boolean aggregatedAutomatically;
 
-  private Map<Integer, Long> actionIdByNodeIndex = Map.of();
   private LongConsumer actionListener = actionId -> {};
   private EntityActions entityActions;
 
@@ -397,47 +377,12 @@ public final class GraphCanvasPanel extends JPanel {
   }
 
   /**
-   * Takes over a session's graph.
-   *
-   * @param labelsByNodeIndex fetched once, off the event thread, so no paint ever needs a name it
-   *     does not already have
+   * Attaches a session without loading graph-wide metadata; each rendering fetches only its nodes.
    */
-  public void attach(
-      GraphLayoutService service,
-      String[] labelsByNodeIndex,
-      long[] durationsByNodeIndex,
-      Map<Integer, Long> actionIdByNodeIndex) {
-    this.service = service;
+  public void attach(GraphLayoutService service) {
+    this.service = Objects.requireNonNull(service, "service");
     this.shownGraph = GraphKind.DECLARED_ACTIONS;
-    this.actionLabels = labelsByNodeIndex;
-    this.actionDurations = durationsByNodeIndex;
-    this.actionIdByNodeIndex = actionIdByNodeIndex == null ? Map.of() : actionIdByNodeIndex;
     showNothing(pickPrompt());
-  }
-
-  /**
-   * Hands over the per-action display names for the action graphs.
-   *
-   * <p>Composed once, off the event thread, by {@code GraphQueries.displayLabelsByNodeIndex()}:
-   * "Mnemonic — output basename", degrading honestly where pieces are absent. The canvas draws
-   * these above the owning target label; the complete export keeps the target labels from {@link
-   * #attach}, whose {@code label} column would otherwise lie.
-   */
-  public void attachActionDisplayLabels(String[] displayLabelsByNodeIndex) {
-    this.actionDisplayLabels = displayLabelsByNodeIndex;
-  }
-
-  /**
-   * Hands over the configured-target label graph's per-node names.
-   *
-   * <p>Nothing times a label — a target's actions are timed, the label is not — so its duration
-   * array is all unknown, and the legend says so rather than colouring targets as uniformly fast.
-   */
-  public void attachLabelGraph(String[] labelsByNodeIndex) {
-    this.labelGraphLabels = labelsByNodeIndex;
-    long[] unknown = new long[labelsByNodeIndex == null ? 0 : labelsByNodeIndex.length];
-    Arrays.fill(unknown, GraphModel.UNKNOWN_DURATION);
-    this.labelGraphDurations = unknown;
   }
 
   /**
@@ -491,36 +436,10 @@ public final class GraphCanvasPanel extends JPanel {
         + " Double-click a node to refocus on it.";
   }
 
-  private String[] currentLabels() {
-    return shownGraph == GraphKind.CONFIGURED_TARGETS ? labelGraphLabels : actionLabels;
-  }
-
-  /**
-   * What the canvas names nodes with: target labels for the label graph — a label <em>is</em> the
-   * node there — and the per-action display names for the action graphs, falling back to target
-   * labels when no display array was attached rather than showing nothing.
-   */
-  private String[] currentDisplayLabels() {
-    if (shownGraph == GraphKind.CONFIGURED_TARGETS) {
-      return labelGraphLabels;
-    }
-    return actionDisplayLabels != null ? actionDisplayLabels : actionLabels;
-  }
-
-  private long[] currentDurations() {
-    return shownGraph == GraphKind.CONFIGURED_TARGETS ? labelGraphDurations : actionDurations;
-  }
-
   /** Lets go of the session. */
   public void detach() {
     this.service = null;
-    this.actionLabels = null;
-    this.actionDisplayLabels = null;
-    this.actionDurations = null;
-    this.labelGraphLabels = null;
-    this.labelGraphDurations = null;
     this.shownGraph = GraphKind.DECLARED_ACTIONS;
-    this.actionIdByNodeIndex = Map.of();
     this.rootNode = -1;
     this.aggregatedAutomatically = false;
     mode.setSelectedItem(GraphExtract.Mode.NEIGHBOURHOOD);
@@ -552,11 +471,16 @@ public final class GraphCanvasPanel extends JPanel {
     mode.setSelectedItem(pathMode);
     setText(description, "Drawing…");
     long wanted = ++renderGeneration;
-    service.submitPath(
+    GraphLayoutService active = service;
+    active.submitPath(
         GraphLayoutService.Request.forPath(shownGraph, pathMode).withLimits(nodeLimit, edgeLimit),
         nodes,
-        result -> rendered(result, wanted),
-        failure -> failed(failure, wanted));
+        result -> rendered(result, wanted, active),
+        failure -> {
+          if (active == service) {
+            failed(failure, wanted);
+          }
+        });
     return true;
   }
 
@@ -716,16 +640,7 @@ public final class GraphCanvasPanel extends JPanel {
     if (model.isCluster() || position < 0 || position >= model.size()) {
       return Optional.empty();
     }
-    int node = model.nodeAt(position);
-    String[] labels = currentLabels();
-    if (labels == null
-        || node < 0
-        || node >= labels.length
-        || labels[node] == null
-        || labels[node].isBlank()) {
-      return Optional.empty();
-    }
-    return Optional.of(labels[node]);
+    return model.targetLabelAt(position);
   }
 
   public int nodeLimit() {
@@ -876,8 +791,14 @@ public final class GraphCanvasPanel extends JPanel {
     if (weight == GraphWeight.DURATION) {
       GraphLayoutService active = service;
       if (active != null) {
-        active.prepare(
-            model::withDurationWeight,
+        GraphModel.Lease modelLease = model.lease();
+        active.prepareOwned(
+            modelLease,
+            () -> {
+              try (modelLease) {
+                return modelLease.model().withDurationWeight();
+              }
+            },
             styled -> applyRestyle(styled, model, wanted, active),
             failure -> weightFailed(weight, wanted, failure));
       }
@@ -893,29 +814,48 @@ public final class GraphCanvasPanel extends JPanel {
     if (active == null) {
       return;
     }
+    GraphModel.Lease modelLease = model.lease();
     active.weights(
         shownGraph,
         weight,
-        model.extract(),
-        set -> weightsArrived(set, model, wanted, active),
+        modelLease,
+        set -> weightsArrived(set, wanted, active),
         failure -> weightFailed(weight, wanted, failure));
   }
 
   /** Applies computed weights, unless the drawing has moved on. */
   private void weightsArrived(
-      GraphLayoutService.WeightSet set, GraphModel model, long wanted, GraphLayoutService active) {
-    if (wanted != weightGeneration || active != service || canvas.model() != model) {
+      GraphLayoutService.WeightSet set, long wanted, GraphLayoutService active) {
+    if (wanted != weightGeneration || active != service) {
+      set.close();
       return;
     }
-    active.prepare(
-        () -> model.withWeights(set.weight(), set.valueByNode(), set.truncated(), set.note()),
+    GraphModel model = canvas.model();
+    GraphModel.Lease modelLease = model.lease();
+    AutoCloseable inputs =
+        () -> {
+          set.close();
+          modelLease.close();
+        };
+    active.prepareOwned(
+        inputs,
+        () -> {
+          try (inputs) {
+            return modelLease
+                .model()
+                .withWeights(set.weight(), set.values(), set.truncated(), set.note());
+          }
+        },
         styled -> applyRestyle(styled, model, wanted, active),
-        failure -> weightFailed(set.weight(), wanted, failure));
+        failure -> {
+          weightFailed(set.weight(), wanted, failure);
+        });
   }
 
   private void applyRestyle(
       GraphModel styled, GraphModel previous, long wanted, GraphLayoutService active) {
     if (wanted != weightGeneration || active != service || canvas.model() != previous) {
+      styled.close();
       return;
     }
     canvas.restyle(styled);
@@ -970,21 +910,32 @@ public final class GraphCanvasPanel extends JPanel {
 
     weightGeneration++;
     exportGeneration++;
+    estimate = null;
     setText(description, "Drawing…");
     long wanted = ++renderGeneration;
-    service.estimate(
+    GraphLayoutService active = service;
+    active.estimate(
         request,
         found -> {
-          if (wanted == renderGeneration) {
+          if (wanted == renderGeneration && active == service) {
             this.estimate = found;
           }
         },
         failure -> {});
-    service.submit(request, result -> rendered(result, wanted), failure -> failed(failure, wanted));
+    active.submit(
+        request,
+        result -> rendered(result, wanted, active),
+        failure -> {
+          if (active == service) {
+            failed(failure, wanted);
+          }
+        });
   }
 
-  private void rendered(GraphLayoutService.Rendered result, long wanted) {
-    if (wanted != renderGeneration) {
+  private void rendered(
+      GraphLayoutService.Rendered result, long wanted, GraphLayoutService active) {
+    if (wanted != renderGeneration || active != service) {
+      result.close();
       return;
     }
     // Plan 13.6: above the limit, switch to cluster mode. Switch, not
@@ -996,19 +947,13 @@ public final class GraphCanvasPanel extends JPanel {
         && result.request().mode() == GraphExtract.Mode.WHOLE) {
       aggregatedAutomatically = true;
       setText(description, result.description());
+      result.close();
       mode.setSelectedItem(GraphExtract.Mode.CLUSTERS);
       return;
     }
 
-    GraphLayoutService active = service;
-    if (active == null) {
-      return;
-    }
-    String[] displayLabels = currentDisplayLabels();
-    String[] ownerLabels = currentLabels();
-    long[] durations = currentDurations();
-    active.prepare(
-        () -> GraphModel.of(result, displayLabels, ownerLabels, durations),
+    active.prepareModel(
+        result,
         model -> preparedRendering(result, model, wanted, active),
         failure -> failed(failure, wanted));
   }
@@ -1019,6 +964,7 @@ public final class GraphCanvasPanel extends JPanel {
       long wanted,
       GraphLayoutService active) {
     if (wanted != renderGeneration || active != service) {
+      model.close();
       return;
     }
     if (aggregatedAutomatically && result.isCluster() && result.refused()) {
@@ -1075,11 +1021,14 @@ public final class GraphCanvasPanel extends JPanel {
     // which is the whole-graph case. For a traversal that stopped at its
     // budget, doubling the budget is the honest offer.
     if (clustered && result.clustering() != null) {
+      long safeUpperBound = Math.min((long) MAX_NODE_LIMIT, result.clustering().totalNodes());
       raiseLimit.setToolTipText(
           PlainText.tooltip(
               "Raise the group budget to "
-                  + result.clustering().clusterCount()
-                  + " and draw every group."));
+                  + safeUpperBound
+                  + "; there can be at most one group per "
+                  + noun()
+                  + "."));
     } else {
       raiseLimit.setToolTipText(
           PlainText.tooltip(
@@ -1160,10 +1109,7 @@ public final class GraphCanvasPanel extends JPanel {
       return;
     }
     if (model.isCluster() && model.clustering() != null) {
-      clusterLimit =
-          (int)
-              Math.min(
-                  MAX_NODE_LIMIT, Math.max(model.clustering().clusterCount(), clusterLimit * 2L));
+      clusterLimit = (int) Math.min(MAX_NODE_LIMIT, model.clustering().totalNodes());
       syncingLimitControl = true;
       try {
         nodeLimitControl.setValue(Math.min(MAX_NODE_LIMIT, clusterLimit));
@@ -1202,8 +1148,7 @@ public final class GraphCanvasPanel extends JPanel {
         || shownGraph == GraphKind.CONFIGURED_TARGETS) {
       return OptionalLong.empty();
     }
-    Long actionId = actionIdByNodeIndex.get(canvas.model().nodeAt(position));
-    return actionId == null ? OptionalLong.empty() : OptionalLong.of(actionId);
+    return canvas.model().actionIdAt(position);
   }
 
   /**
@@ -1223,9 +1168,11 @@ public final class GraphCanvasPanel extends JPanel {
       return;
     }
     long wanted = ++exportGeneration;
-    active.onGraph(
-        shownGraph,
-        graph -> GraphExport.visible(model, target, format),
+    GraphModel.Lease modelLease = model.lease();
+    active.exportVisible(
+        modelLease,
+        target,
+        format,
         result -> exported(result, wanted, active),
         failure -> exportFailed(failure, wanted, active));
   }
@@ -1241,13 +1188,13 @@ public final class GraphCanvasPanel extends JPanel {
     if (active == null) {
       return;
     }
-    String[] labels = currentLabels();
-    long[] durations = currentDurations();
     String nodeNoun = noun();
     long wanted = ++exportGeneration;
-    active.onGraph(
+    active.exportComplete(
         shownGraph,
-        graph -> GraphExport.whole(graph, labels, durations, target, format, nodeNoun),
+        target,
+        format,
+        nodeNoun,
         result -> exported(result, wanted, active),
         failure -> exportFailed(failure, wanted, active));
   }
@@ -1421,19 +1368,23 @@ public final class GraphCanvasPanel extends JPanel {
   private void selectionChanged(int[] positions) {
     updateOmission();
     if (positions.length == 0) {
-      setText(selected, legend());
+      setText(selected, withSelectionLimitNote(legend()));
       return;
     }
     if (positions.length == 1) {
       GraphModel model = canvas.model();
       actionIdAt(positions[0]).ifPresent(actionListener::accept);
-      setText(selected, describeSelection(model, positions[0]));
+      setText(selected, withSelectionLimitNote(describeSelection(model, positions[0])));
       if (model.weight().isTransitive() && !model.isCluster()) {
         appendGlobalCount(model, positions[0]);
       }
       return;
     }
-    setText(selected, positions.length + " " + noun() + "s selected");
+    setText(selected, withSelectionLimitNote(positions.length + " " + noun() + "s selected"));
+  }
+
+  private String withSelectionLimitNote(String text) {
+    return canvas.selectionLimitNote().map(note -> text + "  —  " + note).orElse(text);
   }
 
   /** One selected node, in the words of the selected weight. */
@@ -1469,7 +1420,8 @@ public final class GraphCanvasPanel extends JPanel {
     long wanted = weightGeneration;
     int node = model.nodeAt(position);
     GraphWeight weight = model.weight();
-    service.globalTransitiveCount(
+    GraphLayoutService active = service;
+    active.globalTransitiveCount(
         shownGraph,
         node,
         weight.countsForwards(),
@@ -1480,9 +1432,25 @@ public final class GraphCanvasPanel extends JPanel {
           }
           setText(
               selected,
-              describeSelection(canvas.model(), position)
-                  + "  —  whole graph: "
-                  + counted.describe());
+              withSelectionLimitNote(
+                  describeSelection(canvas.model(), position)
+                      + "  —  whole graph: "
+                      + counted.describe()));
+        },
+        failure -> {
+          int[] now = canvas.selectedPositions();
+          if (wanted != weightGeneration
+              || active != service
+              || now.length != 1
+              || now[0] != position) {
+            return;
+          }
+          setText(
+              selected,
+              withSelectionLimitNote(
+                  describeSelection(canvas.model(), position)
+                      + "  —  whole graph unavailable: "
+                      + failure.getMessage()));
         });
   }
 

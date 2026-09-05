@@ -13,8 +13,11 @@ import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.core.measure.Measured;
 import com.holtherndon.bazelviz.core.source.Completeness;
 import com.holtherndon.bazelviz.core.source.DataSource;
+import com.holtherndon.bazelviz.graph.CsrFile;
 import com.holtherndon.bazelviz.graph.CsrGraph;
+import com.holtherndon.bazelviz.graph.GraphResourceBudget;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
+import com.holtherndon.bazelviz.storage.graph.GraphSessionResources;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -1184,9 +1187,21 @@ public final class MetricQueries implements AutoCloseable {
       }
       return DerivedPath.unavailable(reason);
     }
-    Optional<CsrGraph> forward;
     try {
-      forward = queries.forwardIndex(EdgeDerivation.DECLARED);
+      Optional<DerivedPath> result =
+          queries.withIndexDescriptor(
+              EdgeDerivation.DECLARED,
+              true,
+              (descriptor, graphIndex) ->
+                  admittedCriticalPath(queries, descriptor, graphIndex, source));
+      return result.orElseGet(
+          () -> DerivedPath.unavailable("no declared action-graph index was built"));
+    } catch (GraphResourceBudget.RefusedException refused) {
+      return DerivedPath.unavailable(
+          "the dependency-path computation was refused by the graph resource budget: "
+              + readableMessage(refused));
+    } catch (GraphSessionResources.SessionChangedException changed) {
+      return DerivedPath.unavailable(readableMessage(changed));
     } catch (IOException unreadable) {
       // A memory-mapped index that will not open is a session problem,
       // not a metrics problem: every other number here is still correct,
@@ -1195,29 +1210,65 @@ public final class MetricQueries implements AutoCloseable {
       return DerivedPath.unavailable(
           "the declared action-graph index could not be read: " + readableMessage(unreadable));
     }
-    if (forward.isEmpty()) {
-      return DerivedPath.unavailable("no declared action-graph index was built");
+  }
+
+  private static DerivedPath admittedCriticalPath(
+      GraphQueries queries,
+      CsrFile.Descriptor descriptor,
+      CsrGraph graphIndex,
+      CriticalPath.DurationSource source)
+      throws SQLException, IOException {
+    String cacheSlot = "critical-path:" + source;
+    String generationKey =
+        descriptor.path() + ":" + Long.toUnsignedString(descriptor.header().checksum());
+    Optional<DerivedPath> cached =
+        queries.cachedSessionResult(cacheSlot, generationKey, DerivedPath.class);
+    if (cached.isPresent()) {
+      return cached.orElseThrow();
     }
-    long[] durations =
-        queries.durationsByNodeIndex(
-            source == CriticalPath.DurationSource.EXECUTION_ATTEMPT, CriticalPath.UNKNOWN_DURATION);
-    CsrGraph graphIndex = forward.orElseThrow();
-    if (graphIndex.nodeCount() != durations.length) {
-      return DerivedPath.unavailable(
-          "the declared action-graph index describes "
-              + graphIndex.nodeCount()
-              + " nodes, but the current graph has "
-              + durations.length
-              + "; the index is stale");
-    }
-    try {
-      return DerivedPath.available(CriticalPath.compute(graphIndex, durations, source));
-    } catch (IllegalArgumentException invalidDuration) {
-      return DerivedPath.unavailable(
-          "the dependency-path durations are invalid: " + readableMessage(invalidDuration));
-    } catch (ArithmeticException overflow) {
-      return DerivedPath.unavailable(
-          "the dependency-path duration arithmetic overflowed: " + readableMessage(overflow));
+    long retainedBytes = CriticalPath.retainedBytes(graphIndex.nodeCount());
+    long scratchBytes =
+        Math.subtractExact(CriticalPath.peakBytes(graphIndex.nodeCount()), retainedBytes);
+    List<GraphResourceBudget.Reservation> reservations =
+        queries
+            .resourceBudget()
+            .reserveAll(
+                List.of(
+                    new GraphResourceBudget.Request(retainedBytes, "retained critical-path result"),
+                    new GraphResourceBudget.Request(scratchBytes, "critical-path scratch")));
+    GraphResourceBudget.Reservation retained = reservations.get(0);
+    try (GraphResourceBudget.Reservation scratch = reservations.get(1)) {
+      long[] durations =
+          queries.durationsByNodeIndex(
+              source == CriticalPath.DurationSource.EXECUTION_ATTEMPT,
+              CriticalPath.UNKNOWN_DURATION);
+      if (graphIndex.nodeCount() != durations.length) {
+        return DerivedPath.unavailable(
+            "the declared action-graph index describes "
+                + graphIndex.nodeCount()
+                + " nodes, but the current graph has "
+                + durations.length
+                + "; the index is stale");
+      }
+      try {
+        DerivedPath result =
+            DerivedPath.available(CriticalPath.compute(graphIndex, durations, source));
+        result =
+            queries.retainSessionResult(
+                cacheSlot, generationKey, DerivedPath.class, result, retained);
+        retained = null;
+        return result;
+      } catch (IllegalArgumentException invalidDuration) {
+        return DerivedPath.unavailable(
+            "the dependency-path durations are invalid: " + readableMessage(invalidDuration));
+      } catch (ArithmeticException overflow) {
+        return DerivedPath.unavailable(
+            "the dependency-path duration arithmetic overflowed: " + readableMessage(overflow));
+      }
+    } finally {
+      if (retained != null) {
+        retained.close();
+      }
     }
   }
 
@@ -1732,7 +1783,6 @@ public final class MetricQueries implements AutoCloseable {
     if (actions.isEmpty()) {
       return actions;
     }
-    boolean degreeIndexesAvailable = false;
     if (graph.isPresent()) {
       try {
         GraphQueries queries = graph.orElseThrow();
@@ -1740,33 +1790,43 @@ public final class MetricQueries implements AutoCloseable {
             queries.sources().stream()
                 .filter(source -> source.kind().equals("DECLARED_ACTIONS"))
                 .anyMatch(GraphQueries.GraphSource::isTrustworthy);
-        degreeIndexesAvailable =
-            sourceTrustworthy
-                && queries.forwardIndex(EdgeDerivation.DECLARED).isPresent()
-                && queries.reverseIndex(EdgeDerivation.DECLARED).isPresent();
+        if (sourceTrustworthy) {
+          Optional<List<ActionMetrics>> enriched =
+              queries.withIndexPair(
+                  EdgeDerivation.DECLARED,
+                  (forward, reverse) -> enrich(actions, derived, spans, queries, forward, reverse));
+          if (enriched.isPresent()) {
+            return enriched.orElseThrow();
+          }
+        }
       } catch (IOException unreadable) {
-        degreeIndexesAvailable = false;
+        // Fan-in and fan-out remain unknown. The rest of each action is still usable.
       }
     }
+    return enrich(actions, derived, spans, graph.orElse(null), null, null);
+  }
+
+  private static List<ActionMetrics> enrich(
+      List<ActionMetrics> actions,
+      Optional<CriticalPath.Result> derived,
+      ConcurrencySweep.Spans spans,
+      GraphQueries queries,
+      CsrGraph forward,
+      CsrGraph reverse)
+      throws SQLException {
     List<ActionMetrics> out = new ArrayList<>(actions.size());
     for (ActionMetrics action : actions) {
       OptionalLong consumers = OptionalLong.empty();
       OptionalLong dependencies = OptionalLong.empty();
       OptionalLong slack = OptionalLong.empty();
       boolean onPath = false;
-      if (graph.isPresent()) {
-        GraphQueries queries = graph.orElseThrow();
+      if (queries != null) {
         OptionalLong node = queries.nodeForAction(action.actionId());
         if (node.isPresent()) {
           int index = Math.toIntExact(node.getAsLong());
-          if (degreeIndexesAvailable) {
-            try {
-              consumers = OptionalLong.of(queries.degree(EdgeDerivation.DECLARED, index, true));
-              dependencies = OptionalLong.of(queries.degree(EdgeDerivation.DECLARED, index, false));
-            } catch (IOException unreadable) {
-              consumers = OptionalLong.empty();
-              dependencies = OptionalLong.empty();
-            }
+          if (forward != null && reverse != null) {
+            consumers = OptionalLong.of(forward.degree(index));
+            dependencies = OptionalLong.of(reverse.degree(index));
           }
           if (derived.isPresent()
               && derived.orElseThrow().outcome() == CriticalPath.Outcome.COMPUTED

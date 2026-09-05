@@ -4,7 +4,6 @@ import com.holtherndon.bazelviz.core.text.Csv;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -42,8 +41,12 @@ import java.util.List;
  *
  * <h2>Written through a temporary file</h2>
  *
- * <p>Plan 10.4: "export through a temporary file, then atomically rename". An export interrupted
- * halfway leaves no file at all rather than a plausible truncated one.
+ * <p>Plan 10.4: "export through a temporary file, then atomically rename". A DOT export requests
+ * one atomic staged replacement and falls back to a replacing move where the filesystem does not
+ * support one. Both halves of a CSV export are staged before either is published, and a normal
+ * publication failure restores both preceding files. Two filesystem renames cannot be crash-atomic
+ * as a pair, so a process or machine crash between them remains an explicit format limitation
+ * rather than a stronger promise.
  */
 public final class GraphExport {
 
@@ -129,6 +132,7 @@ public final class GraphExport {
           out -> {
             dotHeader(out, provenance);
             for (int i = 0; i < nodes; i++) {
+              checkCancelled(i);
               dotNode(
                   out,
                   i,
@@ -136,6 +140,7 @@ public final class GraphExport {
                   model.durationAt(i).isPresent() ? model.durationAt(i).getAsLong() : -1);
             }
             for (int e = 0; e < edges[0].length; e++) {
+              checkCancelled(e);
               out.write("  n" + edges[0][e] + " -> n" + edges[1][e] + ";\n");
             }
             out.write("}\n");
@@ -145,7 +150,7 @@ public final class GraphExport {
 
     Path nodeFile = sibling(target, "-nodes.csv");
     Path edgeFile = sibling(target, "-edges.csv");
-    writeAtomically(
+    writeCsvPair(
         nodeFile,
         out -> {
           out.write("# " + provenance + "\n");
@@ -154,6 +159,7 @@ public final class GraphExport {
           // Bazel label. The complete export is the one that writes labels.
           out.write("id,name,duration_micros\n");
           for (int i = 0; i < nodes; i++) {
+            checkCancelled(i);
             out.write(
                 i
                     + ","
@@ -164,13 +170,13 @@ public final class GraphExport {
                         : "")
                     + "\n");
           }
-        });
-    writeAtomically(
+        },
         edgeFile,
         out -> {
           out.write("# " + provenance + "\n");
           out.write("from,to\n");
           for (int e = 0; e < edges[0].length; e++) {
+            checkCancelled(e);
             out.write(edges[0][e] + "," + edges[1][e] + "\n");
           }
         });
@@ -207,6 +213,27 @@ public final class GraphExport {
       Format format,
       String nodeNoun)
       throws IOException {
+    return whole(
+        forward,
+        visitor -> {
+          for (int node = 0; node < forward.nodeCount(); node++) {
+            visitor.node(
+                node,
+                labelsByNodeIndex != null && node < labelsByNodeIndex.length
+                    ? labelsByNodeIndex[node]
+                    : null,
+                durationOf(durationsByNodeIndex, node));
+          }
+        },
+        target,
+        format,
+        nodeNoun);
+  }
+
+  /** Complete export with metadata streamed in dense node order. */
+  public static Result whole(
+      CsrGraph forward, NodeMetadataSource metadata, Path target, Format format, String nodeNoun)
+      throws IOException {
     long nodes = forward.nodeCount();
     long edges = forward.edgeCount();
     String provenance =
@@ -224,24 +251,18 @@ public final class GraphExport {
           file,
           out -> {
             dotHeader(out, provenance);
+            writeDenseMetadata(
+                metadata,
+                nodes,
+                (node, label, duration) -> dotNode(out, node, nameOf(label), duration));
             for (int node = 0; node < nodes; node++) {
-              dotNode(
-                  out,
-                  node,
-                  nameOf(labelsByNodeIndex, node),
-                  durationOf(durationsByNodeIndex, node));
-            }
-            for (int node = 0; node < nodes; node++) {
-              int from = node;
-              forward.forEachNeighbor(
-                  node,
-                  to -> {
-                    try {
-                      out.write("  n" + from + " -> n" + to + ";\n");
-                    } catch (IOException failure) {
-                      throw new UncheckedIOException(failure);
-                    }
-                  });
+              checkCancelled(node);
+              for (long edge = forward.neighborsBegin(node);
+                  edge < forward.neighborsEnd(node);
+                  edge++) {
+                checkCancelled(edge);
+                out.write("  n" + node + " -> n" + forward.neighborAt(edge) + ";\n");
+              }
             }
             out.write("}\n");
           });
@@ -250,41 +271,76 @@ public final class GraphExport {
 
     Path nodeFile = sibling(target, "-nodes.csv");
     Path edgeFile = sibling(target, "-edges.csv");
-    writeAtomically(
+    writeCsvPair(
         nodeFile,
         out -> {
           out.write("# " + provenance + "\n");
           out.write("id,label,duration_micros\n");
-          for (int node = 0; node < nodes; node++) {
-            long duration = durationOf(durationsByNodeIndex, node);
-            out.write(
-                node
-                    + ","
-                    + csv(nameOf(labelsByNodeIndex, node))
-                    + ","
-                    + (duration < 0 ? "" : Long.toString(duration))
-                    + "\n");
-          }
-        });
-    writeAtomically(
+          writeDenseMetadata(
+              metadata,
+              nodes,
+              (node, label, duration) ->
+                  out.write(
+                      node
+                          + ","
+                          + csv(nameOf(label))
+                          + ","
+                          + (duration < 0 ? "" : Long.toString(duration))
+                          + "\n"));
+        },
         edgeFile,
         out -> {
           out.write("# " + provenance + "\n");
           out.write("from,to\n");
           for (int node = 0; node < nodes; node++) {
-            int from = node;
-            forward.forEachNeighbor(
-                node,
-                to -> {
-                  try {
-                    out.write(from + "," + to + "\n");
-                  } catch (IOException failure) {
-                    throw new UncheckedIOException(failure);
-                  }
-                });
+            checkCancelled(node);
+            for (long edge = forward.neighborsBegin(node);
+                edge < forward.neighborsEnd(node);
+                edge++) {
+              checkCancelled(edge);
+              out.write(node + "," + forward.neighborAt(edge) + "\n");
+            }
           }
         });
     return new Result(List.of(nodeFile, edgeFile), nodes, edges, provenance, nodeNoun);
+  }
+
+  /** Supplies exactly one metadata row per graph node in ascending dense index order. */
+  @FunctionalInterface
+  public interface NodeMetadataSource {
+    void forEach(NodeMetadataVisitor visitor) throws IOException;
+  }
+
+  /** Receives one complete-export metadata row. */
+  @FunctionalInterface
+  public interface NodeMetadataVisitor {
+    void node(int nodeIndex, String label, long durationMicros) throws IOException;
+  }
+
+  private static void writeDenseMetadata(
+      NodeMetadataSource source, long expectedNodes, NodeMetadataVisitor output)
+      throws IOException {
+    long[] expected = {0};
+    source.forEach(
+        (node, label, duration) -> {
+          checkCancelled(expected[0]);
+          if (node != expected[0]) {
+            throw new IOException(
+                "complete-export metadata must be dense and ordered; expected node "
+                    + expected[0]
+                    + " and read "
+                    + node);
+          }
+          output.node(node, label, duration);
+          expected[0]++;
+        });
+    if (expected[0] != expectedNodes) {
+      throw new IOException(
+          "complete-export metadata covered "
+              + expected[0]
+              + " nodes but the graph has "
+              + expectedNodes);
+    }
   }
 
   private static String plural(String noun, long count) {
@@ -292,8 +348,13 @@ public final class GraphExport {
     return count == 1 ? safe : safe + "s";
   }
 
-  private static String nameOf(String[] labels, int node) {
-    String label = labels != null && node < labels.length ? labels[node] : null;
+  private static void checkCancelled(long progress) throws IOException {
+    if ((progress & 4_095L) == 0 && Thread.currentThread().isInterrupted()) {
+      throw new IOException("graph export was cancelled");
+    }
+  }
+
+  private static String nameOf(String label) {
     // The same wording the drawing uses. An empty cell would read as a real
     // blank name rather than as a name nobody recorded.
     return label == null ? "(name not recorded)" : label;
@@ -355,6 +416,11 @@ public final class GraphExport {
     void writeTo(Writer out) throws IOException;
   }
 
+  @FunctionalInterface
+  interface FileMove {
+    void move(Path source, Path target) throws IOException;
+  }
+
   /**
    * Writes through a temporary file and renames.
    *
@@ -362,23 +428,118 @@ public final class GraphExport {
    * file, which is the failure that would be believed.
    */
   private static void writeAtomically(Path target, Body body) throws IOException {
+    Path temporary = writeTemporary(target, body);
+    try {
+      moveReplacing(temporary, target);
+    } finally {
+      Files.deleteIfExists(temporary);
+    }
+  }
+
+  private static void writeCsvPair(Path first, Body firstBody, Path second, Body secondBody)
+      throws IOException {
+    Path firstTemporary = writeTemporary(first, firstBody);
+    Path secondTemporary = null;
+    try {
+      secondTemporary = writeTemporary(second, secondBody);
+      publishCsvPair(firstTemporary, first, secondTemporary, second, GraphExport::moveReplacing);
+      firstTemporary = null;
+      secondTemporary = null;
+    } finally {
+      if (firstTemporary != null) {
+        Files.deleteIfExists(firstTemporary);
+      }
+      if (secondTemporary != null) {
+        Files.deleteIfExists(secondTemporary);
+      }
+    }
+  }
+
+  private static Path writeTemporary(Path target, Body body) throws IOException {
     Path directory = target.toAbsolutePath().getParent();
     Files.createDirectories(directory);
     Path temporary = Files.createTempFile(directory, ".bbv-export", ".partial");
     try {
       try (BufferedWriter out = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
         body.writeTo(out);
-      } catch (UncheckedIOException unwrapped) {
-        throw unwrapped.getCause();
       }
-      try {
-        Files.move(
-            temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-      } catch (AtomicMoveNotSupportedException notAtomic) {
-        Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
-      }
-    } finally {
+      return temporary;
+    } catch (IOException | RuntimeException failure) {
       Files.deleteIfExists(temporary);
+      throw failure;
+    }
+  }
+
+  /** Publishes both staged CSV halves, restoring both preceding files on a normal failure. */
+  static void publishCsvPair(
+      Path firstTemporary, Path first, Path secondTemporary, Path second, FileMove publisher)
+      throws IOException {
+    Path firstBackup = backup(first);
+    Path secondBackup;
+    try {
+      secondBackup = backup(second);
+    } catch (IOException failure) {
+      deleteIfPresent(firstBackup);
+      throw failure;
+    }
+    boolean published = false;
+    try {
+      publisher.move(firstTemporary, first);
+      publisher.move(secondTemporary, second);
+      published = true;
+    } catch (IOException publicationFailure) {
+      restore(firstBackup, first, publicationFailure);
+      restore(secondBackup, second, publicationFailure);
+      throw publicationFailure;
+    } finally {
+      Files.deleteIfExists(firstTemporary);
+      Files.deleteIfExists(secondTemporary);
+      if (published) {
+        deleteIfPresent(firstBackup);
+        deleteIfPresent(secondBackup);
+      }
+    }
+  }
+
+  private static Path backup(Path target) throws IOException {
+    if (!Files.exists(target)) {
+      return null;
+    }
+    Path backup =
+        Files.createTempFile(target.toAbsolutePath().getParent(), ".bbv-export", ".backup");
+    try {
+      Files.copy(target, backup, StandardCopyOption.REPLACE_EXISTING);
+      return backup;
+    } catch (IOException failure) {
+      Files.deleteIfExists(backup);
+      throw failure;
+    }
+  }
+
+  private static void restore(Path backup, Path target, IOException publicationFailure) {
+    try {
+      if (backup == null) {
+        Files.deleteIfExists(target);
+      } else {
+        moveReplacing(backup, target);
+      }
+    } catch (IOException rollbackFailure) {
+      publicationFailure.addSuppressed(rollbackFailure);
+    }
+  }
+
+  private static void deleteIfPresent(Path path) throws IOException {
+    if (path != null) {
+      Files.deleteIfExists(path);
+    }
+  }
+
+  private static void moveReplacing(Path source, Path target) throws IOException {
+    try {
+      Files.move(
+          source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    } catch (AtomicMoveNotSupportedException notAtomic) {
+      Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
     }
   }
 }

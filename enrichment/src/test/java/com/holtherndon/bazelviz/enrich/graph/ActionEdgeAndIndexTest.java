@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.graph.Bfs;
+import com.holtherndon.bazelviz.graph.CsrFile;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.graph.ActionEdgeDeriver;
@@ -120,18 +121,20 @@ final class ActionEdgeAndIndexTest {
     Optional<GraphIndexBuilder.Result> built = builder.build(EdgeDerivation.DECLARED);
 
     assertThat(built).isPresent();
-    CsrGraph forward = builder.load(EdgeDerivation.DECLARED, "FORWARD").orElseThrow();
-    CsrGraph reverse = builder.load(EdgeDerivation.DECLARED, "REVERSE").orElseThrow();
-
-    // Plan 24's exit criterion, checked rather than assumed: every forward
-    // edge is a reverse edge with its ends swapped.
-    assertThat(reverse.edgeCount()).isEqualTo(forward.edgeCount());
-    assertThat(reverse.nodeCount()).isEqualTo(forward.nodeCount());
-    for (int node = 0; node < forward.nodeCount(); node++) {
-      for (int neighbor : neighbors(forward, node)) {
-        assertThat(neighbors(reverse, neighbor))
-            .as("reverse edge %d <- %d", neighbor, node)
-            .contains(node);
+    try (CsrGraph forward =
+            CsrFile.open(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD").orElseThrow());
+        CsrGraph reverse =
+            CsrFile.open(builder.descriptor(EdgeDerivation.DECLARED, "REVERSE").orElseThrow())) {
+      // Plan 24's exit criterion, checked rather than assumed: every forward
+      // edge is a reverse edge with its ends swapped.
+      assertThat(reverse.edgeCount()).isEqualTo(forward.edgeCount());
+      assertThat(reverse.nodeCount()).isEqualTo(forward.nodeCount());
+      for (int node = 0; node < forward.nodeCount(); node++) {
+        for (int neighbor : neighbors(forward, node)) {
+          assertThat(neighbors(reverse, neighbor))
+              .as("reverse edge %d <- %d", neighbor, node)
+              .contains(node);
+        }
       }
     }
   }
@@ -144,13 +147,15 @@ final class ActionEdgeAndIndexTest {
     builder.build(EdgeDerivation.DECLARED);
 
     int genA = nodeIndexOf("//pkg:gen_a", "Genrule");
-    CsrGraph forward = builder.load(EdgeDerivation.DECLARED, "FORWARD").orElseThrow();
-    CsrGraph reverse = builder.load(EdgeDerivation.DECLARED, "REVERSE").orElseThrow();
-
-    // Forward from gen_a reaches gen_b and gen_slow down the chain.
-    assertThat(new Bfs(forward).run(genA, 1000, 10)).isGreaterThan(1);
-    // gen_a is at the head of the chain, so nothing produces its inputs.
-    assertThat(neighbors(reverse, genA)).isEmpty();
+    try (CsrGraph forward =
+            CsrFile.open(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD").orElseThrow());
+        CsrGraph reverse =
+            CsrFile.open(builder.descriptor(EdgeDerivation.DECLARED, "REVERSE").orElseThrow())) {
+      // Forward from gen_a reaches gen_b and gen_slow down the chain.
+      assertThat(new Bfs(forward).run(genA, 1000, 10)).isGreaterThan(1);
+      // gen_a is at the head of the chain, so nothing produces its inputs.
+      assertThat(neighbors(reverse, genA)).isEmpty();
+    }
   }
 
   @Test
@@ -159,15 +164,17 @@ final class ActionEdgeAndIndexTest {
     new ActionEdgeDeriver(connection).deriveAll();
     GraphIndexBuilder builder = new GraphIndexBuilder(connection, tempDir.resolve("index"));
     builder.build(EdgeDerivation.DECLARED);
-    CsrGraph forward = builder.load(EdgeDerivation.DECLARED, "FORWARD").orElseThrow();
     int genA = nodeIndexOf("//pkg:gen_a", "Genrule");
 
-    // Plan 13.3: depth-limited and node-budget-limited traversal, so a
-    // neighbourhood view never walks a whole build.
-    long depthOne = new Bfs(forward).run(genA, 1000, 1);
-    long unlimited = new Bfs(forward).run(genA, 1000, 100);
-    assertThat(depthOne).isLessThanOrEqualTo(unlimited);
-    assertThat(new Bfs(forward).run(genA, 1, 100)).isEqualTo(1);
+    try (CsrGraph forward =
+        CsrFile.open(builder.descriptor(EdgeDerivation.DECLARED, "FORWARD").orElseThrow())) {
+      // Plan 13.3: depth-limited and node-budget-limited traversal, so a
+      // neighbourhood view never walks a whole build.
+      long depthOne = new Bfs(forward).run(genA, 1000, 1);
+      long unlimited = new Bfs(forward).run(genA, 1000, 100);
+      assertThat(depthOne).isLessThanOrEqualTo(unlimited);
+      assertThat(new Bfs(forward).run(genA, 1, 100)).isEqualTo(1);
+    }
   }
 
   @Test
@@ -184,7 +191,7 @@ final class ActionEdgeAndIndexTest {
         "UPDATE graph_indexes SET edge_count = edge_count + 1"
             + " WHERE kind = 'DECLARED' AND direction = 'FORWARD'");
 
-    assertThatThrownBy(() -> builder.load(EdgeDerivation.DECLARED, "FORWARD"))
+    assertThatThrownBy(() -> builder.descriptor(EdgeDerivation.DECLARED, "FORWARD"))
         .isInstanceOf(GraphIndexBuilder.StaleIndexException.class)
         .hasMessageContaining("stale");
   }

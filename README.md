@@ -10,22 +10,6 @@ The app preserves the original capture before deriving results. Missing data
 is shown as unavailable, and incomplete captures remain inspectable without
 being presented as complete.
 
-## 0.1.0 support
-
-The 0.1.0 desktop release supports Apple Silicon macOS. Its measured desktop
-environment is macOS 26.6.2 on arm64; no older minimum macOS version is claimed.
-Intel macOS is not supported by this release because the clean build lacks
-Intel protobuf code-generation tools. Linux is supported as an SSH execution
-host, not as a verified desktop package. Windows is unverified.
-
-A packaged app contains its own Java runtime. Running builds still requires a
-Bazel executable, such as Bazelisk, on the selected local or SSH machine.
-There is not yet a verified signed and notarized 0.1.0 disk image. After a
-candidate passes the release checks in [the packaging guide](docs/packaging.md),
-install its disk image by opening it and dragging **Bazel Build Visualizer** to
-**Applications**. Unsigned development images are for local use; Gatekeeper is
-expected to refuse them on another machine.
-
 ## Quick start
 
 1. Install [Bazelisk](https://github.com/bazelbuild/bazelisk). On macOS:
@@ -49,6 +33,22 @@ toolchain. A separate JDK installation is not required for this workflow.
 
 ![Main application overview placeholder](docs/images/readme-overview-placeholder.svg)
 
+## 0.1.0 support
+
+The 0.1.0 desktop release supports Apple Silicon macOS. Its measured desktop
+environment is macOS 26.6.2 on arm64; no older minimum macOS version is claimed.
+Intel macOS is not supported by this release because the clean build lacks
+Intel protobuf code-generation tools. Linux is supported as an SSH execution
+host, not as a verified desktop package. Windows is unverified.
+
+A packaged app contains its own Java runtime. Running builds still requires a
+Bazel executable, such as Bazelisk, on the selected local or SSH machine. There
+is not yet a verified signed, notarized, and stapled 0.1.0 disk image. After a
+candidate passes the release checks in [the packaging guide](docs/packaging.md),
+install its disk image by opening it and dragging **Bazel Build Visualizer** to
+**Applications**. Unsigned development images are for local use; Gatekeeper is
+expected to refuse them on another machine.
+
 ## Features
 
 ### Available in the first release
@@ -63,7 +63,8 @@ toolchain. A separate JDK installation is not required for this workflow.
   trees, and bounded dependency graphs.
 - Profile Starlark CPU use with hot-function, caller/callee, graph, and flame
   views.
-- Enrich sessions with execution logs, trace profiles, `aquery`, and `cquery`.
+- Enrich managed captures with execution logs, trace profiles, `aquery`, and
+  `cquery`.
 - Query normalized session data with a syntax-aware SQL editor.
 - Browse and edit local or remote repositories, and use a persistent terminal
   for each Workspace.
@@ -71,7 +72,8 @@ toolchain. A separate JDK installation is not required for this workflow.
   Workspace.
 - Choose a persistent UI theme and collect bounded diagnostic logs at several
   verbosity levels.
-- Page and render large captures without loading the whole build into memory.
+- Page large tabular views and bound graph work under a shared per-session
+  memory budget.
 
 ![Timeline and graph views placeholder](docs/images/readme-analysis-placeholder.svg)
 
@@ -111,12 +113,23 @@ of truth.
 - Ordinary CI builds and tests Java on macOS and Linux, but omits native
   packaging and host-state real-Bazel tests. The four-version sweep is a
   separate supervised test.
-- No signed/notarized release candidate has passed the full Finder, local
-  Terminal, and SSH Terminal smoke checklist.
+- No signed, notarized, and stapled release candidate has passed the full
+  Gatekeeper, Finder association, local and SSH Terminal, packaged Query and
+  cancellation, and final-artifact hash checklist.
 - Redaction applies reviewed built-in patterns but is not proof that an export
   is safe to share. Inspect the preview and resulting artifact.
-- Tier 3 graph construction has not been measured; only the Tier 2 graph and a
-  linear Tier 3 memory estimate are recorded.
+- Tier 3 graph construction has not been measured. Production graph access is
+  bounded and can refuse work; the Tier 2 measurement and Tier 3 estimate do
+  not replace a Tier 3 run.
+- Three late hardening batches remain blocked and are not in this source tree:
+  preflight of archive metadata before ZIP allocation and bounded catalog
+  recovery; bounded execution-log, trace-profile, `aquery`, and `cquery`
+  ingestion; and bounded Query, Events, and Errors inspection. Until those
+  follow-ups land, treat imported archives and auxiliary files as trusted and
+  avoid queries or event/error cells with unbounded values. See
+  [implementation status](docs/implementation-status.md#remaining-release-blockers).
+- Saved Query-library `.sql` and `index.json` updates are serialized between
+  app windows but are not crash-atomic yet.
 
 ## Workspaces and sessions
 

@@ -7,6 +7,7 @@ import java.util.BitSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.RandomAccess;
+import java.util.concurrent.CancellationException;
 
 /**
  * The longest weighted path through an action graph: what the build could not have finished sooner
@@ -40,7 +41,30 @@ import java.util.RandomAccess;
  */
 public final class CriticalPath {
 
+  private static final long RETAINED_BYTES_PER_NODE = 32;
+  // Durations, topology, schedule, predecessor/depth, path and both bit sets can overlap. Their
+  // primitive payload is about 56.25 bytes/node; 64 leaves per-node room for alignment.
+  private static final long PEAK_BYTES_PER_NODE = 64;
+  private static final long ESTIMATE_OVERHEAD_BYTES = 1_024;
+
   private CriticalPath() {}
+
+  /** Conservative retained size of the largest computed result, including its compact bit sets. */
+  public static long retainedBytes(long nodeCount) {
+    return estimate(nodeCount, RETAINED_BYTES_PER_NODE, ESTIMATE_OVERHEAD_BYTES / 2);
+  }
+
+  /** Conservative peak size including input durations and every simultaneous work array. */
+  public static long peakBytes(long nodeCount) {
+    return estimate(nodeCount, PEAK_BYTES_PER_NODE, ESTIMATE_OVERHEAD_BYTES);
+  }
+
+  private static long estimate(long nodeCount, long bytesPerNode, long overhead) {
+    if (nodeCount < 0 || nodeCount > Integer.MAX_VALUE - 1L) {
+      throw new IllegalArgumentException("unsupported critical-path node count " + nodeCount);
+    }
+    return Math.addExact(Math.multiplyExact(nodeCount, bytesPerNode), overhead);
+  }
 
   /**
    * Computes the path over {@code forward}, weighting each node by {@code durationMicros}.
@@ -56,6 +80,7 @@ public final class CriticalPath {
     Objects.requireNonNull(durationMicros, "durationMicros");
     Objects.requireNonNull(source, "source");
     int nodeCount = Math.toIntExact(forward.nodeCount());
+    checkCancelled(0);
     if (durationMicros.length != nodeCount) {
       throw new IllegalArgumentException(
           "one weight per node: " + durationMicros.length + " weights for " + nodeCount + " nodes");
@@ -69,6 +94,7 @@ public final class CriticalPath {
     }
 
     for (int node = 0; node < nodeCount; node++) {
+      checkCancelled(node);
       long duration = durationMicros[node];
       if (duration < 0 && duration != UNKNOWN_DURATION) {
         throw new IllegalArgumentException(
@@ -84,6 +110,7 @@ public final class CriticalPath {
 
     BitSet untimedNodes = new BitSet(nodeCount);
     for (int node = 0; node < nodeCount; node++) {
+      checkCancelled(node);
       if (durationMicros[node] == UNKNOWN_DURATION) {
         untimedNodes.set(node);
       }
@@ -99,12 +126,15 @@ public final class CriticalPath {
     Arrays.fill(predecessor, NO_PREDECESSOR);
     Arrays.fill(pathDepth, 1);
 
-    for (int node : order) {
+    for (int orderIndex = 0; orderIndex < order.length; orderIndex++) {
+      checkCancelled(orderIndex);
+      int node = order[orderIndex];
       earliestFinish[node] = Math.addExact(earliestStart[node], weight(durationMicros, node));
       long finish = earliestFinish[node];
       int candidateDepth = Math.addExact(pathDepth[node], 1);
       long edgeEnd = forward.neighborsEnd(node);
       for (long edge = forward.neighborsBegin(node); edge < edgeEnd; edge++) {
+        checkCancelled(edge);
         int successor = forward.neighborAt(edge);
         int currentPredecessor = predecessor[successor];
         if (finish > earliestStart[successor]
@@ -121,6 +151,7 @@ public final class CriticalPath {
 
     int last = 0;
     for (int node = 1; node < nodeCount; node++) {
+      checkCancelled(node);
       if (earliestFinish[node] > earliestFinish[last]
           || (earliestFinish[node] == earliestFinish[last] && pathDepth[node] > pathDepth[last])) {
         last = node;
@@ -133,10 +164,12 @@ public final class CriticalPath {
     long[] latestFinish = new long[nodeCount];
     Arrays.fill(latestFinish, makespan);
     for (int i = order.length - 1; i >= 0; i--) {
+      checkCancelled(i);
       int node = order[i];
       long earliest = Long.MAX_VALUE;
       long edgeEnd = forward.neighborsEnd(node);
       for (long edge = forward.neighborsBegin(node); edge < edgeEnd; edge++) {
+        checkCancelled(edge);
         int successor = forward.neighborAt(edge);
         long successorStart =
             Math.subtractExact(latestFinish[successor], weight(durationMicros, successor));
@@ -150,6 +183,7 @@ public final class CriticalPath {
     }
     long[] slack = new long[nodeCount];
     for (int node = 0; node < nodeCount; node++) {
+      checkCancelled(node);
       slack[node] =
           Math.subtractExact(
               Math.subtractExact(latestFinish[node], weight(durationMicros, node)),
@@ -159,6 +193,7 @@ public final class CriticalPath {
     int[] path = new int[pathDepth[last]];
     int pathIndex = path.length - 1;
     for (int node = last; node != NO_PREDECESSOR; node = predecessor[node]) {
+      checkCancelled(pathIndex);
       path[pathIndex--] = node;
     }
 
@@ -192,12 +227,20 @@ public final class CriticalPath {
     return duration == UNKNOWN_DURATION ? 0 : duration;
   }
 
+  private static void checkCancelled(long progress) {
+    if ((progress & 4_095L) == 0 && Thread.currentThread().isInterrupted()) {
+      throw new CancellationException("critical-path computation was cancelled");
+    }
+  }
+
   /** Kahn's algorithm, retaining its residual nodes when the graph has a cycle. */
   private static Topology topologicalOrder(CsrGraph forward, int nodeCount) {
     int[] inDegree = new int[nodeCount];
     for (int node = 0; node < nodeCount; node++) {
+      checkCancelled(node);
       long edgeEnd = forward.neighborsEnd(node);
       for (long edge = forward.neighborsBegin(node); edge < edgeEnd; edge++) {
+        checkCancelled(edge);
         inDegree[forward.neighborAt(edge)]++;
       }
     }
@@ -205,14 +248,17 @@ public final class CriticalPath {
     int head = 0;
     int tail = 0;
     for (int node = 0; node < nodeCount; node++) {
+      checkCancelled(node);
       if (inDegree[node] == 0) {
         queue[tail++] = node;
       }
     }
     while (head < tail) {
+      checkCancelled(head);
       int node = queue[head++];
       long edgeEnd = forward.neighborsEnd(node);
       for (long edge = forward.neighborsBegin(node); edge < edgeEnd; edge++) {
+        checkCancelled(edge);
         int successor = forward.neighborAt(edge);
         if (--inDegree[successor] == 0) {
           queue[tail++] = successor;
@@ -230,6 +276,7 @@ public final class CriticalPath {
     int[] stuck = new int[nodeCount - tail];
     int stuckIndex = 0;
     for (int node = 0; node < nodeCount; node++) {
+      checkCancelled(node);
       if (inDegree[node] > 0) {
         stuck[stuckIndex++] = node;
       }
@@ -330,8 +377,9 @@ public final class CriticalPath {
       this.slackMicros = slackMicros;
       this.untimedNodesByIndex = untimedNodesByIndex;
       this.selectedPathNodesByIndex = new BitSet(slackMicros.length);
-      for (int node : pathNodes) {
-        this.selectedPathNodesByIndex.set(node);
+      for (int position = 0; position < pathNodes.length; position++) {
+        checkCancelled(position);
+        this.selectedPathNodesByIndex.set(pathNodes[position]);
       }
       this.untimedNodes = untimedNodesByIndex.cardinality();
       this.nodeCount = nodeCount;

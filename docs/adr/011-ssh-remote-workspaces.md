@@ -157,9 +157,10 @@ Instrumentation files written by Bazel use a unique, private remote staging
 directory. After the primary command, each planned execution log, trace
 profile, or BEP fallback is copied into the managed session's local `raw/`
 directory before an importer reads it. Aquery and cquery stdout stream directly
-to bounded local files; cquery's generated query file is uploaded before the
-query starts. A failed or missing transfer is recorded as unavailable and does
-not invalidate event data already journaled.
+to local files; enforcing a byte ceiling on those binary outputs remains
+required because the blocked t3 work has not landed. Cquery's generated query
+file is uploaded before the query starts. A failed or missing transfer is
+recorded as unavailable and does not invalidate event data already journaled.
 
 The managed session remains local and raw-first. Remote files are never parsed
 in place and are never silently omitted from a completeness claim.

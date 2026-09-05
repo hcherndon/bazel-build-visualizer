@@ -102,15 +102,30 @@ final class GraphWeightsTest {
     GraphWeights.Result counted =
         GraphWeights.subgraphTransitiveCounts(List.of(0, 1, 2, 3), diamondEdges(), true, 1);
 
-    // Node 0 was computed before the budget was checked again; the rest
-    // must be UNKNOWN — a zero would claim "no dependents", which is a
-    // fact about the build the computation never established.
-    assertThat(counted.values()[0]).isEqualTo(3);
+    // The first traversal could not finish inside the exact budget, so even
+    // its partial reachability stays UNKNOWN rather than looking complete.
+    assertThat(counted.values()[0]).isEqualTo(GraphWeights.UNKNOWN);
     assertThat(counted.values()[1]).isEqualTo(GraphWeights.UNKNOWN);
     assertThat(counted.values()[2]).isEqualTo(GraphWeights.UNKNOWN);
     assertThat(counted.values()[3]).isEqualTo(GraphWeights.UNKNOWN);
     assertThat(counted.truncated()).isTrue();
     assertThat(counted.note()).contains("budget");
+  }
+
+  @Test
+  @DisplayName("the subgraph work boundary admits N and refuses N minus one exactly")
+  void subgraphWorkBoundaryIsExact() {
+    List<Integer> nodes = List.of(0, 1, 2, 3);
+
+    GraphWeights.Result exact =
+        GraphWeights.subgraphTransitiveCounts(nodes, List.of(), true, nodes.size());
+    GraphWeights.Result shortByOne =
+        GraphWeights.subgraphTransitiveCounts(nodes, List.of(), true, nodes.size() - 1L);
+
+    assertThat(exact.values()).containsExactly(0, 0, 0, 0);
+    assertThat(exact.truncated()).isFalse();
+    assertThat(shortByOne.values()).containsExactly(0, 0, 0, GraphWeights.UNKNOWN);
+    assertThat(shortByOne.truncated()).isTrue();
   }
 
   @Test
@@ -144,6 +159,18 @@ final class GraphWeightsTest {
 
     assertThat(counted.count()).isEqualTo(3);
     assertThat(counted.budgetReached()).isFalse();
+  }
+
+  @Test
+  @DisplayName("a disconnected component exactly equal to the budget is still complete")
+  void exactBudgetForDisconnectedComponentIsComplete() {
+    CsrGraph isolated = CsrBuilder.build(2, visitor -> {});
+
+    GraphWeights.BudgetedCount counted = GraphWeights.globalTransitiveCount(isolated, 0, 1);
+
+    assertThat(counted.count()).isZero();
+    assertThat(counted.budgetReached()).isFalse();
+    assertThat(counted.describe()).isEqualTo("0");
   }
 
   @Test

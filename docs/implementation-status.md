@@ -1,25 +1,70 @@
 # Implementation status
 
-Last updated: 2026-09-04. This file states what exists in the tree, not what
+Last updated: 2026-09-05. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
 
-The ten implementation phases are closed, but the historical v1 definition of
-done is met in 29 of 31 items, not 31 of 31. Display limits are documented but
-not all configurable in Preferences. Intel macOS is unsupported for 0.1.0:
+The eleven implementation phases are closed, but the historical v1 definition of
+done is met in 33 of 37 items, not 37 of 37. Display limits are documented but
+not all configurable in Preferences. Configured-target import still retains a
+whole object graph, security checks have known open blockers, and Intel macOS
+is unsupported for 0.1.0:
 the clean Bazel build has no Intel macOS protobuf code-generation tool pins, so
 the package cannot yet be built or verified there.
 
 Other release caveats remain explicit:
 
 - the 100,000-events/s synthetic burst objective is not met;
-- Tier 3 graph construction has not been run, though its bounded structure and
-  a linear memory estimate are documented;
+- Tier 3 graph construction has not been run; CSR construction is structurally
+  bounded, but configured-target ingestion still retains the whole object graph;
 - no fuzzing or dependency-advisory scan has run;
 - ordinary CI omits native packaging and host-state real-Bazel tests; and
-- no signed and notarized candidate has passed the complete Finder, local
-  Terminal, and SSH Terminal smoke checklist.
+- no signed, notarized and stapled candidate has passed the complete
+  Gatekeeper/Finder association, local and SSH Terminal, packaged Query and
+  cancellation, and final-artifact hash checklist.
+
+<a id="remaining-release-blockers"></a>
+
+### Remaining release blockers
+
+Three late hardening tasks are blocked and **none of their commits is merged**
+into this tree:
+
+- **Archive import and catalog recovery.** The current reader applies its
+  archive entry and expansion checks after constructing `ZipFile`; it does not
+  first bound the central directory. Imported checkpoints and catalog walks
+  also lack the proposed recovery bounds and unknown-size handling, and a
+  normal existing-session open is not physically read-only. The retained fix
+  closed the pathname-swap window with a private snapshot, but exact review
+  found that a source-channel close failure could discard ownership of that
+  snapshot before cleanup. That branch remains blocked and unmerged.
+- **Auxiliary enrichment and query ingestion.** The current execution-log,
+  JSON trace-profile, `aquery`, and `cquery` paths do not have the proposed
+  source/expanded/record/fan-out/work bounds or bounded redirected query output.
+  The retained implementation passed focused review, then failed its last
+  merged real-Bazel integration when capture still started enrichment while
+  its shared writer transaction was open. The coordinator now closes ingest
+  writers first, so that branch needs a rebase and renewed integration testing.
+  A successful query whose importer cannot start also still needs a `FAILED`
+  graph-source record. The branch remains blocked and unmerged.
+- **Query, Events, and Errors inspection.** The current tree does not contain
+  that task's bounded SQL/cell/result spool, lazy bounded raw-event payload, or
+  bounded reusable ANSI error transcript, and those three pages have not moved
+  their root actions into the shared toolbar. Exact retry review found that the
+  candidate ANSI model lost per-line omitted-character ownership after
+  committing a truncated line; a cursor rewind or line eviction could then show
+  a false nonzero omission count. That branch remains blocked and unmerged.
+
+Saved Query-library files are a separate deferred item. Their process-wide lock
+serializes app windows, but `.sql` and `index.json` replacement is not
+crash-atomic and a multi-file operation is not transactional.
+
+Release verification also remains manual and incomplete: signed/notarized/
+stapled packaging; Gatekeeper and Finder association; local and SSH Terminal;
+packaged Query execution and cancellation; final artifact hashes; supervised
+real-Bazel coverage; parser fuzzing; and dependency-advisory review. Passing the
+safe Bazel test suite does not pass those gates.
 
 The current build is Bazel-only under ADR-009. Gradle commands and results in
 the phase records below are dated historical evidence, not current
@@ -66,9 +111,11 @@ current commands.
   complete enrichment. Test timeouts validate the full Duration and never overflow in the UI.
 - JSON profile anchors and relative placement use exact arithmetic. An overflowing anchor is a
   controlled malformed profile; an overflowing relative placement is unavailable.
-- CSR readers validate count arithmetic before mapping, checksum before interpretation, then every
-  offset and target before constructing a graph. The documented reverse-direction bit is accepted
-  and checked against the registry direction; unknown flag bits, direction mismatches, and
+- CSR descriptors validate header arithmetic and exact file length without
+  mapping the body. After aggregate resource admission, readers map in bounded
+  read-only segments, verify checksum and structure directly, and never copy a
+  whole CSR into heap arrays. The documented reverse-direction bit is checked
+  against the registry direction; unknown flag bits, direction mismatches, and
   checksum-valid structural corruption are refused.
 
 ## Phases
@@ -82,8 +129,8 @@ renumbered or re-scoped here.
 | 1 | Session, journal, and offline BEP import | **Complete** — all five exit criteria verified end to end (see below) |
 | 2 | Bazel launcher and embedded BES | **Complete** — all six exit criteria verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0, audited, and remediated (see below) |
 | 3 | Core target, action, test, and artifact normalization | **Complete** — all five exit criteria met and verified against real Bazel 6.5.0, 7.6.1, 8.4.1 and 9.2.0 (see below) |
-| 4 | Execution-log and profile enrichment | **Complete** — all five exit criteria met, audited and remediated (see below) |
-| 5 | `aquery`, `cquery`, and graph construction | **Complete** — five of six exit criteria met, one partial with a stated reason (see below) |
+| 4 | Execution-log and profile enrichment | **Complete** — all four exit criteria addressed, one partial with a stated reason (see below) |
+| 5 | `aquery`, `cquery`, and graph construction | **Complete with boundedness gap** — four of five exit criteria met; configured-target ingestion remains unbounded and Tier 3 construction unmeasured (see below) |
 | 6 | Timeline | **Complete** — all five exit criteria met, one task partial with a stated reason (see below) |
 | 7 | Graph visualization | **Complete** — all six exit criteria met and proved by test (see below) |
 | 8 | Metrics and findings | **Complete** — all five exit criteria met and proved by test (see below) |
@@ -646,14 +693,14 @@ terminally. See ADR-008 for the exposure and the exit.
 | Generate auxiliary command plans | Done — `AuxiliaryQueryPlanner`, plan 8.6's ten rules; options fall into three groups, not two (carried, rejected-and-named, instrumentation-left-behind-and-not-counted-as-a-loss) |
 | Capture protobuf query outputs | Done — run after the build, stdout redirected to a file because it is binary and `Subprocess.run` decodes UTF-8 |
 | Import action graph | Done — one sub-message at a time from a `CodedInputStream`; the container is never materialised |
-| Import configured-target graph | Done — same streaming treatment; edges reach labels that are not nodes, because a rule's inputs include its source files |
+| Import configured-target graph | Done, with a release blocker — the current importer buffers every configured-target node, dependency list and configuration checksum until the file has been read. Edges reach labels that are not nodes, because a rule's inputs include its source files. The blocked t3 work must bound this path. |
 | Correlate graph actions | Done — by reconstructed primary-output path; unmatched rows on both sides are expected and kept |
 | Preserve depset DAG | Done — `graph_depsets` and its two edge tables, never flattened |
 | Derive artifact producer/consumer edges | Done — plan 13.1 as one statement; source artifacts excluded by the join, pairs deduplicated by the group-by |
 | Implement external edge sorting | Done, by delegation — SQLite's external merge sort, and the code says so rather than claiming a fresh one |
-| Build forward/reverse CSR indexes | Done — `CsrFile` with magic, version, counts, CRC32C and atomic rename; reverse derived from forward so they cannot disagree |
+| Build forward/reverse CSR indexes | Done — `CsrFile` with magic, version, counts, CRC32C and atomic rename; independently ordered direction streams must agree on edge count, and generation-matched registry rows publish together |
 | Add graph completeness diagnostics | Done — `graph_sources` records exact unresolved-artifact and unresolved-depset-reference counts; schema v7 leaves migrated values unknown rather than fabricating zero |
-| UI: dependency and reverse-dependency trees, selected-action neighbourhood, path-between-nodes, graph-source selector | Done — the Graph card, which therefore arrives in Phase 5 rather than 7 |
+| UI: dependency and reverse-dependency trees, selected-action neighbourhood, path-between-nodes, graph-source selector | Done — split between the Tree and Graph cards, over the same source-qualified index services |
 | aquery/cquery ground truth recorded | Done — `docs/aquery-and-cquery.md`, four versions, twelve findings, with a "not measured" section |
 
 ## Phase 5 exit criteria (plan section 24)
@@ -661,19 +708,21 @@ terminally. See ADR-008 for the exposure and the exit.
 | Criterion | Status |
 |---|---|
 | Direct action dependencies and reverse dependencies are queryable | Met — `ActionEdgeAndIndexTest` derives edges from a real `aquery` graph and walks the genrule chain in both directions: `gen_a -> gen_b -> gen_slow` forward, and nothing behind `gen_a` because it is at the head. The Graph card reaches both from a selected action. |
-| Large graph construction is bounded-memory | **Met in construction, unmeasured at scale.** No step holds the edge set: the file is read one sub-message at a time, staging is SQLite temp tables that spill to disk, the derivation never leaves the database, and the CSR build streams a query twice. What has not been done is running it on a five-million-action graph — the fixture is six targets. See the interpretation below. |
+| Large graph construction is bounded-memory | **Partial; release blocker open.** Action-graph import and CSR construction stream, staging and graph-reader temporary b-trees spill to disk, and each ordered direction uses a fixed 1 MiB buffer. `ConfiguredTargetImporter` still retains every parsed node and its dependency objects, and auxiliary aquery/cquery output files have no size ceiling because t3 is unmerged. The production path has not run at Tier 3. |
 | Configuration mismatches are visible | Met — `ConfigurationMatch` is a checked set comparison, not a judgement, and `EXACT` is the only state that permits a graph to be called the build's. A mismatched graph is imported, labelled in the selector, warned about above the trees, and still shown, because its actions are real. |
-| Forward and reverse indexes are consistent | Met — the reverse index is `CsrBuilder.reverse` of the forward one rather than a second query, so disagreement is impossible rather than unlikely; the test still asserts every forward edge appears reversed. A file whose header disagrees with its registry row is refused. |
+| Forward and reverse indexes are consistent | Met for newly built pairs — forward and reverse streams must have the same edge count, their forced generation files publish in one registry transaction, and reads require matching generation, source, timestamp, node count, and edge count. A file whose header disagrees with its registry row is refused. Legacy fixed-name rows cannot prove pair identity, so pair-dependent work is unavailable until a fresh import/build creates a generation-matched pair. |
 | A failed auxiliary query leaves the rest of the session usable | Met — the two graphs are independent `graph_sources` rows; a failed import writes no graph rows and leaves the executed actions untouched, which `ActionGraphImporterTest` asserts by counting them before and after. |
 
 ### Interpretations worth knowing
 
-**"Bounded memory" is a property of the construction, not a measurement.**
-Every step is streaming or delegated to SQLite, and the code says which. But the
-largest graph this has run on is sixteen actions. Phase 0's spikes measured the
-CSR structures at five million nodes; the import path in front of them has not
-been measured at that size, and the honest statement is that it is built not to
-hold the graph rather than that it has been shown not to.
+**Only the CSR construction path is structurally bounded; graph ingestion is
+not yet bounded end to end.** Action-graph rows stream and SQLite performs
+file-backed ordering before each CSR direction streams through fixed buffers.
+Configured-target import, however, retains its complete parsed node/dependency
+object graph and configuration checksum map, and the auxiliary output file has
+no ceiling. Phase 0's spikes measured CSR structures at five million nodes, but
+the current production import/index/read path has not run at that size. The
+blocked t3 work must close those ingestion bounds before this criterion is met.
 
 **The external sort is SQLite's.** Plan 13.1 asks for bounded buffers, sorted
 runs, a merge and a dedup. A `GROUP BY` SQLite cannot satisfy from an index is
@@ -812,7 +861,7 @@ that made the suite unrunnable.
 | Add semantic zoom | Done — plan 13.6's far, medium and near bands, with label thresholds and an edge budget at far zoom that reports itself |
 | Add limit estimation and warnings | Done — `LimitEstimate` before a drawing is attempted, and a bar offering all three of plan 13.6's actions plus grouping |
 | Cache layouts | Done — keyed by the whole request record, so query *and* settings both count; bounded LRU |
-| Add export of visible and complete filtered graphs | Done — `GraphExport`, DOT and CSV, streamed and written through a temporary file, each carrying its own provenance |
+| Add export of visible and complete filtered graphs | Done — `GraphExport`, DOT and CSV, streamed through sibling temporary files with provenance. DOT requests an atomic staged replacement and falls back to a replacing move where unsupported; both CSV halves stage before publication and roll back together on a normal failure. A crash between the two final CSV renames remains a documented format limitation. |
 
 ## Phase 7 exit criteria (plan section 24)
 
@@ -864,7 +913,7 @@ supplies, and a mode a user could select but never satisfy would be a dead
 control.
 
 **Clustering refuses rather than truncating, twice over.** A graph with more
-groups than the Group budget returns nothing with the exact count, exactly as
+groups than the Group budget returns nothing with the proven lower bound, exactly as
 `GraphExtract.whole` does for nodes. The refusal offers a larger Group budget
 or another named grouping dimension; package and mnemonic counts are not
 falsely ordered. The Node budget remains independent.
@@ -1098,12 +1147,12 @@ runs the CLI. That is not part of `build` — jpackage is slow and platform-boun
 |---|---|
 | Run all benchmark tiers | Done — Tier 3 raw capture (50,000,000 events), Tier 3 indexed session (5,000,000 actions), Tier 3 timeline, Tier 2 graph. Figures in `docs/performance.md`. |
 | Profile heap allocation | Done — 0.48 GB resident capturing 50,000,000 events; 0.96 GB with the larger page cache. Objective 9's budget is 4 GB. |
-| Remove per-event/per-edge retained objects | Done — and now enforced: `BoundedMemoryTest` asserts the CSR graph is two primitive arrays and that nothing streaming the build retains a domain object |
+| Remove per-event/per-edge retained objects | **Partial; release blocker open.** `BoundedMemoryTest` asserts that heap CSR storage is flat primitive arrays, production CSR storage retains only bounded mapping-segment metadata, and streaming capture/index writers retain no domain-object collection. `ConfiguredTargetImporter` still holds its whole node/dependency object graph; the blocked t3 work must remove it. |
 | Tune SQLite and queues | Done — three pragmas, measured before and after at two scales, with the unflattering result published |
 | Verify Bazel 6–9 fixtures | Done — `BazelVersionMatrixTest`, one real instrumented build per version, all four complete with nothing lost |
 | Test incomplete and corrupt sessions | Done — `DamagedSessionTest`, seven cases end to end |
 | Perform privacy review | Done — `docs/security-review.md`, plan 22.1 and 22.2 clause by clause |
-| Perform archive/parser security review | Done — same document, plan 22.3 and 22.4, with the one partial stated |
+| Perform archive/parser security review | Reviewed, blocker open — `docs/security-review.md` records that ZIP central-directory preflight and several auxiliary/UI parser bounds are not in this tree |
 | Document known version limitations | Done — `docs/bazel-compatibility.md`, including the action-timing table that differs on every version |
 | Write user guide and troubleshooting guide | Done — `docs/user-guide.md`, and `docs/troubleshooting.md` extended to cover sessions |
 
@@ -1114,10 +1163,10 @@ runs the CLI. That is not part of `build` — jpackage is slow and platform-boun
 | Tier 3 raw capture succeeds without data loss | **Met** — 50,000,000 events sent, acknowledged, journaled (11.8 GB across 42 segments) and indexed. `received == journaled` and `journaled == normalized + stream-control`. 0.48 GB resident. |
 | Tier 3 indexed session can be reopened and queried | **Met** — 5,000,000 actions in a 1.5 GB database, closed and reopened from cold: overview in **9.6 ms** against a five-second objective, first page in **0.6 ms** against five hundred milliseconds. |
 | Aggregate timeline and graph remain usable | **Met at the measured tiers** — timeline p95 **0.89 ms** at 5,000,000 spans; graph p95 **1.29 ms** at 1,000,000 nodes and 20,000,000 edges. Tier 3 graph construction was not run. |
-| Every limit is explicit | **Met** — `docs/limits.md` enumerates every bound, what happens when it is reached and whether it can be moved, and `LimitsDocTest` checks the page against the constants so it cannot drift. |
-| Bazel compatibility matrix is published | **Met** — `docs/bazel-compatibility.md`'s release matrix, produced by a test that prints the row it asserts. All four versions capture completely. |
+| Every landed named limit is explicit | **Partial** — `docs/limits.md` enumerates and `LimitsDocTest` checks the public constants in this tree. The blocked t2, t3, and t6 work identifies paths that still lack the intended bounds, so this is not a claim that every input path is bounded. |
+| Bazel compatibility matrix is published | **Historical evidence; release gate open** — `docs/bazel-compatibility.md` records complete captures from all four versions. The final source/package candidate still needs its deliberate supervised real-Bazel coverage. |
 | No known routine path blocks the EDT | **Structurally checked, not measured end to end** — `EdtDisciplineTest` requires database-reaching Swing components to own a worker, and paint-isolation tests keep connections and executors out of painted views. No broad pause-duration trace proves every routine path stays below 100 ms. |
-| Release candidate packages launch on supported macOS architectures | **Partial** — an unsigned Apple Silicon development image was built and launched. Intel is unsupported for 0.1.0 because the clean build lacks Intel macOS protobuf code-generation tools. No signed/notarized candidate has completed the release smoke checklist. |
+| Release candidate packages launch on supported macOS architectures | **Partial** — an unsigned Apple Silicon development image was built and launched. Intel is unsupported for 0.1.0 because the clean build lacks Intel macOS protobuf code-generation tools. No signed, notarized, and stapled candidate has completed the release smoke checklist. |
 
 ### Interpretations worth knowing
 
@@ -1152,8 +1201,8 @@ Never clear the tag filter. Ordinary CI also excludes all host-state
 
 ## Definition of done for v1 (plan section 25)
 
-Walked item by item. Twenty-nine of the plan's thirty-one items are met; the two
-that are not are named.
+Walked item by item. Thirty-three of the plan's thirty-seven items are met; the
+four that are not are named.
 
 | Group | Status |
 |---|---|
@@ -1162,11 +1211,12 @@ that are not are named.
 | **Analysis** (6 items) | Met. |
 | **Visualization** (5 items) | **4 of 5.** "Every display limit is visible and configurable" — every limit is visible and stated, and only the graph's node and edge limits are raisable from the UI. There was no settings screen at v1; post-v1 Preferences has Theme and Discovery tabs, not display limits. |
 | **Persistence** (5 items) | Met. |
-| **Performance** (4 items) | Met as written in section 25; the separate 100,000-events/s objective remains unmet. |
-| **Quality** (5 items) | **4 of 5.** Intel packaging is unsupported because the clean build lacks Intel macOS code-generation tools. |
+| **Performance** (4 items) | **3 of 4.** Configured-target import constructs a whole graph of `Node` and `Dep` objects before writing it. Action-graph and CSR construction avoid object-per-edge retention, but the criterion applies to the application as a whole. The separate 100,000-events/s objective also remains unmet. |
+| **Quality** (5 items) | **3 of 5.** Security checks have open archive/parser, fuzzing and dependency-advisory blockers. Intel packaging is unsupported because the clean build lacks Intel macOS code-generation tools. |
 
-Both shortfalls remain product gaps. Documented limits are not all configurable,
-and the Intel build path does not exist yet.
+All four shortfalls remain product gaps. Documented limits are not all
+configurable, configured-target import still retains an object per dependency,
+security checks do not yet pass, and the Intel build path does not exist yet.
 
 ## Phase 10 audit
 
@@ -1201,8 +1251,9 @@ produced it.
 
 # 0.1.0 implementation and release status
 
-All ten implementation phases are closed. Plan section 25's definition of done
-is met in twenty-nine of thirty-one items, with both shortfalls named above.
+All eleven implementation phases are closed. Plan section 25's definition of
+done is met in thirty-three of thirty-seven items, with all four shortfalls
+named above.
 This is not a claim that every original v1 criterion or release verification
 step is complete.
 
@@ -2550,8 +2601,9 @@ it is a different tab and was not reported.
   user meant.
 
   Schema v6 retains cquery configuration metadata, fragments and option values
-  under the cquery graph-source row. Import remains streaming at the
-  configuration boundary and batches child rows. Bazel 6.5/7.6 sessions say
+  under the cquery graph-source row. Configuration child rows are batched, but
+  the importer still retains the complete configured-target node/dependency
+  graph and checksum map before writing. Bazel 6.5/7.6 sessions say
   option details are unavailable rather than showing an empty comparison;
   Bazel 8.4/9.2 sessions retain the full payload. Secret-named option values
   are withheld on normalization with explicit presence and redacted again by
@@ -2636,8 +2688,9 @@ it is a different tab and was not reported.
   After the build, each planned execution log, profile or BEP fallback is
   downloaded into the managed session's local `raw/` directory before import,
   under `CaptureCoordinator.MAX_REMOTE_CAPTURE_FILE_BYTES` (32 GiB per file).
-  Aquery and cquery stream their protobuf stdout directly into bounded local
-  files, while cquery's generated target expression is uploaded to staging.
+  Aquery and cquery stream their protobuf stdout directly into local files
+  without a current output-size ceiling, while cquery's generated target
+  expression is uploaded to staging.
   Missing, failed or oversized transfers become named warnings and unavailable
   sources; BES bytes already journaled remain valid. Cleanup deletes only the
   exact planned staging files and the validated generated directory. The
@@ -2648,12 +2701,14 @@ it is a different tab and was not reported.
   opens there with recent entries newest first; a profile has a stable ID and
   user label and names one local or SSH repository plus its Bazel executable.
   Several profiles can point at different repositories on the same machine.
-  New, Edit and Remove are inline and I/O-free; the Workspaces menu also offers
-  recent selection, reconnect and close. Choosing a local profile validates and
-  installs direct command/filesystem services. Choosing an SSH profile is the
-  explicit action that opens one private control connection before the shell is
-  shown. The Console launcher displays the selected machine and directory
-  while keeping that Workspace's **Bazel Executable** editable.
+  New, Discover, Edit Discovery and Open are inline and I/O-free. Saved
+  Workspace rows expose Open Workspace, Edit and Remove in their right-click
+  menu; discovered rows omit Edit and Remove. The Workspaces menu also offers
+  recent selection, reconnect and close. Choosing a local profile validates
+  and installs direct command/filesystem services. Choosing an SSH profile is
+  the explicit action that opens one private control connection before the
+  shell is shown. The Console launcher displays the selected machine and
+  directory while keeping that Workspace's **Bazel Executable** editable.
 
   `WorkspaceStore` persists at most 100 entries in
   `settings/workspaces.properties`, through a bounded sibling temporary file
@@ -3179,3 +3234,52 @@ it is a different tab and was not reported.
   integer-category tests cover the new seams. The ten new page bounds are
   recorded in `docs/limits.md`; this is a required overlap with the release
   documentation pass, not a new architectural decision.
+
+- **Graph access now enforces one session-wide resource and integrity contract**
+  (2026-09-05). A header-only CSR descriptor uses checked arithmetic and exact
+  file length before any body mapping. Admitted bodies are read directly from
+  read-only `MemorySegment` regions no larger than 256 MiB; checksum and
+  structural validation no longer require graph-sized heap copies. Ordered SQL
+  edges stream through fixed 1 MiB positional buffers into generation-named
+  forward and reverse files. Both files are forced before their registry rows
+  publish together, and a failed build publishes neither new direction.
+
+  Every open session shares a 1 GiB `GraphResourceBudget` and an idle-LRU,
+  reference-counted `GraphIndexCache` retaining at most two mappings. Pair
+  acquisition is atomic and a lease prevents eviction under a traversal. Graph
+  extraction, metadata, models, traversal scratch, and layout retention reserve
+  checked bytes before allocation. The layout cache is capped at both 128 MiB
+  and 12 request keys inside that same aggregate budget. Refusals report the
+  requested, limit, retained, and retained-purpose bytes; unavailable work is
+  not presented as an empty graph. The budget covers graph-owned Java/mapping
+  state, not all native process memory: each independently open graph reader
+  keeps a fixed 1 MiB SQLite page cache outside it and uses file-backed
+  temporary b-trees.
+
+  Schema v10 adds the partial unique covering index
+  `ix_declared_actions_node_index` for non-null assigned action indices. Runtime
+  validation separately streams and requires the dense sequence
+  `0..count-1` before node-indexed allocation or mapping. A writable
+  creation/import migration advances valid v9 data transactionally; duplicate
+  assigned values reject it and leave v9 intact. Opening an already-finished
+  managed session does not migrate it and refuses an older schema with
+  re-import guidance.
+
+  New index pairs must match generation token, source, build timestamp, node
+  count, and edge count. Legacy fixed-name rows lack that proof. A validated
+  single direction may remain usable after a writable v10 migration, but
+  pair-dependent path, neighbourhood, metric, and weight work reports
+  unavailable until a fresh import/build creates a generation-matched pair.
+  Merely opening historical data does not repair or rebuild those indexes; the general open remains writer-capable
+  until the blocked t2 physical-read-only change lands.
+
+  Graph now uses `PageChrome` for only its source selector and root find, open,
+  and browse controls. Scope, depth, budgets, grouping, layout, edge/weight,
+  fit/reset, and export stay with the canvas. The source selector names the
+  source; shared page metadata names its state and node count, while session generations prevent stale loads from
+  replacing a newer session. Header/arithmetic/corruption/segment, constrained
+  heap, exact admission, cache/lease/rollback, graph-generation, dense-index,
+  aggregate analysis/layout, metadata, page-toolbar, cancellation, and
+  off-event-thread tests cover these seams. No new dependency or architectural
+  decision was added; the named graph resource and format limits are recorded
+  in `docs/limits.md`.

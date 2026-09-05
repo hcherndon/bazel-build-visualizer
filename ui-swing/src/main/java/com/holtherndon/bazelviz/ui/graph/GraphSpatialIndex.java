@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.graph;
 
 import com.holtherndon.bazelviz.analysis.GraphLayout;
+import java.util.Arrays;
 import java.util.OptionalInt;
 import java.util.function.IntConsumer;
 import java.util.function.IntPredicate;
@@ -173,6 +174,63 @@ public final class GraphSpatialIndex {
     forEachInRect(left, top, right, bottom, position -> found[next[0]++] = position);
     return found;
   }
+
+  /**
+   * A bounded rectangle query for interactive selection.
+   *
+   * <p>Stops before examining or retaining more than the caller's exact bounds. {@code truncated}
+   * means unexamined candidates or additional hits may remain; it never means the returned subset
+   * is the complete selection.
+   */
+  BoundedSelection withinBounded(
+      double left,
+      double top,
+      double right,
+      double bottom,
+      int maxPositions,
+      int maxCandidates,
+      IntPredicate accepted) {
+    if (maxPositions < 0 || maxCandidates < 0) {
+      throw new IllegalArgumentException("negative rectangle-query budget");
+    }
+    int[] found = new int[Math.min(maxPositions, points.length)];
+    if (points.length == 0 || right < left || bottom < top) {
+      return new BoundedSelection(found, 0, false);
+    }
+    int firstColumn = clamp((int) Math.floor((left - minX) / cellWidth), columns);
+    int lastColumn = clamp((int) Math.floor((right - minX) / cellWidth), columns);
+    int firstRow = clamp((int) Math.floor((top - minY) / cellHeight), rows);
+    int lastRow = clamp((int) Math.floor((bottom - minY) / cellHeight), rows);
+    int examined = 0;
+    int count = 0;
+
+    for (int row = firstRow; row <= lastRow; row++) {
+      for (int column = firstColumn; column <= lastColumn; column++) {
+        int cell = row * columns + column;
+        for (int p = offsets[cell]; p < offsets[cell + 1]; p++) {
+          if (examined == maxCandidates) {
+            return new BoundedSelection(Arrays.copyOf(found, count), examined, true);
+          }
+          examined++;
+          int position = points[p];
+          if (accepted.test(position)
+              && x[position] >= left
+              && x[position] <= right
+              && y[position] >= top
+              && y[position] <= bottom) {
+            if (count == maxPositions) {
+              return new BoundedSelection(Arrays.copyOf(found, count), examined, true);
+            }
+            found[count++] = position;
+          }
+        }
+      }
+    }
+    return new BoundedSelection(Arrays.copyOf(found, count), examined, false);
+  }
+
+  /** Primitive bounded rectangle-query result. */
+  record BoundedSelection(int[] positions, int examinedCandidates, boolean truncated) {}
 
   /**
    * The position nearest a point, within a radius.

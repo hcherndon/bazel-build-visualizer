@@ -167,18 +167,21 @@ not select or reconnect a Workspace.
 
 ## 22.4 Archive and parser safety
 
-The archive clauses are enforced by `BvizIndex`, `BvizReader`, `BvizPaths`, and
-`ArchiveImport`; hostile-format and adoption tests exercise each boundary.
+The archive clauses below are enforced by `BvizIndex`, `BvizReader`,
+`BvizPaths`, and `ArchiveImport`; hostile-format and adoption tests exercise
+them after Java has opened the Zip container. That timing leaves one important
+gap stated in the first row.
 
 | Requirement | Status | How |
 |---|---|---|
+| Bound archive metadata before ZIP parsing | **Not met — release blocker** | The current path constructs `ZipFile` before applying the entry and expansion limits, so a hostile central directory reaches the JDK ZIP parser first. The reviewed replacement still had a snapshot-cleanup ownership defect and remains unmerged. Treat imported archives as trusted input for 0.1.0 source builds. |
 | Prevent zip-slip | Met, twice | An allow-list first — a session archive holds a known set of files, so anything else is refused before any path resolution — and a canonicalised containment check second. |
 | Limit expanded archive size | Met | Counted from bytes the decompressor produced, never from the size the entry declares. |
 | Limit entry count | Met | `BvizLimits.maxEntries`, 50,000. |
 | Reject duplicate manifest entries | Met | A path listed twice in the index, or present twice in the Zip, is refused: nothing says which copy a reader would get. |
 | Validate checksums | Met | SHA-256 per entry in `archive.json`, checked against the bytes actually decompressed. A Zip CRC-32 detects accidents and nothing else. |
 | Keep archive adoption beneath the sessions root | Met | `archive.json` accepts only the canonical UUID spelling. Adoption resolves the managed root once and uses that real path for staging, extraction, and the final move. It rejects an index changed after coordinator validation and a manifest/index identity mismatch. The process mutation coordinator applies the same UUID rule to leases and cleanup locks. |
-| Treat imported SQLite as untrusted | **Partially met — see below** | The schema version is validated on open and a mismatch is refused with the remedy. |
+| Treat imported SQLite as untrusted | **Partially met — see below** | The schema version is validated and a mismatch is refused with the remedy. Query uses a physical read-only connection; the general finished-session open first creates a normal writer-capable connection, so t2's physical read-only open remains unmerged. |
 | Never load native code from a session archive | Met | Not by refusing to load it: by never writing it. A `.dylib` is not a session file, so the allow-list refuses the entry. |
 
 Two further defences that the plan does not name and that this review adds:
@@ -192,7 +195,7 @@ Two further defences that the plan does not name and that this review adds:
 - **Entry names are escaped in error messages.** An archive's entry names are
   attacker-chosen text and error messages get printed into terminals.
 
-### The one partial: "prefer rebuilding from raw files"
+### Why a schema mismatch is refused rather than rebuilt
 
 Plan 22.4 says to prefer rebuilding from raw files *unless the archive format
 and database schema pass validation*. This application validates and then
@@ -213,16 +216,27 @@ the deviation is deliberate:
 What is *not* deferred: the validation itself. A database that is not a
 database, one from an older build, and one from a newer build are each refused
 with a distinct message, and `DamagedSessionTest` proves all three plus the case
-where the bad database arrives inside a well-formed archive.
+where the bad database arrives inside a well-formed archive. Writable
+capture/import initialization runs migrations through schema v10, while opening
+an already-finished managed session does not migrate it. A duplicate assigned
+graph node index makes v9-to-v10 migration roll back and leave v9 intact.
 
 ### Parser limits
 
-Every parser that reads somebody else's bytes is bounded, and the bounds are in
-`docs/limits.md`: BEP message size, JSON record size, JSON nesting depth,
-manifest size, journal payload size, and the archive limits above. Each refuses
-rather than truncating, and each records the refusal where the user can see it.
-Numeric format versions are read with exact-width conversions, so a value such
-as `2^32 + 1` cannot narrow to supported version 1.
+The core BEP, manifest, journal, Starlark pprof, and post-`ZipFile` archive
+parsers have the bounds recorded in `docs/limits.md`. They refuse rather than
+presenting a truncated prefix as complete. Numeric format versions are read
+with exact-width conversions, so a value such as `2^32 + 1` cannot narrow to
+supported version 1.
+
+That statement does **not** cover every imported or displayed byte path. The
+current execution-log, JSON trace-profile, `aquery`, and `cquery` importers lack
+the proposed source, expansion, record, fan-out, and work bounds; local query
+output is not staged through the proposed bounded file path. Query result cells,
+decoded Events payloads, and ANSI-normalized Errors detail also lack the late
+t6 inspection bounds. The focused t2, t3, and t6 branch tests are not evidence
+for this tree: all three branches remain blocked and unmerged for the reasons in
+`docs/implementation-status.md#remaining-release-blockers`.
 
 File import's default `COPY_INTO_SESSION` mode hashes bytes during the copy and
 parses that exact copy. The former `REFERENCE_ORIGINAL` mode is unavailable for
@@ -248,11 +262,14 @@ refusal and safe re-import remedy.
   in an archive whose every other entry was checksum-verified; it is not a
   claim that SQLite is safe against a malicious database file.
 
-The third of those is the largest residual risk in this application, and it is
-inherent to opening somebody else's session at all.
+The SQLite native parser is a separate residual risk inherent to opening
+somebody else's session at all; this review does not rank it above the unmerged
+ZIP preflight and auxiliary/UI bounds.
 
-Ordinary CI also omits native packaging, signing/notarization, and the
+Ordinary CI also omits signed/notarized/stapled packaging, Gatekeeper/Finder
+association, local and SSH Terminal, packaged Query/cancellation, final
+artifact hashes, parser fuzzing, dependency-advisory review, and the supervised
 host-state real-Bazel sweep. Those are manual release gates, not evidence
 produced by the safe test suite. See [SECURITY.md](../SECURITY.md) for private
 reporting guidance and [packaging.md](packaging.md#release-candidate-checklist)
-for the candidate smoke checklist.
+for the candidate checklist.

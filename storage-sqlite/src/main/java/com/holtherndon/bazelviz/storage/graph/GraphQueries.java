@@ -4,7 +4,10 @@ import com.holtherndon.bazelviz.core.graph.ConfigurationMatch;
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.core.graph.GraphTargetScope;
+import com.holtherndon.bazelviz.graph.CsrFile;
 import com.holtherndon.bazelviz.graph.CsrGraph;
+import com.holtherndon.bazelviz.graph.GraphIndexCache;
+import com.holtherndon.bazelviz.graph.GraphResourceBudget;
 import com.holtherndon.bazelviz.graph.ShortestPath;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -28,10 +31,11 @@ import java.util.OptionalLong;
  * Reads the graph: what sources exist, what a node's neighbours are, and whether two nodes are
  * connected.
  *
- * <h2>Indexes are loaded once and kept</h2>
+ * <h2>Indexes are leased from the session cache</h2>
  *
- * <p>A CSR index is two primitive arrays and is immutable, so one load serves every question.
- * Loading per query would re-read and re-verify the file for each keystroke in a dependency tree.
+ * <p>A CSR index is immutable. The open session owns its bounded mapped-index cache; callers can
+ * use an index only inside a callback, so a mapping cannot outlive the cache lease that protects
+ * it.
  *
  * <h2>Nothing here computes a transitive closure</h2>
  *
@@ -85,10 +89,15 @@ public final class GraphQueries implements AutoCloseable {
           + " WHERE l.value = ? AND da.node_index IS NOT NULL"
           + " ORDER BY da.node_index LIMIT 1";
 
+  private static final String LABEL_NODES_CTE =
+      "WITH label_nodes(label_id, node_index) AS ("
+          + " SELECT label_id, row_number() OVER (ORDER BY label_id) - 1"
+          + " FROM (SELECT DISTINCT label_id FROM configured_target_nodes)) ";
+
   private static final String LABEL_NODE_BY_EXACT_LABEL =
-      "SELECT n.label_id FROM configured_target_nodes n"
-          + " JOIN labels l ON l.id = n.label_id"
-          + " WHERE l.value = ? LIMIT 1";
+      LABEL_NODES_CTE
+          + "SELECT n.node_index FROM label_nodes n"
+          + " JOIN labels l ON l.id = n.label_id WHERE l.value = ? LIMIT 1";
 
   /**
    * The label-graph search: the label or the rule class may match, because both appear in the rows
@@ -96,35 +105,45 @@ public final class GraphQueries implements AutoCloseable {
    * presented with.
    */
   private static final String LABEL_NODES_BY_PATTERN =
-      "SELECT n.label_id, l.value, min(n.rule_class)"
-          + " FROM configured_target_nodes n"
-          + " JOIN labels l ON l.id = n.label_id"
+      LABEL_NODES_CTE
+          + "SELECT numbered.node_index, l.value, min(n.rule_class)"
+          + " FROM label_nodes numbered"
+          + " JOIN configured_target_nodes n ON n.label_id = numbered.label_id"
+          + " JOIN labels l ON l.id = numbered.label_id"
           + " WHERE l.value LIKE ? OR n.rule_class LIKE ?"
-          + " GROUP BY n.label_id, l.value ORDER BY l.value LIMIT ?";
+          + " GROUP BY numbered.node_index, l.value ORDER BY l.value LIMIT ?";
 
   private static final String LABEL_NODE_BY_ID =
-      "SELECT l.value, min(n.rule_class)"
-          + " FROM configured_target_nodes n"
-          + " JOIN labels l ON l.id = n.label_id"
-          + " WHERE n.label_id = ? GROUP BY l.value";
+      LABEL_NODES_CTE
+          + "SELECT l.value, min(n.rule_class)"
+          + " FROM label_nodes numbered"
+          + " JOIN configured_target_nodes n ON n.label_id = numbered.label_id"
+          + " JOIN labels l ON l.id = numbered.label_id"
+          + " WHERE numbered.node_index = ? GROUP BY l.value";
 
   private final Connection connection;
   private final GraphIndexBuilder indexes;
-  private final Map<String, CsrGraph> forward = new HashMap<>();
-  private final Map<String, CsrGraph> reverse = new HashMap<>();
-
-  /**
-   * The label graph's node numbering: sorted distinct label ids, loaded once.
-   *
-   * <p>One {@code long} per analysed label, which is the same order of cost as the CSR index it
-   * accompanies. Kept because every label-graph question translates through it, in both directions
-   * — array position to label id by indexing, label id to position by binary search.
-   */
-  private long[] labelUniverse;
+  private final GraphSessionResources resources;
+  private final boolean ownsResources;
 
   public GraphQueries(Connection connection, Path indexDirectory) {
+    this(connection, indexDirectory, new GraphSessionResources(), true);
+  }
+
+  /** Uses the graph resources shared by every reader of one open session. */
+  public GraphQueries(Connection connection, Path indexDirectory, GraphSessionResources resources) {
+    this(connection, indexDirectory, resources, false);
+  }
+
+  private GraphQueries(
+      Connection connection,
+      Path indexDirectory,
+      GraphSessionResources resources,
+      boolean ownsResources) {
     this.connection = connection;
     this.indexes = new GraphIndexBuilder(connection, indexDirectory);
+    this.resources = Objects.requireNonNull(resources, "resources");
+    this.ownsResources = ownsResources;
   }
 
   /**
@@ -148,8 +167,7 @@ public final class GraphQueries implements AutoCloseable {
    */
   public long[] durationsByNodeIndex(boolean fromAttempts, long unknownDuration)
       throws SQLException {
-    int nodes =
-        Math.toIntExact(scalar("SELECT coalesce(max(node_index), -1) + 1 FROM declared_actions"));
+    int nodes = actionNodeCount();
     long[] durations = new long[nodes];
     Arrays.fill(durations, unknownDuration);
     if (nodes == 0) {
@@ -192,8 +210,7 @@ public final class GraphQueries implements AutoCloseable {
    * them is about the build.
    */
   public long[] outputSizesByNodeIndex(long unknownSize) throws SQLException {
-    int nodes =
-        Math.toIntExact(scalar("SELECT coalesce(max(node_index), -1) + 1 FROM declared_actions"));
+    int nodes = actionNodeCount();
     long[] sizes = new long[nodes];
     Arrays.fill(sizes, unknownSize);
     if (nodes == 0) {
@@ -208,12 +225,102 @@ public final class GraphQueries implements AutoCloseable {
         ResultSet rows = statement.executeQuery()) {
       while (rows.next()) {
         int index = rows.getInt(1);
-        if (index >= 0 && index < nodes) {
-          sizes[index] = Math.max(0, rows.getLong(2));
+        long value = rows.getLong(2);
+        if (index >= 0 && index < nodes && value >= 0) {
+          sizes[index] = value;
         }
       }
     }
     return sizes;
+  }
+
+  /** Primary-output sizes aligned only with the bounded extracted node list. */
+  public long[] outputSizes(List<Integer> nodeIndexes, long unknownSize) throws SQLException {
+    Objects.requireNonNull(nodeIndexes, "nodeIndexes");
+    long[] sizes = new long[nodeIndexes.size()];
+    Arrays.fill(sizes, unknownSize);
+    if (nodeIndexes.isEmpty()) {
+      return sizes;
+    }
+    for (Integer node : nodeIndexes) {
+      Objects.requireNonNull(node, "nodeIndexes contains null");
+      if (node < 0) {
+        throw new IllegalArgumentException("negative graph node index " + node);
+      }
+    }
+    for (int from = 0; from < nodeIndexes.size(); from += 400) {
+      int to = Math.min(nodeIndexes.size(), from + 400);
+      StringBuilder values = new StringBuilder();
+      for (int position = from; position < to; position++) {
+        if (!values.isEmpty()) {
+          values.append(',');
+        }
+        values
+            .append('(')
+            .append(nodeIndexes.get(position))
+            .append(',')
+            .append(position)
+            .append(')');
+      }
+      String sql =
+          "WITH requested(node_index, position) AS (VALUES "
+              + values
+              + ") SELECT r.position, art.size_bytes FROM requested r"
+              + " LEFT JOIN declared_actions da ON da.node_index = r.node_index"
+              + " LEFT JOIN artifacts art ON art.id = da.primary_output_id";
+      try (PreparedStatement statement = connection.prepareStatement(sql);
+          ResultSet rows = statement.executeQuery()) {
+        while (rows.next()) {
+          long value = rows.getLong(2);
+          if (!rows.wasNull() && value >= 0) {
+            sizes[rows.getInt(1)] = value;
+          }
+        }
+      }
+    }
+    return sizes;
+  }
+
+  /** Streams complete-export metadata in dense node order without retaining whole-graph arrays. */
+  public void forEachNodeMetadata(GraphKind graphKind, NodeMetadataVisitor visitor)
+      throws SQLException, IOException {
+    Objects.requireNonNull(visitor, "visitor");
+    String sql;
+    if (graphKind == GraphKind.CONFIGURED_TARGETS) {
+      sql =
+          LABEL_NODES_CTE
+              + "SELECT numbered.node_index, l.value, NULL"
+              + " FROM label_nodes numbered LEFT JOIN labels l ON l.id = numbered.label_id"
+              + " ORDER BY numbered.node_index";
+    } else {
+      sql =
+          "SELECT da.node_index, l.value,"
+              + " CASE WHEN a.start_micros IS NOT NULL AND a.end_micros IS NOT NULL"
+              + " AND a.end_micros > a.start_micros"
+              + " THEN a.end_micros - a.start_micros END"
+              + " FROM declared_actions da LEFT JOIN labels l ON l.id = da.label_id"
+              + " LEFT JOIN actions a ON a.id = da.action_id"
+              + " WHERE da.node_index IS NOT NULL ORDER BY da.node_index";
+    }
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setFetchSize(4_096);
+      try (ResultSet rows = statement.executeQuery()) {
+        long read = 0;
+        while (rows.next()) {
+          if ((read++ & 4_095L) == 0 && Thread.currentThread().isInterrupted()) {
+            throw new IOException("complete graph metadata export was cancelled");
+          }
+          long duration = rows.getLong(3);
+          visitor.node(rows.getInt(1), rows.getString(2), rows.wasNull() ? -1 : duration);
+        }
+      }
+    }
+  }
+
+  /** One streamed complete-export metadata row. */
+  @FunctionalInterface
+  public interface NodeMetadataVisitor {
+    void node(int nodeIndex, String label, long durationMicros) throws IOException;
   }
 
   /**
@@ -240,9 +347,9 @@ public final class GraphQueries implements AutoCloseable {
   /**
    * Streams correlated graph-node/action pairs without materializing the graph as boxed maps.
    *
-   * <p>The rendered graph needs a random-access map and uses {@link #actionIdsByNodeIndex()}.
-   * Metrics that only select a bounded top-N can consume this cursor directly, keeping memory
-   * bounded for Tier-3 graphs.
+   * <p>Metrics that only select a bounded top-N can consume this cursor directly, keeping memory
+   * bounded for Tier-3 graphs. New rendering code uses extraction-aligned metadata instead of the
+   * compatibility whole-session map returned by {@link #actionIdsByNodeIndex()}.
    */
   public void forEachActionIdByNodeIndex(NodeActionVisitor visitor) throws SQLException {
     Objects.requireNonNull(visitor, "visitor");
@@ -268,10 +375,10 @@ public final class GraphQueries implements AutoCloseable {
   /**
    * The target label behind each graph node, indexed by {@code node_index}.
    *
-   * <p>What the cluster view groups by, once the caller has reduced a label to its package. Nodes
-   * whose label the import never learned are left null rather than filled with a placeholder: plan
-   * 11.4 wants unknown to stay distinguishable from a real name all the way to the drawing, and a
-   * clustering that invented "" here would show a package called nothing.
+   * <p>This whole-session helper remains for compatibility and inherently whole-graph analysis. New
+   * clustering uses admitted {@code clusterKeys}, and rendering uses extraction-aligned metadata.
+   * Nodes whose label the import never learned remain null rather than becoming a real, empty
+   * label.
    */
   public String[] labelsByNodeIndex() throws SQLException {
     return keysByNodeIndex(
@@ -283,6 +390,9 @@ public final class GraphQueries implements AutoCloseable {
   /**
    * A display name per action-graph node: "Mnemonic — output basename".
    *
+   * <p>This whole-session compatibility helper is not used while opening or drawing a graph page;
+   * the renderer loads the same composition only for its admitted extraction.
+   *
    * <p>{@link #labelsByNodeIndex()} names a node by its owning target, and a target owns many
    * actions — so on the canvas every action under one target read as the same string. This is the
    * per-action name: the mnemonic and the primary output's basename, which together distinguish the
@@ -293,8 +403,7 @@ public final class GraphQueries implements AutoCloseable {
    * of the three stays null so the canvas can say "(name not recorded)" instead of showing a blank.
    */
   public String[] displayLabelsByNodeIndex() throws SQLException {
-    int nodes =
-        Math.toIntExact(scalar("SELECT coalesce(max(node_index), -1) + 1 FROM declared_actions"));
+    int nodes = actionNodeCount();
     String[] names = new String[nodes];
     if (nodes == 0) {
       return names;
@@ -366,8 +475,7 @@ public final class GraphQueries implements AutoCloseable {
    * that does not span the graph instead of treating the shortfall as unknown.
    */
   private String[] keysByNodeIndex(String sql) throws SQLException {
-    int nodes =
-        Math.toIntExact(scalar("SELECT coalesce(max(node_index), -1) + 1 FROM declared_actions"));
+    int nodes = actionNodeCount();
     String[] keys = new String[nodes];
     if (nodes == 0) {
       return keys;
@@ -388,6 +496,25 @@ public final class GraphQueries implements AutoCloseable {
     try (PreparedStatement statement = connection.prepareStatement(sql);
         ResultSet rows = statement.executeQuery()) {
       return rows.next() ? rows.getLong(1) : 0;
+    }
+  }
+
+  private int actionNodeCount() throws SQLException {
+    long count = scalar("SELECT count(*) FROM declared_actions WHERE node_index IS NOT NULL");
+    try {
+      return resources.validateActionNodes(connection, count);
+    } catch (IOException malformed) {
+      throw new SQLException("declared action node indexes are not safe to allocate", malformed);
+    }
+  }
+
+  private int labelNodeCount() throws SQLException {
+    long count =
+        scalar("SELECT count(*) FROM (SELECT DISTINCT label_id FROM configured_target_nodes)");
+    try {
+      return resources.validateLabelNodes(connection, count);
+    } catch (IOException malformed) {
+      throw new SQLException("configured-target label indexes are not safe to allocate", malformed);
     }
   }
 
@@ -463,18 +590,10 @@ public final class GraphQueries implements AutoCloseable {
         }
       }
     }
-    long[] universe = labelUniverse();
     try (PreparedStatement statement = connection.prepareStatement(LABEL_NODE_BY_EXACT_LABEL)) {
       statement.setString(1, label);
       try (ResultSet rows = statement.executeQuery()) {
-        if (!rows.next()) {
-          return OptionalInt.empty();
-        }
-        int index = Arrays.binarySearch(universe, rows.getLong(1));
-        // A label imported after the universe was read is treated
-        // exactly as search(GraphKind, ...) treats it: reported as
-        // absent rather than given an index the CSR does not have.
-        return index < 0 ? OptionalInt.empty() : OptionalInt.of(index);
+        return rows.next() ? OptionalInt.of(rows.getInt(1)) : OptionalInt.empty();
       }
     }
   }
@@ -569,6 +688,406 @@ public final class GraphQueries implements AutoCloseable {
     return Collections.unmodifiableMap(byIndex);
   }
 
+  /**
+   * Loads only metadata for the bounded nodes in one extraction, positionally aligned with it.
+   * String byte lengths are counted and admitted before JDBC materializes any string value.
+   */
+  public NodeMetadata metadata(GraphKind graphKind, List<Integer> nodeIndexes)
+      throws SQLException, IOException {
+    Objects.requireNonNull(nodeIndexes, "nodeIndexes");
+    for (Integer node : nodeIndexes) {
+      Objects.requireNonNull(node, "nodeIndexes contains null");
+      if (node < 0) {
+        throw new IllegalArgumentException("negative graph node index " + node);
+      }
+    }
+    return inReadSnapshot(() -> loadMetadata(graphKind, nodeIndexes));
+  }
+
+  /** The database string column used to group a whole graph. */
+  public enum ClusterKeySource {
+    LABEL,
+    MNEMONIC,
+    RULE_CLASS
+  }
+
+  /**
+   * Loads admitted whole-graph grouping keys on one stable sizing/materialization snapshot. Package
+   * derivation may briefly retain both each label and its substring, so it is charged at twice the
+   * variable string storage.
+   */
+  public ClusterKeyData clusterKeys(
+      GraphKind graphKind, ClusterKeySource source, int expectedNodes, boolean derivePackages)
+      throws SQLException, IOException {
+    if (expectedNodes < 0) {
+      throw new IllegalArgumentException("negative graph node count " + expectedNodes);
+    }
+    if (source == ClusterKeySource.RULE_CLASS && graphKind != GraphKind.CONFIGURED_TARGETS) {
+      throw new IllegalArgumentException("rule-class keys belong only to configured targets");
+    }
+    if (graphKind == GraphKind.CONFIGURED_TARGETS && source == ClusterKeySource.MNEMONIC) {
+      throw new IllegalArgumentException(
+          "configured-target nodes have rule classes, not mnemonics");
+    }
+    return inReadSnapshot(() -> loadClusterKeys(graphKind, source, expectedNodes, derivePackages));
+  }
+
+  private ClusterKeyData loadClusterKeys(
+      GraphKind graphKind, ClusterKeySource source, int expectedNodes, boolean derivePackages)
+      throws SQLException, IOException {
+    String rowsSql = clusterKeyRows(graphKind, source);
+    long encodedBytes =
+        scalar(
+            "SELECT coalesce(sum(coalesce(length(CAST(value AS BLOB)), 0)), 0) FROM ("
+                + rowsSql
+                + ")");
+    long retainedBytes;
+    try {
+      retainedBytes =
+          Math.addExact(
+              4_096,
+              Math.addExact(
+                  Math.multiplyExact((long) expectedNodes, 16L),
+                  Math.multiplyExact(encodedBytes, derivePackages ? 8L : 4L)));
+    } catch (ArithmeticException overflow) {
+      throw new IOException("whole-graph cluster keys are too large to account safely", overflow);
+    }
+    GraphResourceBudget.Reservation reservation =
+        resources.budget().reserve(retainedBytes, "whole-graph cluster keys");
+    try {
+      String[] keys = new String[expectedNodes];
+      boolean[] present = new boolean[expectedNodes];
+      int rowsRead = 0;
+      try (PreparedStatement statement =
+              connection.prepareStatement(rowsSql + " ORDER BY node_index");
+          ResultSet rows = statement.executeQuery()) {
+        while (rows.next()) {
+          int node = rows.getInt(1);
+          if (node < 0 || node >= expectedNodes || present[node]) {
+            throw new IOException("cluster-key rows do not match the dense graph node universe");
+          }
+          present[node] = true;
+          keys[node] = rows.getString(2);
+          rowsRead++;
+        }
+      }
+      if (rowsRead != expectedNodes) {
+        throw new IOException(
+            "cluster-key rows cover "
+                + rowsRead
+                + " nodes but the graph index has "
+                + expectedNodes);
+      }
+      return new ClusterKeyData(keys, retainedBytes, reservation);
+    } catch (SQLException | IOException | RuntimeException failure) {
+      reservation.close();
+      throw failure;
+    }
+  }
+
+  private static String clusterKeyRows(GraphKind graphKind, ClusterKeySource source) {
+    if (graphKind == GraphKind.CONFIGURED_TARGETS) {
+      if (source == ClusterKeySource.LABEL) {
+        return LABEL_NODES_CTE
+            + "SELECT numbered.node_index AS node_index, l.value AS value"
+            + " FROM label_nodes numbered LEFT JOIN labels l ON l.id = numbered.label_id";
+      }
+      return LABEL_NODES_CTE
+          + "SELECT numbered.node_index AS node_index, min(n.rule_class) AS value"
+          + " FROM label_nodes numbered LEFT JOIN configured_target_nodes n"
+          + " ON n.label_id = numbered.label_id GROUP BY numbered.node_index";
+    }
+    String table = source == ClusterKeySource.MNEMONIC ? "mnemonics" : "labels";
+    String foreignKey = source == ClusterKeySource.MNEMONIC ? "mnemonic_id" : "label_id";
+    return "SELECT da.node_index AS node_index, value.value AS value"
+        + " FROM declared_actions da LEFT JOIN "
+        + table
+        + " value ON value.id = da."
+        + foreignKey
+        + " WHERE da.node_index IS NOT NULL";
+  }
+
+  private NodeMetadata loadMetadata(GraphKind graphKind, List<Integer> nodeIndexes)
+      throws SQLException, IOException {
+    long boundedSqlScratch =
+        Math.addExact(8_192L, Math.multiplyExact(Math.min(400L, nodeIndexes.size()), 64L));
+    try (GraphResourceBudget.Reservation ignored =
+        resources.budget().reserve(boundedSqlScratch, "bounded graph metadata SQL scratch")) {
+      long encodedBytes = metadataEncodedBytes(graphKind, nodeIndexes);
+      long retainedBytes;
+      try {
+        retainedBytes =
+            Math.addExact(
+                4_096,
+                Math.addExact(
+                    Math.multiplyExact((long) nodeIndexes.size(), 80L),
+                    Math.multiplyExact(encodedBytes, 4L)));
+      } catch (ArithmeticException overflow) {
+        throw new IOException("extraction metadata is too large to account safely", overflow);
+      }
+      GraphResourceBudget.Reservation reservation =
+          resources.budget().reserve(retainedBytes, "extraction-aligned graph metadata");
+      try {
+        String[] display = new String[nodeIndexes.size()];
+        String[] owners = new String[nodeIndexes.size()];
+        long[] durations = new long[nodeIndexes.size()];
+        long[] actionIds = new long[nodeIndexes.size()];
+        Arrays.fill(durations, -1);
+        Arrays.fill(actionIds, -1);
+        forMetadataBatches(
+            graphKind,
+            nodeIndexes,
+            false,
+            rows -> {
+              int position = rows.getInt(1);
+              if (graphKind == GraphKind.CONFIGURED_TARGETS) {
+                String label = rows.getString(2);
+                display[position] = label;
+                owners[position] = label;
+                return;
+              }
+              String owner = rows.getString(2);
+              String mnemonic = rows.getString(3);
+              String output = rows.getString(4);
+              display[position] = composeDisplayLabel(mnemonic, output, owner);
+              owners[position] = owner;
+              long actionId = rows.getLong(5);
+              if (!rows.wasNull()) {
+                actionIds[position] = actionId;
+              }
+              long duration = rows.getLong(6);
+              if (!rows.wasNull() && duration >= 0) {
+                durations[position] = duration;
+              }
+            });
+        return new NodeMetadata(display, owners, durations, actionIds, reservation);
+      } catch (SQLException | RuntimeException failure) {
+        reservation.close();
+        throw failure;
+      }
+    }
+  }
+
+  private long metadataEncodedBytes(GraphKind graphKind, List<Integer> nodeIndexes)
+      throws SQLException {
+    long[] total = {0};
+    forMetadataBatches(
+        graphKind, nodeIndexes, true, rows -> total[0] = Math.addExact(total[0], rows.getLong(1)));
+    return total[0];
+  }
+
+  private void forMetadataBatches(
+      GraphKind graphKind, List<Integer> nodeIndexes, boolean sizing, MetadataRows visitor)
+      throws SQLException {
+    // Node ids come from the bounded extraction and were validated above, so embedding their
+    // decimal forms is safe. Fixed batches keep both the Java builder and SQLite statement bounded
+    // even when the user raises the drawing limit. Graph-reader temporary b-trees are file-backed.
+    int nodesPerBatch = 400;
+    for (int from = 0; from < nodeIndexes.size(); from += nodesPerBatch) {
+      int to = Math.min(nodeIndexes.size(), from + nodesPerBatch);
+      StringBuilder values = new StringBuilder();
+      for (int index = from; index < to; index++) {
+        if (!values.isEmpty()) {
+          values.append(',');
+        }
+        values.append('(').append(nodeIndexes.get(index)).append(',').append(index).append(')');
+      }
+      String requested = "WITH requested(node_index, position) AS (VALUES " + values + ") ";
+      String sql;
+      if (graphKind == GraphKind.CONFIGURED_TARGETS) {
+        String labelNodes =
+            ", label_nodes(label_id, node_index) AS ("
+                + " SELECT label_id, row_number() OVER (ORDER BY label_id) - 1"
+                + " FROM (SELECT DISTINCT label_id FROM configured_target_nodes)) ";
+        sql =
+            requested.substring(0, requested.length() - 1)
+                + labelNodes
+                + (sizing
+                    ? "SELECT coalesce(sum(length(CAST(l.value AS BLOB))), 0)"
+                    : "SELECT r.position, l.value")
+                + " FROM requested r LEFT JOIN label_nodes n ON n.node_index = r.node_index"
+                + " LEFT JOIN labels l ON l.id = n.label_id";
+      } else {
+        sql =
+            requested
+                + (sizing
+                    ? "SELECT coalesce(sum(coalesce(length(CAST(l.value AS BLOB)), 0)"
+                        + " + coalesce(length(CAST(m.value AS BLOB)), 0)"
+                        + " + coalesce(length(CAST(art.path AS BLOB)), 0)), 0)"
+                    : "SELECT r.position, l.value, m.value, art.path, da.action_id,"
+                        + " CASE WHEN a.start_micros IS NOT NULL AND a.end_micros IS NOT NULL"
+                        + " AND a.end_micros > a.start_micros"
+                        + " THEN a.end_micros - a.start_micros END")
+                + " FROM requested r"
+                + " LEFT JOIN declared_actions da ON da.node_index = r.node_index"
+                + " LEFT JOIN labels l ON l.id = da.label_id"
+                + " LEFT JOIN mnemonics m ON m.id = da.mnemonic_id"
+                + " LEFT JOIN artifacts art ON art.id = da.primary_output_id"
+                + " LEFT JOIN actions a ON a.id = da.action_id";
+      }
+      try (PreparedStatement statement = connection.prepareStatement(sql)) {
+        try (ResultSet rows = statement.executeQuery()) {
+          while (rows.next()) {
+            visitor.visit(rows);
+          }
+        }
+      }
+    }
+  }
+
+  @FunctionalInterface
+  private interface MetadataRows {
+    void visit(ResultSet rows) throws SQLException;
+  }
+
+  /** Keeps metadata sizing and materialization on one SQLite snapshot without owning mutations. */
+  private <T> T inReadSnapshot(ReadWork<T> work) throws SQLException, IOException {
+    boolean ownsTransaction = connection.getAutoCommit();
+    if (ownsTransaction) {
+      connection.setAutoCommit(false);
+    }
+    T result = null;
+    Throwable failure = null;
+    try {
+      result = work.run();
+      return result;
+    } catch (SQLException | IOException | RuntimeException caught) {
+      failure = caught;
+      throw caught;
+    } finally {
+      if (ownsTransaction) {
+        SQLException cleanup = null;
+        try {
+          connection.rollback();
+        } catch (SQLException rollbackFailure) {
+          cleanup = rollbackFailure;
+        }
+        try {
+          connection.setAutoCommit(true);
+        } catch (SQLException restoreFailure) {
+          if (cleanup == null) {
+            cleanup = restoreFailure;
+          } else {
+            cleanup.addSuppressed(restoreFailure);
+          }
+        }
+        if (cleanup != null) {
+          if (failure != null) {
+            failure.addSuppressed(cleanup);
+          } else {
+            closeOwnedResult(result, cleanup);
+            throw cleanup;
+          }
+        }
+      }
+    }
+  }
+
+  /** Releases a callback result hidden inside the optional API wrappers after cleanup fails. */
+  static void closeOwnedResult(Object result, Throwable cleanup) {
+    Object owned = result;
+    while (owned instanceof Optional<?> optional) {
+      owned = optional.orElse(null);
+    }
+    if (owned instanceof AutoCloseable closeable) {
+      try {
+        closeable.close();
+      } catch (Exception closeFailure) {
+        cleanup.addSuppressed(closeFailure);
+      }
+    }
+  }
+
+  @FunctionalInterface
+  private interface ReadWork<T> {
+    T run() throws SQLException, IOException;
+  }
+
+  /** Extraction-aligned metadata and the charge protecting its retained strings and arrays. */
+  public static final class NodeMetadata implements AutoCloseable {
+    private final String[] displayLabels;
+    private final String[] ownerLabels;
+    private final long[] durations;
+    private final long[] actionIds;
+    private GraphResourceBudget.Reservation reservation;
+
+    NodeMetadata(
+        String[] displayLabels,
+        String[] ownerLabels,
+        long[] durations,
+        long[] actionIds,
+        GraphResourceBudget.Reservation reservation) {
+      this.displayLabels = displayLabels;
+      this.ownerLabels = ownerLabels;
+      this.durations = durations;
+      this.actionIds = actionIds;
+      this.reservation = reservation;
+    }
+
+    public String[] displayLabels() {
+      return displayLabels;
+    }
+
+    public String[] ownerLabels() {
+      return ownerLabels;
+    }
+
+    public long[] durations() {
+      return durations;
+    }
+
+    public long[] actionIds() {
+      return actionIds;
+    }
+
+    @Override
+    public void close() {
+      if (reservation != null) {
+        reservation.close();
+        reservation = null;
+      }
+    }
+  }
+
+  /** Whole-graph cluster keys and the variable-string charge that must follow retained clusters. */
+  public static final class ClusterKeyData implements AutoCloseable {
+    private final String[] keys;
+    private final long retainedBytes;
+    private GraphResourceBudget.Reservation reservation;
+
+    private ClusterKeyData(
+        String[] keys, long retainedBytes, GraphResourceBudget.Reservation reservation) {
+      this.keys = keys;
+      this.retainedBytes = retainedBytes;
+      this.reservation = reservation;
+    }
+
+    public String[] keys() {
+      return keys;
+    }
+
+    public long retainedBytes() {
+      return retainedBytes;
+    }
+
+    public GraphResourceBudget.Reservation transferReservation() {
+      if (reservation == null) {
+        throw new IllegalStateException("cluster-key reservation was already transferred");
+      }
+      GraphResourceBudget.Reservation transferred = reservation;
+      reservation = null;
+      return transferred;
+    }
+
+    @Override
+    public void close() {
+      if (reservation != null) {
+        reservation.close();
+        reservation = null;
+      }
+    }
+  }
+
   private static GraphNode readGraphNode(ResultSet rows) throws SQLException {
     int nodeIndex = rows.getInt(1);
     Optional<String> label = Optional.ofNullable(rows.getString(2));
@@ -590,7 +1109,6 @@ public final class GraphQueries implements AutoCloseable {
     if (graphKind != GraphKind.CONFIGURED_TARGETS) {
       return search(pattern, limit);
     }
-    long[] universe = labelUniverse();
     List<GraphNode> out = new ArrayList<>();
     try (PreparedStatement statement = connection.prepareStatement(LABEL_NODES_BY_PATTERN)) {
       statement.setString(1, pattern);
@@ -598,16 +1116,9 @@ public final class GraphQueries implements AutoCloseable {
       statement.setInt(3, limit);
       try (ResultSet rows = statement.executeQuery()) {
         while (rows.next()) {
-          int index = Arrays.binarySearch(universe, rows.getLong(1));
-          if (index < 0) {
-            // A label imported after the universe was read; the
-            // session is read-only in practice, but skipping is
-            // safer than inventing an index the CSR does not have.
-            continue;
-          }
           out.add(
               new GraphNode(
-                  index,
+                  rows.getInt(1),
                   Optional.ofNullable(rows.getString(2)),
                   Optional.ofNullable(rows.getString(3)),
                   Optional.empty(),
@@ -623,12 +1134,11 @@ public final class GraphQueries implements AutoCloseable {
     if (graphKind != GraphKind.CONFIGURED_TARGETS) {
       return node(nodeIndex);
     }
-    long[] universe = labelUniverse();
-    if (nodeIndex < 0 || nodeIndex >= universe.length) {
+    if (nodeIndex < 0 || nodeIndex >= labelNodeCount()) {
       return Optional.empty();
     }
     try (PreparedStatement statement = connection.prepareStatement(LABEL_NODE_BY_ID)) {
-      statement.setLong(1, universe[nodeIndex]);
+      statement.setInt(1, nodeIndex);
       try (ResultSet rows = statement.executeQuery()) {
         if (!rows.next()) {
           return Optional.empty();
@@ -647,25 +1157,23 @@ public final class GraphQueries implements AutoCloseable {
   /**
    * One label per label-graph node, or the action-graph labels.
    *
-   * <p>The label-graph flavour of {@link #labelsByNodeIndex()}: what the canvas names nodes with
-   * and the clustering groups by, fetched once per session rather than during any paint.
+   * <p>The label-graph flavour of {@link #labelsByNodeIndex()}. This whole-session compatibility
+   * helper remains useful to analysis that inherently visits every node; rendering loads only the
+   * extracted nodes and never calls it while opening a graph page.
    */
   public String[] labelsByNodeIndex(GraphKind graphKind) throws SQLException {
     if (graphKind != GraphKind.CONFIGURED_TARGETS) {
       return labelsByNodeIndex();
     }
-    long[] universe = labelUniverse();
-    String[] out = new String[universe.length];
+    String[] out = new String[labelNodeCount()];
     try (PreparedStatement statement =
             connection.prepareStatement(
-                "SELECT DISTINCT n.label_id, l.value FROM configured_target_nodes n"
-                    + " JOIN labels l ON l.id = n.label_id");
+                LABEL_NODES_CTE
+                    + "SELECT numbered.node_index, l.value FROM label_nodes numbered"
+                    + " JOIN labels l ON l.id = numbered.label_id");
         ResultSet rows = statement.executeQuery()) {
       while (rows.next()) {
-        int index = Arrays.binarySearch(universe, rows.getLong(1));
-        if (index >= 0) {
-          out[index] = rows.getString(2);
-        }
+        out[rows.getInt(1)] = rows.getString(2);
       }
     }
     return out;
@@ -680,18 +1188,16 @@ public final class GraphQueries implements AutoCloseable {
    * did not report one, which stays distinguishable from a real name (plan 11.4).
    */
   public String[] ruleClassesByNodeIndex() throws SQLException {
-    long[] universe = labelUniverse();
-    String[] out = new String[universe.length];
+    String[] out = new String[labelNodeCount()];
     try (PreparedStatement statement =
             connection.prepareStatement(
-                "SELECT n.label_id, min(n.rule_class) FROM configured_target_nodes n"
-                    + " GROUP BY n.label_id");
+                LABEL_NODES_CTE
+                    + "SELECT numbered.node_index, min(n.rule_class)"
+                    + " FROM label_nodes numbered JOIN configured_target_nodes n"
+                    + " ON n.label_id = numbered.label_id GROUP BY numbered.node_index");
         ResultSet rows = statement.executeQuery()) {
       while (rows.next()) {
-        int index = Arrays.binarySearch(universe, rows.getLong(1));
-        if (index >= 0) {
-          out[index] = rows.getString(2);
-        }
+        out[rows.getInt(1)] = rows.getString(2);
       }
     }
     return out;
@@ -699,22 +1205,7 @@ public final class GraphQueries implements AutoCloseable {
 
   /** How many nodes the configured-target label graph has. */
   public int labelGraphNodeCount() throws SQLException {
-    return labelUniverse().length;
-  }
-
-  /**
-   * The label graph's node numbering, loaded once and kept.
-   *
-   * <p>The same numbering {@link GraphIndexBuilder#configuredLabelUniverse} built the CSR files
-   * with: a pure function of the imported rows, so the index files and these queries cannot
-   * disagree about which label a node id means unless the tables changed — and a changed table
-   * invalidates the registered index by checksum anyway.
-   */
-  private long[] labelUniverse() throws SQLException {
-    if (labelUniverse == null) {
-      labelUniverse = GraphIndexBuilder.configuredLabelUniverse(connection);
-    }
-    return labelUniverse;
+    return labelNodeCount();
   }
 
   /**
@@ -723,47 +1214,50 @@ public final class GraphQueries implements AutoCloseable {
    * @param direction {@code true} for dependencies this action feeds, {@code false} for the ones
    *     that feed it
    */
-  public List<GraphNode> neighbours(
+  public Optional<List<GraphNode>> neighbours(
       EdgeDerivation derivation, int nodeIndex, boolean forwards, int limit)
       throws SQLException, IOException {
     return neighbours(kindOf(derivation), nodeIndex, forwards, limit);
   }
 
   /** {@link #neighbours(EdgeDerivation, int, boolean, int)} for any indexed graph. */
-  public List<GraphNode> neighbours(GraphKind graphKind, int nodeIndex, boolean forwards, int limit)
+  public Optional<List<GraphNode>> neighbours(
+      GraphKind graphKind, int nodeIndex, boolean forwards, int limit)
       throws SQLException, IOException {
-    Optional<CsrGraph> graph = forwards ? forwardIndex(graphKind) : reverseIndex(graphKind);
-    if (graph.isEmpty()) {
-      return List.of();
+    if (limit < 0) {
+      throw new IllegalArgumentException("negative neighbour limit " + limit);
     }
-    List<Integer> targets = new ArrayList<>();
-    graph
-        .get()
-        .forEachNeighbor(
-            nodeIndex,
-            neighbour -> {
-              if (targets.size() < limit) {
-                targets.add(neighbour);
-              }
-            });
-    List<GraphNode> out = new ArrayList<>(targets.size());
-    for (int target : targets) {
-      node(graphKind, target).ifPresent(out::add);
-    }
-    return out;
+    return withIndex(
+        graphKind,
+        forwards,
+        graph -> {
+          List<Integer> targets = new ArrayList<>(Math.min(limit, graph.degree(nodeIndex)));
+          graph.forEachNeighbor(
+              nodeIndex,
+              neighbour -> {
+                if (targets.size() < limit) {
+                  targets.add(neighbour);
+                }
+              });
+          List<GraphNode> out = new ArrayList<>(targets.size());
+          for (int target : targets) {
+            node(graphKind, target).ifPresent(out::add);
+          }
+          return List.copyOf(out);
+        });
   }
 
   /** How many direct neighbours a node has, whether or not they are listed. */
-  public int degree(EdgeDerivation derivation, int nodeIndex, boolean forwards)
+  public OptionalInt degree(EdgeDerivation derivation, int nodeIndex, boolean forwards)
       throws SQLException, IOException {
     return degree(kindOf(derivation), nodeIndex, forwards);
   }
 
   /** {@link #degree(EdgeDerivation, int, boolean)} for any indexed graph. */
-  public int degree(GraphKind graphKind, int nodeIndex, boolean forwards)
+  public OptionalInt degree(GraphKind graphKind, int nodeIndex, boolean forwards)
       throws SQLException, IOException {
-    Optional<CsrGraph> graph = forwards ? forwardIndex(graphKind) : reverseIndex(graphKind);
-    return graph.map(value -> value.degree(nodeIndex)).orElse(0);
+    Optional<Integer> value = withIndex(graphKind, forwards, graph -> graph.degree(nodeIndex));
+    return value.isPresent() ? OptionalInt.of(value.get()) : OptionalInt.empty();
   }
 
   /**
@@ -771,21 +1265,30 @@ public final class GraphQueries implements AutoCloseable {
    *
    * @return empty when there is no index to search
    */
-  public Optional<ShortestPath.Result> path(
-      EdgeDerivation derivation, int from, int to, long budget) throws SQLException, IOException {
-    return path(kindOf(derivation), from, to, budget);
+  public <T> Optional<T> withPath(
+      EdgeDerivation derivation, int from, int to, long budget, PathWork<T> work)
+      throws SQLException, IOException {
+    return withPath(kindOf(derivation), from, to, budget, work);
   }
 
-  /** {@link #path(EdgeDerivation, int, int, long)} for any indexed graph. */
-  public Optional<ShortestPath.Result> path(GraphKind graphKind, int from, int to, long budget)
+  /** Runs work against one admitted shortest-path result while its charge is held. */
+  public <T> Optional<T> withPath(
+      GraphKind graphKind, int from, int to, long budget, PathWork<T> work)
       throws SQLException, IOException {
-    Optional<CsrGraph> forwardGraph = forwardIndex(graphKind);
-    Optional<CsrGraph> reverseGraph = reverseIndex(graphKind);
-    if (forwardGraph.isEmpty() || reverseGraph.isEmpty()) {
-      return Optional.empty();
-    }
-    return Optional.of(
-        new ShortestPath(forwardGraph.get(), reverseGraph.get()).find(from, to, budget));
+    Objects.requireNonNull(work, "work");
+    return withIndexPair(
+        graphKind,
+        (forward, reverse) -> {
+          try (GraphResourceBudget.Reservation admitted =
+              resources
+                  .budget()
+                  .reserve(
+                      ShortestPath.peakBytes(forward.nodeCount()),
+                      "shortest-path scratch and scoped result")) {
+            ShortestPath.Result result = new ShortestPath(forward, reverse).find(from, to, budget);
+            return work.run(result);
+          }
+        });
   }
 
   /** The graph an edge derivation's index describes. */
@@ -795,48 +1298,85 @@ public final class GraphQueries implements AutoCloseable {
         : GraphKind.OBSERVED_EXECUTION;
   }
 
-  /**
-   * The producer-to-consumer index, memory-mapped and cached.
-   *
-   * <p>Public because extraction and layout happen outside this module -- a CSR graph is a {@code
-   * graph-core} value, not a SQLite implementation detail, so handing one out does not put the UI
-   * back in touch with the database the way rule 19 forbids. Empty when the index was never built,
-   * which is the honest answer for a session with no aquery output.
-   */
-  public Optional<CsrGraph> forwardIndex(EdgeDerivation derivation)
+  /** Header-only metadata for one registered direction. No CSR body is mapped or checksummed. */
+  public Optional<CsrFile.Descriptor> indexDescriptor(GraphKind graph, boolean forwards)
       throws SQLException, IOException {
-    return cached(forward, derivation.name(), "FORWARD");
-  }
-
-  /** The consumer-to-producer index; see {@link #forwardIndex}. */
-  public Optional<CsrGraph> reverseIndex(EdgeDerivation derivation)
-      throws SQLException, IOException {
-    return cached(reverse, derivation.name(), "REVERSE");
-  }
-
-  /**
-   * The producer-to-consumer index of whichever graph is asked for.
-   *
-   * <p>Three graphs have indexes: the two action graphs (declared and observed edges, nodes are
-   * actions) and the configured-target label graph (nodes are labels). Any other {@link GraphKind}
-   * has no CSR index and gets an empty answer, which is the honest one — those graphs exist in the
-   * schema but are not traversable this way.
-   */
-  public Optional<CsrGraph> forwardIndex(GraphKind graph) throws SQLException, IOException {
     Optional<String> kind = indexKind(graph);
     if (kind.isEmpty()) {
       return Optional.empty();
     }
-    return cached(forward, kind.get(), "FORWARD");
+    return descriptor(kind.get(), forwards ? "FORWARD" : "REVERSE");
   }
 
-  /** The consumer-to-producer index of whichever graph is asked for. */
-  public Optional<CsrGraph> reverseIndex(GraphKind graph) throws SQLException, IOException {
-    Optional<String> kind = indexKind(graph);
-    if (kind.isEmpty()) {
-      return Optional.empty();
-    }
-    return cached(reverse, kind.get(), "REVERSE");
+  /** Runs work while one mapped index lease is held; the graph cannot escape this callback. */
+  public <T> Optional<T> withIndex(GraphKind graph, boolean forwards, IndexWork<T> work)
+      throws SQLException, IOException {
+    Objects.requireNonNull(work, "work");
+    return withIndexDescriptor(graph, forwards, (ignored, index) -> work.run(index));
+  }
+
+  /** Runs work with the immutable descriptor that identifies the held mapped-index lease. */
+  public <T> Optional<T> withIndexDescriptor(
+      GraphKind graph, boolean forwards, DescriptorIndexWork<T> work)
+      throws SQLException, IOException {
+    Objects.requireNonNull(work, "work");
+    return inReadSnapshot(
+        () -> {
+          Optional<CsrFile.Descriptor> descriptor = indexDescriptor(graph, forwards);
+          if (descriptor.isEmpty()) {
+            return Optional.empty();
+          }
+          validateIndexPopulation(graph, descriptor.get());
+          try (GraphIndexCache.Lease lease = resources.cache().acquire(descriptor.get())) {
+            return Optional.ofNullable(work.run(descriptor.get(), lease.graph()));
+          }
+        });
+  }
+
+  /** Runs work while the matching pair is leased atomically from one stable registry snapshot. */
+  public <T> Optional<T> withIndexPair(GraphKind graph, IndexPairWork<T> work)
+      throws SQLException, IOException {
+    Objects.requireNonNull(work, "work");
+    return inReadSnapshot(
+        () -> {
+          Optional<String> kind = indexKind(graph);
+          if (kind.isEmpty()) {
+            return Optional.empty();
+          }
+          Optional<GraphIndexBuilder.DescriptorPair> pair = indexes.descriptorPair(kind.get());
+          if (pair.isEmpty()) {
+            return Optional.empty();
+          }
+          validateIndexPopulation(graph, pair.get().forward());
+          if (pair.get().forward().header().nodeCount() != pair.get().reverse().header().nodeCount()
+              || pair.get().forward().header().edgeCount()
+                  != pair.get().reverse().header().edgeCount()) {
+            throw new IOException("forward and reverse graph index descriptors disagree");
+          }
+          try (GraphIndexCache.PairLease lease =
+              resources.cache().acquirePair(pair.get().forward(), pair.get().reverse())) {
+            return Optional.ofNullable(work.run(lease.forward().graph(), lease.reverse().graph()));
+          }
+        });
+  }
+
+  /** Action-derivation form of {@link #withIndex(GraphKind, boolean, IndexWork)}. */
+  public <T> Optional<T> withIndex(EdgeDerivation derivation, boolean forwards, IndexWork<T> work)
+      throws SQLException, IOException {
+    return withIndex(kindOf(derivation), forwards, work);
+  }
+
+  /** Action-derivation form of {@link #withIndexDescriptor}. */
+  public <T> Optional<T> withIndexDescriptor(
+      EdgeDerivation derivation, boolean forwards, DescriptorIndexWork<T> work)
+      throws SQLException, IOException {
+    return withIndexDescriptor(kindOf(derivation), forwards, work);
+  }
+
+  /** Action-derivation form of {@link #withIndexPair(GraphKind, IndexPairWork)}. */
+  public <T> Optional<T> withIndexPair(EdgeDerivation derivation, IndexPairWork<T> work)
+      throws SQLException, IOException {
+    return withIndexPair(kindOf(derivation), work);
   }
 
   /** The {@code graph_indexes.kind} behind a graph, or empty when none exists. */
@@ -849,23 +1389,88 @@ public final class GraphQueries implements AutoCloseable {
     };
   }
 
-  private Optional<CsrGraph> cached(Map<String, CsrGraph> into, String kind, String direction)
+  private Optional<CsrFile.Descriptor> descriptor(String kind, String direction)
       throws SQLException, IOException {
-    CsrGraph existing = into.get(kind);
-    if (existing != null) {
-      return Optional.of(existing);
+    return kind.equals(GraphIndexBuilder.CONFIGURED_TARGETS_KIND)
+        ? indexes.configuredTargetsDescriptor(direction)
+        : indexes.descriptor(EdgeDerivation.valueOf(kind), direction);
+  }
+
+  private void validateIndexPopulation(GraphKind graph, CsrFile.Descriptor descriptor)
+      throws SQLException, IOException {
+    if (graph == GraphKind.CONFIGURED_TARGETS) {
+      resources.validateLabelNodes(connection, descriptor);
+    } else {
+      resources.validateActionNodes(connection, descriptor);
     }
-    Optional<CsrGraph> loaded =
-        kind.equals(GraphIndexBuilder.CONFIGURED_TARGETS_KIND)
-            ? indexes.loadConfiguredTargets(direction)
-            : indexes.load(EdgeDerivation.valueOf(kind), direction);
-    loaded.ifPresent(graph -> into.put(kind, graph));
-    return loaded;
+  }
+
+  /** The aggregate budget shared by every graph reader for this open session. */
+  public GraphResourceBudget resourceBudget() {
+    return resources.budget();
+  }
+
+  /** Returns a charged immutable result already computed for this exact session generation. */
+  public <T> Optional<T> cachedSessionResult(String slot, String generationKey, Class<T> type)
+      throws IOException {
+    return resources.retainedResult(slot, generationKey, type);
+  }
+
+  /** Installs one charged immutable result, or reuses a concurrently installed identical result. */
+  public <T> T retainSessionResult(
+      String slot,
+      String generationKey,
+      Class<T> type,
+      T value,
+      GraphResourceBudget.Reservation reservation)
+      throws IOException {
+    return resources.retainResult(slot, generationKey, type, value, reservation);
+  }
+
+  /** Visible for operational state and tests; never maps an index. */
+  public int cachedIndexCount() {
+    return resources.cache().cachedCount();
   }
 
   @Override
   public void close() throws SQLException {
-    connection.close();
+    SQLException failure = null;
+    try {
+      connection.close();
+    } catch (SQLException caught) {
+      failure = caught;
+    } finally {
+      if (ownsResources) {
+        resources.close();
+      }
+    }
+    if (failure != null) {
+      throw failure;
+    }
+  }
+
+  /** Work whose graph reference is valid only for the duration of {@link #withIndex}. */
+  @FunctionalInterface
+  public interface IndexWork<T> {
+    T run(CsrGraph graph) throws SQLException, IOException;
+  }
+
+  /** Work whose descriptor and graph are valid only for the duration of the held lease. */
+  @FunctionalInterface
+  public interface DescriptorIndexWork<T> {
+    T run(CsrFile.Descriptor descriptor, CsrGraph graph) throws SQLException, IOException;
+  }
+
+  /** Work whose two graph references are valid only for the duration of {@link #withIndexPair}. */
+  @FunctionalInterface
+  public interface IndexPairWork<T> {
+    T run(CsrGraph forward, CsrGraph reverse) throws SQLException, IOException;
+  }
+
+  /** Work whose path result is valid only while its aggregate-budget charge is held. */
+  @FunctionalInterface
+  public interface PathWork<T> {
+    T run(ShortestPath.Result result) throws SQLException, IOException;
   }
 
   /**

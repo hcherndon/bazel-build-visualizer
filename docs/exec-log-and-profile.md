@@ -9,6 +9,15 @@ Companion to `docs/bep-content.md`, which does the same for the BEP stream.
 Where the two sources describe the same thing, ADR-009 governs: both values are
 kept, under names that say whose they are.
 
+**Current implementation boundary.** Managed captures import the compact
+execution log when Bazel supports it and the binary form otherwise, plus the
+managed JSON trace profile. Bazel's JSON execution-log format is measured below
+but is not a supported analysis input, and the current importer does not yet
+give it an explicit early rejection. There is no manual post-hoc attachment UI
+or service API for any of these files. The proposed bounded auxiliary-ingestion
+work remains blocked and unmerged; measurements in this document describe the
+formats, not safety guarantees absent from the current tree.
+
 ## Legend
 
 | Mark | Meaning |

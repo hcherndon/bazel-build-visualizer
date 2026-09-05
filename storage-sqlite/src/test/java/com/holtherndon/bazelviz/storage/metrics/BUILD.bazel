@@ -10,7 +10,10 @@ java_library(
     ],
     deps = JUNIT_DEPS + [
         "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis:analysis",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//graph-core/src/main/java/com/holtherndon/bazelviz/graph:graph",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph:graph",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics:metrics",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",

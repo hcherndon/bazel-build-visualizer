@@ -106,6 +106,33 @@ final class ShortestPathTest {
   }
 
   @Test
+  @DisplayName("a high-fanout node stops at the exact discovery budget")
+  void highFanoutCannotMaterializePastBudget() {
+    int nodes = 20_002;
+    CsrGraph forward =
+        CsrBuilder.build(
+            nodes,
+            visitor -> {
+              for (int target = 1; target < nodes - 1; target++) {
+                visitor.edge(0, target);
+              }
+            });
+
+    ShortestPath.Result result =
+        new ShortestPath(forward, CsrBuilder.reverse(forward)).find(0, nodes - 1, 17);
+
+    assertThat(result.outcome()).isEqualTo(ShortestPath.Outcome.BUDGET_EXHAUSTED);
+    assertThat(result.nodesVisited()).isEqualTo(17);
+  }
+
+  @Test
+  void zeroBudgetCannotEvenClaimASelfPath() {
+    ShortestPath.Result result = chain(4).find(2, 2, 0);
+    assertThat(result.outcome()).isEqualTo(ShortestPath.Outcome.BUDGET_EXHAUSTED);
+    assertThat(result.nodesVisited()).isZero();
+  }
+
+  @Test
   @DisplayName("meeting in the middle visits far fewer nodes than one-directional search")
   void bidirectionalIsCheaper() {
     // A wide tree: node 0 has 200 children, each with 200 children.

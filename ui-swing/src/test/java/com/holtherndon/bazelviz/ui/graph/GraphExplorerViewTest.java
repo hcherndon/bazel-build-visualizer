@@ -22,7 +22,13 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -50,6 +56,7 @@ final class GraphExplorerViewTest {
 
   private SessionDatabase database;
   private GraphExplorerView view;
+  private GraphOnlySource source;
 
   @BeforeEach
   void buildSession() throws Exception {
@@ -109,7 +116,8 @@ final class GraphExplorerViewTest {
 
     view = new GraphExplorerView();
     view.setSize(1000, 700);
-    view.openSession(new GraphOnlySource());
+    source = new GraphOnlySource();
+    view.openSession(source);
     awaitCondition(() -> view.sourceSelector().getItemCount() == 2, "the sources to install");
   }
 
@@ -178,6 +186,44 @@ final class GraphExplorerViewTest {
     assertThat(view.canvasPanel().shownGraph()).isEqualTo(GraphKind.DECLARED_ACTIONS);
     assertThat(view.detailLabel().getText()).contains("A node is one declared action");
     assertThat(view.canvasPanel().descriptionText()).contains("Pick an action");
+  }
+
+  @Test
+  @DisplayName("opening a session does not map or retain graph data before a node is selected")
+  void sessionOpenRemainsLazy() {
+    assertThat(source.query().cachedIndexCount()).isZero();
+    assertThat(source.query().resourceBudget().snapshot().retainedBytes()).isZero();
+    assertThat(view.canvasPanel().canvas().model().size()).isZero();
+  }
+
+  @Test
+  @DisplayName("navigation and layout workers open distinct JDBC readers")
+  void graphWorkersDoNotShareAConnection() {
+    assertThat(source.openedConnections()).hasSize(2);
+    assertThat(source.openedConnections().get(0)).isNotSameAs(source.openedConnections().get(1));
+  }
+
+  @Test
+  @DisplayName("normal graph close releases both worker readers")
+  void normalCloseReleasesBothGraphReaders() throws Exception {
+    view.closeSessionAsync().toCompletableFuture().get(10, TimeUnit.SECONDS);
+
+    assertThat(source.openedConnections()).hasSize(2);
+    assertThat(source.allReadersAreClosed()).isTrue();
+  }
+
+  @Test
+  @DisplayName("a second-reader open failure closes the first reader")
+  void partialOpenClosesTheNavigationReader() throws Exception {
+    view.closeSessionAsync().toCompletableFuture().get(10, TimeUnit.SECONDS);
+    GraphOnlySource partial = new GraphOnlySource(false, true);
+
+    SwingUtilities.invokeAndWait(() -> view.openSession(partial));
+    partial.awaitSecondAttempt();
+    awaitCondition(partial::allReadersAreClosed, "the partial graph open to clean up");
+
+    assertThat(partial.openedConnections()).hasSize(1);
+    assertThat(view.sourceSelector().getItemCount()).isZero();
   }
 
   @Test
@@ -387,6 +433,67 @@ final class GraphExplorerViewTest {
     assertThat(view.browserForTesting().listedEntriesForTesting().getFirst()).contains("t1");
   }
 
+  @Test
+  @DisplayName("graph opening stays off EDT and a newer session closes a pending stale reader")
+  void newerSessionSupersedesPendingOpenAndClosesItsResources() throws Exception {
+    view.closeSessionAsync().toCompletableFuture().get(10, TimeUnit.SECONDS);
+    GraphOnlySource stale = new GraphOnlySource(true);
+    GraphOnlySource current = new GraphOnlySource();
+
+    try {
+      SwingUtilities.invokeAndWait(() -> view.openSession(stale));
+      stale.awaitOpened();
+
+      assertThat(stale.openedOnEdt()).isFalse();
+      assertThat(stale.query().cachedIndexCount()).isEqualTo(1);
+      assertThat(stale.query().resourceBudget().snapshot().retainedBytes()).isPositive();
+
+      SwingUtilities.invokeAndWait(() -> view.openSession(current));
+      current.awaitOpened();
+      awaitCondition(
+          () -> view.sourceSelector().getItemCount() == 2, "the newer session to install");
+      assertThat(current.openedOnEdt()).isFalse();
+
+      stale.release();
+      awaitCondition(stale::readerResourcesAreClosed, "the stale graph reader to close");
+
+      assertThat(stale.query().cachedIndexCount()).isZero();
+      assertThat(stale.query().resourceBudget().snapshot().retainedBytes()).isZero();
+      assertThat(current.readerIsClosed()).isFalse();
+      assertThat(view.sourceSelector().getItemCount()).isEqualTo(2);
+    } finally {
+      stale.release();
+    }
+  }
+
+  @Test
+  @DisplayName("closing while graph opening is pending cannot install or retain the stale reader")
+  void closeSupersedesPendingOpenAndClosesItsResources() throws Exception {
+    view.closeSessionAsync().toCompletableFuture().get(10, TimeUnit.SECONDS);
+    GraphOnlySource stale = new GraphOnlySource(true);
+    AtomicReference<CompletionStage<Void>> closing = new AtomicReference<>();
+
+    try {
+      SwingUtilities.invokeAndWait(() -> view.openSession(stale));
+      stale.awaitOpened();
+      assertThat(stale.query().cachedIndexCount()).isEqualTo(1);
+
+      SwingUtilities.invokeAndWait(() -> closing.set(view.closeSessionAsync()));
+      stale.release();
+      closing.get().toCompletableFuture().get(10, TimeUnit.SECONDS);
+      awaitCondition(
+          stale::readerResourcesAreClosed, "the closed view's pending graph reader to close");
+
+      SwingUtilities.invokeAndWait(() -> {});
+      assertThat(view.sourceSelector().getItemCount()).isZero();
+      assertThat(view.canvasPanel().descriptionText()).isEqualTo("No dependency graph is open.");
+      assertThat(stale.query().cachedIndexCount()).isZero();
+      assertThat(stale.query().resourceBudget().snapshot().retainedBytes()).isZero();
+    } finally {
+      stale.release();
+    }
+  }
+
   // ------------------------------------------------------------- plumbing
 
   private void selectConfiguredTargets() throws Exception {
@@ -454,12 +561,132 @@ final class GraphExplorerViewTest {
   /** A session source that answers only the graph question. */
   private final class GraphOnlySource implements SessionSource {
 
+    private final boolean delayed;
+    private final boolean failSecondOpen;
+    private final CountDownLatch opened = new CountDownLatch(1);
+    private final CountDownLatch secondAttempt = new CountDownLatch(1);
+    private final CountDownLatch release = new CountDownLatch(1);
+    private final AtomicBoolean openedOnEdt = new AtomicBoolean(true);
+    private final AtomicReference<Connection> openedConnection = new AtomicReference<>();
+    private final AtomicReference<GraphQueries> openedQuery = new AtomicReference<>();
+    private final List<Connection> openedConnections = new CopyOnWriteArrayList<>();
+    private final AtomicInteger openCalls = new AtomicInteger();
+
+    GraphOnlySource() {
+      this(false, false);
+    }
+
+    GraphOnlySource(boolean delayed) {
+      this(delayed, false);
+    }
+
+    GraphOnlySource(boolean delayed, boolean failSecondOpen) {
+      this.delayed = delayed;
+      this.failSecondOpen = failSecondOpen;
+    }
+
     @Override
     public GraphQueries openGraphQueries() {
+      openedOnEdt.set(SwingUtilities.isEventDispatchThread());
+      int call = openCalls.incrementAndGet();
+      if (call == 2) {
+        secondAttempt.countDown();
+        if (failSecondOpen) {
+          throw new IllegalStateException("the layout reader could not be opened");
+        }
+      }
       try {
-        return new GraphQueries(database.newReadConnection(), tempDir.resolve("indexes"));
-      } catch (SQLException failure) {
+        Connection connection = database.newReadConnection();
+        GraphQueries query = new GraphQueries(connection, tempDir.resolve("indexes"));
+        openedConnection.set(connection);
+        openedQuery.set(query);
+        openedConnections.add(connection);
+        if (delayed) {
+          query.withIndex(GraphKind.DECLARED_ACTIONS, true, graph -> graph.degree(0));
+        }
+        opened.countDown();
+        awaitReleaseIfDelayed();
+        return query;
+      } catch (Exception failure) {
+        opened.countDown();
         throw new IllegalStateException(failure);
+      }
+    }
+
+    void awaitOpened() throws InterruptedException {
+      assertThat(opened.await(10, TimeUnit.SECONDS)).as("graph reader opened").isTrue();
+    }
+
+    void awaitSecondAttempt() throws InterruptedException {
+      assertThat(secondAttempt.await(10, TimeUnit.SECONDS))
+          .as("the layout reader open was attempted")
+          .isTrue();
+    }
+
+    boolean openedOnEdt() {
+      return openedOnEdt.get();
+    }
+
+    GraphQueries query() {
+      return openedQuery.get();
+    }
+
+    List<Connection> openedConnections() {
+      return List.copyOf(openedConnections);
+    }
+
+    void release() {
+      release.countDown();
+    }
+
+    boolean readerIsClosed() {
+      Connection connection = openedConnection.get();
+      if (connection == null) {
+        return false;
+      }
+      try {
+        return connection.isClosed();
+      } catch (SQLException failure) {
+        throw new AssertionError(failure);
+      }
+    }
+
+    boolean readerResourcesAreClosed() {
+      GraphQueries query = openedQuery.get();
+      return query != null
+          && readerIsClosed()
+          && query.cachedIndexCount() == 0
+          && query.resourceBudget().snapshot().retainedBytes() == 0;
+    }
+
+    boolean allReadersAreClosed() {
+      return !openedConnections.isEmpty()
+          && openedConnections.stream()
+              .allMatch(
+                  connection -> {
+                    try {
+                      return connection.isClosed();
+                    } catch (SQLException failure) {
+                      throw new AssertionError(failure);
+                    }
+                  });
+    }
+
+    private void awaitReleaseIfDelayed() {
+      if (!delayed) {
+        return;
+      }
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (release.getCount() != 0 && System.nanoTime() < deadline) {
+        try {
+          release.await(100, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException superseded) {
+          // GraphExplorerView interrupts a superseded opener. Keep it pending until the test
+          // deliberately releases it so the stale completion path is deterministic.
+        }
+      }
+      if (release.getCount() != 0) {
+        throw new IllegalStateException("timed out waiting to release the graph reader");
       }
     }
 

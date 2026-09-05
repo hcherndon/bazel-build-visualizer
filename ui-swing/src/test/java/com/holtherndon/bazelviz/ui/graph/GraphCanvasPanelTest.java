@@ -23,6 +23,7 @@ import java.sql.Statement;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import javax.swing.JLabel;
@@ -61,7 +62,7 @@ final class GraphCanvasPanelTest {
     exec(
         connection,
         "INSERT INTO graph_sources (id, kind, state, configuration_match)"
-            + " VALUES (1, 'AQUERY', 'COMPLETE', 'EXACT')");
+            + " VALUES (1, 'DECLARED_ACTIONS', 'SUCCEEDED', 'EXACT')");
     exec(connection, "INSERT INTO mnemonics (id, value) VALUES (1, 'Javac')");
     for (int i = 0; i < 6; i++) {
       exec(
@@ -69,8 +70,15 @@ final class GraphCanvasPanelTest {
           "INSERT INTO labels (id, value) VALUES (" + (i + 1) + ", '//a:target" + i + "')");
       exec(
           connection,
+          "INSERT INTO artifacts (id, path) VALUES ("
+              + (100 + i)
+              + ", 'bazel-out/bin/t"
+              + i
+              + ".o')");
+      exec(
+          connection,
           "INSERT INTO declared_actions"
-              + " (id, source_id, graph_id, label_id, mnemonic_id, node_index)"
+              + " (id, source_id, graph_id, label_id, mnemonic_id, primary_output_id, node_index)"
               + " VALUES ("
               + (i + 1)
               + ", 1, "
@@ -78,6 +86,8 @@ final class GraphCanvasPanelTest {
               + ", "
               + (i + 1)
               + ", 1, "
+              + (100 + i)
+              + ", "
               + i
               + ")");
     }
@@ -91,17 +101,18 @@ final class GraphCanvasPanelTest {
               + (i + 2)
               + ", 'DECLARED')");
     }
+    exec(
+        connection,
+        "INSERT INTO actions (id, primary_output, outcome, start_micros, end_micros)"
+            + " VALUES (500, 'bazel-out/bin/t5.o', 'OK', 1000, 4000)");
+    exec(connection, "UPDATE declared_actions SET action_id = 500 WHERE id = 6");
     new GraphIndexBuilder(connection, tempDir.resolve("indexes")).build(EdgeDerivation.DECLARED);
 
     queries = new GraphQueries(connection, tempDir.resolve("indexes"));
     service = new GraphLayoutService(queries);
     panel = new GraphCanvasPanel();
     panel.setSize(800, 600);
-    panel.attach(
-        service,
-        queries.labelsByNodeIndex(),
-        queries.durationsByNodeIndex(false, GraphModel.UNKNOWN_DURATION),
-        queries.actionIdsByNodeIndex());
+    panel.attach(service);
   }
 
   @AfterEach
@@ -230,15 +241,6 @@ final class GraphCanvasPanelTest {
   @Test
   @DisplayName("attached display labels are what the canvas names actions with")
   void displayLabelsReachTheCanvas() throws Exception {
-    // The per-action names — "Mnemonic — output basename" — arrive
-    // separately from the target labels, because the complete export's
-    // label column must keep meaning the target.
-    String[] display = new String[6];
-    for (int i = 0; i < 6; i++) {
-      display[i] = "Javac — t" + i + ".o";
-    }
-    panel.attachActionDisplayLabels(display);
-
     panel.showNode(2);
     awaitDrawn();
 
@@ -254,11 +256,6 @@ final class GraphCanvasPanelTest {
   @Test
   @DisplayName("selection names both the action and the target it belongs to")
   void selectionNamesTargetOwnership() throws Exception {
-    String[] display = new String[6];
-    for (int i = 0; i < display.length; i++) {
-      display[i] = "Javac — t" + i + ".o";
-    }
-    panel.attachActionDisplayLabels(display);
     panel.showNode(2);
     awaitDrawn();
 
@@ -292,6 +289,9 @@ final class GraphCanvasPanelTest {
   @Test
   @DisplayName("without display labels the canvas falls back to target labels, never blanks")
   void displayLabelsFallBackToTargetLabels() throws Exception {
+    exec(
+        database.writerConnection(),
+        "UPDATE declared_actions SET mnemonic_id = NULL, primary_output_id = NULL");
     panel.showNode(2);
     awaitDrawn();
 
@@ -526,7 +526,9 @@ final class GraphCanvasPanelTest {
     // Two could be drawn; six exist. That difference is the whole point of
     // offering export beside the limit.
     assertThat(panel.legendText()).contains("Wrote 6 actions");
-    assertThat(Files.readString(tempDir.resolve("exported-nodes.csv"))).contains("//a:target5");
+    assertThat(Files.readString(tempDir.resolve("exported-nodes.csv")))
+        .contains("5,//a:target5,3000")
+        .doesNotContain("(name not recorded)");
   }
 
   @Test
@@ -541,6 +543,49 @@ final class GraphCanvasPanelTest {
 
     assertThat(panel.legendText()).contains("Wrote " + panel.canvas().model().size() + " actions");
     assertThat(Files.readString(target)).contains("Visible graph").contains("from a graph of 6");
+  }
+
+  @Test
+  @DisplayName("a queued visible export keeps its model charged after the canvas replaces it")
+  void queuedVisibleExportOwnsItsModel() throws Exception {
+    panel.showNode(2);
+    awaitDrawn();
+
+    CountDownLatch workerEntered = new CountDownLatch(1);
+    CountDownLatch releaseWorker = new CountDownLatch(1);
+    service.prepare(
+        () -> {
+          workerEntered.countDown();
+          if (!releaseWorker.await(10, TimeUnit.SECONDS)) {
+            throw new AssertionError("timed out waiting to release the graph worker");
+          }
+          return null;
+        },
+        ignored -> {},
+        failure -> {});
+    assertThat(workerEntered.await(10, TimeUnit.SECONDS)).isTrue();
+
+    Path target = tempDir.resolve("queued-visible.dot");
+    try {
+      panel.exportVisible(target, GraphExport.Format.DOT);
+      panel.detach();
+
+      assertThat(queries.resourceBudget().snapshot().retainedByPurpose())
+          .containsKey("retained graph model and spatial index");
+    } finally {
+      releaseWorker.countDown();
+    }
+
+    awaitCondition(() -> Files.exists(target), "the queued visible export to finish");
+    awaitCondition(
+        () ->
+            !queries
+                .resourceBudget()
+                .snapshot()
+                .retainedByPurpose()
+                .containsKey("retained graph model and spatial index"),
+        "the queued export's model charge to be released");
+    assertThat(Files.readString(target)).contains("Visible graph");
   }
 
   @Test

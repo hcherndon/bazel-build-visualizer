@@ -16,6 +16,8 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -140,6 +142,46 @@ final class MetricsServiceTest {
       assertThat(listeners).hasValue(0);
       assertThat(failures).hasValue(0);
     } finally {
+      service.close();
+    }
+  }
+
+  @Test
+  @DisplayName("close stays pending until an interrupted metric reader releases the session")
+  void closeFencesActiveMetricReader() throws Exception {
+    CountDownLatch readerEntered = new CountDownLatch(1);
+    CountDownLatch readerInterrupted = new CountDownLatch(1);
+    CountDownLatch releaseReader = new CountDownLatch(1);
+    MetricOnlySource blockingSource =
+        new MetricOnlySource() {
+          @Override
+          public MetricQueries openMetricQueries() {
+            readerEntered.countDown();
+            while (releaseReader.getCount() != 0) {
+              try {
+                releaseReader.await();
+              } catch (InterruptedException cancelled) {
+                readerInterrupted.countDown();
+              }
+            }
+            return super.openMetricQueries();
+          }
+        };
+    MetricsService service =
+        new MetricsService(blockingSource, Runnable::run, FindingThresholds.defaults());
+    try {
+      service.collect(ignored -> {}, ignored -> {});
+      assertThat(readerEntered.await(10, TimeUnit.SECONDS)).isTrue();
+
+      CompletableFuture<Void> closing = service.closeAsync().toCompletableFuture();
+      assertThat(readerInterrupted.await(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(closing).isNotDone();
+
+      releaseReader.countDown();
+      closing.get(10, TimeUnit.SECONDS);
+      assertThat(closing).isCompleted();
+    } finally {
+      releaseReader.countDown();
       service.close();
     }
   }

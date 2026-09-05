@@ -50,7 +50,7 @@ public final class MigrationRunner {
    * yet the errors it raises must tell the user which version this build actually supports. {@code
    * standardIsTheLatestVersion} in the migration tests keeps the two from drifting.
    */
-  public static final int LATEST_VERSION = SchemaV9.VERSION;
+  public static final int LATEST_VERSION = SchemaV10.VERSION;
 
   private static final String SELECT_METADATA_TABLE =
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'";
@@ -81,7 +81,7 @@ public final class MigrationRunner {
     this.migrations = List.copyOf(sorted);
   }
 
-  /** The runner this application ships: schema v1 through v9, in order. */
+  /** The runner this application ships: schema v1 through v10, in order. */
   public static MigrationRunner standard() {
     return new MigrationRunner(
         List.of(
@@ -93,7 +93,8 @@ public final class MigrationRunner {
             new V6Migration(),
             new V7Migration(),
             new V8Migration(),
-            new V9Migration()));
+            new V9Migration(),
+            new V10Migration()));
   }
 
   /** The newest version this runner can produce. */

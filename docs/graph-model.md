@@ -11,8 +11,8 @@ layout at Tier 2/3 scale.
 ## CSR file format (plan 13.2)
 
 One file per direction (forward = producer→consumers, reverse =
-consumer→producers), written once at indexing time, memory-mapped read-only
-afterwards. All integers little-endian, fixed-width.
+consumer→producers), written once at indexing time and mapped read-only in
+bounded regions afterwards. All integers are little-endian and fixed-width.
 
 ```
 header (40 bytes)
@@ -31,10 +31,15 @@ targets array
   E x u32             node ids in [0, N). Ordering within a slice is not significant.
 ```
 
-Readers validate counts and exact body size before mapping, verify the checksum, then validate that
-offsets begin at zero, are monotone and end at `E`, and that every target is within `[0, N)`. A
-checksum-valid file with invalid structure is corrupt and is refused. Bit 0 records the direction
-for inspection and registry checks; it does not change the array representation.
+`CsrFile.describe` reads only the fixed header, uses checked arithmetic for the
+array and file lengths, and requires the exact file size. It neither maps nor
+checksums the body. Only after the descriptor is admitted under the open
+session's graph budget does `CsrFile.open` map the body in read-only regions of
+at most 256 MiB, verify the checksum, and validate that offsets begin at zero,
+are monotone and end at `E`, and that every target is within `[0, N)`. A
+checksum-valid file with invalid structure is corrupt and is refused. Bit 0
+records the direction for inspection and registry checks; it does not change
+the array representation.
 
 Node ids are dense indexes assigned at indexing time; the mapping from node
 id to domain identity (action, artifact) lives in the session SQLite
@@ -43,10 +48,52 @@ tables of schema v2, not the `strings` table, which holds only the raw layer's
 interned text. Degree of node
 `i` is `offsets[i+1] - offsets[i]` — degrees are never stored separately.
 
-Construction streams edges (two passes: count, then fill) so peak memory is
-the offsets array plus a bounded write buffer — never one object per edge.
-Corrupt or version-mismatched files are discarded and rebuilt from the
-journal (ADR-004); there is no in-place migration.
+Construction streams each SQL-ordered direction straight into its own
+generation-named file through fixed positional buffers — never one object or
+heap array per edge. The forward file completes before the reverse stream
+begins; both files are forced before their registry rows publish together. A
+failed pair never publishes one new direction by itself. Pair-dependent reads
+require matching generation tokens, graph source, build timestamp, node count,
+and edge count.
+A fresh import/build can create new indexes from newly imported graph rows.
+There is no user-facing in-place repair/reindex action, and merely opening a
+finished historical session does not run one.
+
+Legacy fixed-name CSR registry rows do not prove that their forward and reverse
+files came from one build. Where a writable v10 migration preserves them, a
+validated single direction remains available for descriptor, neighbour, and
+degree operations. Shortest path and other metrics or weights that require a
+forward/reverse pair report unavailable. Opening a historical session does not
+silently rebuild those files to invent the missing proof; its general database
+connection is not yet physically read-only because t2 remains unmerged.
+
+### Resource admission and index lifetime
+
+Every open session owns one `GraphResourceBudget`, defaulting to 1 GiB, and one
+access-ordered `GraphIndexCache`. The budget covers mapped index file bytes,
+retained rendering/model/metadata state, and charged analysis scratch. A
+refusal happens before the corresponding allocation or mapping and reports the
+request, the session limit, retained bytes, and retained purposes. The layout
+cache retains at most 128 MiB and 12 request keys; both caps are contained
+inside the 1 GiB allowance. The entry bound also covers tiny, empty, and
+unavailable renderings.
+
+The budget does not claim to cap every native byte in the process. Each open
+graph reader configures SQLite with a fixed 1 MiB page cache outside it and
+forces temporary b-trees to files. The aggregate admission covers the mapped
+CSR and graph-owned Java/mapping state named above.
+
+The index cache holds at most two mappings: normally one forward/reverse pair.
+Only idle entries are evicted. A traversal receives a scoped lease, and pair
+acquisition succeeds or fails atomically, so a mapping cannot close under work
+and a failed pair cannot leak one direction. The mapped arrays are read through
+their segments; opening no longer makes a graph-sized heap copy.
+
+Before action-index construction or use, assigned
+`declared_actions.node_index` values are streamed in order and must be the
+unique dense sequence `0..count-1`. Schema v10 enforces uniqueness for non-null
+values as well. Duplicate, negative, gapped, or sparse near-integer-limit data
+is refused before a node-indexed array is allocated.
 
 The temporal index (`temporal.idx`) is a sibling flat format — time-sorted
 span records for timeline queries — and will be specified here alongside
@@ -84,10 +131,11 @@ warned about.
 ### Traversals
 
 Forward and reverse BFS are depth-, node-, and edge-budgeted; bidirectional
-shortest path is also budgeted. Running out of either resource budget is
-reported as its own outcome and never as "there is no path" — plan 13.3 forbids
-a transitive closure, so a search has to be able to give up, and giving up is
-not an answer.
+shortest path is also budgeted. Their primitive scratch and retained result are
+admitted under the session graph budget too. Running out of either traversal or
+memory budget is reported as its own outcome and never as "there is no path" —
+plan 13.3 forbids a transitive closure, so a search has to be able to give up,
+and giving up is not an answer.
 
 ## What Phase 7 added (2026-08-22)
 
@@ -96,12 +144,11 @@ no schema change — two lookups and three layers on top.
 
 ### Two lookups over the same node index
 
-`GraphQueries.durationsByNodeIndex` weights nodes by time, from either the build
-event stream's action window or the execution log's spawn total, with the source
-travelling alongside because plan 13.4 requires it. `actionIdsByNodeIndex` maps
-a node back to the action that ran, where one did. Together they are the join
-Phase 6 deferred: `declared_actions.node_index` on one side, `actions.id` on the
-other.
+`GraphQueries.metadata` loads time, display identity, owner and action identity
+only for the bounded extracted node indices, with the source travelling
+alongside because plan 13.4 requires it. The arrays are aligned with that
+extraction and charged to the session budget; opening a graph does not preload
+graph-wide strings or timing arrays.
 
 Nodes with no executed action — every test's `TestRunner` in a `build`
 invocation — are absent from the map rather than mapped to zero.
@@ -138,8 +185,17 @@ graph, which would look like an answer.
 
 The default ceiling is plan 13.6's 50,000 nodes and 200,000 edges. Above it the
 view groups itself and offers to raise the limit, narrow the query, or export.
-The export is streamed straight from the CSR index and has no ceiling at all —
-which is what makes the drawing limit acceptable.
+The export is streamed straight from the CSR index and has no node/edge display
+ceiling. It still needs a mapped-index lease under the session graph budget, so
+an index that cannot be admitted is refused rather than bypassing the memory
+boundary.
+
+DOT export publishes with one staged replacement, requesting an atomic move and
+falling back to a replacing move where the filesystem does not support one.
+CSV nodes and edges both finish in sibling staging files before either final
+name is replaced, and a normal publication failure restores both preceding
+files. A process or machine crash between the two final renames can still leave
+a mismatched CSV pair; rerun the export before relying on that pair.
 
 ## What the graph-tab rework added (2026-08-23)
 

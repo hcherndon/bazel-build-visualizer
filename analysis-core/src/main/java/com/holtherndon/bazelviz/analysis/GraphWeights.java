@@ -116,6 +116,9 @@ public final class GraphWeights {
    */
   public static Result subgraphTransitiveCounts(
       List<Integer> nodes, List<GraphExtract.Edge> edges, boolean forwards, long workBudget) {
+    if (workBudget < 0) {
+      throw new IllegalArgumentException("negative graph-weight work budget " + workBudget);
+    }
     int size = nodes.size();
     long[] values = new long[size];
     Arrays.fill(values, UNKNOWN);
@@ -157,6 +160,7 @@ public final class GraphWeights {
     int[] queue = new int[size];
     long work = 0;
     boolean truncated = false;
+    nodeLoop:
     for (int start = 0; start < size; start++) {
       if (work >= workBudget) {
         truncated = true;
@@ -169,9 +173,17 @@ public final class GraphWeights {
       int tail = 1;
       long reached = 0;
       while (head < tail) {
+        if (work >= workBudget) {
+          truncated = true;
+          break nodeLoop;
+        }
         int node = queue[head++];
         work++;
         for (int e = offsets[node]; e < offsets[node + 1]; e++) {
+          if (work >= workBudget) {
+            truncated = true;
+            break nodeLoop;
+          }
           work++;
           int next = targets[e];
           if (!seen[next]) {
@@ -211,8 +223,7 @@ public final class GraphWeights {
    *     is a lower bound and says so
    */
   public static BudgetedCount globalTransitiveCount(CsrGraph graph, int node, long budget) {
-    long visited = new Bfs(graph).run(node, budget, Integer.MAX_VALUE);
-    boolean reached = visited >= budget && visited < graph.nodeCount();
-    return new BudgetedCount(Math.max(0, visited - 1), reached);
+    Bfs.RunResult traversal = new Bfs(graph).runWithStatus(node, budget, Integer.MAX_VALUE, null);
+    return new BudgetedCount(Math.max(0, traversal.visited() - 1), traversal.budgetReached());
   }
 }

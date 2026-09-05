@@ -305,8 +305,8 @@ final class ActionGraphImporterTest {
     GraphIndexBuilder indexes = new GraphIndexBuilder(connection, indexDirectory);
     GraphIndexBuilder.Result declared = indexes.build(EdgeDerivation.DECLARED).orElseThrow();
     assertThat(indexes.build(EdgeDerivation.OBSERVED)).isPresent();
-    assertThat(indexes.load(EdgeDerivation.DECLARED, "FORWARD")).isPresent();
-    assertThat(indexes.load(EdgeDerivation.OBSERVED, "FORWARD")).isPresent();
+    assertThat(indexes.descriptor(EdgeDerivation.DECLARED, "FORWARD")).isPresent();
+    assertThat(indexes.descriptor(EdgeDerivation.OBSERVED, "FORWARD")).isPresent();
 
     Path garbage = tempDir.resolve("replacement-garbage.proto");
     Files.write(garbage, new byte[] {(byte) 0xff, (byte) 0xff, (byte) 0xff});
@@ -319,8 +319,8 @@ final class ActionGraphImporterTest {
             scalar(
                 "SELECT count(*) FROM graph_indexes" + " WHERE kind IN ('DECLARED', 'OBSERVED')"))
         .isZero();
-    assertThat(indexes.load(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
-    assertThat(indexes.load(EdgeDerivation.OBSERVED, "FORWARD")).isEmpty();
+    assertThat(indexes.descriptor(EdgeDerivation.DECLARED, "FORWARD")).isEmpty();
+    assertThat(indexes.descriptor(EdgeDerivation.OBSERVED, "FORWARD")).isEmpty();
     // Files are harmless without a registry row and can be atomically
     // replaced by the next successful index build.
     assertThat(declared.forwardFile()).exists();

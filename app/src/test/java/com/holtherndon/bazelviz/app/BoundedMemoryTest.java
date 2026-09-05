@@ -6,6 +6,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -43,7 +44,6 @@ final class BoundedMemoryTest {
    */
   private static final List<String> MUST_BE_FLAT =
       List.of(
-          "com.holtherndon.bazelviz.graph.CsrGraph",
           "com.holtherndon.bazelviz.graph.CsrBuilder",
           "com.holtherndon.bazelviz.ui.timeline.TimelineLodIndex",
           "com.holtherndon.bazelviz.analysis.ConcurrencySweep$Spans",
@@ -133,19 +133,42 @@ final class BoundedMemoryTest {
   }
 
   @Test
-  @DisplayName("the graph index is two primitive arrays and nothing else")
+  @DisplayName("the graph index is flat on heap and retains only bounded mapping metadata")
   void theGraphIsNotObjectPerEdge() throws Exception {
     // Plan section 25's definition of done names this one specifically, and
-    // ADR-006 exists because of it. Two arrays: offsets and targets.
+    // ADR-006 exists because of it. The small/test form owns two primitive arrays; the production
+    // form reads the same logical arrays from bounded read-only mapping segments.
     Class<?> csr = Class.forName("com.holtherndon.bazelviz.graph.CsrGraph");
-    List<String> instanceFields = new ArrayList<>();
-    for (Field field : csr.getDeclaredFields()) {
-      if (!Modifier.isStatic(field.getModifiers())) {
-        instanceFields.add(field.getName() + ": " + field.getType().getSimpleName());
-      }
-    }
+    assertThat(instanceFields(csr)).containsExactly("storage: Storage");
 
-    assertThat(instanceFields).containsExactlyInAnyOrder("offsets: long[]", "targets: int[]");
+    Class<?> heapStorage = nestedClass(csr, "HeapStorage");
+    assertThat(instanceFields(heapStorage))
+        .containsExactlyInAnyOrder("offsets: long[]", "targets: int[]");
+
+    Class<?> mappedStorage = nestedClass(csr, "MappedStorage");
+    assertThat(instanceFields(mappedStorage))
+        .containsExactlyInAnyOrder(
+            "nodeCount: long",
+            "edgeCount: long",
+            "offsetsBytes: long",
+            "bodyBytes: long",
+            "segmentBytes: long",
+            "segments: MemorySegment[]",
+            "arena: Arena");
+  }
+
+  private static Class<?> nestedClass(Class<?> owner, String simpleName) {
+    return Arrays.stream(owner.getDeclaredClasses())
+        .filter(candidate -> candidate.getSimpleName().equals(simpleName))
+        .findFirst()
+        .orElseThrow();
+  }
+
+  private static List<String> instanceFields(Class<?> owner) {
+    return Arrays.stream(owner.getDeclaredFields())
+        .filter(field -> !Modifier.isStatic(field.getModifiers()))
+        .map(field -> field.getName() + ": " + field.getType().getSimpleName())
+        .toList();
   }
 
   @Test

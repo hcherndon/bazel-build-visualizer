@@ -1,23 +1,23 @@
 package com.holtherndon.bazelviz.storage.graph;
 
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
-import com.holtherndon.bazelviz.graph.CsrBuilder;
 import com.holtherndon.bazelviz.graph.CsrFile;
-import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.graph.EdgeStream;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Types;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.sql.Savepoint;
+import java.sql.Statement;
 import java.util.Collections;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.function.LongSupplier;
 
 /**
@@ -25,16 +25,14 @@ import java.util.function.LongSupplier;
  *
  * <h2>Never an object per node or per edge</h2>
  *
- * <p>Plan 13.2. {@link CsrBuilder} reads the edge stream twice — once to count degrees, once to
- * fill — and the stream here is a SQL query replayed, so at no point does the edge set exist in
- * Java. The two primitive arrays the builder produces are the whole of the memory cost, and they go
- * straight to a file.
+ * <p>Plan 13.2. Each ordered SQL result is streamed straight to a CSR file through fixed buffers;
+ * no graph-sized Java array or object-per-edge representation exists on this path.
  *
  * <h2>Both directions, from one edge set</h2>
  *
- * <p>The reverse index is {@link CsrBuilder#reverse}, not a second query with the columns swapped.
- * They must agree — plan 24 makes "forward and reverse indexes are consistent" an exit criterion —
- * and deriving one from the other makes disagreement impossible rather than merely unlikely.
+ * <p>Both ordered queries run in one stable SQLite transaction. Generation-unique files are fully
+ * forced first, then their registry rows publish in the same transaction; a failure cannot leave
+ * one new direction reachable through an old pair.
  */
 public final class GraphIndexBuilder {
 
@@ -52,6 +50,10 @@ public final class GraphIndexBuilder {
   private static final String NODE_COUNT =
       "SELECT count(*) FROM declared_actions WHERE node_index IS NOT NULL";
 
+  private static final String ORDERED_NODE_INDICES =
+      "SELECT node_index FROM declared_actions"
+          + " WHERE node_index IS NOT NULL ORDER BY node_index";
+
   /**
    * The label-graph node universe: every distinct label some configured target was analysed under,
    * in {@code label_id} order.
@@ -63,8 +65,8 @@ public final class GraphIndexBuilder {
    * to go stale. Labels are interned append-only, so a label's id never changes underneath a
    * session.
    */
-  private static final String LABEL_UNIVERSE =
-      "SELECT DISTINCT label_id FROM configured_target_nodes ORDER BY label_id";
+  private static final String LABEL_NODE_COUNT =
+      "SELECT count(*) FROM (SELECT DISTINCT label_id FROM configured_target_nodes)";
 
   /**
    * The label-graph edges, in dependency-to-depender order once mapped.
@@ -78,12 +80,32 @@ public final class GraphIndexBuilder {
    * <p>{@code DISTINCT} collapses the same dependency seen through several configurations or
    * attributes into one label-level edge, which is what makes this the <em>label</em> graph.
    */
-  private static final String LABEL_EDGES =
-      "SELECT DISTINCT n.label_id, e.to_label_id FROM configured_target_edges e"
+  private static final String LABEL_NODES_CTE =
+      "WITH label_nodes(label_id, node_index) AS ("
+          + " SELECT label_id, row_number() OVER (ORDER BY label_id) - 1"
+          + " FROM (SELECT DISTINCT label_id FROM configured_target_nodes)) ";
+
+  private static final String LABEL_EDGES_FORWARD =
+      LABEL_NODES_CTE
+          + "SELECT producer.node_index, consumer.node_index"
+          + " FROM configured_target_edges e"
           + " JOIN configured_target_nodes n ON n.id = e.from_node_id"
+          + " JOIN label_nodes consumer ON consumer.label_id = n.label_id"
+          + " JOIN label_nodes producer ON producer.label_id = e.to_label_id"
           + " WHERE n.label_id <> e.to_label_id"
-          + "   AND EXISTS (SELECT 1 FROM configured_target_nodes t"
-          + "               WHERE t.label_id = e.to_label_id)";
+          + " GROUP BY producer.node_index, consumer.node_index"
+          + " ORDER BY producer.node_index, consumer.node_index";
+
+  private static final String LABEL_EDGES_REVERSE =
+      LABEL_NODES_CTE
+          + "SELECT consumer.node_index, producer.node_index"
+          + " FROM configured_target_edges e"
+          + " JOIN configured_target_nodes n ON n.id = e.from_node_id"
+          + " JOIN label_nodes consumer ON consumer.label_id = n.label_id"
+          + " JOIN label_nodes producer ON producer.label_id = e.to_label_id"
+          + " WHERE n.label_id <> e.to_label_id"
+          + " GROUP BY consumer.node_index, producer.node_index"
+          + " ORDER BY consumer.node_index, producer.node_index";
 
   private static final String LABEL_EDGES_EXCLUDED =
       "SELECT count(*) FROM (SELECT DISTINCT n.label_id, e.to_label_id"
@@ -93,12 +115,21 @@ public final class GraphIndexBuilder {
           + "   AND NOT EXISTS (SELECT 1 FROM configured_target_nodes t"
           + "                   WHERE t.label_id = e.to_label_id))";
 
-  private static final String EDGES =
+  private static final String EDGES_FORWARD =
       "SELECT p.node_index, c.node_index FROM action_edges e"
           + " JOIN declared_actions p ON p.id = e.producer_id"
           + " JOIN declared_actions c ON c.id = e.consumer_id"
           + " WHERE e.derivation = ?"
-          + "   AND p.node_index IS NOT NULL AND c.node_index IS NOT NULL";
+          + "   AND p.node_index IS NOT NULL AND c.node_index IS NOT NULL"
+          + " ORDER BY p.node_index, c.node_index";
+
+  private static final String EDGES_REVERSE =
+      "SELECT c.node_index, p.node_index FROM action_edges e"
+          + " JOIN declared_actions p ON p.id = e.producer_id"
+          + " JOIN declared_actions c ON c.id = e.consumer_id"
+          + " WHERE e.derivation = ?"
+          + "   AND p.node_index IS NOT NULL AND c.node_index IS NOT NULL"
+          + " ORDER BY c.node_index, p.node_index";
 
   private static final String REGISTER =
       "INSERT INTO graph_indexes (kind, direction, file_name, format_version,"
@@ -163,11 +194,25 @@ public final class GraphIndexBuilder {
    *     action graph, which is not a failure
    */
   public Optional<Result> build(EdgeDerivation derivation) throws SQLException, IOException {
-    int nodeCount = Math.toIntExact(scalar(NODE_COUNT));
-    if (nodeCount == 0) {
-      return Optional.empty();
-    }
-    return Optional.of(buildAndRegister(derivation.name(), nodeCount, edgeStream(derivation), 0));
+    Optional<Result> built =
+        withFileBackedTempStore(
+            () ->
+                inStableTransaction(
+                    () -> {
+                      int nodeCount = validateDenseActionNodeIndices();
+                      if (nodeCount == 0) {
+                        return Optional.empty();
+                      }
+                      return Optional.of(
+                          buildAndRegister(
+                              derivation.name(),
+                              nodeCount,
+                              actionEdgeStream(derivation, false),
+                              actionEdgeStream(derivation, true),
+                              0));
+                    }));
+    built.ifPresent(result -> pruneSuperseded(derivation.name(), result));
+    return built;
   }
 
   /**
@@ -182,79 +227,136 @@ public final class GraphIndexBuilder {
    *     failure
    */
   public Optional<Result> buildConfiguredTargets() throws SQLException, IOException {
-    long[] universe = configuredLabelUniverse(connection);
-    if (universe.length == 0) {
-      return Optional.empty();
+    Optional<Result> built =
+        withFileBackedTempStore(
+            () ->
+                inStableTransaction(
+                    () -> {
+                      int nodeCount = Math.toIntExact(scalar(LABEL_NODE_COUNT));
+                      if (nodeCount == 0) {
+                        return Optional.empty();
+                      }
+                      long excluded = scalar(LABEL_EDGES_EXCLUDED);
+                      Result result =
+                          buildAndRegister(
+                              CONFIGURED_TARGETS_KIND,
+                              nodeCount,
+                              sqlEdgeStream(LABEL_EDGES_FORWARD),
+                              sqlEdgeStream(LABEL_EDGES_REVERSE),
+                              excluded);
+                      return Optional.of(result);
+                    }));
+    built.ifPresent(result -> pruneSuperseded(CONFIGURED_TARGETS_KIND, result));
+    return built;
+  }
+
+  /** Best-effort removal of now-unregistered generations after the pair transaction commits. */
+  private void pruneSuperseded(String kind, Result current) {
+    Path checkedDirectory;
+    try {
+      checkedDirectory = requireIndexDirectory(false);
+    } catch (IOException unsafeDirectory) {
+      return;
     }
-    long excluded = scalar(LABEL_EDGES_EXCLUDED);
-    Result built =
-        buildAndRegister(
-            CONFIGURED_TARGETS_KIND, universe.length, labelEdgeStream(universe), excluded);
-    return Optional.of(built);
+    if (!Files.isDirectory(checkedDirectory, LinkOption.NOFOLLOW_LINKS)) {
+      return;
+    }
+    String prefix = kind.toLowerCase(Locale.ROOT) + "-";
+    Path keptForward = current.forwardFile().toAbsolutePath().normalize();
+    Path keptReverse = current.reverseFile().toAbsolutePath().normalize();
+    try (var files = Files.newDirectoryStream(checkedDirectory, prefix + "*.csr")) {
+      for (Path file : files) {
+        Path normalized = file.toAbsolutePath().normalize();
+        if (!normalized.equals(keptForward)
+            && !normalized.equals(keptReverse)
+            && Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+          try {
+            Files.deleteIfExists(file);
+          } catch (IOException inUseOrUnremovable) {
+            // A live mapped lease can keep the superseded file open on some platforms. It is
+            // unregistered and therefore harmless; a later successful rebuild retries cleanup.
+          }
+        }
+      }
+    } catch (IOException unavailableDirectory) {
+      // Publication already committed. Cleanup must never make the valid new pair look failed.
+    }
   }
 
-  private Result buildAndRegister(String kind, int nodeCount, EdgeStream edges, long excluded)
-      throws SQLException, IOException {
-    Files.createDirectories(directory);
-
-    CsrGraph forward = CsrBuilder.build(nodeCount, edges);
-    CsrGraph reverse = CsrBuilder.reverse(forward);
-
-    Path forwardFile = directory.resolve(fileName(kind, "forward"));
-    Path reverseFile = directory.resolve(fileName(kind, "reverse"));
-    long forwardChecksum = CsrFile.write(forward, forwardFile);
-    long reverseChecksum = CsrFile.write(reverse, reverseFile, true);
-
-    register(kind, "FORWARD", forwardFile, forward, forwardChecksum);
-    register(kind, "REVERSE", reverseFile, reverse, reverseChecksum);
-
-    return new Result(nodeCount, forward.edgeCount(), forwardFile, reverseFile, excluded);
-  }
-
-  /**
-   * The sorted distinct label ids behind the label graph's node numbering.
-   *
-   * <p>Static and public within the package's contract because {@link GraphQueries} must translate
-   * the same way: a label's node index is its position in this array, found by binary search.
-   */
-  public static long[] configuredLabelUniverse(Connection connection) throws SQLException {
-    ArrayList<Long> ids = new ArrayList<>();
-    try (PreparedStatement statement = connection.prepareStatement(LABEL_UNIVERSE);
-        ResultSet rows = statement.executeQuery()) {
-      while (rows.next()) {
-        ids.add(rows.getLong(1));
+  /** Forces any SQLite sort/group temporary b-tree to disk for the duration of index building. */
+  private <T> T withFileBackedTempStore(TransactionWork<T> work) throws SQLException, IOException {
+    if (!connection.getAutoCommit()) {
+      throw new IOException(
+          "graph index construction requires an idle writer connection so its bounded"
+              + " file-backed temporary-store setting cannot alter a caller transaction");
+    }
+    int previous;
+    try (Statement statement = connection.createStatement();
+        ResultSet rows = statement.executeQuery("PRAGMA temp_store")) {
+      previous = rows.next() ? rows.getInt(1) : 0;
+    }
+    Throwable failure = null;
+    try (Statement statement = connection.createStatement()) {
+      statement.execute("PRAGMA temp_store=FILE");
+      return work.run();
+    } catch (SQLException | IOException | RuntimeException caught) {
+      failure = caught;
+      throw caught;
+    } finally {
+      try (Statement statement = connection.createStatement()) {
+        statement.execute("PRAGMA temp_store=" + previous);
+      } catch (SQLException restoreFailure) {
+        if (failure != null) {
+          failure.addSuppressed(restoreFailure);
+        } else {
+          throw restoreFailure;
+        }
       }
     }
-    long[] out = new long[ids.size()];
-    for (int i = 0; i < out.length; i++) {
-      out[i] = ids.get(i);
-    }
-    return out;
   }
 
-  /**
-   * The label edges as dense node indexes, replayable.
-   *
-   * <p>Emitted producer-to-consumer: the stored edge says "consumer names producer as an input", so
-   * the pair is flipped here once, and the forward index means the same thing for both graphs.
-   */
-  private EdgeStream labelEdgeStream(long[] universe) {
+  private Result buildAndRegister(
+      String kind, int nodeCount, EdgeStream forwardEdges, EdgeStream reverseEdges, long excluded)
+      throws SQLException, IOException {
+    requireIndexDirectory(true);
+    String generation = UUID.randomUUID().toString();
+    Path forwardFile = generationFile(kind, "forward", generation);
+    Path reverseFile = generationFile(kind, "reverse", generation);
+    try {
+      CsrFile.WriteResult forward =
+          CsrFile.writeOrdered(nodeCount, forwardEdges, forwardFile, false);
+      CsrFile.WriteResult reverse =
+          CsrFile.writeOrdered(nodeCount, reverseEdges, reverseFile, true);
+      if (forward.edgeCount() != reverse.edgeCount()) {
+        throw new IOException(
+            "forward and reverse graph streams disagree: "
+                + forward.edgeCount()
+                + " edges against "
+                + reverse.edgeCount());
+      }
+      registerPair(kind, nodeCount, forwardFile, forward, reverseFile, reverse);
+      return new Result(nodeCount, forward.edgeCount(), forwardFile, reverseFile, excluded);
+    } catch (SQLException | IOException | RuntimeException failure) {
+      deleteFailedWrite(forwardFile, failure);
+      deleteFailedWrite(reverseFile, failure);
+      throw failure;
+    }
+  }
+
+  private static void deleteFailedWrite(Path file, Throwable failure) {
+    try {
+      Files.deleteIfExists(file);
+    } catch (IOException cleanupFailure) {
+      failure.addSuppressed(cleanupFailure);
+    }
+  }
+
+  private EdgeStream sqlEdgeStream(String sql) {
     return visitor -> {
-      try (PreparedStatement statement = connection.prepareStatement(LABEL_EDGES);
+      try (PreparedStatement statement = connection.prepareStatement(sql);
           ResultSet rows = statement.executeQuery()) {
         while (rows.next()) {
-          int consumer = Arrays.binarySearch(universe, rows.getLong(1));
-          int producer = Arrays.binarySearch(universe, rows.getLong(2));
-          if (consumer < 0 || producer < 0) {
-            // Cannot happen while the query and the universe read
-            // the same tables; refusing is better than a wrong
-            // node id in a file that outlives this method.
-            throw new IllegalStateException(
-                "an edge names a label outside the"
-                    + " configured-target universe; the tables changed while the"
-                    + " index was being built");
-          }
-          visitor.edge(producer, consumer);
+          visitor.edge(rows.getInt(1), rows.getInt(2));
         }
       } catch (SQLException failure) {
         throw new UncheckedEdgeException(failure);
@@ -269,9 +371,10 @@ public final class GraphIndexBuilder {
    * two passes see the same rows because nothing writes between them. A materialised list would
    * satisfy it too, and would be the object-per-edge this design exists to avoid.
    */
-  private EdgeStream edgeStream(EdgeDerivation derivation) {
+  private EdgeStream actionEdgeStream(EdgeDerivation derivation, boolean reverse) {
     return visitor -> {
-      try (PreparedStatement statement = connection.prepareStatement(EDGES)) {
+      try (PreparedStatement statement =
+          connection.prepareStatement(reverse ? EDGES_REVERSE : EDGES_FORWARD)) {
         statement.setString(1, derivation.name());
         try (ResultSet rows = statement.executeQuery()) {
           while (rows.next()) {
@@ -284,31 +387,46 @@ public final class GraphIndexBuilder {
     };
   }
 
-  private void register(String kind, String direction, Path file, CsrGraph graph, long checksum)
-      throws SQLException {
+  private void registerPair(
+      String kind,
+      int nodeCount,
+      Path forwardFile,
+      CsrFile.WriteResult forward,
+      Path reverseFile,
+      CsrFile.WriteResult reverse)
+      throws SQLException, IOException {
     Long sourceId = sourceIdFor(kind);
+    if (sourceId == null) {
+      throw new IOException(
+          "graph index publication requires a successful registered source for " + kind);
+    }
     try (PreparedStatement statement = connection.prepareStatement(REGISTER)) {
-      statement.setString(1, kind);
-      statement.setString(2, direction);
-      statement.setString(3, file.getFileName().toString());
-      statement.setInt(4, CsrFile.FORMAT_VERSION);
-      statement.setLong(5, graph.nodeCount());
-      statement.setLong(6, graph.edgeCount());
-      statement.setString(7, Long.toHexString(checksum));
-      statement.setLong(8, clock.getAsLong());
-      if (sourceId == null) {
-        statement.setNull(9, Types.INTEGER);
-      } else {
+      long builtMicros = clock.getAsLong();
+      for (RegisteredWrite write :
+          new RegisteredWrite[] {
+            new RegisteredWrite("FORWARD", forwardFile, forward),
+            new RegisteredWrite("REVERSE", reverseFile, reverse)
+          }) {
+        statement.setString(1, kind);
+        statement.setString(2, write.direction());
+        statement.setString(3, write.file().getFileName().toString());
+        statement.setInt(4, CsrFile.FORMAT_VERSION);
+        statement.setLong(5, nodeCount);
+        statement.setLong(6, write.result().edgeCount());
+        statement.setString(7, Long.toHexString(write.result().checksum()));
+        statement.setLong(8, builtMicros);
         statement.setLong(9, sourceId);
+        statement.addBatch();
       }
-      statement.executeUpdate();
+      statement.executeBatch();
     }
   }
 
   private Long sourceIdFor(String indexKind) throws SQLException {
     String sourceKind = sourceKindFor(indexKind);
     try (PreparedStatement statement =
-        connection.prepareStatement("SELECT id FROM graph_sources WHERE kind = ?")) {
+        connection.prepareStatement(
+            "SELECT id FROM graph_sources WHERE kind = ? AND state = 'SUCCEEDED'")) {
       statement.setString(1, sourceKind);
       try (ResultSet rows = statement.executeQuery()) {
         return rows.next() ? rows.getLong(1) : null;
@@ -322,67 +440,303 @@ public final class GraphIndexBuilder {
         : DECLARED_ACTIONS_SOURCE_KIND;
   }
 
-  /**
-   * Loads a registered index, checking it against what the database says.
-   *
-   * <p>A file whose header disagrees with its row is refused rather than used. A stale index is
-   * worse than none: it answers, and its answers look like the others.
-   */
-  public Optional<CsrGraph> load(EdgeDerivation derivation, String direction)
+  /** Header-only descriptor for a registered action index. */
+  public Optional<CsrFile.Descriptor> descriptor(EdgeDerivation derivation, String direction)
       throws SQLException, IOException {
-    return load(derivation.name(), direction);
+    return descriptor(derivation.name(), direction);
   }
 
-  /** Loads the configured-target label graph's registered index. */
-  public Optional<CsrGraph> loadConfiguredTargets(String direction)
+  /** Header-only descriptor for a registered configured-target label index. */
+  public Optional<CsrFile.Descriptor> configuredTargetsDescriptor(String direction)
       throws SQLException, IOException {
-    return load(CONFIGURED_TARGETS_KIND, direction);
+    return descriptor(CONFIGURED_TARGETS_KIND, direction);
   }
 
-  private Optional<CsrGraph> load(String kind, String direction) throws SQLException, IOException {
+  private Optional<CsrFile.Descriptor> descriptor(String kind, String direction)
+      throws SQLException, IOException {
+    if (!direction.equals("FORWARD") && !direction.equals("REVERSE")) {
+      throw new IllegalArgumentException("unknown graph index direction " + direction);
+    }
+    RegisteredDescriptors registered = registeredDescriptors(kind);
+    RegisteredDirection wanted =
+        direction.equals("FORWARD") ? registered.forward() : registered.reverse();
+    if (wanted == null) {
+      return Optional.empty();
+    }
+    if (wanted.generation().isEmpty()) {
+      // Legacy stable-name indexes cannot support pair-dependent answers, but one direction is
+      // still an independently checksummed registered artifact.
+      return Optional.of(wanted.descriptor());
+    }
+    // A generation-named direction is usable only when the same registry snapshot proves its
+    // counterpart belongs to the same atomic publication.
+    if (registered.forward() == null || registered.reverse() == null) {
+      return Optional.empty();
+    }
+    return Optional.of(wanted.descriptor());
+  }
+
+  /** Reads both registry rows in one SQLite statement snapshot. */
+  private RegisteredDescriptors registeredDescriptors(String kind)
+      throws SQLException, IOException {
+    RegisteredDirection forward = null;
+    RegisteredDirection reverse = null;
     try (PreparedStatement statement =
         connection.prepareStatement(
-            "SELECT gi.file_name, gi.node_count, gi.edge_count, gi.checksum,"
-                + " gi.source_id, gs.kind AS source_kind, gs.state AS source_state"
+            "SELECT gi.direction, gi.file_name, gi.format_version, gi.node_count,"
+                + " gi.edge_count, gi.checksum, gi.source_id, gi.built_micros,"
+                + " gs.kind AS source_kind, gs.state AS source_state"
                 + " FROM graph_indexes gi"
                 + " LEFT JOIN graph_sources gs ON gs.id = gi.source_id"
-                + " WHERE gi.kind = ? AND gi.direction = ?")) {
+                + " WHERE gi.kind = ? AND gi.direction IN ('FORWARD', 'REVERSE')"
+                + " ORDER BY gi.direction")) {
       statement.setString(1, kind);
-      statement.setString(2, direction);
       try (ResultSet rows = statement.executeQuery()) {
-        if (!rows.next()) {
-          return Optional.empty();
+        while (rows.next()) {
+          String rowDirection = rows.getString("direction");
+          Optional<CsrFile.Descriptor> descriptor = registeredDescriptor(rows, kind, rowDirection);
+          if (descriptor.isEmpty()) {
+            return new RegisteredDescriptors(null, null);
+          }
+          long rawSource = rows.getLong("source_id");
+          Long source = rows.wasNull() ? null : rawSource;
+          long rawBuilt = rows.getLong("built_micros");
+          Long built = rows.wasNull() ? null : rawBuilt;
+          RegisteredDirection found =
+              new RegisteredDirection(
+                  descriptor.get(),
+                  generationOf(kind, rowDirection, rows.getString("file_name")),
+                  source,
+                  built);
+          if ("FORWARD".equals(rowDirection)) {
+            if (forward != null) {
+              throw new IOException("duplicate forward graph index registry row");
+            }
+            forward = found;
+          } else if ("REVERSE".equals(rowDirection)) {
+            if (reverse != null) {
+              throw new IOException("duplicate reverse graph index registry row");
+            }
+            reverse = found;
+          } else {
+            throw new IOException("registered graph index has unknown direction " + rowDirection);
+          }
         }
-        rows.getLong("source_id");
-        if (!rows.wasNull()
-            && (!sourceKindFor(kind).equals(rows.getString("source_kind"))
-                || !"SUCCEEDED".equals(rows.getString("source_state")))) {
-          return Optional.empty();
-        }
-        Path file = directory.resolve(rows.getString("file_name"));
-        if (!Files.exists(file)) {
-          return Optional.empty();
-        }
-        CsrFile.Header header = CsrFile.headerOf(file);
-        if (header.nodeCount() != rows.getLong("node_count")
-            || header.edgeCount() != rows.getLong("edge_count")
-            || !Long.toHexString(header.checksum()).equals(rows.getString("checksum"))
-            || header.reverseDirection() != "REVERSE".equals(direction)) {
-          throw new StaleIndexException(file);
-        }
-        return Optional.of(CsrFile.read(file));
       }
+    }
+    RegisteredDescriptors registered = new RegisteredDescriptors(forward, reverse);
+    validatePublishedPair(registered);
+    return registered;
+  }
+
+  /** Reads and validates both registry rows in one SQLite statement snapshot. */
+  Optional<DescriptorPair> descriptorPair(String kind) throws SQLException, IOException {
+    RegisteredDescriptors registered = registeredDescriptors(kind);
+    if (registered.forward() == null || registered.reverse() == null) {
+      return Optional.empty();
+    }
+    // Pre-v10 files used stable names and separately written registry rows, so there is no durable
+    // evidence that a forward/reverse pair belongs to one build. Single-direction features remain
+    // readable, but pair-dependent answers are unavailable rather than inferred or repaired.
+    if (registered.forward().generation().isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new DescriptorPair(registered.forward().descriptor(), registered.reverse().descriptor()));
+  }
+
+  private static void validatePublishedPair(RegisteredDescriptors registered) throws IOException {
+    RegisteredDirection forward = registered.forward();
+    RegisteredDirection reverse = registered.reverse();
+    if (forward == null || reverse == null) {
+      return;
+    }
+    if (forward.generation().isEmpty() != reverse.generation().isEmpty()) {
+      throw new IOException(
+          "forward and reverse graph registry rows are from different generations");
+    }
+    if (forward.generation().isPresent()
+        && (!Objects.equals(forward.generation(), reverse.generation())
+            || !Objects.equals(forward.sourceId(), reverse.sourceId())
+            || !Objects.equals(forward.builtMicros(), reverse.builtMicros()))) {
+      throw new IOException(
+          "forward and reverse graph registry rows are from different generations");
     }
   }
 
-  private static String fileName(String kind, String direction) {
-    return kind.toLowerCase(Locale.ROOT) + "-" + direction + ".csr";
+  private static Optional<String> generationOf(String kind, String direction, String fileName)
+      throws IOException {
+    String prefix = kind.toLowerCase(Locale.ROOT) + "-" + direction.toLowerCase(Locale.ROOT) + "-";
+    String legacy =
+        kind.toLowerCase(Locale.ROOT) + "-" + direction.toLowerCase(Locale.ROOT) + ".csr";
+    if (fileName.equals(legacy)) {
+      return Optional.empty();
+    }
+    if (!fileName.startsWith(prefix)
+        || !fileName.endsWith(".csr")
+        || fileName.length() <= prefix.length() + ".csr".length()) {
+      throw new IOException("registered graph index does not carry a valid generation name");
+    }
+    return Optional.of(fileName.substring(prefix.length(), fileName.length() - ".csr".length()));
+  }
+
+  private Optional<CsrFile.Descriptor> registeredDescriptor(
+      ResultSet rows, String kind, String direction) throws SQLException, IOException {
+    rows.getLong("source_id");
+    if (rows.wasNull()
+        || !sourceKindFor(kind).equals(rows.getString("source_kind"))
+        || !"SUCCEEDED".equals(rows.getString("source_state"))) {
+      return Optional.empty();
+    }
+    Path file = containedFile(rows.getString("file_name"));
+    if (file == null) {
+      return Optional.empty();
+    }
+    CsrFile.Descriptor descriptor = CsrFile.describe(file);
+    CsrFile.Header header = descriptor.header();
+    if (header.formatVersion() != rows.getInt("format_version")
+        || header.nodeCount() != rows.getLong("node_count")
+        || header.edgeCount() != rows.getLong("edge_count")
+        || !Long.toHexString(header.checksum()).equals(rows.getString("checksum"))
+        || header.reverseDirection() != "REVERSE".equals(direction)) {
+      throw new StaleIndexException(file);
+    }
+    return Optional.of(descriptor);
+  }
+
+  private Path containedFile(String registeredName) throws IOException {
+    Path name;
+    try {
+      name = Path.of(registeredName);
+    } catch (RuntimeException malformed) {
+      throw new IOException("registered graph index has an invalid file name", malformed);
+    }
+    if (name.isAbsolute()
+        || name.getNameCount() != 1
+        || registeredName.equals(".")
+        || registeredName.equals("..")) {
+      throw new IOException(
+          "registered graph index file must be one direct child name, not " + registeredName);
+    }
+    Path normalizedDirectory = requireIndexDirectory(false);
+    Path candidate = normalizedDirectory.resolve(name).normalize();
+    if (!candidate.getParent().equals(normalizedDirectory) || Files.isSymbolicLink(candidate)) {
+      throw new IOException(
+          "registered graph index escapes its index directory: " + registeredName);
+    }
+    if (!Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+      return null;
+    }
+    return candidate;
+  }
+
+  private Path generationFile(String kind, String direction, String generation) throws IOException {
+    Path file =
+        requireIndexDirectory(false)
+            .resolve(
+                kind.toLowerCase(Locale.ROOT)
+                    + "-"
+                    + direction.toLowerCase(Locale.ROOT)
+                    + "-"
+                    + generation
+                    + ".csr");
+    if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+      throw new IOException("new graph index generation already exists: " + file.getFileName());
+    }
+    return file;
+  }
+
+  private Path requireIndexDirectory(boolean create) throws IOException {
+    Path normalized = directory.toAbsolutePath().normalize();
+    if (create && !Files.exists(normalized, LinkOption.NOFOLLOW_LINKS)) {
+      Files.createDirectories(normalized);
+    }
+    if (Files.exists(normalized, LinkOption.NOFOLLOW_LINKS)
+        && (Files.isSymbolicLink(normalized)
+            || !Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS))) {
+      throw new IOException("graph index directory must be a real directory, not a symlink");
+    }
+    return normalized;
+  }
+
+  private int validateDenseActionNodeIndices() throws SQLException, IOException {
+    long expected = 0;
+    try (PreparedStatement statement = connection.prepareStatement(ORDERED_NODE_INDICES);
+        ResultSet rows = statement.executeQuery()) {
+      while (rows.next()) {
+        long actual = rows.getLong(1);
+        if (actual != expected) {
+          throw new IOException(
+              "declared action node indices must be unique and dense 0..count-1; expected "
+                  + expected
+                  + " and read "
+                  + actual);
+        }
+        expected++;
+        if (expected > Integer.MAX_VALUE - 1L) {
+          throw new IOException("declared action node count exceeds the dense int index format");
+        }
+      }
+    }
+    long counted = scalar(NODE_COUNT);
+    if (counted != expected) {
+      throw new IOException(
+          "declared action node population changed while it was validated: "
+              + expected
+              + " ordered rows against "
+              + counted);
+    }
+    return (int) expected;
   }
 
   private long scalar(String sql) throws SQLException {
     try (PreparedStatement statement = connection.prepareStatement(sql);
         ResultSet rows = statement.executeQuery()) {
       return rows.next() ? rows.getLong(1) : 0;
+    }
+  }
+
+  private <T> T inStableTransaction(TransactionWork<T> work) throws SQLException, IOException {
+    boolean previousAutoCommit = connection.getAutoCommit();
+    Savepoint savepoint = null;
+    Throwable failure = null;
+    try {
+      if (previousAutoCommit) {
+        connection.setAutoCommit(false);
+      } else {
+        savepoint = connection.setSavepoint();
+      }
+      T result = work.run();
+      if (previousAutoCommit) {
+        connection.commit();
+      } else {
+        connection.releaseSavepoint(savepoint);
+      }
+      return result;
+    } catch (SQLException | IOException | RuntimeException caught) {
+      failure = caught;
+      try {
+        if (previousAutoCommit) {
+          connection.rollback();
+        } else if (savepoint != null) {
+          connection.rollback(savepoint);
+        }
+      } catch (SQLException rollbackFailure) {
+        caught.addSuppressed(rollbackFailure);
+      }
+      throw caught;
+    } finally {
+      if (previousAutoCommit) {
+        try {
+          connection.setAutoCommit(true);
+        } catch (SQLException restoreFailure) {
+          if (failure != null) {
+            failure.addSuppressed(restoreFailure);
+          } else {
+            throw restoreFailure;
+          }
+        }
+      }
     }
   }
 
@@ -397,6 +751,24 @@ public final class GraphIndexBuilder {
    */
   public record Result(
       int nodeCount, long edgeCount, Path forwardFile, Path reverseFile, long excludedEdges) {}
+
+  /** Matching descriptors read from one registry snapshot. */
+  record DescriptorPair(CsrFile.Descriptor forward, CsrFile.Descriptor reverse) {}
+
+  private record RegisteredDescriptors(RegisteredDirection forward, RegisteredDirection reverse) {}
+
+  private record RegisteredDirection(
+      CsrFile.Descriptor descriptor,
+      Optional<String> generation,
+      Long sourceId,
+      Long builtMicros) {}
+
+  private record RegisteredWrite(String direction, Path file, CsrFile.WriteResult result) {}
+
+  @FunctionalInterface
+  private interface TransactionWork<T> {
+    T run() throws SQLException, IOException;
+  }
 
   /** The file on disk is not the index the database registered. */
   public static final class StaleIndexException extends IOException {

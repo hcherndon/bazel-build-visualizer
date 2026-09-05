@@ -67,24 +67,23 @@ public final class CsrBuilder {
    * order), regardless of the input's per-node ordering.
    */
   public static CsrGraph reverse(CsrGraph graph) {
-    long[] offsets = graph.rawOffsets();
-    int[] targets = graph.rawTargets();
-    int nodeCount = offsets.length - 1;
+    int nodeCount = Math.toIntExact(graph.nodeCount());
 
     long[] revOffsets = new long[nodeCount + 1];
-    for (int t : targets) {
+    for (long edge = 0; edge < graph.edgeCount(); edge++) {
+      int t = graph.neighborAt(edge);
       revOffsets[t + 1]++;
     }
     for (int i = 0; i < nodeCount; i++) {
       revOffsets[i + 1] += revOffsets[i];
     }
 
-    int[] revTargets = new int[targets.length];
+    int[] revTargets = new int[Math.toIntExact(graph.edgeCount())];
     int[] filled = new int[nodeCount];
     for (int u = 0; u < nodeCount; u++) {
-      long end = offsets[u + 1];
-      for (long e = offsets[u]; e < end; e++) {
-        int t = targets[(int) e];
+      long end = graph.neighborsEnd(u);
+      for (long e = graph.neighborsBegin(u); e < end; e++) {
+        int t = graph.neighborAt(e);
         revTargets[(int) (revOffsets[t] + filled[t])] = u;
         filled[t]++;
       }

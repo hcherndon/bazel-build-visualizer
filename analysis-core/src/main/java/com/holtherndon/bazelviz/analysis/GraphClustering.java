@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 /**
  * The far-zoom view: one box per package, target or mnemonic.
@@ -101,6 +102,14 @@ public final class GraphClustering {
    */
   public static Result cluster(
       CsrGraph forward, String[] keyByNode, By by, int maxClusters, AtomicBoolean cancelled) {
+    return cluster(forward, keyByNode, by, maxClusters, cancelled::get);
+  }
+
+  static Result cluster(
+      CsrGraph forward, String[] keyByNode, By by, int maxClusters, BooleanSupplier cancelled) {
+    if (maxClusters < 1) {
+      throw new IllegalArgumentException("cluster limit must be positive");
+    }
     int nodeCount = Math.toIntExact(forward.nodeCount());
     if (keyByNode.length < nodeCount) {
       throw new IllegalArgumentException(
@@ -112,14 +121,24 @@ public final class GraphClustering {
     Map<String, Integer> ordinals = new TreeMap<>();
     boolean anyUnknown = false;
     for (int node = 0; node < nodeCount; node++) {
-      if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+      if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.getAsBoolean()) {
         return Result.cancelled(by, maxClusters);
       }
       String key = keyByNode[node];
       if (key == null || key.isBlank()) {
-        anyUnknown = true;
-      } else {
-        ordinals.putIfAbsent(key, 0);
+        if (!anyUnknown) {
+          anyUnknown = true;
+          if ((long) ordinals.size() + 1L > maxClusters) {
+            return Result.overLimit(forward, by, maxClusters);
+          }
+        }
+      } else if (!ordinals.containsKey(key)) {
+        // Stop at the first proven excess. Keeping every unique imported string merely to count
+        // how far above the drawing limit it is would make the refusal itself unbounded.
+        if ((long) ordinals.size() + 1L + (anyUnknown ? 1L : 0L) > maxClusters) {
+          return Result.overLimit(forward, by, maxClusters);
+        }
+        ordinals.put(key, 0);
       }
     }
     int next = 0;
@@ -132,18 +151,6 @@ public final class GraphClustering {
     int unknownOrdinal = anyUnknown ? next : -1;
 
     int clusterCount = next + (anyUnknown ? 1 : 0);
-    if (clusterCount > maxClusters) {
-      return new Result(
-          by,
-          List.of(),
-          List.of(),
-          forward.nodeCount(),
-          forward.edgeCount(),
-          clusterCount,
-          true,
-          maxClusters,
-          false);
-    }
     if (clusterCount == 0) {
       return new Result(
           by,
@@ -169,23 +176,26 @@ public final class GraphClustering {
     long[] internal = new long[clusterCount];
     Map<Long, Long> between = new HashMap<>();
     for (int node = 0; node < nodeCount; node++) {
-      if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.get()) {
+      if ((node & (CANCEL_CHECK_INTERVAL - 1)) == 0 && cancelled.getAsBoolean()) {
         return Result.cancelled(by, maxClusters);
       }
       int from = clusterOf[node];
-      forward.forEachNeighbor(
-          node,
-          to -> {
-            int target = clusterOf[to];
-            if (target == from) {
-              internal[from]++;
-            } else {
-              // Packed rather than a record key: an edge map over a
-              // five-million-edge graph is the one place in this class
-              // where the allocation would show.
-              between.merge(((long) from << 32) | (target & 0xffffffffL), 1L, Long::sum);
-            }
-          });
+      long begin = forward.neighborsBegin(node);
+      long end = forward.neighborsEnd(node);
+      for (long edge = begin; edge < end; edge++) {
+        if ((edge & (CANCEL_CHECK_INTERVAL - 1L)) == 0L && cancelled.getAsBoolean()) {
+          return Result.cancelled(by, maxClusters);
+        }
+        int target = clusterOf[forward.neighborAt(edge)];
+        if (target == from) {
+          internal[from]++;
+        } else {
+          // Packed rather than a record key: an edge map over a
+          // five-million-edge graph is the one place in this class
+          // where the allocation would show.
+          between.merge(((long) from << 32) | (target & 0xffffffffL), 1L, Long::sum);
+        }
+      }
     }
 
     List<Cluster> clusters = new ArrayList<>(clusterCount);
@@ -250,7 +260,8 @@ public final class GraphClustering {
   /**
    * A whole graph, grouped.
    *
-   * @param clusterCount how many clusters the grouping produced, whether or not they fitted
+   * @param clusterCount how many clusters the grouping produced, or {@code maxClusters + 1} as a
+   *     truthful lower bound when the bounded preflight proved there were too many
    * @param hitLimit true when there were more clusters than the limit, in which case nothing is
    *     returned rather than some of it
    * @param cancelled true when the grouping stopped early, in which case it grouped nothing at all
@@ -273,6 +284,19 @@ public final class GraphClustering {
 
     static Result cancelled(By by, int maxClusters) {
       return new Result(by, List.of(), List.of(), 0, 0, 0, false, maxClusters, true);
+    }
+
+    static Result overLimit(CsrGraph graph, By by, int maxClusters) {
+      return new Result(
+          by,
+          List.of(),
+          List.of(),
+          graph.nodeCount(),
+          graph.edgeCount(),
+          maxClusters + 1,
+          true,
+          maxClusters,
+          false);
     }
 
     /**
@@ -317,9 +341,7 @@ public final class GraphClustering {
             + noun
             + "s by "
             + by.displayName().toLowerCase()
-            + " gives "
-            + clusterCount
-            + " groups, more than the "
+            + " gives more than the "
             + maxClusters
             + " this view draws. Nothing is hidden — group by something coarser,"
             + " narrow the filter, or raise the limit.";

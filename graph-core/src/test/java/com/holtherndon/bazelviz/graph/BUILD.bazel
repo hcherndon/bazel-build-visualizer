@@ -1,12 +1,26 @@
 load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
 load("@rules_java//java:defs.bzl", "java_library")
-load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "NATIVE_ACCESS_FLAG", "TEST_JVM_FLAGS")
 
 java_library(
     name = "test-lib",
     testonly = True,
     srcs = glob(["*.java"]),
     deps = JUNIT_DEPS + ["//graph-core/src/main/java/com/holtherndon/bazelviz/graph"],
+)
+
+java_junit5_test(
+    name = "GraphIndexCacheTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.graph.GraphIndexCacheTest",
+)
+
+java_junit5_test(
+    name = "GraphResourceBudgetTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.graph.GraphResourceBudgetTest",
 )
 
 java_junit5_test(
@@ -31,6 +45,13 @@ java_junit5_test(
 )
 
 java_junit5_test(
+    name = "CsrStreamingLowHeapTest",
+    jvm_flags = [NATIVE_ACCESS_FLAG, "-Xmx64m"],
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.graph.CsrStreamingLowHeapTest",
+)
+
+java_junit5_test(
     name = "CsrGraphTest",
     jvm_flags = TEST_JVM_FLAGS,
     runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
@@ -50,7 +71,10 @@ test_suite(
         ":BfsTest",
         ":CsrBuilderTest",
         ":CsrFileTest",
+        ":CsrStreamingLowHeapTest",
         ":CsrGraphTest",
+        ":GraphIndexCacheTest",
+        ":GraphResourceBudgetTest",
         ":ShortestPathTest",
     ],
     visibility = ["//visibility:public"],

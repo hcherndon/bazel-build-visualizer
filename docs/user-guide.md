@@ -382,8 +382,9 @@ answer your question. The schema tree lists the session's tables, views, and
 columns; double-click a table to start a query. Press Ctrl-Enter (Command-Enter
 on macOS) or **Run**. **Format** changes only the editor text.
 
-The session database is opened read-only. The editor accepts one `SELECT`,
-`WITH`, or `VALUES` statement, read-only introspection `PRAGMA`s, and
+Each Query tab uses a physical SQLite read-only connection plus
+`PRAGMA query_only`. The editor accepts one `SELECT`, `WITH`, or `VALUES`
+statement, read-only introspection `PRAGMA`s, and
 `EXPLAIN` of those statements. Its one non-read form is
 `CREATE TEMP VIEW <name> AS <read-only query>`: that view exists only on the
 current tab's connection and never changes the session file. Other writes,
@@ -392,7 +393,9 @@ multiple statements, attachments, and unsafe pragmas are refused.
 Each tab owns its connection and can run alongside the others; at most 16 tabs
 may be open. Saved queries and saved views are `.sql` files below the
 application settings directory. Saved views are replayed onto every tab and a
-broken definition is reported and skipped.
+broken definition is reported and skipped. Their process-wide lock serializes
+app windows, but saved Query-library `.sql` and `index.json` updates are not yet
+crash-atomic and a multi-file operation is not transactional.
 
 Results are paged from SQLite rather than loaded at once. The default visible
 row cap is 1,000,000 and the maximum selectable cap is 20,000,000. Reaching a
@@ -402,6 +405,10 @@ deadline plus an immediate **Cancel** action. A result's order comes from its
 SQL, so add `ORDER BY`; the grid does not sort only the pages already fetched.
 `NULL` and BLOB values are labeled explicitly.
 
+The current row cap and paging do not yet bound every individual cell, retained
+result, spool, or SQL-text path. Avoid running queries over known oversized
+values from untrusted sessions until the blocked t6 hardening batch lands.
+
 On a live capture the displayed exact count is a snapshot and therefore only a
 lower bound on the eventual rows, but 0.1.0 does not label it as such. Re-run
 the query after capture finishes when completeness matters.
@@ -410,13 +417,29 @@ the query after capture finishes when completeness matters.
 
 The dependency graph, derived from which action produced the file another action
 consumed — two cards, one graph. **Tree** browses dependencies and reverse
-dependencies one level at a time and finds paths between nodes; it works at any
-graph size. **Graph** draws bounded pieces of it on a canvas.
+dependencies one level at a time and finds paths between nodes. **Graph** draws
+bounded pieces of it on a canvas. Both use the open session's 1 GiB graph
+resource budget; a mapping, traversal, model, or layout that cannot be admitted
+is reported as unavailable rather than attempted without a bound.
 
 A graph too large to draw in detail **groups itself** by package, target or
 mnemonic rather than showing you a blank canvas or a hairball. The exact totals
 are always on screen, and you can raise the limit, narrow the query, or export
-the whole thing. Nothing is silently sampled.
+the full index when its mapping can be admitted. Nothing is silently sampled;
+an aggregate memory refusal is shown with its accounting.
+
+Graph DOT export publishes through one staged replacement. It requests an
+atomic move and falls back to a replacing move when the filesystem does not
+support one. Graph CSV nodes and edges both finish in staging before
+publication, and a normal failure restores both preceding files. A process or
+machine crash between the two final renames can leave a mismatched CSV pair;
+rerun that export before relying on it.
+
+The shared page toolbar holds Graph's source selector and root find, open, and
+browse actions. Scope, depth, node/edge budgets, grouping, layout, encoding,
+fit, reset, and export remain beside the canvas because they change the current
+drawing. The source selector names the selected source; toolbar metadata names
+its state and node count.
 
 The Graph card's **weight selector** decides what node size, edge thickness and
 colour mean: duration, immediate or transitive dependency counts, output size,
@@ -424,6 +447,12 @@ or inputs. Transitive counts are exact for what is drawn; the whole-graph count
 for a selected node is budgeted, and shows "≥N (budget reached)" when the
 search gave up rather than a number pretending to be a total. A node with no
 recorded value is grey at base size — unknown is never shown as zero.
+
+New forward/reverse indexes carry a shared generation identity. A migrated
+legacy fixed-name index may still support one-direction neighbour and degree
+reads, but path and neighbourhood analysis that needs both directions remains
+unavailable until a fresh import/build creates a generation-matched pair;
+opening a session never repairs it in place.
 
 ### Findings
 
@@ -453,6 +482,10 @@ the same finding at 99%, and the banner is what tells them apart.
 - **Events** — the raw event stream, with the original bytes of any event.
 - **Console** — one pane for the running build: the capture's phase, counters and
   stop buttons across the top, and what Bazel printed below them.
+
+The late bounded inspection work for decoded Events text, ANSI Errors detail,
+and Query results is not present in this source candidate. Treat imported
+sessions as trusted and avoid selecting known oversized payloads until it lands.
 
 ### Browse Repository and Terminal
 
@@ -591,6 +624,13 @@ Stated so you do not go looking:
   rather than growing without bound.
 - **The timeline does not draw the critical path.** Use Critical Path to
   analyse both path definitions, then open the dependency chain in Graph.
+- **Three input/inspection hardening batches remain unmerged.** Archive central
+  directory preflight and bounded catalog recovery; bounded execution-log,
+  trace-profile, `aquery`, and `cquery` ingestion; and bounded Query, Events,
+  and Errors inspection remain release blockers. Manual post-hoc auxiliary-file
+  attachment is not implemented.
+- **Saved Query-library updates are serialized, not crash-atomic.** Keep a copy
+  of important saved SQL until atomic multi-file replacement lands.
 
 ---
 

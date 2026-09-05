@@ -8,6 +8,15 @@ Companion to `docs/bep-content.md` (the event stream) and
 governs all three: where two sources describe the same thing, both are kept
 under names that say whose they are (ADR-009).
 
+**Current implementation boundary.** Managed capture runs and imports these
+queries after the build. Their current source, redirected-output, expanded
+message, record, fan-out, and work limits are not the full bounded contract the
+requirements below call for. The retained t3 implementation failed its last
+merged integration on a writer-ordering condition that the coordinator now
+avoids; it remains unmerged pending rebase, review, and the remaining `FAILED`
+graph-source record fix. Treat query protobufs as trusted input. There is no
+manual post-hoc attachment workflow.
+
 The probe workspace is the Phase 4 one — four genrules, one slow and one large,
 plus a passing and a failing `simple_test` — queried with
 `aquery --output=proto '//pkg:all'` and `cquery --output=proto '//pkg:all'`.

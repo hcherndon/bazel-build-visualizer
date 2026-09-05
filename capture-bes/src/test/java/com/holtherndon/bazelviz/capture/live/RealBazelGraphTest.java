@@ -150,26 +150,30 @@ class RealBazelGraphTest {
       assertThat(scalar(c, "SELECT count(*) FROM action_edges" + " WHERE derivation = 'DECLARED'"))
           .isPositive();
       assertThat(scalar(c, "SELECT count(*) FROM graph_indexes" + " WHERE kind = 'DECLARED'"))
+          .describedAs("capture warnings: %s", result.warnings())
           .isEqualTo(2);
       // The configured-target label graph got its index too — the graph
       // closest to `bazel query deps(//foo)`, and a dead end until now.
       assertThat(
               scalar(
                   c, "SELECT count(*) FROM graph_indexes" + " WHERE kind = 'CONFIGURED_TARGETS'"))
+          .describedAs("capture warnings: %s", result.warnings())
           .isEqualTo(2);
     }
 
     // And the indexes a reopened session loads really answer: the exact
     // path the graph view takes, from label search to bounded traversal.
-    try (SessionDatabase database = open(result)) {
-      var queries =
-          new GraphQueries(
-              database.newReadConnection(),
-              ManagedSessionLayout.at(result.sessionRoot()).indexesDirectory());
-      var forward = queries.forwardIndex(EdgeDerivation.DECLARED);
-      assertThat(forward).describedAs("the forward CSR index is loadable").isPresent();
-      assertThat(forward.orElseThrow().nodeCount()).isPositive();
-      assertThat(queries.reverseIndex(EdgeDerivation.DECLARED)).isPresent();
+    try (SessionDatabase database = open(result);
+        GraphQueries queries =
+            new GraphQueries(
+                database.newGraphReadConnection(),
+                ManagedSessionLayout.at(result.sessionRoot()).indexesDirectory())) {
+      var forwardNodes =
+          queries.withIndex(EdgeDerivation.DECLARED, true, graph -> graph.nodeCount());
+      assertThat(forwardNodes).describedAs("the forward CSR index is loadable").isPresent();
+      assertThat(forwardNodes.orElseThrow()).isPositive();
+      assertThat(queries.withIndex(EdgeDerivation.DECLARED, false, graph -> graph.nodeCount()))
+          .isPresent();
 
       var found = queries.search("%:t1%", 1);
       assertThat(found).describedAs("a target label seeds a graph node").isNotEmpty();
@@ -177,18 +181,22 @@ class RealBazelGraphTest {
       // does this need" with at least t0.
       var producers =
           queries.neighbours(EdgeDerivation.DECLARED, found.getFirst().nodeIndex(), false, 10);
-      assertThat(producers).describedAs("the fixture chain has a producer for t1").isNotEmpty();
+      assertThat(producers).describedAs("the reverse CSR index is loadable").isPresent();
+      assertThat(producers.orElseThrow())
+          .describedAs("the fixture chain has a producer for t1")
+          .isNotEmpty();
 
       // The label graph answers the same questions over labels: a label
       // seeds a node, and t1's rule inputs include t0.
       var labelKind = GraphKind.CONFIGURED_TARGETS;
-      assertThat(queries.forwardIndex(labelKind))
+      assertThat(queries.withIndex(labelKind, true, graph -> graph.nodeCount()))
           .describedAs("the configured-target label index is loadable")
           .isPresent();
       var t1 = queries.search(labelKind, "%:t1", 1);
       assertThat(t1).describedAs("a label seeds a label-graph node").isNotEmpty();
       var labelProducers = queries.neighbours(labelKind, t1.getFirst().nodeIndex(), false, 10);
-      assertThat(labelProducers)
+      assertThat(labelProducers).describedAs("the reverse label index is loadable").isPresent();
+      assertThat(labelProducers.orElseThrow())
           .describedAs("t1 names t0 as a rule input")
           .anySatisfy(node -> assertThat(node.label().orElse("")).endsWith(":t0"));
     }
