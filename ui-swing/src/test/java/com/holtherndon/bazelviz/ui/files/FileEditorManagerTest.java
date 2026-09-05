@@ -3,6 +3,9 @@ package com.holtherndon.bazelviz.ui.files;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -15,8 +18,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.swing.Action;
 import javax.swing.JDialog;
 import javax.swing.JFrame;
+import javax.swing.JRootPane;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,6 +30,32 @@ import org.junit.jupiter.api.io.TempDir;
 
 /** Window semantics for the modeless file viewer. */
 final class FileEditorManagerTest {
+
+  @Test
+  @DisplayName("the native close shortcut invokes only its editor close request")
+  void nativeCloseShortcutUsesTheProvidedPlatformModifier() throws Exception {
+    AtomicInteger closeRequests = new AtomicInteger();
+    JRootPane root = onEdt(JRootPane::new);
+
+    onEdt(
+        () -> {
+          FileEditorManager.installCloseShortcut(
+              root, InputEvent.META_DOWN_MASK, closeRequests::incrementAndGet);
+          KeyStroke commandW = KeyStroke.getKeyStroke(KeyEvent.VK_W, InputEvent.META_DOWN_MASK);
+          Object binding = root.getInputMap(JRootPane.WHEN_IN_FOCUSED_WINDOW).get(commandW);
+          Action action = root.getActionMap().get(binding);
+          assertThat(action).isNotNull();
+          assertThat(
+                  root.getInputMap(JRootPane.WHEN_IN_FOCUSED_WINDOW)
+                      .get(KeyStroke.getKeyStroke(KeyEvent.VK_W, InputEvent.CTRL_DOWN_MASK)))
+              .isNull();
+          action.actionPerformed(
+              new ActionEvent(root, ActionEvent.ACTION_PERFORMED, "close-file-editor"));
+          return null;
+        });
+
+    assertThat(closeRequests).hasValue(1);
+  }
 
   @Test
   @DisplayName("file viewers are normal windows rather than owner-bound floating dialogs")

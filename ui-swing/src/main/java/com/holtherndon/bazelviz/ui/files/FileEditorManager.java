@@ -11,9 +11,13 @@ import com.holtherndon.bazelviz.ui.theme.WrappingLabel;
 import java.awt.BorderLayout;
 import java.awt.Desktop;
 import java.awt.Dimension;
+import java.awt.HeadlessException;
 import java.awt.Toolkit;
 import java.awt.Window;
 import java.awt.datatransfer.StringSelection;
+import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.IOException;
@@ -28,17 +32,23 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JComponent;
 import javax.swing.JFrame;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JRootPane;
 import javax.swing.JTextArea;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.WindowConstants;
 
 /** Owns modeless execution-file windows and their blocking-I/O workers. */
 public final class FileEditorManager implements AutoCloseable {
+
+  private static final String CLOSE_EDITOR_ACTION = "close-file-editor";
 
   private final Window owner;
   private final LocalExecutionFileSystem compatibilityLocalFiles =
@@ -403,15 +413,23 @@ public final class FileEditorManager implements AutoCloseable {
         new WindowAdapter() {
           @Override
           public void windowClosing(WindowEvent event) {
-            if (panel.isDirty() && !confirmDiscard(window)) {
-              return;
-            }
-            windows.remove(path);
-            panel.close();
-            window.dispose();
+            closeEditor(path, opened);
           }
         });
+    installCloseShortcut(window.getRootPane(), menuShortcutMask(), () -> closeEditor(path, opened));
     window.setVisible(true);
+  }
+
+  private void closeEditor(ExecutionPath path, OpenWindow opened) {
+    if (windows.get(path) != opened) {
+      return;
+    }
+    if (opened.panel().isDirty() && !confirmDiscard(opened.window())) {
+      return;
+    }
+    windows.remove(path);
+    opened.panel().close();
+    opened.window().dispose();
   }
 
   private boolean confirmDiscard(Window window) {
@@ -477,6 +495,7 @@ public final class FileEditorManager implements AutoCloseable {
     text.setBorder(BorderFactory.createEmptyBorder(16, 18, 12, 18));
     JButton close = new JButton("Close");
     close.addActionListener(event -> window.dispose());
+    installCloseShortcut(window.getRootPane(), menuShortcutMask(), window::dispose);
     JPanel actions = new JPanel();
     actions.add(close);
     JPanel content = new JPanel(new BorderLayout());
@@ -567,6 +586,33 @@ public final class FileEditorManager implements AutoCloseable {
 
     EditorWindow(String title) {
       super(title);
+    }
+  }
+
+  static void installCloseShortcut(JRootPane rootPane, int shortcutMask, Runnable closeRequest) {
+    Objects.requireNonNull(rootPane, "rootPane");
+    Objects.requireNonNull(closeRequest, "closeRequest");
+    KeyStroke shortcut = KeyStroke.getKeyStroke(KeyEvent.VK_W, shortcutMask);
+    rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(shortcut, CLOSE_EDITOR_ACTION);
+    rootPane
+        .getActionMap()
+        .put(
+            CLOSE_EDITOR_ACTION,
+            new AbstractAction() {
+              private static final long serialVersionUID = 1L;
+
+              @Override
+              public void actionPerformed(ActionEvent event) {
+                closeRequest.run();
+              }
+            });
+  }
+
+  private static int menuShortcutMask() {
+    try {
+      return Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+    } catch (HeadlessException ignored) {
+      return InputEvent.CTRL_DOWN_MASK;
     }
   }
 

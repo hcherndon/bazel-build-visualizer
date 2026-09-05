@@ -457,10 +457,14 @@ the same finding at 99%, and the banner is what tells them apart.
 ### Browse Repository and Terminal
 
 **Browse Repository** is available for a local workspace and for the currently
-connected SSH workspace. It lists a directory only when you expand it. Double-
-click a regular file to open the shared language-aware viewer/editor; Save is
-explicit and refuses to replace a file that changed since it was opened. Binary
-files and text files above 16 MiB are refused rather than shown partially.
+connected SSH workspace. It lists a directory only when you expand it.
+Double-click a regular file, or select it and press Enter, to open the shared
+language-aware viewer/editor. Press the platform menu shortcut plus W
+(Command+W on macOS) to close only the active editor; an editor with unsaved
+changes uses the same confirmation as its title-bar close control. Save is
+explicit and refuses to replace a file that changed since it was opened.
+Binary files and text files above 16 MiB are refused rather than shown
+partially.
 Rows use bundled SVG icons for directories and common source, data and document
 types. BUILD, WORKSPACE, MODULE, `.bzl`, `.bazel`, and `.bazelrc` names use the
 green BZL document icon; an unknown file uses the text-document icon. The

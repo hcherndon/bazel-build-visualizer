@@ -14,6 +14,8 @@ import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.IOException;
@@ -28,6 +30,8 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
+import javax.swing.AbstractAction;
+import javax.swing.Action;
 import javax.swing.BorderFactory;
 import javax.swing.Icon;
 import javax.swing.JButton;
@@ -38,6 +42,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.JTree;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.event.TreeExpansionEvent;
 import javax.swing.event.TreeWillExpandListener;
@@ -57,6 +62,7 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
   public static final int DEFAULT_VISIBLE_ENTRY_LIMIT = 5_000;
 
   private static final String LOADING = "Loading…";
+  private static final String OPEN_SELECTED_FILE_ACTION = "open-selected-repository-file";
 
   private final int visibleEntryLimit;
   private ExecutorService worker;
@@ -135,6 +141,7 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
             }
           }
         });
+    installOpenSelectedFileShortcut();
 
     refresh.setEnabled(false);
     refresh.setToolTipText("Reload the repository root and discard cached directory listings.");
@@ -175,7 +182,7 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
         });
   }
 
-  /** Opens regular files when their tree row is double-clicked. */
+  /** Opens regular files when their tree row is double-clicked or opened from the keyboard. */
   public void onOpenFile(Consumer<ExecutionPath> callback) {
     openFile = Objects.requireNonNull(callback, "callback");
   }
@@ -478,6 +485,38 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
     }
   }
 
+  private void installOpenSelectedFileShortcut() {
+    KeyStroke enter = KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0);
+    Object inheritedBinding = tree.getInputMap(JComponent.WHEN_FOCUSED).get(enter);
+    Action inheritedAction =
+        inheritedBinding == null ? null : tree.getActionMap().get(inheritedBinding);
+    tree.getInputMap(JComponent.WHEN_FOCUSED).put(enter, OPEN_SELECTED_FILE_ACTION);
+    tree.getActionMap()
+        .put(
+            OPEN_SELECTED_FILE_ACTION,
+            new AbstractAction() {
+              private static final long serialVersionUID = 1L;
+
+              @Override
+              public void actionPerformed(ActionEvent event) {
+                TreePath selected = tree.getSelectionPath();
+                if (isRegularFile(selected)) {
+                  open(selected);
+                } else if (inheritedAction != null) {
+                  inheritedAction.actionPerformed(event);
+                }
+              }
+            });
+  }
+
+  private static boolean isRegularFile(TreePath path) {
+    if (path == null) {
+      return false;
+    }
+    Object value = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+    return value instanceof RepositoryNode node && node.kind == FileMetadata.Kind.REGULAR_FILE;
+  }
+
   private void updateStatus(String activity) {
     StringBuilder text = new StringBuilder();
     if (activity != null) {
@@ -750,5 +789,25 @@ public final class RepositoryBrowserView extends JPanel implements AutoCloseable
   void openRootChildForTest(int index) {
     DefaultMutableTreeNode child = (DefaultMutableTreeNode) rootNode.swingNode.getChildAt(index);
     open(new TreePath(child.getPath()));
+  }
+
+  void selectRootChildForTest(int index) {
+    DefaultMutableTreeNode child = (DefaultMutableTreeNode) rootNode.swingNode.getChildAt(index);
+    tree.setSelectionPath(new TreePath(child.getPath()));
+  }
+
+  void clearSelectionForTest() {
+    tree.clearSelection();
+  }
+
+  void pressEnterForTest() {
+    KeyStroke enter = KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0);
+    Object binding = tree.getInputMap(JComponent.WHEN_FOCUSED).get(enter);
+    Action action = tree.getActionMap().get(binding);
+    if (action == null) {
+      throw new IllegalStateException("repository Enter action is not installed");
+    }
+    action.actionPerformed(
+        new ActionEvent(tree, ActionEvent.ACTION_PERFORMED, OPEN_SELECTED_FILE_ACTION));
   }
 }
