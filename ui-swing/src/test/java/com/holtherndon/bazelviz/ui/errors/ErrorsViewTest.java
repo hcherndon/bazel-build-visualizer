@@ -3,6 +3,7 @@ package com.holtherndon.bazelviz.ui.errors;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
+import java.awt.Color;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -10,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import javax.swing.SwingUtilities;
+import javax.swing.text.StyleConstants;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -34,7 +36,7 @@ final class ErrorsViewTest {
   }
 
   @Test
-  @DisplayName("selecting a console row shows the stderr the source event holds")
+  @DisplayName("selecting a console row renders ANSI stderr as a terminal transcript")
   void selectionShowsTheStderr() throws Exception {
     FakeErrorSession session =
         new FakeErrorSession()
@@ -42,17 +44,27 @@ final class ErrorsViewTest {
             .withConsoleEvent(
                 11,
                 4,
-                "ERROR: /ws/failsyntax/BUILD.bazel:3:5: syntax error at 'outs': expected ," + "\n",
+                "\u001b[31mERROR:\u001b[0m old progress\n"
+                    + "\u001b[1A\u001b[2K\u001b[31mERROR:\u001b[0m"
+                    + " /ws/failsyntax/BUILD.bazel:3:5: syntax error at 'outs': expected ,\n",
                 "");
     open(session);
 
     select(0);
 
     awaitCondition(
-        () -> headings().contains("Console output (stderr)"), "the stderr section to appear");
-    assertThat(values("Console output (stderr)"))
-        .containsExactly(
-            "ERROR: /ws/failsyntax/BUILD.bazel:3:5: syntax error at 'outs': expected ,");
+        () -> consoleText("stderr").contains("syntax error"), "the stderr transcript to appear");
+    assertThat(consoleText("stderr"))
+        .isEqualTo("ERROR: /ws/failsyntax/BUILD.bazel:3:5: syntax error at 'outs': expected ,\n");
+    assertThat(
+            onEdt(
+                () ->
+                    StyleConstants.getForeground(
+                        view.consolePaneForTest("stderr")
+                            .getStyledDocument()
+                            .getCharacterElement(0)
+                            .getAttributes())))
+        .isEqualTo(new Color(0xAA0000));
     // The whole point of reading on selection: one payload, for the one row.
     assertThat(session.rawPayloadCalls()).isEqualTo(1);
     assertThat(session.edtCalls()).as("reads that happened on the event dispatch thread").isZero();
@@ -180,6 +192,10 @@ final class ErrorsViewTest {
         .stream()
         .map(field -> field.value().orElseThrow())
         .toList();
+  }
+
+  private String consoleText(String stream) {
+    return onEdt(() -> view.consoleTextForTest(stream));
   }
 
   private Optional<String> unknownNote(String heading, String name) {

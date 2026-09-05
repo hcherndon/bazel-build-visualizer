@@ -5,7 +5,6 @@ import com.holtherndon.bazelviz.ui.files.WorkspaceFileResolver;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
 import com.holtherndon.bazelviz.ui.inspect.Inspection;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -26,15 +25,6 @@ import java.util.Objects;
  * each says which it is.
  */
 public final class ErrorInspection {
-
-  /**
-   * Lines of console text rendered before the inspector stops.
-   *
-   * <p>A cap, and one that is stated when it fires. Nothing bounds how much a build writes to its
-   * console, and a pane that quietly showed the first screenful would be indistinguishable from a
-   * build whose diagnostic was that short.
-   */
-  static final int MAX_LINES = 400;
 
   private ErrorInspection() {}
 
@@ -64,7 +54,9 @@ public final class ErrorInspection {
 
     /** The event decoded; this is what it says the console received. */
     static Console text(String stderr, String stdout) {
-      return new Text(stderr, stdout);
+      Objects.requireNonNull(stderr, "stderr");
+      Objects.requireNonNull(stdout, "stdout");
+      return new Text(!stderr.isEmpty(), !stdout.isEmpty());
     }
 
     /**
@@ -89,12 +81,7 @@ public final class ErrorInspection {
     /**
      * @see #text(String, String)
      */
-    record Text(String stderr, String stdout) implements Console {
-      public Text {
-        Objects.requireNonNull(stderr, "stderr");
-        Objects.requireNonNull(stdout, "stdout");
-      }
-    }
+    record Text(boolean hasStderr, boolean hasStdout) implements Console {}
   }
 
   /** A row on its own, with nothing read from the journal for it. */
@@ -168,12 +155,12 @@ public final class ErrorInspection {
           builder.section("Console output").unknown("Text", "reading it back from the journal…");
       case Console.Unavailable unavailable ->
           builder.section("Console output").unknown("Text", unavailable.why());
-      case Console.Text text -> addText(builder, text);
+      case Console.Text text -> addTextState(builder, text);
     }
   }
 
-  private static void addText(Inspection.Builder builder, Console.Text text) {
-    if (text.stderr().isEmpty() && text.stdout().isEmpty()) {
+  private static void addTextState(Inspection.Builder builder, Console.Text text) {
+    if (!text.hasStderr() && !text.hasStdout()) {
       // The bytes were read and decoded and there was nothing in them.
       // That is an answer about the event, not a failure of the read, and
       // the two must not look alike.
@@ -182,52 +169,6 @@ public final class ErrorInspection {
           .unknown("Text", "this event decoded and carried no console text");
       return;
     }
-    if (!text.stderr().isEmpty()) {
-      addStream(builder, "Console output (stderr)", text.stderr());
-    }
-    if (!text.stdout().isEmpty()) {
-      addStream(builder, "Console output (stdout)", text.stdout());
-    }
-  }
-
-  /**
-   * One stream, a line per field.
-   *
-   * <p>Line per field rather than one field holding the whole string: the inspector renders a
-   * field's value in a single label, so a multi-line diagnostic in one field would come out as one
-   * unreadable run. The line number is the field name, which also keeps two identical lines visibly
-   * distinct.
-   */
-  private static void addStream(Inspection.Builder builder, String heading, String stream) {
-    List<String> lines = linesOf(stream);
-    builder.section(heading);
-    for (int i = 0; i < Math.min(lines.size(), MAX_LINES); i++) {
-      builder.field(Integer.toString(i + 1), lines.get(i));
-    }
-    if (lines.size() > MAX_LINES) {
-      builder.unknown(
-          "…",
-          (lines.size() - MAX_LINES)
-              + " of "
-              + lines.size()
-              + " lines are not shown: this pane is limited to "
-              + MAX_LINES
-              + ". The event is stored complete in the journal.");
-    }
-  }
-
-  /**
-   * The stream split for display, carriage returns dropped and one trailing newline absorbed.
-   *
-   * <p>Bazel ends a console chunk with a newline; rendering the empty string after it as a line
-   * would add a blank row to every diagnostic. Any further blank lines are the event's own and are
-   * kept.
-   */
-  private static List<String> linesOf(String stream) {
-    String normalized = stream.replace("\r\n", "\n").replace('\r', '\n');
-    if (normalized.endsWith("\n")) {
-      normalized = normalized.substring(0, normalized.length() - 1);
-    }
-    return List.of(normalized.split("\n", -1));
+    // The ANSI-aware ConsoleTextPane renders non-empty streams below the shared inspector.
   }
 }

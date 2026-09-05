@@ -2,8 +2,6 @@ package com.holtherndon.bazelviz.ui.capture;
 
 import java.awt.BorderLayout;
 import java.awt.Color;
-import java.awt.Font;
-import java.awt.Insets;
 import java.util.ArrayList;
 import java.util.List;
 import javax.swing.BorderFactory;
@@ -11,12 +9,8 @@ import javax.swing.JCheckBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
-import javax.swing.JTextPane;
 import javax.swing.SwingUtilities;
-import javax.swing.text.AttributeSet;
 import javax.swing.text.BadLocationException;
-import javax.swing.text.DefaultCaret;
-import javax.swing.text.SimpleAttributeSet;
 import javax.swing.text.StyleConstants;
 import javax.swing.text.StyledDocument;
 
@@ -40,7 +34,7 @@ public final class ConsoleView extends JPanel {
   private static final long serialVersionUID = 1L;
 
   private final ConsoleModel model;
-  private final WrappingTextPane area = new WrappingTextPane();
+  private final ConsoleTextPane area = new ConsoleTextPane();
   private final JCheckBox follow = new JCheckBox("Follow output", true);
   private final JLabel limits = new JLabel(" ");
 
@@ -67,16 +61,6 @@ public final class ConsoleView extends JPanel {
     super(new BorderLayout(0, 4));
     model = new ConsoleModel(maxLines);
     setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-
-    area.setEditable(false);
-    area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, area.getFont().getSize()));
-    area.setMargin(new Insets(6, 8, 6, 8));
-    area.getAccessibleContext().setAccessibleName("Build output");
-    area.setToolTipText(
-        "ANSI colours and emphasis are shown. Long lines wrap; select text to copy it.");
-    // Without this, every append scrolls the pane and clears the selection,
-    // which is what made the follow checkbox look inert.
-    ((DefaultCaret) area.getCaret()).setUpdatePolicy(DefaultCaret.NEVER_UPDATE);
 
     JPanel controls = new JPanel(new BorderLayout());
     controls.add(follow, BorderLayout.WEST);
@@ -236,10 +220,7 @@ public final class ConsoleView extends JPanel {
     if (length > partialStart) {
       document.remove(partialStart, length - partialStart);
     }
-    append(document, line);
-    if (newline) {
-      document.insertString(document.getLength(), "\n", attributes(ConsoleModelDefaults.STYLE));
-    }
+    area.appendLine(line, newline);
   }
 
   private void rebuildDocument() {
@@ -249,59 +230,16 @@ public final class ConsoleView extends JPanel {
     try {
       for (ConsoleModel.StyledLine line : model.styledLines()) {
         committedLineStarts.add(document.getLength());
-        append(document, line);
-        document.insertString(document.getLength(), "\n", attributes(ConsoleModelDefaults.STYLE));
+        area.appendLine(line, true);
       }
       partialStart = document.getLength();
-      append(document, model.partialStyledLine());
+      area.appendLine(model.partialStyledLine(), false);
       renderedBase = model.droppedLines();
       renderedLines = model.droppedLines() + model.retainedLines();
       model.acknowledgeChanges();
     } catch (BadLocationException impossible) {
       throw new IllegalStateException("could not rebuild the console document", impossible);
     }
-  }
-
-  private void append(StyledDocument document, ConsoleModel.StyledLine line)
-      throws BadLocationException {
-    for (ConsoleModel.StyledRun run : line.runs()) {
-      document.insertString(document.getLength(), run.text(), attributes(run.style()));
-    }
-  }
-
-  private AttributeSet attributes(ConsoleModel.AnsiStyle style) {
-    SimpleAttributeSet attributes = new SimpleAttributeSet();
-    Color foreground = colour(style.foregroundRgb(), area.getForeground());
-    Color background = colour(style.backgroundRgb(), area.getBackground());
-    if (style.inverse()) {
-      Color exchanged = foreground;
-      foreground = background;
-      background = exchanged;
-    }
-    if (style.faint()) {
-      foreground = blend(foreground, background);
-    }
-    if (style.concealed()) {
-      foreground = background;
-    }
-    StyleConstants.setForeground(attributes, foreground);
-    StyleConstants.setBackground(attributes, background);
-    StyleConstants.setBold(attributes, style.bold());
-    StyleConstants.setItalic(attributes, style.italic());
-    StyleConstants.setUnderline(attributes, style.underline());
-    StyleConstants.setStrikeThrough(attributes, style.strikethrough());
-    return attributes;
-  }
-
-  private static Color colour(Integer rgb, Color fallback) {
-    return rgb == null ? fallback : new Color(rgb);
-  }
-
-  private static Color blend(Color foreground, Color background) {
-    return new Color(
-        (foreground.getRed() + background.getRed() * 2) / 3,
-        (foreground.getGreen() + background.getGreen() * 2) / 3,
-        (foreground.getBlue() + background.getBlue() * 2) / 3);
   }
 
   // Focused tests inspect the rendered document rather than reaching through component order.
@@ -324,23 +262,5 @@ public final class ConsoleView extends JPanel {
 
   boolean wrapsLinesForTest() {
     return area.getScrollableTracksViewportWidth();
-  }
-
-  private static final class WrappingTextPane extends JTextPane {
-
-    private static final long serialVersionUID = 1L;
-
-    @Override
-    public boolean getScrollableTracksViewportWidth() {
-      return true;
-    }
-  }
-
-  private static final class ConsoleModelDefaults {
-
-    private static final ConsoleModel.AnsiStyle STYLE =
-        new ConsoleModel.AnsiStyle(null, null, false, false, false, false, false, false, false);
-
-    private ConsoleModelDefaults() {}
   }
 }

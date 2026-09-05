@@ -9,6 +9,7 @@ java_library(
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/events",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",

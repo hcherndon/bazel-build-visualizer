@@ -478,14 +478,19 @@ the same finding at 99%, and the banner is what tells them apart.
   never summed: one broken target in a large workspace would otherwise look
   like a catastrophe. The stderr rows are why the card is called Errors rather
   than Failures — for most broken builds the compiler's own text is the only
-  diagnostic there is, and not all of it describes a failure.
+  diagnostic there is, and not all of it describes a failure. Select a console
+  row to see its ANSI colours, emphasis, and Bazel progress-line rewrites in a
+  selectable terminal-style pane below the error details. stderr and stdout
+  are separate tabs when the event contains both.
 - **Events** — the raw event stream, with the original bytes of any event.
 - **Console** — one pane for the running build: the capture's phase, counters and
   stop buttons across the top, and what Bazel printed below them.
 
-The late bounded inspection work for decoded Events text, ANSI Errors detail,
-and Query results is not present in this source candidate. Treat imported
-sessions as trusted and avoid selecting known oversized payloads until it lands.
+The late bounded inspection work for decoded Events text and Query results is
+not present in this source candidate. Errors now bounds its rendered line tail,
+but the selected raw payload is still read as one value. Treat imported
+sessions as trusted and avoid selecting known oversized payloads until the
+remaining source-size bounds land.
 
 ### Browse Repository and Terminal
 

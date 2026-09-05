@@ -26,6 +26,13 @@ java_library(
 )
 
 java_junit5_test(
+    name = "ErrorConsolePanelTest",
+    test_class = "com.holtherndon.bazelviz.ui.errors.ErrorConsolePanelTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
     name = "ErrorInspectionTest",
     test_class = "com.holtherndon.bazelviz.ui.errors.ErrorInspectionTest",
     jvm_flags = HEADLESS_TEST_JVM_FLAGS,
@@ -49,6 +56,7 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":ErrorConsolePanelTest",
         ":ErrorInspectionTest",
         ":ErrorsViewSortTest",
         ":ErrorsViewTest",

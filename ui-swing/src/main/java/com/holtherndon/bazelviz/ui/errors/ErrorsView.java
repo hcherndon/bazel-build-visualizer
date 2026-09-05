@@ -3,6 +3,7 @@ package com.holtherndon.bazelviz.ui.errors;
 import com.holtherndon.bazelviz.storage.entities.ErrorQueries;
 import com.holtherndon.bazelviz.storage.entities.ErrorRow;
 import com.holtherndon.bazelviz.storage.events.RawLocation;
+import com.holtherndon.bazelviz.ui.capture.ConsoleTextPane;
 import com.holtherndon.bazelviz.ui.events.RawPayloadRenderer;
 import com.holtherndon.bazelviz.ui.files.WorkspaceFileResolver;
 import com.holtherndon.bazelviz.ui.inspect.EntityFormat;
@@ -23,6 +24,8 @@ import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -135,6 +138,7 @@ public final class ErrorsView extends JPanel {
 
   private final TableHeaderInteractions headerInteractions;
   private final InspectorPanel inspector = new InspectorPanel();
+  private final ErrorConsolePanel console = new ErrorConsolePanel();
   private final JLabel statusLabel = new JLabel(" ");
   private final JLabel abortSummary = new JLabel(" ");
   private final JButton loadMore = new JButton("Load more");
@@ -220,13 +224,24 @@ public final class ErrorsView extends JPanel {
 
     JScrollPane scroll = new JScrollPane(table);
     scroll.setMinimumSize(new Dimension(320, 160));
-    inspector.setMinimumSize(new Dimension(300, 160));
+    inspector.setMinimumSize(new Dimension(300, 120));
+    JPanel details = new JPanel(new GridBagLayout());
+    GridBagConstraints detail = new GridBagConstraints();
+    detail.gridx = 0;
+    detail.weightx = 1;
+    detail.fill = GridBagConstraints.BOTH;
+    detail.gridy = 0;
+    detail.weighty = 0.4;
+    details.add(inspector, detail);
+    detail.gridy = 1;
+    detail.weighty = 0.6;
+    details.add(console, detail);
     JSplitPane split =
         new JSplitPane(
-            JSplitPane.HORIZONTAL_SPLIT,
+            JSplitPane.VERTICAL_SPLIT,
             new SectionPane("Errors", scroll),
-            new SectionPane("Error details", inspector));
-    split.setResizeWeight(0.62);
+            new SectionPane("Error details", details));
+    split.setResizeWeight(0.55);
 
     JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
     controls.add(abortSummary);
@@ -400,6 +415,7 @@ public final class ErrorsView extends JPanel {
   public CompletionStage<Void> closeSessionAsync() {
     tableModel.clear();
     inspector.show(Inspection.NONE);
+    console.clear();
     loadMore.setVisible(false);
     listAborts.setVisible(false);
     selection.incrementAndGet();
@@ -457,6 +473,16 @@ public final class ErrorsView extends JPanel {
   /** Visible for testing: selects a row the way a click would. */
   void selectForTest(int row) {
     table.setRowSelectionInterval(row, row);
+  }
+
+  /** Visible for testing: rendered terminal text after ANSI interpretation. */
+  String consoleTextForTest(String stream) {
+    return console.textForTest(stream);
+  }
+
+  /** Visible for testing: styled terminal document after ANSI interpretation. */
+  ConsoleTextPane consolePaneForTest(String stream) {
+    return console.textPaneForTest(stream);
   }
 
   /** Visible for testing: the "Load more" button, without the button. */
@@ -615,6 +641,7 @@ public final class ErrorsView extends JPanel {
     long mine = selection.incrementAndGet();
     if (row < 0) {
       inspector.show(Inspection.NONE);
+      console.clear();
       return;
     }
     // View to model: with a sort active the row on screen is not the row
@@ -626,6 +653,7 @@ public final class ErrorsView extends JPanel {
       // Everything but a console row: its text is in the row already, so
       // there is nothing to read and nothing to wait for.
       inspector.show(ErrorInspection.of(selected));
+      console.clear();
       return;
     }
     ExecutorService running = executor;
@@ -638,9 +666,11 @@ public final class ErrorsView extends JPanel {
                   payloadFailure != null
                       ? "this session's journal could not be opened: " + payloadFailure
                       : "this session is no longer open for reading")));
+      console.clear();
       return;
     }
     inspector.show(ErrorInspection.of(selected, ErrorInspection.Console.reading()));
+    console.clear();
     running.execute(
         () -> {
           if (selection.get() != mine) {
@@ -648,13 +678,14 @@ public final class ErrorsView extends JPanel {
             // the user has already left is a cost with no reader.
             return;
           }
-          ErrorInspection.Console console = readConsole(reading, location.get());
+          ConsoleRead read = readConsole(reading, location.get());
           SwingUtilities.invokeLater(
               () -> {
                 if (selection.get() != mine) {
                   return;
                 }
-                inspector.show(ErrorInspection.of(selected, console));
+                inspector.show(ErrorInspection.of(selected, read.state()));
+                console.show(read.content());
               });
         });
   }
@@ -667,18 +698,32 @@ public final class ErrorsView extends JPanel {
    * modal error for a row the user merely clicked would turn a session that is working as intended
    * into something that looks broken.
    */
-  private static ErrorInspection.Console readConsole(SessionReader reader, RawLocation location) {
+  private static ConsoleRead readConsole(SessionReader reader, RawLocation location) {
     try {
       RawPayload payload = reader.rawPayload(location);
       RawPayloadRenderer.Console console = RawPayloadRenderer.console(payload);
-      return console
-          .absence()
-          .map(ErrorInspection.Console::unavailable)
-          .orElseGet(() -> ErrorInspection.Console.text(console.stderr(), console.stdout()));
+      if (console.absence().isPresent()) {
+        return ConsoleRead.unavailable(console.absence().orElseThrow());
+      }
+      return new ConsoleRead(
+          ErrorInspection.Console.text(console.stderr(), console.stdout()),
+          ErrorConsolePanel.parse(console.stderr(), console.stdout()));
     } catch (RuntimeException failure) {
       log.warn("could not read the console output at {}", location, failure);
-      return ErrorInspection.Console.unavailable(
+      return ConsoleRead.unavailable(
           "the bytes could not be read back from this session's journal: " + describe(failure));
+    }
+  }
+
+  private record ConsoleRead(ErrorInspection.Console state, ErrorConsolePanel.Content content) {
+    private ConsoleRead {
+      Objects.requireNonNull(state, "state");
+      Objects.requireNonNull(content, "content");
+    }
+
+    private static ConsoleRead unavailable(String reason) {
+      return new ConsoleRead(
+          ErrorInspection.Console.unavailable(reason), ErrorConsolePanel.parse("", ""));
     }
   }
 

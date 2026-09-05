@@ -222,6 +222,14 @@ unsupported cursor-addressed controls are omitted from display, while the
 original bytes remain available in the session. The interactive Terminal owns
 PTY and full xterm behavior.
 
+The Errors view uses the same selectable, wrapping ANSI text surface for a
+selected progress event's recorded stderr and stdout. Decoding and terminal
+control interpretation happen on the Errors worker before an immutable styled
+transcript reaches the EDT. The error list and full-width detail area are
+stacked vertically; console streams appear below the ordinary entity fields.
+Each stream keeps a disclosed 400-line display tail while the raw journal stays
+unchanged.
+
 The Console's **Bazel Executable** starts as `bazel` and remains editable for
 the selected Workspace; it accepts either a command on that machine's PATH or
 an executable path. It sits first in one left-aligned row with **Capture

@@ -25,8 +25,8 @@ final class ErrorInspectionTest {
   private static final RawLocation SOMEWHERE = new RawLocation(0, 4_096, 512);
 
   @Test
-  @DisplayName("stderr is shown line by line under its own heading")
-  void stderrIsShown() {
+  @DisplayName("ANSI console text stays out of ordinary inspector fields")
+  void consoleTextUsesItsDedicatedRenderer() {
     Inspection inspection =
         ErrorInspection.of(
             outputRow(),
@@ -35,24 +35,16 @@ final class ErrorInspectionTest {
                     + "ERROR: error loading package 'failsyntax'\n",
                 ""));
 
-    Inspection.Section stderr = section(inspection, "Console output (stderr)");
-    assertThat(values(stderr))
-        .containsExactly(
-            "ERROR: /ws/failsyntax/BUILD.bazel:3:5: syntax error at 'outs': expected ,",
-            "ERROR: error loading package 'failsyntax'");
-    // The trailing newline Bazel writes must not become a blank row.
-    assertThat(stderr.fields()).hasSize(2);
-    assertThat(headings(inspection)).doesNotContain("Console output (stdout)");
+    assertThat(headings(inspection)).containsExactly("Failure");
   }
 
   @Test
-  @DisplayName("stdout gets its own section, and only when the event carried some")
-  void stdoutIsSeparate() {
+  @DisplayName("non-empty stdout and stderr both use the dedicated renderer")
+  void bothStreamsUseTheDedicatedRenderer() {
     Inspection both =
         ErrorInspection.of(outputRow(), ErrorInspection.Console.text("on stderr\n", "on stdout\n"));
 
-    assertThat(values(section(both, "Console output (stderr)"))).containsExactly("on stderr");
-    assertThat(values(section(both, "Console output (stdout)"))).containsExactly("on stdout");
+    assertThat(headings(both)).containsExactly("Failure");
   }
 
   @Test
@@ -100,27 +92,6 @@ final class ErrorInspectionTest {
     assertThat(field(inspection, "Console output", "Text").unknownNote())
         .hasValueSatisfying(
             note -> assertThat(note).contains("decoded and carried no console text"));
-  }
-
-  @Test
-  @DisplayName("a console pane that hits its line limit says exactly what it withheld")
-  void lineLimitIsDisclosed() {
-    StringBuilder stderr = new StringBuilder();
-    for (int i = 0; i < ErrorInspection.MAX_LINES + 5; i++) {
-      stderr.append("line ").append(i).append('\n');
-    }
-
-    Inspection inspection =
-        ErrorInspection.of(outputRow(), ErrorInspection.Console.text(stderr.toString(), ""));
-
-    Inspection.Section section = section(inspection, "Console output (stderr)");
-    assertThat(section.fields()).hasSize(ErrorInspection.MAX_LINES + 1);
-    assertThat(section.fields().getLast().unknownNote())
-        .hasValueSatisfying(
-            note ->
-                assertThat(note)
-                    .contains("5 of " + (ErrorInspection.MAX_LINES + 5) + " lines are not shown")
-                    .contains("stored complete in the journal"));
   }
 
   @Test

@@ -49,9 +49,11 @@ into this tree:
   A successful query whose importer cannot start also still needs a `FAILED`
   graph-source record. The branch remains blocked and unmerged.
 - **Query, Events, and Errors inspection.** The current tree does not contain
-  that task's bounded SQL/cell/result spool, lazy bounded raw-event payload, or
-  bounded reusable ANSI error transcript, and those three pages have not moved
-  their root actions into the shared toolbar. Exact retry review found that the
+  that task's bounded SQL/cell/result spool or lazy bounded raw-event payload,
+  and those three pages have not moved their root actions into the shared
+  toolbar. Errors now uses the Console's ANSI renderer with a disclosed
+  400-line display tail, but its selected raw payload still lacks a source byte
+  bound. Exact retry review found that the
   candidate ANSI model lost per-line omitted-character ownership after
   committing a truncated line; a cursor rewind or line eviction could then show
   a false nonzero omission count. That branch remains blocked and unmerged.
@@ -3234,6 +3236,21 @@ it is a different tab and was not reported.
   integer-category tests cover the new seams. The ten new page bounds are
   recorded in `docs/limits.md`; this is a required overlap with the release
   documentation pass, not a new architectural decision.
+
+- **Recorded error output now uses the Console's ANSI renderer**
+  (2026-09-05). Selecting a console-output row renders its stderr and stdout
+  below the ordinary error fields in separate tabs. The shared text surface
+  applies ANSI colour and emphasis, collapses carriage-return and cursor-up
+  progress rewrites, wraps to the available width, and keeps text selectable.
+  The Errors table and its full-width detail pane are stacked vertically.
+
+  Journal decoding and ANSI interpretation stay on the Errors worker; the EDT
+  receives an immutable styled transcript. Each stream retains the last 400
+  displayed lines and states the exact number omitted, while the raw journal
+  remains unchanged. This does not yet impose the deferred source-byte bound
+  on the selected payload. Focused tests cover ANSI colour/reset, cursor
+  rewrites, off-EDT journal access, and line-limit disclosure. No dependency or
+  fixed architectural decision changed.
 
 - **Graph access now enforces one session-wide resource and integrity contract**
   (2026-09-05). A header-only CSR descriptor uses checked arithmetic and exact

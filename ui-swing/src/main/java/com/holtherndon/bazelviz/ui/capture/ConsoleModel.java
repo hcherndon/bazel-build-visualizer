@@ -460,6 +460,27 @@ public final class ConsoleModel {
     return out.toString();
   }
 
+  /** Immutable display state, safe to hand from a journal-reading worker to the EDT. */
+  public Transcript transcript() {
+    return new Transcript(List.copyOf(styledLines), partialStyledLine(), droppedLines);
+  }
+
+  /** Styled output after progress rewrites, with exact disclosure of evicted display lines. */
+  public record Transcript(List<StyledLine> lines, StyledLine partialLine, long droppedLines) {
+    public Transcript {
+      lines = List.copyOf(lines);
+      Objects.requireNonNull(partialLine, "partialLine");
+    }
+
+    public String text() {
+      StringBuilder text = new StringBuilder();
+      for (StyledLine line : lines) {
+        text.append(line.text()).append('\n');
+      }
+      return text.append(partialLine.text()).toString();
+    }
+  }
+
   private static final class StyledLineBuilder {
 
     private final List<MutableRun> runs = new ArrayList<>();
