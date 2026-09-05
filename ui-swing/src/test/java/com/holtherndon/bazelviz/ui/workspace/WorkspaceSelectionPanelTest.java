@@ -4,15 +4,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.Point;
+import java.awt.event.KeyEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
+import javax.swing.JMenuItem;
+import javax.swing.JPopupMenu;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.plaf.basic.BasicHTML;
 import org.junit.jupiter.api.Test;
@@ -78,13 +84,13 @@ final class WorkspaceSelectionPanelTest {
   }
 
   @Test
-  void emptyAndPopulatedStatesEnableOnlyValidActions() throws Exception {
+  void emptyAndPopulatedStatesExposeOnlyChooserActions() throws Exception {
     WorkspaceSelectionPanel panel = panel();
 
     assertThat(panel.openForTest().isEnabled()).isFalse();
-    assertThat(panel.editForTest().isEnabled()).isFalse();
-    assertThat(panel.removeForTest().isEnabled()).isFalse();
     assertThat(panel.createForTest().isEnabled()).isTrue();
+    assertThat(panel.discoverForTest().isEnabled()).isTrue();
+    assertThat(panel.editDiscoveryForTest().isEnabled()).isTrue();
     assertThat(namedLabel(panel, "workspaces.count").getText()).contains("No saved workspaces");
 
     SwingUtilities.invokeAndWait(
@@ -94,8 +100,6 @@ final class WorkspaceSelectionPanelTest {
                     WorkspaceProfile.local("id", "Repo", "/repo", "bazel", OptionalLong.empty()))));
 
     assertThat(panel.openForTest().isEnabled()).isTrue();
-    assertThat(panel.editForTest().isEnabled()).isTrue();
-    assertThat(panel.removeForTest().isEnabled()).isTrue();
     assertThat(namedLabel(panel, "workspaces.count").getText())
         .isEqualTo("1 saved workspace, most recent first.");
   }
@@ -244,7 +248,7 @@ final class WorkspaceSelectionPanelTest {
   }
 
   @Test
-  void removeIsACallbackAndDoesNotSilentlyMutateOwnerState() throws Exception {
+  void savedRowContextActionsReuseCallbacksWithoutMutatingOwnerState() throws Exception {
     WorkspaceProfile profile =
         WorkspaceProfile.local("id", "Repo", "/repo", "bazel", OptionalLong.empty());
     WorkspaceSelectionPanel panel = panel();
@@ -254,7 +258,7 @@ final class WorkspaceSelectionPanelTest {
         () -> {
           panel.setWorkspaces(List.of(profile));
           panel.onRemove(removed::set);
-          panel.removeForTest().doClick();
+          menuItem(panel.contextMenuForTest(profile), "Remove").doClick();
         });
 
     assertThat(removed).hasValue(profile);
@@ -262,7 +266,7 @@ final class WorkspaceSelectionPanelTest {
   }
 
   @Test
-  void discoveredRowsAreTaggedOpenableAndCannotBeEditedOrRemoved() throws Exception {
+  void discoveredRowsAreTaggedAndTheirContextMenuOnlyOpens() throws Exception {
     WorkspaceProfile saved =
         WorkspaceProfile.local("saved", "Saved", "/saved", "bazel", OptionalLong.of(20));
     WorkspaceProfile discovered =
@@ -286,8 +290,6 @@ final class WorkspaceSelectionPanelTest {
         });
 
     assertThat(panel.openForTest().isEnabled()).isTrue();
-    assertThat(panel.editForTest().isEnabled()).isFalse();
-    assertThat(panel.removeForTest().isEnabled()).isFalse();
     assertThat(namedLabel(panel, "workspaces.count").getText())
         .isEqualTo("1 saved workspace · 1 discovered this run.");
     assertThat(namedLabel(panel, "workspaces.discoveryStatus").getText())
@@ -303,6 +305,50 @@ final class WorkspaceSelectionPanelTest {
 
     SwingUtilities.invokeAndWait(panel.openForTest()::doClick);
     assertThat(opened).hasValue(discovered);
+    assertThat(menuLabels(panel.contextMenuForTest(discovered))).containsExactly("Open Workspace");
+    assertThat(menuLabels(panel.contextMenuForTest(saved)))
+        .containsExactly("Open Workspace", "Edit", "Remove");
+  }
+
+  @Test
+  void discoverActionsAreExplicitCallbacksAndContextSelectionCannotUseABlankRow() throws Exception {
+    WorkspaceProfile first =
+        WorkspaceProfile.local("first", "First", "/first", "bazel", OptionalLong.empty());
+    WorkspaceProfile second =
+        WorkspaceProfile.local("second", "Second", "/second", "bazel", OptionalLong.empty());
+    WorkspaceSelectionPanel panel = panel();
+    AtomicInteger discovers = new AtomicInteger();
+    AtomicInteger edits = new AtomicInteger();
+
+    SwingUtilities.invokeAndWait(
+        () -> {
+          panel.onDiscover(discovers::incrementAndGet);
+          panel.onEditDiscovery(edits::incrementAndGet);
+          panel.setWorkspaces(List.of(first, second));
+          panel.workspaceListForTest().setSize(400, 100);
+          panel.workspaceListForTest().setSelectedValue(first, true);
+          panel.discoverForTest().doClick();
+          panel.editDiscoveryForTest().doClick();
+        });
+
+    assertThat(discovers).hasValue(1);
+    assertThat(edits).hasValue(1);
+    assertThat(onEdt(() -> panel.selectWorkspaceAtForTest(new Point(4, 35)))).hasValue(second);
+    assertThat(panel.selectedWorkspace()).hasValue(second);
+    assertThat(onEdt(() -> panel.selectWorkspaceAtForTest(new Point(4, 90)))).isEmpty();
+    assertThat(panel.selectedWorkspace()).isEmpty();
+    assertThat(
+            panel
+                .workspaceListForTest()
+                .getInputMap(JComponent.WHEN_FOCUSED)
+                .get(KeyStroke.getKeyStroke(KeyEvent.VK_F10, KeyEvent.SHIFT_DOWN_MASK)))
+        .isEqualTo("workspace-menu");
+    assertThat(
+            panel
+                .workspaceListForTest()
+                .getInputMap(JComponent.WHEN_FOCUSED)
+                .get(KeyStroke.getKeyStroke(KeyEvent.VK_CONTEXT_MENU, 0)))
+        .isEqualTo("workspace-menu");
   }
 
   @Test
@@ -370,6 +416,42 @@ final class WorkspaceSelectionPanelTest {
       }
     }
     throw new AssertionError("No JLabel named " + name);
+  }
+
+  private static JMenuItem menuItem(JPopupMenu menu, String text) {
+    for (Component component : menu.getComponents()) {
+      if (component instanceof JMenuItem item && text.equals(item.getText())) {
+        return item;
+      }
+    }
+    throw new AssertionError("No menu item named " + text);
+  }
+
+  private static List<String> menuLabels(JPopupMenu menu) {
+    List<String> labels = new ArrayList<>();
+    for (Component component : menu.getComponents()) {
+      if (component instanceof JMenuItem item) {
+        labels.add(item.getText());
+      }
+    }
+    return labels;
+  }
+
+  private static <T> T onEdt(Callable<T> work) throws Exception {
+    AtomicReference<T> result = new AtomicReference<>();
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          try {
+            result.set(work.call());
+          } catch (Throwable caught) {
+            failure.set(caught);
+          }
+        });
+    if (failure.get() != null) {
+      throw new AssertionError(failure.get());
+    }
+    return result.get();
   }
 
   private static List<Component> allComponents(Container root) {

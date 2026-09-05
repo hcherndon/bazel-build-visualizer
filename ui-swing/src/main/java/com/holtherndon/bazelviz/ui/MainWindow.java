@@ -1525,6 +1525,18 @@ public final class MainWindow extends JFrame {
     }
   }
 
+  /** Opens or raises Preferences with the Workspace Discovery settings selected. */
+  public void showDiscoveryPreferences() {
+    if (!SwingUtilities.isEventDispatchThread()) {
+      SwingUtilities.invokeLater(this::showDiscoveryPreferences);
+      return;
+    }
+    showPreferences();
+    if (preferencesPanel != null) {
+      preferencesPanel.selectDiscovery();
+    }
+  }
+
   private void installLoadedDiscoveryScript(
       WorkspaceDiscoveryPreferencesPanel panel, WorkspaceDiscoveryScriptStore.LoadResult loaded) {
     if (!isCurrentPreferencesPanel(panel)) {
@@ -2850,6 +2862,8 @@ public final class MainWindow extends JFrame {
           return upsertWorkspace(profile);
         });
     workspaceSelectionPanel.onRemove(this::removeWorkspace);
+    workspaceSelectionPanel.onDiscover(() -> startWorkspaceDiscovery(true, null));
+    workspaceSelectionPanel.onEditDiscovery(this::showDiscoveryPreferences);
   }
 
   private void refreshWorkspaceChoices() {

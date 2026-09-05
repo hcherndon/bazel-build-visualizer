@@ -48,6 +48,23 @@ final class PreferencesPanelTest {
     assertThat(closed).hasValue(1);
   }
 
+  @Test
+  void selectsDiscoveryThroughTheSemanticApi() throws Exception {
+    ThemePreferencesPanel theme =
+        onEdt(() -> new ThemePreferencesPanel(AppTheme.DARK, ignored -> true));
+    WorkspaceDiscoveryPreferencesPanel discovery =
+        onEdt(() -> new WorkspaceDiscoveryPreferencesPanel("", ignored -> {}, ignored -> {}));
+    PreferencesPanel panel = onEdt(() -> new PreferencesPanel(theme, discovery, () -> {}));
+
+    onEdt(
+        () -> {
+          panel.selectDiscovery();
+          return null;
+        });
+
+    assertThat(onEdt(() -> panel.tabsForTest().getSelectedComponent())).isSameAs(discovery);
+  }
+
   private static JButton button(Container root, String text) {
     for (Component child : root.getComponents()) {
       if (child instanceof JButton candidate && text.equals(candidate.getText())) {
