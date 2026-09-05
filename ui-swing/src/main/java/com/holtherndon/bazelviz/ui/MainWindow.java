@@ -106,6 +106,7 @@ import com.holtherndon.bazelviz.ui.workspace.WorkspaceUiSettings;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Component;
+import java.awt.Desktop;
 import java.awt.Dialog;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -1349,15 +1350,19 @@ public final class MainWindow extends JFrame {
     file.add(cancelImportItem);
     file.add(closeSessionItem);
 
-    JMenuItem preferences = new JMenuItem("Preferences…");
-    preferences.addActionListener(event -> showPreferences());
-    JMenu settings = new JMenu("Settings");
-    settings.add(preferences);
-
     JMenuBar bar = new JMenuBar();
     bar.add(buildWorkspacesMenu());
     bar.add(file);
-    bar.add(settings);
+    // macOS exposes Preferences in the application menu through DesktopIntegration.
+    // Keep a Swing entry only on desktops without that native action.
+    if (!Desktop.isDesktopSupported()
+        || !Desktop.getDesktop().isSupported(Desktop.Action.APP_PREFERENCES)) {
+      JMenuItem preferences = new JMenuItem("Preferences…");
+      preferences.addActionListener(event -> showPreferences());
+      JMenu settings = new JMenu("Settings");
+      settings.add(preferences);
+      bar.add(settings);
+    }
     bar.add(
         LoggingMenu.create(
             loggingRuntime,

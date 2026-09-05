@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.events;
 
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.storage.events.EventSummary;
 import com.holtherndon.bazelviz.ui.session.SessionDataException;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
@@ -60,12 +61,22 @@ public final class EventRowSource implements RowSource<EventRow> {
   private final int pageSize;
   private final long rowCount;
   private final EventRowIndex index;
+  private final FilterExpression filter;
+  private final long totalRowCount;
 
-  private EventRowSource(SessionReader reader, int pageSize, long rowCount, EventRowIndex index) {
+  private EventRowSource(
+      SessionReader reader,
+      int pageSize,
+      long rowCount,
+      EventRowIndex index,
+      FilterExpression filter,
+      long totalRowCount) {
     this.reader = reader;
     this.pageSize = pageSize;
     this.rowCount = rowCount;
     this.index = index;
+    this.filter = filter;
+    this.totalRowCount = totalRowCount;
   }
 
   /**
@@ -75,9 +86,32 @@ public final class EventRowSource implements RowSource<EventRow> {
    * {@link #rowCount()} without I/O so that constructing the table model on the EDT is safe.
    */
   public static EventRowSource open(SessionReader reader, int pageSize) {
+    return open(reader, pageSize, FilterExpression.ALL);
+  }
+
+  public static EventRowSource open(SessionReader reader, int pageSize, FilterExpression filter) {
     Objects.requireNonNull(reader, "reader");
-    EventRowIndex index = EventRowIndex.open(reader, pageSize);
-    return new EventRowSource(reader, pageSize, index.rowCount(), index);
+    EventRowIndex index = EventRowIndex.open(reader, pageSize, filter);
+    return new EventRowSource(
+        reader,
+        pageSize,
+        index.rowCount(),
+        index,
+        filter,
+        filter.isEmpty() ? index.rowCount() : reader.eventCount());
+  }
+
+  public FilterExpression filter() {
+    return filter;
+  }
+
+  public long totalRowCount() {
+    return totalRowCount;
+  }
+
+  /** Stops obsolete sparse-index work when the host replaces this source. */
+  void cancel() {
+    index.cancel();
   }
 
   /** Opens with {@link #DEFAULT_PAGE_SIZE}. */
@@ -116,6 +150,7 @@ public final class EventRowSource implements RowSource<EventRow> {
 
   @Override
   public Page<EventRow> fetchPage(long pageIndex, int requestedPageSize) {
+    index.checkCancelled();
     if (requestedPageSize != pageSize) {
       // The row index's anchors are laid out for one page size. Serving a
       // different one would silently misalign every page boundary.
@@ -135,7 +170,7 @@ public final class EventRowSource implements RowSource<EventRow> {
 
   private List<EventRow> fetchRows(long firstRow, int wanted, boolean mayRetry) {
     EventRowIndex.Anchor anchor = index.anchorForRow(firstRow);
-    List<EventSummary> summaries = reader.pageAfter(anchor.exclusiveId(), wanted);
+    List<EventSummary> summaries = reader.pageAfter(anchor.exclusiveId(), wanted, filter);
     if (summaries.size() != wanted) {
       throw new SessionDataException(
           "row "

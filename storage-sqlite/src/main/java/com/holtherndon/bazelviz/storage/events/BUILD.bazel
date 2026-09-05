@@ -10,6 +10,7 @@ java_library(
         "DiagnosticSeverity.java",
         "DiagnosticWriter.java",
         "EventDetail.java",
+        "EventFilterSql.java",
         "EventIdentity.java",
         "EventPage.java",
         "EventQueries.java",
@@ -23,6 +24,7 @@ java_library(
         "StringDictionary.java",
     ],
     deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",

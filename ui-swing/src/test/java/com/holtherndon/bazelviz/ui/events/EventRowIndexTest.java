@@ -5,11 +5,30 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.ui.table.Page;
 import java.util.OptionalLong;
+import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /** The row-index-to-keyset-anchor mapping itself. */
 class EventRowIndexTest {
+
+  @Test
+  void sparseIndexOnlyWalksAsFarAsTheRequestedPageAndReusesAnchors() {
+    FakeSessionReader reader = FakeSessionReader.withIds(2, 4, 6, 8, 10, 12, 14, 16, 18, 20);
+    EventRowIndex index = EventRowIndex.open(reader, 2);
+    int before = reader.pageAfterCalls();
+    index.anchorForRow(0);
+    assertThat(reader.pageAfterCalls()).isEqualTo(before);
+    assertThat(index.anchorForRow(4).exclusiveId()).hasValue(8);
+    assertThat(reader.pageAfterCalls()).isEqualTo(before + 2);
+    assertThat(index.anchorForRow(2).exclusiveId()).hasValue(4);
+    assertThat(reader.pageAfterCalls()).isEqualTo(before + 2);
+    assertThat(index.anchorForRow(8).exclusiveId()).hasValue(16);
+    assertThat(reader.pageAfterCalls()).isEqualTo(before + 4);
+    index.cancel();
+    assertThatThrownBy(() -> index.anchorForRow(0)).isInstanceOf(CancellationException.class);
+    assertThat(reader.pageAfterCalls()).isEqualTo(before + 4);
+  }
 
   @Test
   @DisplayName("contiguous ids resolve arithmetically, with the first id predicted")

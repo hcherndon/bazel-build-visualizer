@@ -39,6 +39,18 @@ repository-wide formatting entry point; it skips nested repositories.
 | `test-support` | Test and benchmark fixtures, notably the deterministic synthetic data generators (`SyntheticActionGenerator`, `SyntheticEdges`, `SyntheticScale`) with O(1) random access so Tier 3 scale never requires materialized fixtures. |
 | `benchmarks` | Phase 0 architectural spikes (table/timeline/graph/SQL-paging, each with `--offscreen`) and JMH microbenchmarks. Never shipped. |
 
+## Shared visual filters
+
+`core.filter.FilterExpression` is a bounded immutable tree of conditions and
+All/Any groups, not a query-language parser. `ui.filter.FilterBuilder` receives
+page-defined `FilterField` descriptors and supplies typed editors, chips and
+group controls without knowing SQL. Events supplies its field catalog and
+passes expressions through `SessionReader`. `storage.events.EventFilterSql`
+allowlists field identifiers and operators and binds every user value; both
+matching counts and keyset pages share its predicate. Other pages can reuse the
+model and builder with their own service mapping; they are not automatically
+filtered. No schema migration or raw-payload parse is needed.
+
 ## The six graph representations
 
 Bazel builds involve several *different* graphs. Conflating them is the

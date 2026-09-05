@@ -92,6 +92,11 @@ test_suite(
 )
 
 test_suite(
+    name = "tests-filter",
+    tests = ["//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/filter:tests"],
+)
+
+test_suite(
     name = "tests-graph",
     tests = ["//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/graph:tests"],
 )
@@ -195,6 +200,7 @@ test_suite(
         "//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/events:tests",
         "//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/export:tests",
         "//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/files:tests",
+        "//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/filter:tests",
         "//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/graph:tests",
         "//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/inspect:tests",
         "//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/logging:tests",

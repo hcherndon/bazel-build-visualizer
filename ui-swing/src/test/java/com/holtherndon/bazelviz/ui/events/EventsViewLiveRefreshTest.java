@@ -3,6 +3,10 @@ package com.holtherndon.bazelviz.ui.events;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Condition;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Group;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Junction;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Operator;
 import com.holtherndon.bazelviz.core.session.SessionState;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import com.holtherndon.bazelviz.storage.metrics.MetricQueries;
@@ -51,6 +55,46 @@ final class EventsViewLiveRefreshTest {
   }
 
   private EventsView events;
+
+  @Test
+  @Timeout(30)
+  void liveRefreshRetainsFiltersAndDoesNotRescanThemWhenNoEventsArrive() throws Exception {
+    FakeSessionReader reader = FakeSessionReader.dense(50);
+    Group filter =
+        new Group(Junction.ALL, List.of(new Condition("id", Operator.GREATER_THAN, List.of("40"))));
+    reader.supportFilter(filter, row -> row.id() > 40);
+    FakeSource source = new FakeSource(reader, SessionState.CAPTURING);
+    List<Long> totals = new ArrayList<>();
+    events = onEdt(() -> new EventsView(40_000));
+    onEdt(
+        () -> {
+          events.setRowCountListener(totals::add);
+          events.openSession(
+              source,
+              failure -> {
+                throw new AssertionError(failure);
+              });
+          return null;
+        });
+    await(() -> onEdt(() -> events.tableModelForTest() != null));
+    onEdt(
+        () -> {
+          events.filtersForTest().setExpression(filter);
+          return null;
+        });
+    await(() -> onEdt(() -> events.tableModelForTest().getRowCount()) == 10);
+    int filterCounts = reader.filteredCounts();
+    TimeUnit.MILLISECONDS.sleep(200);
+    assertThat(reader.filteredCounts())
+        .as("idle ticks should not repeat the filtered count")
+        .isEqualTo(filterCounts);
+    reader.add(51, 50, DecodeStatus.OK);
+    await(() -> onEdt(() -> events.tableModelForTest().getRowCount()) == 11);
+    assertThat(onEdt(() -> events.filtersForTest().expression())).isEqualTo(filter);
+    assertThat(onEdt(events::statusTextForTest)).contains("11 matching of 51 events");
+    assertThat(onEdt(() -> totals.getLast())).isEqualTo(51);
+    assertThat(reader.edtCalls()).isZero();
+  }
 
   @AfterEach
   void tearDown() throws Exception {

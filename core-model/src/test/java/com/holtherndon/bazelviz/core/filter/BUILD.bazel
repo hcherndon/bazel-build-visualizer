@@ -1,0 +1,17 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_junit5_test(
+    name = "FilterExpressionTest",
+    srcs = ["FilterExpressionTest.java"],
+    test_class = "com.holtherndon.bazelviz.core.filter.FilterExpressionTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    deps = JUNIT_DEPS + ["//core-model/src/main/java/com/holtherndon/bazelviz/core/filter"],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+)
+
+test_suite(
+    name = "tests",
+    tests = [":FilterExpressionTest"],
+    visibility = ["//visibility:public"],
+)

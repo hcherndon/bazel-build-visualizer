@@ -82,7 +82,7 @@ class LauncherPanelTest {
     assertThat(namedLabel(panel, "launcher.commandLabel").getLabelFor())
         .isSameAs(panel.commandFieldForTest());
     assertThat(namedLabel(panel, "launcher.workspaceLabel").getText()).isEqualTo("Workspace:");
-    assertThat(namedLabel(panel, "launcher.bazelLabel").getText()).isEqualTo("Bazel Executable:");
+    assertThat(namedLabel(panel, "launcher.bazelLabel").getText()).isEqualTo("Bazel executable:");
     assertThat(namedLabel(panel, "launcher.captureDetailLabel").getText())
         .isEqualTo("Capture detail:");
     assertThat(namedLabel(panel, "launcher.commandLabel").getText()).isEqualTo("Bazel command:");

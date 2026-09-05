@@ -80,6 +80,25 @@ It is not a whole-process native-memory ceiling: every independently opened
 graph reader has a fixed 1 MiB SQLite page cache outside the graph budget, and
 uses file-backed temporary b-trees.
 
+## Composable Events filtering
+
+The visual filter builder (2026-09-05) runs count and keyset-page predicates in
+SQLite on the page worker, not on the EDT or over cached UI rows. It does not
+read or decode raw event payloads. Dynamic predicates use bound values and
+short-lived prepared statements, so editing filters does not grow a statement
+cache. Replacement filters cancel prior work and suppress stale deliveries.
+
+Arbitrary combinations and identity substring matches can require a database
+scan for an exact matching count; the unfiltered keyset timings below are not
+claims about filtered counts. Sparse filtered results retain at most 65,536
+anchor longs (the existing 512 KiB cap), populated only as far as a requested
+page. First-page display no longer walks all matches to build anchors. A first
+seek far down the result still walks preceding matches in bounded pages, with
+anchors reused for later seeks. With an active filter, live refresh checks the
+unfiltered count first and reevaluates the predicate only when events arrived;
+an idle session does not repeat a filtered scan. These are structural bounds, not a new
+large-session latency benchmark.
+
 ## Benchmark tiers (plan 20.1)
 
 Authoritative constants live in

@@ -6,6 +6,8 @@ java_library(
     name = "events",
     srcs = glob(["*.java"]),
     deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/filter",
         "//bep-codec/src/main/java/com/holtherndon/bazelviz/bepcodec",
         "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/json",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",

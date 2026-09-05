@@ -6,6 +6,7 @@ java_library(
     name = "session",
     srcs = glob(["*.java"]),
     deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
         "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/enrich",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",

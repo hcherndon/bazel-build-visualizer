@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.session;
 
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.storage.events.EventDetail;
 import com.holtherndon.bazelviz.storage.events.EventSummary;
 import com.holtherndon.bazelviz.storage.events.RawLocation;
@@ -33,6 +34,30 @@ public interface SessionReader extends AutoCloseable {
 
   /** Total number of stored events. One aggregate query; do not call per row. */
   long eventCount();
+
+  /** Count matching events. Implementations must apply the filter before counting. */
+  default long eventCount(FilterExpression filter) {
+    if (!filter.isEmpty()) {
+      throw new UnsupportedOperationException("This reader does not support event filters.");
+    }
+    return eventCount();
+  }
+
+  /** Matching events after an exclusive keyset anchor. */
+  default List<EventSummary> pageAfter(OptionalLong afterId, int limit, FilterExpression filter) {
+    if (!filter.isEmpty()) {
+      throw new UnsupportedOperationException("This reader does not support event filters.");
+    }
+    return pageAfter(afterId, limit);
+  }
+
+  /** Matching events before an exclusive keyset anchor, returned in ascending order. */
+  default List<EventSummary> pageBefore(OptionalLong beforeId, int limit, FilterExpression filter) {
+    if (!filter.isEmpty()) {
+      throw new UnsupportedOperationException("This reader does not support event filters.");
+    }
+    return pageBefore(beforeId, limit);
+  }
 
   /**
    * The events after {@code afterId} in ascending id order, at most {@code limit} of them.

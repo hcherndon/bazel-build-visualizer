@@ -5,6 +5,7 @@ load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST
 java_library(
     name = "tests_lib",
     srcs = [
+        "EventFilterTest.java",
         "EventIngestScaleTest.java",
         "EventQueriesTest.java",
         "EventWriterTest.java",
@@ -12,6 +13,7 @@ java_library(
         "TestSession.java",
     ],
     deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/event:event",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events:events",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
@@ -64,10 +66,18 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":EventFilterTest",
         ":EventIngestScaleTest",
         ":EventQueriesTest",
         ":EventWriterTest",
         ":StringDictionaryTest",
     ],
     visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "EventFilterTest",
+    test_class = "com.holtherndon.bazelviz.storage.events.EventFilterTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
 )

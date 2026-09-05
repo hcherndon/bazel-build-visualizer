@@ -5,6 +5,9 @@ is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
 
+Preferences uses the native application menu on macOS, without a duplicate
+Settings menu. Desktops without native Preferences retain Settings › Preferences….
+
 The eleven implementation phases are closed, but the historical v1 definition of
 done is met in 33 of 37 items, not 37 of 37. Display limits are documented but
 not all configurable in Preferences. Configured-target import still retains a
@@ -72,6 +75,40 @@ The current build is Bazel-only under ADR-009. Gradle commands and results in
 the phase records below are dated historical evidence, not current
 instructions. Use the README and section 26 of `docs/product-plan.md` for
 current commands.
+
+## Composable Events filters (2026-09-05)
+
+- Events now has a visual filter builder: typed field/operator/value editors,
+  multi-select type choices, nested **Match all (AND)** / **Match any (OR)**
+  groups, editable condition chips, individual **×** removal and **Clear all**.
+  The shared `core.filter.FilterExpression` and `ui.filter.FilterBuilder` are
+  independent of Events and SQLite; only Events adopts them in this change.
+  Condition forms use owned non-modal dialogs: nesting a combo box in the
+  original popup menu dismissed the entire form when its dropdown opened.
+  Cancel/Escape discards edits; changing the filter tree closes obsolete editors.
+- Conditions cover type, announced-child count, decode status, event identity
+  text, raw bytes, row/sequence/stream IDs, recorded timestamps, unknown fields
+  and last-message state. Unknown decoded fields do not become zero or false.
+- Filters apply to the full stored event set through allowlisted, parameter-bound
+  SQL behind `SessionReader`, on the page worker. Counts and both keyset paging
+  directions use the same predicate. Matching and total counts are shown
+  separately; the application-wide count remains unfiltered. No raw payload is
+  decoded to filter rows. Filter changes cancel obsolete work and reject stale
+  deliveries; live refresh retains the active filter. Direct event inspection
+  remains available even when that event is outside the filter.
+- Sparse row anchors now build only through the requested page and are reused
+  thereafter. A distant first seek can still scan preceding matches; filtered
+  counts can scan the database. Memory remains bounded by pages and the existing
+  anchor cap. Filter complexity bounds are listed in [limits.md](limits.md).
+- Verification: full build and Google Java Format checks pass. The safe suite
+  passed 339 of 340 distinct test targets; the existing
+  `RealBazelNormalizationTest` capture-start `SQLITE_BUSY` race failed the last
+  target, which passed on an isolated retry. Filter regression coverage includes
+  SQL count/paging agreement, unknown values, nested groups, removal, stale
+  results, live arrivals and avoiding repeated filtered scans while idle.
+  `//ui-swing/src/test/java/com/holtherndon/bazelviz/ui/filter:FilterDialogTest`
+  is an explicit, display-required check of real dropdown opening, applying and
+  cancelling; it is tagged `manual` so the ordinary headless suite excludes it.
 
 ## First-release input and lifecycle hardening (2026-09-04)
 
@@ -2313,7 +2350,7 @@ it is a different tab and was not reported.
   longer consumes `MainWindow`'s frame-wide `BorderLayout.NORTH`; the Console
   card reads top-to-bottom as `LauncherPanel`, live `CapturePanel`, then the
   growing `ConsoleView`. The compact launcher has explicit accessible labels
-  for Workspace, **Bazel Executable**, Capture detail and Bazel command, plus a
+  for Workspace, **Bazel executable**, Capture detail and Bazel command, plus a
   named **Choose workspace…** action. The form labels share a left edge while
   the selected Workspace, Bazel Executable, and Bazel command use the same
   aligned input column. Capture detail follows Bazel Executable on that

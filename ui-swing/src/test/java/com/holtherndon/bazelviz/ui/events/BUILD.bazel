@@ -9,6 +9,8 @@ java_library(
     testonly = True,
     srcs = glob(["*.java"]),
     deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/filter",
         "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/event",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/journal",

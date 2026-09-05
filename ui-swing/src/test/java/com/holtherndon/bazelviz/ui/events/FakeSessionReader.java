@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.events;
 
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.core.journal.JournalFormat.SourceKind;
 import com.holtherndon.bazelviz.storage.events.EventDetail;
 import com.holtherndon.bazelviz.storage.events.EventIdentity;
@@ -20,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import javax.swing.SwingUtilities;
 
 /**
@@ -56,6 +58,63 @@ final class FakeSessionReader implements SessionReader {
   private final AtomicInteger edtCalls = new AtomicInteger();
 
   private boolean closed;
+  private FilterExpression supportedFilter = FilterExpression.ALL;
+  private Predicate<EventSummary> filterMatcher = ignored -> true;
+  private final AtomicInteger filteredCounts = new AtomicInteger();
+
+  /** Explicit test oracle, not a second implementation of the production SQL compiler. */
+  void supportFilter(FilterExpression filter, Predicate<EventSummary> matcher) {
+    supportedFilter = filter;
+    filterMatcher = matcher;
+  }
+
+  int filteredCounts() {
+    return filteredCounts.get();
+  }
+
+  private boolean matches(EventSummary row, FilterExpression filter) {
+    if (!filter.equals(supportedFilter)) {
+      throw new AssertionError("No test matcher for " + filter);
+    }
+    return filterMatcher.test(row);
+  }
+
+  @Override
+  public long eventCount(FilterExpression filter) {
+    if (filter.isEmpty()) {
+      return eventCount();
+    }
+    record();
+    filteredCounts.incrementAndGet();
+    return summaries.stream().filter(row -> matches(row, filter)).count();
+  }
+
+  @Override
+  public List<EventSummary> pageAfter(OptionalLong afterId, int limit, FilterExpression filter) {
+    if (filter.isEmpty()) {
+      return pageAfter(afterId, limit);
+    }
+    record();
+    return summaries.stream()
+        .filter(row -> row.id() > afterId.orElse(Long.MIN_VALUE))
+        .filter(row -> matches(row, filter))
+        .limit(limit)
+        .toList();
+  }
+
+  @Override
+  public List<EventSummary> pageBefore(OptionalLong beforeId, int limit, FilterExpression filter) {
+    if (filter.isEmpty()) {
+      return pageBefore(beforeId, limit);
+    }
+    record();
+    List<EventSummary> matching =
+        summaries.stream()
+            .filter(row -> row.id() < beforeId.orElse(Long.MAX_VALUE))
+            .filter(row -> matches(row, filter))
+            .toList();
+    return matching.subList(Math.max(0, matching.size() - limit), matching.size());
+  }
 
   /** Ids {@code 1..count}, contiguous: the shape a Phase 1 import produces. */
   static FakeSessionReader dense(int count) {

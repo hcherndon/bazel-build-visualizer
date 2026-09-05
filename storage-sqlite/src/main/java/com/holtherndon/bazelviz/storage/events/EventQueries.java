@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.storage.events;
 
 import com.holtherndon.bazelviz.core.event.DecodeStatus;
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -149,6 +150,68 @@ public final class EventQueries implements AutoCloseable {
       } finally {
         active = null;
       }
+    }
+  }
+
+  /** Count all matching stored events, not only the visible table page. */
+  public long eventCount(FilterExpression filter) throws SQLException {
+    if (filter.isEmpty()) {
+      return eventCount();
+    }
+    EventFilterSql.Predicate predicate = EventFilterSql.compile(filter);
+    // Filter shapes are user-controlled, so these statements never enter the fixed SQL cache.
+    try (PreparedStatement statement =
+        connection.prepareStatement("SELECT COUNT(*)" + EVENT_FROM + " WHERE " + predicate.sql())) {
+      predicate.bind(statement, 1);
+      active = statement;
+      try (ResultSet result = statement.executeQuery()) {
+        return result.next() ? result.getLong(1) : 0;
+      } finally {
+        active = null;
+      }
+    }
+  }
+
+  public EventPage pageForward(OptionalLong afterId, int limit, FilterExpression filter)
+      throws SQLException {
+    return filter.isEmpty()
+        ? pageForward(afterId, limit)
+        : filteredPage(afterId, limit, filter, true);
+  }
+
+  public EventPage pageBackward(OptionalLong beforeId, int limit, FilterExpression filter)
+      throws SQLException {
+    return filter.isEmpty()
+        ? pageBackward(beforeId, limit)
+        : filteredPage(beforeId, limit, filter, false);
+  }
+
+  private EventPage filteredPage(
+      OptionalLong anchor, int limit, FilterExpression filter, boolean forward)
+      throws SQLException {
+    requireLimit(limit);
+    EventFilterSql.Predicate predicate = EventFilterSql.compile(filter);
+    String sql =
+        "SELECT "
+            + EVENT_COLUMNS
+            + EVENT_FROM
+            + " WHERE ("
+            + predicate.sql()
+            + ") AND e.id "
+            + (forward ? ">" : "<")
+            + " ? ORDER BY e.id "
+            + (forward ? "ASC" : "DESC")
+            + " LIMIT ?";
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      int next = predicate.bind(statement, 1);
+      statement.setLong(next++, anchor.orElse(forward ? Long.MIN_VALUE : Long.MAX_VALUE));
+      statement.setInt(next, limit);
+      List<EventSummary> page = runEventQuery(statement);
+      long nextId = page.isEmpty() ? 0 : page.getLast().id();
+      if (!forward) {
+        Collections.reverse(page);
+      }
+      return toPage(page, limit, nextId);
     }
   }
 

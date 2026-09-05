@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.ui.session;
 
 import com.holtherndon.bazelviz.capture.file.importer.JournalPayloadReader;
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.format.journal.JournalFrame;
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
 import com.holtherndon.bazelviz.format.session.SessionManager;
@@ -409,6 +410,34 @@ public final class SqliteSessionSource implements SessionSource {
       } catch (SQLException e) {
         throw new SessionDataException(
             "reading " + limit + " events before " + describe(beforeId) + " failed", e);
+      }
+    }
+
+    @Override
+    public long eventCount(FilterExpression filter) {
+      try {
+        return queries.eventCount(filter);
+      } catch (SQLException e) {
+        throw new SessionDataException("Counting filtered events failed", e);
+      }
+    }
+
+    @Override
+    public List<EventSummary> pageAfter(OptionalLong afterId, int limit, FilterExpression filter) {
+      try {
+        return queries.pageForward(afterId, limit, filter).events();
+      } catch (SQLException e) {
+        throw new SessionDataException("Reading filtered events failed", e);
+      }
+    }
+
+    @Override
+    public List<EventSummary> pageBefore(
+        OptionalLong beforeId, int limit, FilterExpression filter) {
+      try {
+        return queries.pageBackward(beforeId, limit, filter).events();
+      } catch (SQLException e) {
+        throw new SessionDataException("Reading filtered events failed", e);
       }
     }
 

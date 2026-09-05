@@ -64,7 +64,8 @@ contacts that host or selects a matching Workspace for you.
 
 ### Discover Workspaces with a script
 
-Open **Settings › Preferences…**, then choose the **Discovery** tab, to save
+Open **Preferences…** from the app menu on macOS (or **Settings › Preferences…**
+on other desktops), then choose the **Discovery** tab, to save
 one optional discovery script. It runs locally, not in a selected Workspace:
 once during graphical startup and whenever you press **Run Discovery Now**.
 That button saves the current editor text before starting the run. The work
@@ -164,7 +165,8 @@ shown; the result names sessions kept for that reason.
 
 ## Appearance
 
-Open **Settings › Preferences…** and choose the **Theme** tab to switch the
+Open **Preferences…** from the app menu on macOS (or **Settings › Preferences…**
+on other desktops) and choose the **Theme** tab to switch the
 whole application between Light, Dark, IntelliJ Light, Darcula, macOS Light,
 and macOS Dark. Open file editors, syntax views, graphs, timelines, and the
 selected Workspace's live Terminal update with the rest of the window;
@@ -491,6 +493,40 @@ not present in this source candidate. Errors now bounds its rendered line tail,
 but the selected raw payload is still read as one value. Treat imported
 sessions as trusted and avoid selecting known oversized payloads until the
 remaining source-size bounds land.
+
+### Filtering Events
+
+Use **+ Add filter** above the Events table to choose a field, an operator and
+a value in a small non-modal editor. Its dropdowns stay within that editor;
+**Add filter** / **Update filter** applies it, and **Cancel** or Escape leaves
+the condition unchanged. No query syntax is needed. For example:
+
+- **Type → is one of** lets you check `action` and `configured` together.
+- **Children → > → 5** selects events announcing more than five child events.
+- Leave **Match All (AND)** selected to require both conditions. Choose
+  **Any (OR)** to accept either. **+ Add group** nests another All/Any group,
+  allowing combinations such as “action with children > 5, or configured.”
+
+Click a condition to edit it, its **×** to remove it, or **Clear all** to return
+to the full stream. A group's **×** removes that group and its conditions.
+Empty groups are placeholders and do not restrict results. Large filter sets
+scroll within the compact filter area.
+
+Filters also cover decode status, event identity text (including recorded target
+labels), payload size, IDs, timestamps and boolean fields. **Contains** is a
+literal, case-insensitive substring match for ASCII text, not a wildcard or
+regular expression; **is** matches text exactly. Timestamp values are integer
+microseconds since the Unix epoch. **Children** counts announcements, not how
+many children have arrived. Failed decodes have unknown children/type/flags;
+use **is unknown** to find them. Unknown values do not match ordinary positive
+or negative comparisons.
+
+The count reads **N matching of M events** and the filter covers the full stored
+stream, not just loaded pages. It remains active as a live session grows. Editing
+filters pauses **Follow tail**; re-enable it to follow matching arrivals. Source
+event links from other pages still inspect that event without clearing filters.
+Filters are per open session view and reset when another session is opened;
+they are not saved presets. See [limits.md](limits.md) for complexity bounds.
 
 ### Browse Repository and Terminal
 

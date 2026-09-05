@@ -1,7 +1,9 @@
 package com.holtherndon.bazelviz.ui.events;
 
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.runner.files.ExecutionPath;
 import com.holtherndon.bazelviz.ui.files.WorkspaceFileAccess;
+import com.holtherndon.bazelviz.ui.filter.FilterBuilder;
 import com.holtherndon.bazelviz.ui.format.EventValueFormat;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
@@ -29,6 +31,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
@@ -108,7 +111,7 @@ public final class EventsView extends JPanel {
    * intervals, for the same reason: it is short enough that a running build feels current and long
    * enough that ticking it does not become the dominant cost of watching one.
    */
-  private static final long LIVE_REFRESH_INTERVAL_MICROS = 2_000_000;
+  private static final long LIVE_REFRESH_INTERVAL_MICROS = 500_000;
 
   private final long liveRefreshIntervalMicros;
 
@@ -120,6 +123,7 @@ public final class EventsView extends JPanel {
   private final JTable table = new JTable();
   private final JLabel statusLabel = new JLabel(" ");
   private final JCheckBox followBox = new JCheckBox("Follow tail", true);
+  private final FilterBuilder filters = new FilterBuilder(EventFilterFields.fields());
   private final JScrollPane tableScroll;
 
   /**
@@ -160,6 +164,12 @@ public final class EventsView extends JPanel {
   /** The row source currently installed, kept so a live refresh can rebuild over its reader. */
   private EventRowSource rows;
 
+  private SessionReader pageReader;
+  private FilterExpression filter = FilterExpression.ALL;
+  private long filterGeneration;
+  private Future<?> filterTask;
+  private boolean filtering;
+
   private Consumer<String> openFailureHandler = message -> {};
   private Consumer<String> copyFilePathHandler = path -> {};
   private Consumer<Path> openFileHandler = path -> {};
@@ -192,6 +202,8 @@ public final class EventsView extends JPanel {
   EventsView(long liveRefreshIntervalMicros) {
     super(new BorderLayout());
     this.liveRefreshIntervalMicros = liveRefreshIntervalMicros;
+    filters.onChange(this::applyFilter);
+    filters.setVisible(false);
 
     // The event table shows identifiers and display strings taken from the
     // stream, so it is exposed exactly as the Phase 3 tables are.
@@ -258,6 +270,7 @@ public final class EventsView extends JPanel {
     deck.add(progressPanel, CARD_IMPORT);
     deck.add(session, CARD_SESSION);
     add(deck, BorderLayout.CENTER);
+    add(filters, BorderLayout.NORTH);
     showEmpty("No session is open. Use File ▸ Open BEP File… or File ▸ Open Session…");
   }
 
@@ -324,12 +337,14 @@ public final class EventsView extends JPanel {
 
   /** Shows an explanatory message in place of any session. */
   public void showEmpty(String message) {
+    filters.setVisible(false);
     emptyState.setText(Objects.requireNonNull(message, "message"));
     cards.show(deck, CARD_EMPTY);
   }
 
   /** Brings the import progress view forward. */
   public void showImportProgress() {
+    filters.setVisible(false);
     cards.show(deck, CARD_IMPORT);
   }
 
@@ -423,6 +438,20 @@ public final class EventsView extends JPanel {
 
   /** Detaches immediately and completes after this session's accepted reads have stopped. */
   public CompletionStage<Void> closeSessionAsync() {
+    filterGeneration++;
+    if (filterTask != null) {
+      filterTask.cancel(true);
+      filterTask = null;
+    }
+    if (pageReader != null) {
+      pageReader.cancelRunningQuery();
+    }
+    if (rows != null) {
+      rows.cancel();
+    }
+    pageReader = null;
+    filtering = false;
+    refreshInFlight = false;
     pendingSelectionRow = -1;
     inspectorModel = null;
     tableModel = null;
@@ -433,6 +462,8 @@ public final class EventsView extends JPanel {
     ExecutorService details = detailExecutor;
     ScheduledExecutorService tick = ticker;
     source = null;
+    filters.setExpression(FilterExpression.ALL);
+    filters.setVisible(false);
     fileAccess = Optional.empty();
     pageExecutor = null;
     detailExecutor = null;
@@ -466,6 +497,10 @@ public final class EventsView extends JPanel {
       return false;
     }
     inspectorModel.select(eventId);
+    if (!filter.isEmpty()) {
+      statusLabel.setText(
+          "Inspecting event " + eventId + " directly; the table's filters remain active.");
+    }
     return true;
   }
 
@@ -518,6 +553,10 @@ public final class EventsView extends JPanel {
     return followBox.isSelected();
   }
 
+  FilterBuilder filtersForTest() {
+    return filters;
+  }
+
   // ------------------------------------------------------------------ EDT
 
   private void install(SessionSource opened, SessionReader detailReader, EventRowSource rows) {
@@ -540,6 +579,8 @@ public final class EventsView extends JPanel {
 
   private void buildViews(SessionSource opened, SessionReader detailReader, EventRowSource rows) {
     this.rows = rows;
+    table.setEnabled(true);
+    pageReader = rows.reader();
     tableModel =
         new PagedTableModel<>(
             rows, EventTableColumns.columns(), pageExecutor, rows.pageSize(), CACHE_PAGES);
@@ -582,7 +623,8 @@ public final class EventsView extends JPanel {
     inspector.show(EventInspection.none());
     statusLabel.setText(describe(opened.info(), rows));
     cards.show(deck, CARD_SESSION);
-    rowCountListener.accept(rows.rowCount());
+    filters.setVisible(true);
+    rowCountListener.accept(rows.totalRowCount());
     if (rows.rowCount() > 0) {
       table.setRowSelectionInterval(0, 0);
     }
@@ -627,7 +669,7 @@ public final class EventsView extends JPanel {
    * model is installed.
    */
   public void refreshLive() {
-    if (pageExecutor == null || source == null || rows == null) {
+    if (pageExecutor == null || source == null || rows == null || filtering) {
       return;
     }
     long now = System.currentTimeMillis() * 1_000L;
@@ -642,6 +684,9 @@ public final class EventsView extends JPanel {
     lastLiveRefreshMicros = now;
     refreshInFlight = true;
     SessionSource opened = source;
+    long generation = filterGeneration;
+    FilterExpression currentFilter = filter;
+    long knownTotal = rows.totalRowCount();
     SessionReader reader = rows.reader();
     int pageSize = rows.pageSize();
     ExecutorService executor = pageExecutor;
@@ -649,7 +694,12 @@ public final class EventsView extends JPanel {
         () -> {
           EventRowSource freshRows;
           try {
-            freshRows = EventRowSource.open(reader, pageSize);
+            // Events and their identities are immutable once committed. Avoid rescanning an
+            // arbitrary predicate on every idle tick (including reopened, finished sessions).
+            if (!currentFilter.isEmpty() && reader.eventCount() == knownTotal) {
+              return;
+            }
+            freshRows = EventRowSource.open(reader, pageSize, currentFilter);
           } catch (RuntimeException failure) {
             log.debug("live events refresh failed", failure);
             return;
@@ -658,12 +708,16 @@ public final class EventsView extends JPanel {
           }
           SwingUtilities.invokeLater(
               () -> {
-                if (source != opened) {
+                if (source != opened
+                    || filterGeneration != generation
+                    || rows == null
+                    || filtering) {
                   // Superseded while this refresh was running.
                   return;
                 }
                 if (freshRows.rowCount() == rows.rowCount()
-                    && freshRows.rowIndexMode() == rows.rowIndexMode()) {
+                    && freshRows.rowIndexMode() == rows.rowIndexMode()
+                    && freshRows.totalRowCount() == rows.totalRowCount()) {
                   return; // nothing new since the last refresh
                 }
                 swapRows(opened, freshRows);
@@ -678,9 +732,11 @@ public final class EventsView extends JPanel {
    * all three without this.
    */
   private void swapRows(SessionSource opened, EventRowSource freshRows) {
-    boolean following = followBox.isSelected();
+    boolean sameFilter = rows != null && rows.filter().equals(freshRows.filter());
+    boolean following = sameFilter && followBox.isSelected();
     int viewRow = table.getSelectedRow();
-    int modelRowToReselect = viewRow >= 0 ? table.convertRowIndexToModel(viewRow) : -1;
+    int modelRowToReselect =
+        sameFilter && viewRow >= 0 ? table.convertRowIndexToModel(viewRow) : -1;
     Point viewPosition = tableScroll.getViewport().getViewPosition();
     // Read before the swap discards it, reapply after: the same
     // treatment given to selection and scroll below, now through the
@@ -688,6 +744,9 @@ public final class EventsView extends JPanel {
     // and, once persistence is attached, survives a restart too.
     headerInteractions.captureNow();
 
+    if (rows != null) {
+      rows.cancel();
+    }
     rows = freshRows;
     tableModel =
         new PagedTableModel<>(
@@ -703,17 +762,78 @@ public final class EventsView extends JPanel {
           table.setModel(tableModel);
           headerInteractions.modelInstalled();
           statusLabel.setText(describe(opened.info(), freshRows));
-          rowCountListener.accept(freshRows.rowCount());
+          rowCountListener.accept(freshRows.totalRowCount());
 
           if (modelRowToReselect >= 0 && modelRowToReselect < tableModel.getRowCount()) {
             table.setRowSelectionInterval(modelRowToReselect, modelRowToReselect);
           }
           if (following) {
             scrollToTail();
-          } else {
+          } else if (sameFilter) {
             tableScroll.getViewport().setViewPosition(viewPosition);
+          } else {
+            tableScroll.getViewport().setViewPosition(new Point());
           }
         });
+  }
+
+  private void applyFilter(FilterExpression requested) {
+    filter = requested;
+    long generation = ++filterGeneration;
+    if (pageExecutor == null || source == null || pageReader == null) {
+      return;
+    }
+    if (filterTask != null) {
+      filterTask.cancel(true);
+    }
+    pageReader.cancelRunningQuery();
+    if (rows != null) {
+      rows.cancel();
+    }
+    filtering = true;
+    followBox.setSelected(false);
+    table.setEnabled(false);
+    table.clearSelection();
+    pendingSelectionRow = -1;
+    if (inspectorModel != null) {
+      inspectorModel.clearSelection();
+    }
+    statusLabel.setText("Applying filters…");
+    SessionSource opened = source;
+    SessionReader reading = pageReader;
+    filterTask =
+        pageExecutor.submit(
+            () -> {
+              try {
+                EventRowSource filtered =
+                    EventRowSource.open(reading, EventRowSource.DEFAULT_PAGE_SIZE, requested);
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (source != opened || filterGeneration != generation) {
+                        return;
+                      }
+                      filtering = false;
+                      table.setEnabled(true);
+                      swapRows(opened, filtered);
+                    });
+              } catch (RuntimeException failure) {
+                SwingUtilities.invokeLater(
+                    () -> {
+                      if (source != opened || filterGeneration != generation) {
+                        return;
+                      }
+                      filtering = false;
+                      rows = null;
+                      tableModel = null;
+                      table.setModel(new DefaultTableModel());
+                      table.setEnabled(true);
+                      statusLabel.setText(
+                          "Filter could not be applied: "
+                              + failure.getMessage()
+                              + ". Edit or clear the filters to retry.");
+                    });
+              }
+            });
   }
 
   /**
@@ -748,6 +868,9 @@ public final class EventsView extends JPanel {
    * refresh cannot yank the user back to the tail; scrolling back down to the bottom re-checks it.
    */
   private void onViewportScrolled() {
+    if (filtering) {
+      return;
+    }
     boolean atBottom = isScrolledToBottom();
     if (followBox.isSelected() && !atBottom) {
       followBox.setSelected(false);
@@ -807,7 +930,7 @@ public final class EventsView extends JPanel {
   }
 
   private void rowsUpdated(TableModelEvent event) {
-    if (pendingSelectionRow < 0 || tableModel == null) {
+    if (pendingSelectionRow < 0 || tableModel == null || event.getSource() != tableModel) {
       return;
     }
     if (event.getType() == TableModelEvent.UPDATE
@@ -818,7 +941,7 @@ public final class EventsView extends JPanel {
   }
 
   private void selectionChanged() {
-    if (tableModel == null || inspectorModel == null) {
+    if (tableModel == null || inspectorModel == null || filtering) {
       return;
     }
     int viewRow = table.getSelectedRow();
@@ -856,7 +979,14 @@ public final class EventsView extends JPanel {
     if (stillCapturing) {
       text.append("at least ");
     }
-    text.append(EventValueFormat.count(rows.rowCount())).append(" events");
+    text.append(EventValueFormat.count(rows.rowCount()));
+    if (!rows.filter().isEmpty()) {
+      text.append(" matching of ").append(EventValueFormat.count(rows.totalRowCount()));
+    }
+    text.append(" events");
+    if (!rows.filter().isEmpty() && rows.rowCount() == 0) {
+      text.append(" — no events match; edit or clear the filters");
+    }
     if (stillCapturing) {
       text.append(" (still capturing)");
     }

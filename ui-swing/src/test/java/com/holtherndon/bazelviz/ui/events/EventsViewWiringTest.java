@@ -4,6 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.capture.file.importer.BepImporter;
 import com.holtherndon.bazelviz.capture.file.importer.ImportResult;
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Condition;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Group;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Junction;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Operator;
 import com.holtherndon.bazelviz.format.session.SessionManager;
 import com.holtherndon.bazelviz.testsupport.bep.BepBinaryWriter;
 import com.holtherndon.bazelviz.testsupport.bep.SyntheticBepStream;
@@ -38,6 +43,109 @@ import org.junit.jupiter.api.io.TempDir;
 class EventsViewWiringTest {
 
   private static final int EVENT_COUNT = 300;
+
+  @Test
+  @Timeout(180)
+  void filteringReachesRowsBeyondTheFirstPageAndClearRestoresTheWholeSession(
+      @TempDir Path temporary) throws Exception {
+    Path source = temporary.resolve("build.bep");
+    BepBinaryWriter.write(source, SyntheticBepStream.of(EVENT_COUNT));
+    SessionManager sessions = new SessionManager(temporary.resolve("sessions"), "0.1.0-test");
+    ImportResult imported = new BepImporter(sessions).importFile(source);
+    try (SqliteSessionSource opened = SqliteSessionSource.open(sessions, imported.sessionRoot())) {
+      List<Long> totals = new ArrayList<>();
+      EventsView events =
+          onEdt(
+              () -> {
+                EventsView view = new EventsView();
+                view.setRowCountListener(totals::add);
+                view.openSession(
+                    opened,
+                    failure -> {
+                      throw new AssertionError(failure);
+                    });
+                return view;
+              });
+      try {
+        await(() -> onEdt(() -> events.tableModelForTest() != null));
+        SwingUtilities.invokeAndWait(
+            () ->
+                events
+                    .filtersForTest()
+                    .setExpression(
+                        new Group(
+                            Junction.ALL,
+                            List.of(new Condition("id", Operator.GREATER_THAN, List.of("280"))))));
+        await(
+            () ->
+                onEdt(
+                    () ->
+                        events.tableModelForTest() != null
+                            && events.tableModelForTest().getRowCount() == 20));
+        assertThat(onEdt(events::statusTextForTest)).contains("20 matching of 300 events");
+        await(
+            () ->
+                onEdt(
+                    () ->
+                        events.tableModelForTest().getValueAt(0, EventTableColumns.ID_COLUMN)
+                            instanceof Long));
+        assertThat(
+                onEdt(() -> events.tableModelForTest().getValueAt(0, EventTableColumns.ID_COLUMN)))
+            .isEqualTo(281L);
+        SwingUtilities.invokeAndWait(() -> events.tableForTest().setRowSelectionInterval(0, 0));
+        await(
+            () ->
+                onEdt(
+                    () ->
+                        events
+                            .inspectorModelForTest()
+                            .current()
+                            .row()
+                            .map(row -> row.id() == 281)
+                            .orElse(false)));
+        // Rapid changes: the first result may be queued, but must never replace the latest one.
+        SwingUtilities.invokeAndWait(
+            () -> {
+              events
+                  .filtersForTest()
+                  .setExpression(
+                      new Group(
+                          Junction.ALL,
+                          List.of(new Condition("id", Operator.LESS_THAN, List.of("100")))));
+              events
+                  .filtersForTest()
+                  .setExpression(
+                      new Group(
+                          Junction.ALL,
+                          List.of(new Condition("id", Operator.GREATER_THAN, List.of("999")))));
+            });
+        await(() -> onEdt(() -> events.statusTextForTest().contains("no events match")));
+        assertThat(onEdt(() -> events.tableModelForTest().getRowCount())).isZero();
+        assertThat(onEdt(() -> events.revealEvent(1))).isTrue();
+        await(
+            () ->
+                onEdt(
+                    () ->
+                        events
+                            .inspectorModelForTest()
+                            .current()
+                            .row()
+                            .map(row -> row.id() == 1)
+                            .orElse(false)));
+        SwingUtilities.invokeAndWait(
+            () -> events.filtersForTest().setExpression(FilterExpression.ALL));
+        await(
+            () ->
+                onEdt(
+                    () ->
+                        events.tableModelForTest() != null
+                            && events.tableModelForTest().getRowCount() == EVENT_COUNT));
+        assertThat(onEdt(() -> List.copyOf(totals))).containsOnly(300L);
+      } finally {
+        onEdt(events::closeAsync).toCompletableFuture().get(10, TimeUnit.SECONDS);
+      }
+    }
+  }
 
   @BeforeAll
   static void requireHeadless() {

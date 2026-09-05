@@ -22,6 +22,7 @@ java_library(
 test_suite(
     name = "tests",
     tests = [
+        "//core-model/src/test/java/com/holtherndon/bazelviz/core/filter:tests",
         "//core-model/src/test/java/com/holtherndon/bazelviz/core/graph:tests",
         "//core-model/src/test/java/com/holtherndon/bazelviz/core/id:tests",
         "//core-model/src/test/java/com/holtherndon/bazelviz/core/journal:tests",

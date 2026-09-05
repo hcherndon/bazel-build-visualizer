@@ -1,0 +1,34 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+java_junit5_test(
+    name = "FilterBuilderTest",
+    srcs = ["FilterBuilderTest.java"],
+    test_class = "com.holtherndon.bazelviz.ui.filter.FilterBuilderTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/filter",
+    ],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+)
+
+test_suite(
+    name = "tests",
+    tests = [":FilterBuilderTest"],
+    visibility = ["//ui-swing:__pkg__"],
+)
+
+# Explicit desktop check: opening real JComboBox popups cannot be tested headlessly.
+java_junit5_test(
+    name = "FilterDialogTest",
+    srcs = ["FilterDialogTest.java"],
+    test_class = "com.holtherndon.bazelviz.ui.filter.FilterDialogTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/filter",
+    ],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    tags = ["manual", "requires-display", "no-sandbox", "external"],
+)

@@ -324,7 +324,7 @@ public final class LauncherPanel extends JPanel {
   private void buildForm() {
     hostLabel = label("Run on", executionHost, "launcher.executionHostLabel");
     workspaceLabel = label("Workspace", workspace, "launcher.workspaceLabel");
-    bazelLabel = label("Bazel Executable", bazelExecutable, "launcher.bazelLabel");
+    bazelLabel = label("Bazel executable", bazelExecutable, "launcher.bazelLabel");
     JLabel detailLabel = label("Capture detail", captureDetail, "launcher.captureDetailLabel");
     JLabel commandLabel = label("Bazel command", command, "launcher.commandLabel");
 

@@ -1,11 +1,13 @@
 package com.holtherndon.bazelviz.ui.events;
 
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.storage.events.EventSummary;
 import com.holtherndon.bazelviz.ui.session.SessionDataException;
 import com.holtherndon.bazelviz.ui.session.SessionReader;
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.concurrent.CancellationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,19 +43,21 @@ import org.slf4j.LoggerFactory;
  *
  * <h2>The fallback: bounded sparse anchors</h2>
  *
- * <p>When the ids are not contiguous — a future phase that deletes rows, a session compacted by a
- * later tool — arithmetic cannot work and a scan is unavoidable. The index then walks the table
- * once through the ordinary keyset API, keeping one anchor id every {@code stride} rows and
- * discarding everything in between, so its memory is {@code rowCount / stride} longs and never the
- * table. {@code stride} is a multiple of the page size chosen so the anchor array stays under
- * {@value #MAX_ANCHORS} entries; a page start that falls between two anchors is reached by walking
- * at most {@code stride / pageSize − 1} pages forward from the nearer one. The build is O(rows)
- * once and every lookup afterwards is O(1) plus that bounded walk.
+ * <p>When the ids are not contiguous — a filtered result or a session compacted by a later tool —
+ * arithmetic cannot work. The index walks matches only as far as the requested page through the
+ * ordinary keyset API, keeping one anchor id every {@code stride} rows and discarding everything in
+ * between, so its memory is {@code rowCount / stride} longs and never the table. {@code stride} is
+ * a multiple of the page size chosen so the anchor array stays under {@value #MAX_ANCHORS} entries;
+ * a page start that falls between two anchors is reached by walking at most {@code stride /
+ * pageSize − 1} pages forward from the nearer one. First-page access needs no index walk. A first
+ * seek far down the result is O(preceding matches); previously indexed lookups are O(1) plus that
+ * bounded walk. Counts for arbitrary filters can still scan the store.
  *
  * <h2>Threading</h2>
  *
  * <p>Confined to the single-threaded page-fetch executor that owns the {@link SessionReader}. Never
- * touched from the EDT; {@link #mode()} is {@code volatile} only so a status line can read it.
+ * queried on the EDT; {@link #mode()} is volatile for the status line, and {@link #cancel()} may be
+ * called from the EDT to abandon an obsolete index.
  */
 public final class EventRowIndex {
 
@@ -90,37 +94,53 @@ public final class EventRowIndex {
   private final long rowCount;
   private final int pageSize;
   private final long minId;
+  private final FilterExpression filter;
 
   private volatile Mode mode;
   private long[] anchors;
   private int stride;
+  private int builtBuckets;
+  private long indexedRows;
+  private OptionalLong indexedThrough = OptionalLong.empty();
+  private volatile boolean cancelled;
 
-  private EventRowIndex(SessionReader reader, long rowCount, int pageSize, long minId, Mode mode) {
+  private EventRowIndex(
+      SessionReader reader,
+      long rowCount,
+      int pageSize,
+      long minId,
+      Mode mode,
+      FilterExpression filter) {
     this.reader = reader;
     this.rowCount = rowCount;
     this.pageSize = pageSize;
     this.minId = minId;
     this.mode = mode;
+    this.filter = filter;
   }
 
   /**
-   * Probes the table and returns an index for it. Three indexed queries; no table scan even when
-   * the outcome is sparse (the anchor array is built on first use, so an index that is never asked
-   * for a row never pays for one).
+   * Probes the unfiltered table and returns an index for it. Three indexed queries; no table scan
+   * even when the outcome is sparse (the anchor array is built on first use, so an index that is
+   * never asked for a row never pays for one).
    *
    * <p>Blocking: call on the fetch executor, never the EDT.
    */
   public static EventRowIndex open(SessionReader reader, int pageSize) {
+    return open(reader, pageSize, FilterExpression.ALL);
+  }
+
+  public static EventRowIndex open(SessionReader reader, int pageSize, FilterExpression filter) {
     Objects.requireNonNull(reader, "reader");
     if (pageSize <= 0) {
       throw new IllegalArgumentException("pageSize must be positive: " + pageSize);
     }
-    long rowCount = reader.eventCount();
+    long rowCount = reader.eventCount(filter);
     if (rowCount <= 0) {
-      return new EventRowIndex(reader, 0, pageSize, 0, Mode.DENSE);
+      return new EventRowIndex(reader, 0, pageSize, 0, Mode.DENSE, filter);
     }
-    List<EventSummary> first = reader.pageAfter(OptionalLong.empty(), 1);
-    List<EventSummary> last = reader.pageBefore(OptionalLong.empty(), 1);
+    List<EventSummary> first = reader.pageAfter(OptionalLong.empty(), 1, filter);
+    List<EventSummary> last = reader.pageBefore(OptionalLong.empty(), 1, filter);
     if (first.isEmpty() || last.isEmpty()) {
       throw new SessionDataException(
           "the event table reports "
@@ -131,15 +151,15 @@ public final class EventRowIndex {
     long maxId = last.getLast().id();
     boolean dense = maxId - minId + 1 == rowCount;
     if (!dense) {
-      log.info(
-          "event ids in this session are not contiguous (first={}, last={}, count={});"
+      log.debug(
+          "event ids in this result are not contiguous (first={}, last={}, count={});"
               + " row lookups will use a sparse anchor index",
           minId,
           maxId,
           rowCount);
     }
     return new EventRowIndex(
-        reader, rowCount, pageSize, minId, dense ? Mode.DENSE : Mode.SPARSE_ANCHORS);
+        reader, rowCount, pageSize, minId, dense ? Mode.DENSE : Mode.SPARSE_ANCHORS, filter);
   }
 
   /** Rows the index was opened over. */
@@ -165,6 +185,7 @@ public final class EventRowIndex {
    *     with, which is what the table model always asks for
    */
   public Anchor anchorForRow(long rowIndex) {
+    checkCancelled();
     if (rowIndex < 0 || rowIndex >= rowCount) {
       throw new IndexOutOfBoundsException(
           "row " + rowIndex + " is outside the " + rowCount + " rows of this session");
@@ -199,20 +220,25 @@ public final class EventRowIndex {
         actualId);
     mode = Mode.SPARSE_ANCHORS;
     anchors = null;
+    builtBuckets = 0;
+    indexedRows = 0;
+    indexedThrough = OptionalLong.empty();
   }
 
   // --------------------------------------------------------------- sparse
 
   private Anchor sparseAnchor(long rowIndex) {
-    long[] built = ensureAnchors();
+    stride = chooseStride(rowCount, pageSize);
     int bucket = (int) (rowIndex / stride);
+    long[] built = ensureAnchors(bucket);
     long bucketRow = (long) bucket * stride;
     OptionalLong anchor =
         bucket == 0 && bucketRow == 0 ? OptionalLong.empty() : OptionalLong.of(built[bucket]);
     long toSkip = rowIndex - bucketRow;
     while (toSkip > 0) {
       int step = (int) Math.min(pageSize, toSkip);
-      List<EventSummary> skipped = reader.pageAfter(anchor, step);
+      checkCancelled();
+      List<EventSummary> skipped = reader.pageAfter(anchor, step, filter);
       if (skipped.size() != step) {
         throw new SessionDataException(
             "walking to row "
@@ -233,48 +259,48 @@ public final class EventRowIndex {
     return new Anchor(anchor, OptionalLong.empty());
   }
 
-  private long[] ensureAnchors() {
+  private long[] ensureAnchors(int throughBucket) {
     long[] built = anchors;
-    if (built != null) {
-      return built;
-    }
-    stride = chooseStride(rowCount, pageSize);
     int buckets = (int) ((rowCount + stride - 1) / stride);
-    built = new long[buckets];
-    long started = System.nanoTime();
-    OptionalLong anchor = OptionalLong.empty();
-    long rowsSeen = 0;
-    int bucket = 1;
-    while (rowsSeen < rowCount && bucket < buckets) {
-      long remaining = stride;
-      while (remaining > 0 && rowsSeen < rowCount) {
+    if (built == null) {
+      built = new long[buckets];
+      anchors = built;
+      builtBuckets = 1;
+    }
+    while (indexedRows < rowCount && builtBuckets <= throughBucket) {
+      // Resume at the same boundary if an earlier query failed mid-bucket.
+      long remaining = (long) builtBuckets * stride - indexedRows;
+      while (remaining > 0 && indexedRows < rowCount) {
+        checkCancelled();
         int step = (int) Math.min(pageSize, remaining);
-        List<EventSummary> page = reader.pageAfter(anchor, step);
+        List<EventSummary> page = reader.pageAfter(indexedThrough, step, filter);
         if (page.isEmpty()) {
           throw new SessionDataException(
               "the event table ended after "
-                  + rowsSeen
+                  + indexedRows
                   + " rows while building a row index over "
                   + rowCount
                   + " rows");
         }
-        anchor = OptionalLong.of(page.getLast().id());
-        rowsSeen += page.size();
+        indexedThrough = OptionalLong.of(page.getLast().id());
+        indexedRows += page.size();
         remaining -= page.size();
       }
       // The id of the last row of bucket-1 is the exclusive anchor the
       // next bucket's first page starts after.
-      built[bucket] = anchor.orElseThrow();
-      bucket++;
+      built[builtBuckets++] = indexedThrough.orElseThrow();
     }
-    anchors = built;
-    log.info(
-        "built a sparse row index of {} anchors (stride {}) over {} rows in {} ms",
-        buckets,
-        stride,
-        rowCount,
-        (System.nanoTime() - started) / 1_000_000);
     return built;
+  }
+
+  void cancel() {
+    cancelled = true;
+  }
+
+  void checkCancelled() {
+    if (cancelled || Thread.currentThread().isInterrupted()) {
+      throw new CancellationException("Event indexing cancelled");
+    }
   }
 
   /**
