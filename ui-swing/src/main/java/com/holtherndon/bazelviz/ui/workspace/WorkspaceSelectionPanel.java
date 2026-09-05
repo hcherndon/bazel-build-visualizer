@@ -10,6 +10,7 @@ import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
+import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
@@ -36,7 +37,9 @@ import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JList;
+import javax.swing.JMenuItem;
 import javax.swing.JPanel;
+import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.JTextField;
 import javax.swing.KeyStroke;
@@ -67,8 +70,8 @@ public final class WorkspaceSelectionPanel extends JPanel {
   private final JButton forgetUnavailableRestores = new JButton("Forget unavailable windows");
   private final JButton open = new JButton("Open workspace");
   private final JButton create = new JButton("New workspace");
-  private final JButton edit = new JButton("Edit");
-  private final JButton remove = new JButton("Remove");
+  private final JButton discover = new JButton("Discover");
+  private final JButton editDiscovery = new JButton("Edit Discovery");
 
   private final CardLayout cardLayout = new CardLayout();
   private final JPanel cards = new JPanel(cardLayout);
@@ -90,6 +93,8 @@ public final class WorkspaceSelectionPanel extends JPanel {
   private Consumer<WorkspaceProfile> createCallback = ignored -> {};
   private Predicate<WorkspaceProfile> updateCallback = ignored -> true;
   private Consumer<WorkspaceProfile> removeCallback = ignored -> {};
+  private Runnable discoverCallback = () -> {};
+  private Runnable editDiscoveryCallback = () -> {};
   private WorkspaceProfile editingProfile;
   private String visibleCard = LIST_CARD;
   private Set<String> discoveredIds = Set.of();
@@ -235,6 +240,16 @@ public final class WorkspaceSelectionPanel extends JPanel {
     removeCallback = Objects.requireNonNull(callback, "callback");
   }
 
+  /** Sets the callback invoked by the visible Discover action. */
+  public void onDiscover(Runnable callback) {
+    discoverCallback = Objects.requireNonNull(callback, "callback");
+  }
+
+  /** Sets the callback invoked by the visible Edit Discovery action. */
+  public void onEditDiscovery(Runnable callback) {
+    editDiscoveryCallback = Objects.requireNonNull(callback, "callback");
+  }
+
   /** Opens a blank local-workspace editor. Performs no file selection or discovery. */
   public void showNewWorkspaceForm() {
     requireEdt();
@@ -308,10 +323,10 @@ public final class WorkspaceSelectionPanel extends JPanel {
     JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
     open.setName("workspaces.open");
     create.setName("workspaces.new");
-    edit.setName("workspaces.edit");
-    remove.setName("workspaces.remove");
-    actions.add(remove);
-    actions.add(edit);
+    discover.setName("workspaces.discover");
+    editDiscovery.setName("workspaces.editDiscovery");
+    actions.add(editDiscovery);
+    actions.add(discover);
     actions.add(create);
     actions.add(open);
     panel.add(actions, BorderLayout.SOUTH);
@@ -377,12 +392,8 @@ public final class WorkspaceSelectionPanel extends JPanel {
     workspaceList.addListSelectionListener(event -> updateSelectionActions());
     open.addActionListener(event -> openSelectedWorkspace());
     create.addActionListener(event -> showNewWorkspaceForm());
-    edit.addActionListener(event -> showEditWorkspaceForm());
-    remove.addActionListener(
-        event ->
-            selectedWorkspace()
-                .filter(profile -> !isDiscovered(profile))
-                .ifPresent(removeCallback));
+    discover.addActionListener(event -> discoverCallback.run());
+    editDiscovery.addActionListener(event -> editDiscoveryCallback.run());
     saveEditor.addActionListener(event -> submitEditor());
     cancelEditor.addActionListener(event -> showCard(LIST_CARD));
     kind.addActionListener(event -> updateSshFields());
@@ -392,13 +403,18 @@ public final class WorkspaceSelectionPanel extends JPanel {
           @Override
           public void mouseClicked(MouseEvent event) {
             if (event.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(event)) {
-              int index = workspaceList.locationToIndex(event.getPoint());
-              Rectangle bounds = index < 0 ? null : workspaceList.getCellBounds(index, index);
-              if (bounds == null || !bounds.contains(event.getPoint())) {
-                return;
-              }
-              openSelectedWorkspace();
+              selectWorkspaceAt(event.getPoint()).ifPresent(openCallback);
             }
+          }
+
+          @Override
+          public void mousePressed(MouseEvent event) {
+            showWorkspaceContextMenu(event);
+          }
+
+          @Override
+          public void mouseReleased(MouseEvent event) {
+            showWorkspaceContextMenu(event);
           }
         });
     workspaceList
@@ -414,6 +430,25 @@ public final class WorkspaceSelectionPanel extends JPanel {
               @Override
               public void actionPerformed(ActionEvent event) {
                 openSelectedWorkspace();
+              }
+            });
+    workspaceList
+        .getInputMap(JComponent.WHEN_FOCUSED)
+        .put(KeyStroke.getKeyStroke(KeyEvent.VK_F10, KeyEvent.SHIFT_DOWN_MASK), "workspace-menu");
+    workspaceList
+        .getInputMap(JComponent.WHEN_FOCUSED)
+        .put(KeyStroke.getKeyStroke(KeyEvent.VK_CONTEXT_MENU, 0), "workspace-menu");
+    workspaceList
+        .getActionMap()
+        .put(
+            "workspace-menu",
+            new AbstractAction() {
+              private static final long serialVersionUID = 1L;
+
+              @Override
+              public void actionPerformed(ActionEvent event) {
+                selectedWorkspace()
+                    .ifPresent(WorkspaceSelectionPanel.this::showWorkspaceContextMenu);
               }
             });
     cards
@@ -460,6 +495,52 @@ public final class WorkspaceSelectionPanel extends JPanel {
 
   private void openSelectedWorkspace() {
     selectedWorkspace().ifPresent(openCallback);
+  }
+
+  private Optional<WorkspaceProfile> selectWorkspaceAt(Point point) {
+    int index = workspaceList.locationToIndex(point);
+    Rectangle bounds = index < 0 ? null : workspaceList.getCellBounds(index, index);
+    if (bounds == null || !bounds.contains(point)) {
+      workspaceList.clearSelection();
+      return Optional.empty();
+    }
+    workspaceList.setSelectedIndex(index);
+    return Optional.of(workspaceModel.getElementAt(index));
+  }
+
+  private void showWorkspaceContextMenu(MouseEvent event) {
+    if (event.isPopupTrigger()) {
+      selectWorkspaceAt(event.getPoint())
+          .ifPresent(profile -> showWorkspaceContextMenu(profile, event.getX(), event.getY()));
+    }
+  }
+
+  private void showWorkspaceContextMenu(WorkspaceProfile profile) {
+    int index = workspaceList.getSelectedIndex();
+    Rectangle bounds = index < 0 ? null : workspaceList.getCellBounds(index, index);
+    int x = bounds == null ? 0 : bounds.x;
+    int y = bounds == null ? 0 : bounds.y + bounds.height;
+    showWorkspaceContextMenu(profile, x, y);
+  }
+
+  private void showWorkspaceContextMenu(WorkspaceProfile profile, int x, int y) {
+    createWorkspaceContextMenu(profile).show(workspaceList, x, y);
+  }
+
+  private JPopupMenu createWorkspaceContextMenu(WorkspaceProfile profile) {
+    JPopupMenu menu = new JPopupMenu();
+    JMenuItem openItem = new JMenuItem("Open Workspace");
+    openItem.addActionListener(event -> openCallback.accept(profile));
+    menu.add(openItem);
+    if (!isDiscovered(profile)) {
+      JMenuItem editItem = new JMenuItem("Edit");
+      editItem.addActionListener(event -> showEditWorkspaceForm(profile));
+      menu.add(editItem);
+      JMenuItem removeItem = new JMenuItem("Remove");
+      removeItem.addActionListener(event -> removeCallback.accept(profile));
+      menu.add(removeItem);
+    }
+    return menu;
   }
 
   private void editWorkspace(WorkspaceProfile profile) {
@@ -557,10 +638,7 @@ public final class WorkspaceSelectionPanel extends JPanel {
 
   private void updateSelectionActions() {
     boolean selected = !workspaceList.isSelectionEmpty();
-    boolean managed = selectedWorkspace().map(profile -> !isDiscovered(profile)).orElse(false);
     open.setEnabled(selected);
-    edit.setEnabled(managed);
-    remove.setEnabled(managed);
   }
 
   private void updateWorkspaceCount() {
@@ -650,12 +728,20 @@ public final class WorkspaceSelectionPanel extends JPanel {
     return create;
   }
 
-  JButton editForTest() {
-    return edit;
+  JButton discoverForTest() {
+    return discover;
   }
 
-  JButton removeForTest() {
-    return remove;
+  JButton editDiscoveryForTest() {
+    return editDiscovery;
+  }
+
+  JPopupMenu contextMenuForTest(WorkspaceProfile profile) {
+    return createWorkspaceContextMenu(profile);
+  }
+
+  Optional<WorkspaceProfile> selectWorkspaceAtForTest(Point point) {
+    return selectWorkspaceAt(point);
   }
 
   JTextField labelForTest() {

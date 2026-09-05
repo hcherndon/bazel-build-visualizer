@@ -42,4 +42,9 @@ public final class PreferencesPanel extends JPanel {
   JTabbedPane tabsForTest() {
     return tabs;
   }
+
+  /** Selects the Discovery settings category. */
+  public void selectDiscovery() {
+    tabs.setSelectedIndex(1);
+  }
 }
