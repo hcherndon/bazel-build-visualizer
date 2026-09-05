@@ -31,7 +31,7 @@ being presented as complete.
 Bazelisk selects the version in `.bazelversion`, and Bazel downloads the Java
 toolchain. A separate JDK installation is not required for this workflow.
 
-![Main application overview placeholder](docs/images/readme-overview-placeholder.svg)
+![Main application overview](docs/images/workspace-overview.png)
 
 ## 0.1.0 support
 
@@ -75,33 +75,13 @@ expected to refuse them on another machine.
 - Page large tabular views and bound graph work under a shared per-session
   memory budget.
 
-![Timeline and graph views placeholder](docs/images/readme-analysis-placeholder.svg)
+![Timeline view](docs/images/timeline.png)
 
-### Planned
-
-- Compare two or more sessions.
-- Match equivalent actions across builds.
-- Highlight duration, cache, action-key, and input-size regressions.
-- Forward local events to an existing enterprise BES.
-- Inspect historical BES storage.
-- Add build annotations and team-shared reports.
-- Add a public API for custom metric plugins.
-- Add IDE integration.
-- Add automated performance-regression detection.
-- Consider an optional Skia renderer only if Java2D measurements justify it.
-- Inspect remote artifacts with explicit credentials.
-- Generate reports from a headless CLI.
-- Make every documented display limit configurable in Preferences.
-- Draw the computed critical path as a Timeline overlay.
-- Add parser fuzzing and dependency-advisory scanning.
-- Add Intel macOS packaging after Intel code-generation tools and release
-  verification exist.
-- Add dedicated release automation for native packaging and host-state
-  real-Bazel coverage.
+### Roadmap
 
 See the [deferred roadmap](docs/product-plan.md#28-deferred-roadmap) and
 [implementation status](docs/implementation-status.md) for the current source
-of truth.
+of truth, though not all planned features may make it.
 
 ### Known release limitations
 
@@ -152,7 +132,7 @@ the user's OpenSSH configuration or agent. The app does not store passwords or
 private keys. See the [user guide](docs/user-guide.md) for Workspace setup,
 capture, navigation, and sharing.
 
-![Local and SSH Workspaces placeholder](docs/images/readme-workspaces-placeholder.svg)
+![Local and SSH Workspaces](docs/images/workspaces.png)
 
 ## Capture and analysis
 
