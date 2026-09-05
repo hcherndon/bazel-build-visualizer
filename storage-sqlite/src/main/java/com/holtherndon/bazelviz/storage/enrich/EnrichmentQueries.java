@@ -2,6 +2,8 @@ package com.holtherndon.bazelviz.storage.enrich;
 
 import com.holtherndon.bazelviz.core.enrich.AttemptCorrelation;
 import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
+import com.holtherndon.bazelviz.storage.CancellableRead;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -10,6 +12,7 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
@@ -23,7 +26,7 @@ import java.util.OptionalLong;
  */
 public final class EnrichmentQueries implements AutoCloseable {
 
-  private static final String ATTEMPTS_FOR_ACTION =
+  private static final String ATTEMPT_SELECT =
       "SELECT a.*, "
           + " (SELECT count(*) FROM attempt_outputs o"
           + "   WHERE o.attempt_id = a.id AND o.produced = 1) AS produced_outputs,"
@@ -31,19 +34,7 @@ public final class EnrichmentQueries implements AutoCloseable {
           + "   WHERE o.attempt_id = a.id AND o.produced = 0) AS unproduced_outputs,"
           + " (SELECT value FROM labels WHERE id = a.label_id) AS label,"
           + " (SELECT value FROM mnemonics WHERE id = a.mnemonic_id) AS mnemonic"
-          + " FROM action_attempts a WHERE a.action_id = ? ORDER BY a.log_entry_index";
-
-  private static final String ATTEMPTS_FOR_LABEL =
-      "SELECT a.*, "
-          + " (SELECT count(*) FROM attempt_outputs o"
-          + "   WHERE o.attempt_id = a.id AND o.produced = 1) AS produced_outputs,"
-          + " (SELECT count(*) FROM attempt_outputs o"
-          + "   WHERE o.attempt_id = a.id AND o.produced = 0) AS unproduced_outputs,"
-          + " (SELECT value FROM labels WHERE id = a.label_id) AS label,"
-          + " (SELECT value FROM mnemonics WHERE id = a.mnemonic_id) AS mnemonic"
-          + " FROM action_attempts a"
-          + " WHERE a.label_id = (SELECT id FROM labels WHERE value = ?)"
-          + " ORDER BY a.log_entry_index";
+          + " FROM action_attempts a";
 
   private static final String CORRELATION_COUNTS =
       "SELECT correlation, count(*) FROM action_attempts GROUP BY correlation";
@@ -68,30 +59,43 @@ public final class EnrichmentQueries implements AutoCloseable {
           + " GROUP BY runner ORDER BY count(*) DESC";
 
   private final Connection connection;
+  private final CancellableRead cancellableRead;
 
   public EnrichmentQueries(Connection connection) {
-    this.connection = connection;
+    this.connection = Objects.requireNonNull(connection, "connection");
+    cancellableRead = new CancellableRead(connection);
   }
 
-  /** Every attempt attached to this action, in log order. */
-  public List<AttemptRow> attemptsForAction(long actionId) throws SQLException {
-    try (PreparedStatement statement = connection.prepareStatement(ATTEMPTS_FOR_ACTION)) {
-      statement.setLong(1, actionId);
-      return readAttempts(statement);
-    }
+  /** Cancels an active counted attempt-page read. */
+  public void cancel() {
+    cancellableRead.cancel();
   }
 
-  /**
-   * Every attempt carrying this label.
-   *
-   * <p>How a test's attempts are reached, since they attach to no action (K2). Returns both of the
-   * two spawns a test produces, in log order, with no attempt to decide which is the real one.
-   */
-  public List<AttemptRow> attemptsForLabel(String label) throws SQLException {
-    try (PreparedStatement statement = connection.prepareStatement(ATTEMPTS_FOR_LABEL)) {
-      statement.setString(1, label);
-      return readAttempts(statement);
-    }
+  /** One counted execution-log attempt page for an action. */
+  public CountedPage<AttemptRow, AttemptAnchor> attemptsForActionPage(
+      long actionId, Optional<AttemptAnchor> after, int limit) throws SQLException {
+    return attemptPage(
+        "a.action_id = ?",
+        statement -> {
+          statement.setLong(1, actionId);
+          return 2;
+        },
+        after,
+        limit);
+  }
+
+  /** One counted execution-log attempt page for an exact target label. */
+  public CountedPage<AttemptRow, AttemptAnchor> attemptsForLabelPage(
+      String label, Optional<AttemptAnchor> after, int limit) throws SQLException {
+    Objects.requireNonNull(label, "label");
+    return attemptPage(
+        "a.label_id = (SELECT id FROM labels WHERE value = ?)",
+        statement -> {
+          statement.setString(1, label);
+          return 2;
+        },
+        after,
+        limit);
   }
 
   /** The numbers the data-coverage panel shows. */
@@ -190,14 +194,73 @@ public final class EnrichmentQueries implements AutoCloseable {
     }
   }
 
-  private List<AttemptRow> readAttempts(PreparedStatement statement) throws SQLException {
+  private CountedPage<AttemptRow, AttemptAnchor> attemptPage(
+      String baseWhere, StatementBinder binder, Optional<AttemptAnchor> after, int limit)
+      throws SQLException {
+    Objects.requireNonNull(after, "after");
+    requirePositiveLimit(limit);
+    return cancellableRead.snapshot(
+        scope -> {
+          long total =
+              scope.statement(
+                  "SELECT COUNT(*) FROM action_attempts a WHERE " + baseWhere,
+                  statement -> {
+                    binder.bind(statement);
+                    return scalar(statement);
+                  });
+          AttemptPageRows page =
+              scope.statement(
+                  ATTEMPT_SELECT
+                      + " WHERE "
+                      + baseWhere
+                      + (after.isPresent()
+                          ? " AND (a.log_entry_index > ?"
+                              + " OR (a.log_entry_index = ? AND a.id > ?))"
+                          : "")
+                      + " ORDER BY a.log_entry_index ASC, a.id ASC LIMIT ?",
+                  statement -> {
+                    int parameter = binder.bind(statement);
+                    if (after.isPresent()) {
+                      AttemptAnchor anchor = after.orElseThrow();
+                      statement.setLong(parameter++, anchor.logEntryIndex());
+                      statement.setLong(parameter++, anchor.logEntryIndex());
+                      statement.setLong(parameter++, anchor.id());
+                    }
+                    statement.setInt(parameter, limit);
+                    return readAttemptPage(statement);
+                  });
+          Optional<AttemptAnchor> boundary = page.last().isPresent() ? page.last() : after;
+          long remaining =
+              boundary.isEmpty()
+                  ? 0
+                  : scope.statement(
+                      "SELECT COUNT(*) FROM action_attempts a WHERE "
+                          + baseWhere
+                          + " AND (a.log_entry_index > ?"
+                          + " OR (a.log_entry_index = ? AND a.id > ?))",
+                      statement -> {
+                        int parameter = binder.bind(statement);
+                        AttemptAnchor anchor = boundary.orElseThrow();
+                        statement.setLong(parameter++, anchor.logEntryIndex());
+                        statement.setLong(parameter++, anchor.logEntryIndex());
+                        statement.setLong(parameter, anchor.id());
+                        return scalar(statement);
+                      });
+          return new CountedPage<>(
+              page.rows(), total, remaining, remaining == 0 ? Optional.empty() : page.last());
+        });
+  }
+
+  private AttemptPageRows readAttemptPage(PreparedStatement statement) throws SQLException {
     List<AttemptRow> attempts = new ArrayList<>();
+    Optional<AttemptAnchor> last = Optional.empty();
     try (ResultSet rows = statement.executeQuery()) {
       while (rows.next()) {
         attempts.add(attemptOf(rows));
+        last = Optional.of(new AttemptAnchor(rows.getLong("log_entry_index"), rows.getLong("id")));
       }
     }
-    return attempts;
+    return new AttemptPageRows(attempts, last);
   }
 
   private static AttemptRow attemptOf(ResultSet rows) throws SQLException {
@@ -247,6 +310,18 @@ public final class EnrichmentQueries implements AutoCloseable {
     try (PreparedStatement statement = connection.prepareStatement(sql);
         ResultSet rows = statement.executeQuery()) {
       return rows.next() ? rows.getLong(1) : 0;
+    }
+  }
+
+  private static long scalar(PreparedStatement statement) throws SQLException {
+    try (ResultSet rows = statement.executeQuery()) {
+      return rows.next() ? rows.getLong(1) : 0;
+    }
+  }
+
+  private static void requirePositiveLimit(int limit) {
+    if (limit < 1) {
+      throw new IllegalArgumentException("limit must be positive, got " + limit);
     }
   }
 
@@ -321,4 +396,19 @@ public final class EnrichmentQueries implements AutoCloseable {
 
   /** How many attempts ran under one runner. */
   public record RunnerCount(String runner, long attempts) {}
+
+  /** Stable seek key for execution-log attempts whose log indexes can repeat across tasks. */
+  public record AttemptAnchor(long logEntryIndex, long id) {}
+
+  private record AttemptPageRows(List<AttemptRow> rows, Optional<AttemptAnchor> last) {
+    private AttemptPageRows {
+      rows = List.copyOf(rows);
+      Objects.requireNonNull(last, "last");
+    }
+  }
+
+  @FunctionalInterface
+  private interface StatementBinder {
+    int bind(PreparedStatement statement) throws SQLException;
+  }
 }

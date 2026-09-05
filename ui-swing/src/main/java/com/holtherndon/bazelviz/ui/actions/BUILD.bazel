@@ -8,6 +8,7 @@ java_library(
     deps = [
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/domain",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/redact",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",

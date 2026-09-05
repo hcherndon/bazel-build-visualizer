@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.session;
 
 import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
 import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
 import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
 import com.holtherndon.bazelviz.storage.enrich.EnrichmentTaskStore;
@@ -117,113 +118,73 @@ final class SqliteEntityReader implements EntityReader {
   }
 
   @Override
-  public List<TargetQueries.PackageSummary> packages() {
-    return call("listing packages", targets::packages);
-  }
-
-  @Override
-  public List<TargetQueries.PackageSummary> packages(String labelText) {
-    return call("listing packages matching " + labelText, () -> targets.packages(labelText));
-  }
-
-  @Override
-  public List<TargetRow> targetsInPackage(String packagePath) {
-    return call("listing targets in " + packagePath, () -> targets.inPackage(packagePath));
-  }
-
-  @Override
-  public List<TargetRow> targetsInPackage(String packagePath, String labelText) {
+  public CountedPage<TargetQueries.PackageSummary, String> packagePage(
+      String labelText, Optional<String> afterPath, int limit) {
     return call(
-        "listing targets in " + packagePath + " matching " + labelText,
-        () -> targets.inPackage(packagePath, labelText));
+        "paging packages matching " + labelText,
+        () -> targets.packagePage(labelText, afterPath, limit));
   }
 
   @Override
-  public List<TargetRow> targetsByLabel(String label) {
-    return call("reading targets labelled " + label, () -> targets.byLabel(label));
-  }
-
-  @Override
-  public long topLevelTargetLabelCount() {
-    return call("counting top-level target labels", targets::topLevelLabelCount);
-  }
-
-  @Override
-  public long topLevelTargetLabelCount(String labelText) {
+  public CountedPage<TargetRow, TargetQueries.TargetAnchor> targetsInPackagePage(
+      String packagePath, String labelText, Optional<TargetQueries.TargetAnchor> after, int limit) {
     return call(
-        "counting top-level target labels matching " + labelText,
-        () -> targets.topLevelLabelCount(labelText));
+        "paging targets in " + packagePath,
+        () -> targets.targetsInPackagePage(packagePath, labelText, after, limit));
   }
 
   @Override
-  public List<String> firstTopLevelTargetLabels(int limit) {
+  public CountedPage<TargetRow, TargetQueries.TargetAnchor> targetsByLabelPage(
+      String label, Optional<TargetQueries.TargetAnchor> after, int limit) {
     return call(
-        "reading the first top-level target-label page",
-        () -> targets.firstTopLevelLabelPage(limit));
+        "paging targets labelled " + label, () -> targets.targetsByLabelPage(label, after, limit));
   }
 
   @Override
-  public List<String> firstTopLevelTargetLabels(String labelText, int limit) {
+  public CountedPage<String, String> topLevelLabelPage(
+      String labelText, Optional<String> after, int limit) {
     return call(
-        "reading the first filtered top-level target-label page",
-        () -> targets.firstTopLevelLabelPage(labelText, limit));
+        "paging top-level target labels matching " + labelText,
+        () -> targets.topLevelLabelPage(labelText, after, limit));
   }
 
   @Override
-  public List<String> topLevelTargetLabelsAfter(String label, int limit) {
+  public CountedPage<TargetQueries.LabelSummary, String> labelPage(
+      String labelText, Optional<String> after, int limit) {
     return call(
-        "reading top-level target labels after " + label,
-        () -> targets.topLevelLabelPageAfter(label, limit));
+        "paging configured-target labels matching " + labelText,
+        () -> targets.labelPage(labelText, after, limit));
   }
 
   @Override
-  public List<String> topLevelTargetLabelsAfter(String labelText, String label, int limit) {
+  public CountedPage<TargetQueries.ConfigurationGroup, TargetQueries.ConfigurationAnchor>
+      configurationGroupPage(
+          String label, Optional<TargetQueries.ConfigurationAnchor> after, int limit) {
     return call(
-        "reading filtered top-level target labels after " + label,
-        () -> targets.topLevelLabelPageAfter(labelText, label, limit));
+        "paging cquery configuration groups for " + label,
+        () -> targets.configurationGroupPage(label, after, limit));
   }
 
   @Override
-  public long targetLabelCount() {
-    return call("counting distinct target labels", targets::labelCount);
-  }
-
-  @Override
-  public long targetLabelCount(String labelText) {
+  public CountedPage<TargetQueries.ConfiguredTarget, Long> configuredTargetPage(
+      String label, Optional<String> configuration, OptionalLong afterId, int limit) {
     return call(
-        "counting distinct target labels matching " + labelText,
-        () -> targets.labelCount(labelText));
+        "paging cquery target variants for " + label,
+        () -> targets.configuredTargetPage(label, configuration, afterId, limit));
   }
 
   @Override
-  public List<TargetQueries.LabelSummary> firstTargetLabels(int limit) {
-    return call("reading the first target-label page", () -> targets.firstLabelPage(limit));
+  public CountedPage<TargetQueries.Tag, TargetQueries.TagAnchor> tagPage(
+      long targetId, Optional<TargetQueries.TagAnchor> after, int limit) {
+    return call("paging tags of target " + targetId, () -> targets.tagPage(targetId, after, limit));
   }
 
   @Override
-  public List<TargetQueries.LabelSummary> firstTargetLabels(String labelText, int limit) {
+  public CountedPage<TargetQueries.OutputGroup, Long> outputGroupPage(
+      long configuredTargetId, OptionalLong afterOrdinal, int limit) {
     return call(
-        "reading the first filtered target-label page",
-        () -> targets.firstLabelPage(labelText, limit));
-  }
-
-  @Override
-  public List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit) {
-    return call("reading target labels after " + label, () -> targets.labelPageAfter(label, limit));
-  }
-
-  @Override
-  public List<TargetQueries.LabelSummary> targetLabelsAfter(
-      String labelText, String label, int limit) {
-    return call(
-        "reading filtered target labels after " + label,
-        () -> targets.labelPageAfter(labelText, label, limit));
-  }
-
-  @Override
-  public List<TargetQueries.ConfiguredTarget> configuredTargetsByLabel(String label) {
-    return call(
-        "reading cquery configurations for " + label, () -> targets.configuredByLabel(label));
+        "paging output groups of " + configuredTargetId,
+        () -> targets.outputGroupPage(configuredTargetId, afterOrdinal, limit));
   }
 
   @Override
@@ -234,18 +195,6 @@ final class SqliteEntityReader implements EntityReader {
   @Override
   public Optional<TargetRow> target(long id) {
     return call("reading target " + id, () -> targets.byId(id));
-  }
-
-  @Override
-  public List<TargetQueries.Tag> targetTags(long targetId) {
-    return call("reading tags of target " + targetId, () -> targets.tags(targetId));
-  }
-
-  @Override
-  public List<TargetQueries.OutputGroup> outputGroups(long configuredTargetId) {
-    return call(
-        "reading output groups of " + configuredTargetId,
-        () -> targets.outputGroups(configuredTargetId));
   }
 
   @Override
@@ -329,13 +278,15 @@ final class SqliteEntityReader implements EntityReader {
   }
 
   @Override
-  public List<TestAttemptRow> testAttempts(long testId) {
-    return call("reading attempts of test " + testId, () -> tests.attempts(testId));
+  public CountedPage<TestAttemptRow, TestQueries.TestAttemptAnchor> testAttemptPage(
+      long testId, Optional<TestQueries.TestAttemptAnchor> after, int limit) {
+    return call("paging attempts of test " + testId, () -> tests.attemptPage(testId, after, limit));
   }
 
   @Override
-  public List<TestQueries.TestLog> testLogs(long testId) {
-    return call("reading logs of test " + testId, () -> tests.logs(testId));
+  public CountedPage<TestQueries.TestLog, Long> testLogPage(
+      long testId, Optional<Long> afterId, int limit) {
+    return call("paging logs of test " + testId, () -> tests.logPage(testId, afterId, limit));
   }
 
   @Override
@@ -372,25 +323,21 @@ final class SqliteEntityReader implements EntityReader {
     return call("reading progress output events", () -> errors.progressOutputEvents(limit));
   }
 
-  /**
-   * Stops the actions query, which is the only one long enough to be worth abandoning.
-   *
-   * <p>The others answer in single-digit milliseconds at a million rows (docs/performance.md), so a
-   * cancel would arrive after they had already finished. If one of them ever grows a long form, it
-   * gets a cancel then; pretending to cancel something that cannot be cancelled would be worse than
-   * not offering it.
-   */
   // ------------------------------------------------------------ enrichment
 
   @Override
-  public List<AttemptRow> attemptsForAction(long actionId) {
+  public CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor> attemptsForActionPage(
+      long actionId, Optional<EnrichmentQueries.AttemptAnchor> after, int limit) {
     return call(
-        "reading attempts for action " + actionId, () -> enrichment.attemptsForAction(actionId));
+        "paging attempts for action " + actionId,
+        () -> enrichment.attemptsForActionPage(actionId, after, limit));
   }
 
   @Override
-  public List<AttemptRow> attemptsForLabel(String label) {
-    return call("reading attempts for " + label, () -> enrichment.attemptsForLabel(label));
+  public CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor> attemptsForLabelPage(
+      String label, Optional<EnrichmentQueries.AttemptAnchor> after, int limit) {
+    return call(
+        "paging attempts for " + label, () -> enrichment.attemptsForLabelPage(label, after, limit));
   }
 
   @Override
@@ -426,6 +373,9 @@ final class SqliteEntityReader implements EntityReader {
   @Override
   public void cancelRunningQuery() {
     actions.cancel();
+    targets.cancel();
+    tests.cancel();
+    enrichment.cancel();
   }
 
   @Override

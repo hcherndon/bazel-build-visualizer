@@ -38,23 +38,28 @@ public final class TimelineLodIndex {
    * arrays (int each) = 24, plus the resolved {@code active} and {@code failure} arrays (int each)
    * that coexist with them.
    *
-   * <p>Phase 6 adds what plan 14.3 asks a bin to carry and Phase 0 did not: cache hits (int),
-   * remote count (int), bytes (long), and the two words of the majority-category vote (short +
-   * int). That is 22 more, for 54.
+   * <p>Phase 6 adds what plan 14.3 asks a bin to carry and Phase 0 did not: cache-hit and
+   * cache-known counts (two ints), remote and runner-known counts (two ints), bytes (long), and the
+   * two words of the majority-category vote (int + int). That is 32 more, for 64. The old 54-byte
+   * accounting omitted the two known-count arrays. Category ids are {@code int} values throughout:
+   * narrowing them to a {@code short} made ids 32768 and 65537 alias negative or unrelated
+   * categories.
    *
    * <p>The consequence is fewer level-0 bins for the same memory: {@link #MAX_FINEST_BINS} falls
-   * from 6,391,320 to 3,728,270. Measured rather than predicted — Tier 3's 2,343.8 s wall builds
+   * from 6,391,320 to 3,145,728. Measured rather than predicted — Tier 3's 2,343.8 s wall builds
    * 2,343,750 level-0 bins, so both benchmark tiers keep the full millisecond. The trade is paid by
    * builds beyond roughly an hour, which lose time resolution rather than data.
    */
-  private static final int BYTES_PER_FINEST_BIN = 54;
+  private static final int BYTES_PER_FINEST_BIN = 64;
 
   /**
    * Every coarser level has a quarter of its predecessor's bins, so the whole pyramid costs the
    * level-0 arrays times the geometric sum 1 + 1/4 + 1/16 + … = 4/3. Rounded up to keep the budget
    * conservative.
    */
-  private static final double PYRAMID_BIN_MULTIPLIER = 4.0 / 3.0;
+  private static final int PYRAMID_BYTES_NUMERATOR = LEVEL_GROWTH;
+
+  private static final int PYRAMID_BYTES_DENOMINATOR = LEVEL_GROWTH - 1;
 
   /** Memory the pyramid may occupy at its peak, against the plan-20.2 4 GB heap objective. */
   static final long MAX_PYRAMID_BYTES = 256L * 1024 * 1024;
@@ -67,7 +72,10 @@ public final class TimelineLodIndex {
    * 1 ms resolution.
    */
   static final int MAX_FINEST_BINS =
-      (int) (MAX_PYRAMID_BYTES / (long) (BYTES_PER_FINEST_BIN * PYRAMID_BIN_MULTIPLIER));
+      (int)
+          Math.floorDiv(
+              Math.multiplyExact(MAX_PYRAMID_BYTES, PYRAMID_BYTES_DENOMINATOR),
+              Math.multiplyExact((long) BYTES_PER_FINEST_BIN, PYRAMID_BYTES_NUMERATOR));
 
   /** A level is selected when its bins are at least this wide on screen. */
   static final double TARGET_BIN_PIXELS = 2.0;
@@ -86,7 +94,7 @@ public final class TimelineLodIndex {
   private final int[][] remoteCounts;
   private final int[][] runnerKnownCounts;
   private final long[][] byteTotals;
-  private final short[][] majorityCategories;
+  private final int[][] majorityCategories;
   private final long[] maxOverlapMicros;
   private final int[] maxActiveCounts;
 
@@ -105,7 +113,7 @@ public final class TimelineLodIndex {
       int[][] remoteCounts,
       int[][] runnerKnownCounts,
       long[][] byteTotals,
-      short[][] majorityCategories,
+      int[][] majorityCategories,
       long[] maxOverlapMicros,
       int[] maxActiveCounts) {
     this.wallStartMicros = wallStartMicros;
@@ -167,7 +175,7 @@ public final class TimelineLodIndex {
     int[][] runnerKnown = new int[levelCount][];
     long[][] bytes = new long[levelCount][];
     // Boyer-Moore majority vote, one candidate and one counter per bin.
-    short[][] majority = new short[levelCount][];
+    int[][] majority = new int[levelCount][];
     int[][] majorityVotes = new int[levelCount][];
     long w = finest;
     for (int l = 0; l < levelCount; l++) {
@@ -183,8 +191,8 @@ public final class TimelineLodIndex {
       remote[l] = new int[counts[l]];
       runnerKnown[l] = new int[counts[l]];
       bytes[l] = new long[counts[l]];
-      majority[l] = new short[counts[l]];
-      Arrays.fill(majority[l], (short) -1);
+      majority[l] = new int[counts[l]];
+      Arrays.fill(majority[l], -1);
       majorityVotes[l] = new int[counts[l]];
       w *= LEVEL_GROWTH;
     }
@@ -223,7 +231,7 @@ public final class TimelineLodIndex {
             }
             // One candidate, one counter: the candidate survives only if it
             // outnumbers everything else combined.
-            short candidate = (short) categoryIndex;
+            int candidate = categoryIndex;
             if (majorityVotes[l][b0] == 0) {
               majority[l][b0] = candidate;
               majorityVotes[l][b0] = 1;
@@ -442,8 +450,24 @@ public final class TimelineLodIndex {
    * be wrong.
    */
   public OptionalInt uniformCategory(int level, int bin) {
-    short category = majorityCategories[level][bin];
-    return category < 0 ? OptionalInt.empty() : OptionalInt.of(category);
+    int category = majorityCategories[level][bin];
+    return category == -1 ? OptionalInt.empty() : OptionalInt.of(category);
+  }
+
+  /**
+   * Conservative infinite-pyramid primitive-array payload for a level-0 bin count.
+   *
+   * <p>Array headers, the one extra entry in each difference array, and per-level metadata are not
+   * included; this method and {@link #MAX_PYRAMID_BYTES} describe the dominant linear payload, not
+   * an exact whole-object heap measurement.
+   */
+  static long conservativePeakBytes(int finestBins) {
+    if (finestBins < 0) {
+      throw new IllegalArgumentException("finestBins must not be negative: " + finestBins);
+    }
+    long levelZeroBytes = Math.multiplyExact((long) finestBins, BYTES_PER_FINEST_BIN);
+    return ceilDiv(
+        Math.multiplyExact(levelZeroBytes, PYRAMID_BYTES_NUMERATOR), PYRAMID_BYTES_DENOMINATOR);
   }
 
   public long maxOverlapMicros(int level) {

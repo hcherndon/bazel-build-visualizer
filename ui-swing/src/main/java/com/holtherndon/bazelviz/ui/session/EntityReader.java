@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.session;
 
 import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
 import com.holtherndon.bazelviz.core.enrich.ProfileAnchor;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.enrich.AttemptRow;
 import com.holtherndon.bazelviz.storage.enrich.EnrichmentQueries;
 import com.holtherndon.bazelviz.storage.entities.ActionFilter;
@@ -79,67 +80,37 @@ public interface EntityReader extends AutoCloseable {
 
   // --- targets ----------------------------------------------------------
 
-  /** Every package with a target in it, alphabetically. */
-  List<TargetQueries.PackageSummary> packages();
+  CountedPage<TargetQueries.PackageSummary, String> packagePage(
+      String labelText, Optional<String> afterPath, int limit);
 
-  /** Packages containing a top-level target whose full label contains this literal text. */
-  List<TargetQueries.PackageSummary> packages(String labelText);
+  CountedPage<TargetRow, TargetQueries.TargetAnchor> targetsInPackagePage(
+      String packagePath, String labelText, Optional<TargetQueries.TargetAnchor> after, int limit);
 
-  /** The targets in one package, with one row per configuration. */
-  List<TargetRow> targetsInPackage(String packagePath);
+  CountedPage<TargetRow, TargetQueries.TargetAnchor> targetsByLabelPage(
+      String label, Optional<TargetQueries.TargetAnchor> after, int limit);
 
-  /** Matching target rows in one package. */
-  List<TargetRow> targetsInPackage(String packagePath, String labelText);
+  CountedPage<String, String> topLevelLabelPage(
+      String labelText, Optional<String> after, int limit);
 
-  /**
-   * Every row carrying exactly this label — one per (aspect, configuration), like {@link
-   * #targetsInPackage}. Empty when the session never saw the label, which is an answer, not an
-   * error: cross-view navigation lands here with labels parsed out of events, and a label the build
-   * did not declare must say so rather than fail.
-   */
-  List<TargetRow> targetsByLabel(String label);
+  CountedPage<TargetQueries.LabelSummary, String> labelPage(
+      String labelText, Optional<String> after, int limit);
 
-  /** Exact distinct-label count in the BEP top-level target set. */
-  long topLevelTargetLabelCount();
+  CountedPage<TargetQueries.ConfigurationGroup, TargetQueries.ConfigurationAnchor>
+      configurationGroupPage(
+          String label, Optional<TargetQueries.ConfigurationAnchor> after, int limit);
 
-  /** Exact distinct-label count in the filtered BEP top-level target set. */
-  long topLevelTargetLabelCount(String labelText);
+  CountedPage<TargetQueries.ConfiguredTarget, Long> configuredTargetPage(
+      String label, Optional<String> configuration, OptionalLong afterId, int limit);
 
-  /** Top-level labels for the flat view, keyset-paged alphabetically. */
-  List<String> firstTopLevelTargetLabels(int limit);
+  CountedPage<TargetQueries.Tag, TargetQueries.TagAnchor> tagPage(
+      long targetId, Optional<TargetQueries.TagAnchor> after, int limit);
 
-  List<String> firstTopLevelTargetLabels(String labelText, int limit);
-
-  List<String> topLevelTargetLabelsAfter(String label, int limit);
-
-  List<String> topLevelTargetLabelsAfter(String labelText, String label, int limit);
-
-  /** Exact distinct-label count behind the All Targets explorer. */
-  long targetLabelCount();
-
-  /** Exact matching distinct-label count behind the All Targets explorer. */
-  long targetLabelCount(String labelText);
-
-  /** Distinct fully-qualified labels, keyset-paged for incremental browsing. */
-  List<TargetQueries.LabelSummary> firstTargetLabels(int limit);
-
-  List<TargetQueries.LabelSummary> firstTargetLabels(String labelText, int limit);
-
-  List<TargetQueries.LabelSummary> targetLabelsAfter(String label, int limit);
-
-  List<TargetQueries.LabelSummary> targetLabelsAfter(String labelText, String label, int limit);
-
-  List<TargetQueries.ConfiguredTarget> configuredTargetsByLabel(String label);
+  CountedPage<TargetQueries.OutputGroup, Long> outputGroupPage(
+      long configuredTargetId, OptionalLong afterOrdinal, int limit);
 
   Optional<TargetQueries.ConfiguredSource> configuredTargetSource();
 
   Optional<TargetRow> target(long id);
-
-  /** A target's tags, each carrying the event that supplied it. */
-  List<TargetQueries.Tag> targetTags(long targetId);
-
-  /** A configured target's output groups, including their incomplete flags. */
-  List<TargetQueries.OutputGroup> outputGroups(long configuredTargetId);
 
   // --- configurations --------------------------------------------------
 
@@ -177,11 +148,11 @@ public interface EntityReader extends AutoCloseable {
 
   Optional<TestRow> test(long id);
 
-  /** Every attempt of one test, in run/shard/attempt order. */
-  List<TestAttemptRow> testAttempts(long testId);
+  CountedPage<TestAttemptRow, TestQueries.TestAttemptAnchor> testAttemptPage(
+      long testId, Optional<TestQueries.TestAttemptAnchor> after, int limit);
 
-  /** Where a test's logs were written; the content is not captured. */
-  List<TestQueries.TestLog> testLogs(long testId);
+  CountedPage<TestQueries.TestLog, Long> testLogPage(
+      long testId, Optional<Long> afterId, int limit);
 
   // --- errors -----------------------------------------------------------
 
@@ -220,22 +191,11 @@ public interface EntityReader extends AutoCloseable {
 
   // ------------------------------------------------------------ enrichment
 
-  /**
-   * Every execution-log attempt attached to this action, in log order.
-   *
-   * <p>Usually empty, and that is not a defect: two thirds of a build's actions run inside the
-   * Bazel server and never spawn a subprocess, so no attempt record exists for them (K1 in
-   * docs/exec-log-and-profile.md).
-   */
-  List<AttemptRow> attemptsForAction(long actionId);
+  CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor> attemptsForActionPage(
+      long actionId, Optional<EnrichmentQueries.AttemptAnchor> after, int limit);
 
-  /**
-   * Every attempt carrying this label.
-   *
-   * <p>How a test's attempts are reached, since a test spawn matches no action by output on any
-   * Bazel version (K2). Returns both spawns a test produces, in log order.
-   */
-  List<AttemptRow> attemptsForLabel(String label);
+  CountedPage<AttemptRow, EnrichmentQueries.AttemptAnchor> attemptsForLabelPage(
+      String label, Optional<EnrichmentQueries.AttemptAnchor> after, int limit);
 
   /** How much of the build each enrichment source covers. */
   EnrichmentQueries.Coverage enrichmentCoverage();
@@ -255,7 +215,7 @@ public interface EntityReader extends AutoCloseable {
   /** Every enrichment task and how it ended. */
   List<EnrichmentTask> enrichmentTasks();
 
-  /** Asks the in-flight query to stop, from another thread. */
+  /** Requests cancellation without making the caller perform JDBC I/O. */
   void cancelRunningQuery();
 
   @Override

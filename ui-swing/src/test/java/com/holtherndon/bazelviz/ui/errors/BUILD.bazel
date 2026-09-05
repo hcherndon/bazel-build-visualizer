@@ -17,6 +17,7 @@ java_library(
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/events",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/errors",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",

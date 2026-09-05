@@ -4388,6 +4388,11 @@ public final class MainWindow extends JFrame {
     installPageChrome(NavEntry.TERMINAL, terminalView);
     installPageChrome(NavEntry.REPOSITORY, repositoryBrowserView);
     installPageChrome(NavEntry.OVERVIEW, overviewPanel);
+    installPageChrome(NavEntry.TIMELINE, timeline.view());
+    installPageChrome(NavEntry.ACTIONS, actionsView);
+    installPageChrome(NavEntry.TARGETS, targetsView);
+    installPageChrome(NavEntry.ALL_TARGETS, allTargetsView);
+    installPageChrome(NavEntry.TESTS, testsView);
     installPageChrome(NavEntry.CRITICAL_PATH, criticalPathView);
     installPageChrome(NavEntry.STARLARK_PROFILE, starlarkProfileView);
     installPageChrome(NavEntry.CONFIGURATIONS, configurationsView);

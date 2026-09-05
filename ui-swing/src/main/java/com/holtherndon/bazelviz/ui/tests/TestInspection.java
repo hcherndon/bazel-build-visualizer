@@ -28,6 +28,11 @@ public final class TestInspection {
     return of(test, attempts, logs, List.of());
   }
 
+  /** The row already held by the table, while its independently paged details load. */
+  public static Inspection summary(TestRow test) {
+    return ofLoaded(test, Optional.empty(), Optional.empty(), Optional.empty());
+  }
+
   /**
    * The test, its BEP attempts, its logs, and the spawns the execution log recorded for it.
    *
@@ -43,6 +48,18 @@ public final class TestInspection {
       List<TestAttemptRow> attempts,
       List<TestQueries.TestLog> logs,
       List<AttemptRow> spawns) {
+    return ofLoaded(test, Optional.of(attempts), Optional.of(logs), Optional.of(spawns));
+  }
+
+  /** Builds from whichever independent detail pages have arrived so far. */
+  public static Inspection ofLoaded(
+      TestRow test,
+      Optional<List<TestAttemptRow>> attempts,
+      Optional<List<TestQueries.TestLog>> logs,
+      Optional<List<AttemptRow>> spawns) {
+    attempts = attempts.map(List::copyOf);
+    logs = logs.map(List::copyOf);
+    spawns = spawns.map(List::copyOf);
     Inspection.Builder builder =
         new Inspection.Builder(test.label())
             .subtitle(test.overallStatus().name())
@@ -88,25 +105,25 @@ public final class TestInspection {
                 : Inspection.Field.unknown("Bazel's reported duration", "not reported"))
         .field(timeoutField(test));
 
-    if (attempts.isEmpty()) {
+    if (attempts.isPresent() && attempts.orElseThrow().isEmpty()) {
       builder
           .section("Attempts")
           .field(
               Inspection.Field.unknown(
                   "Attempts",
                   "no testResult event arrived for this target; it may not have been run"));
-    } else {
+    } else if (attempts.isPresent()) {
       builder.section("Attempts");
-      for (TestAttemptRow attempt : attempts) {
+      for (TestAttemptRow attempt : attempts.orElseThrow()) {
         builder.field(
             new Inspection.Field(
                 attempt.describe(), Optional.of(describe(attempt)), Optional.empty()));
       }
     }
 
-    if (!logs.isEmpty()) {
+    if (logs.isPresent() && !logs.orElseThrow().isEmpty()) {
       builder.section("Logs");
-      for (TestQueries.TestLog log : logs) {
+      for (TestQueries.TestLog log : logs.orElseThrow()) {
         String name = log.name().orElse(log.summaryStatus().orElse("log"));
         // The URI stays visible and the Open button resolves it only
         // when pressed. A later bazel clean may have removed it; that
@@ -114,7 +131,7 @@ public final class TestInspection {
         builder.file(name, log.uri(), FileLink.testLog(name, log.uri()));
       }
     }
-    addSpawns(builder, spawns);
+    spawns.ifPresent(rows -> addSpawns(builder, rows));
     return builder.build();
   }
 

@@ -12,12 +12,14 @@ java_library(
         "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/domain",
         "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
         "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/targets",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
     ],
     visibility = ["//visibility:private"],
 )
@@ -50,6 +52,13 @@ java_junit5_test(
     runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
 )
 
+java_junit5_test(
+    name = "TargetsPageChromeTest",
+    test_class = "com.holtherndon.bazelviz.ui.targets.TargetsPageChromeTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
 test_suite(
     name = "tests",
     tests = [
@@ -57,5 +66,6 @@ test_suite(
         ":TargetInspectionTest",
         ":TargetsViewRevealTest",
         ":TargetsViewWiringTest",
+        ":TargetsPageChromeTest",
     ],
 )

@@ -6,6 +6,7 @@ java_library(
     name = "tests",
     srcs = glob(["*.java"]),
     deps = [
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/enrich",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",

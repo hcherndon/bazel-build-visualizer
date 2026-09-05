@@ -337,7 +337,11 @@ public final class TimelineController {
             if (initial) {
               log.debug("no timeline for this session", failure);
               SwingUtilities.invokeLater(
-                  () -> view.showEmpty("This session's timeline could not be built."));
+                  () -> {
+                    if (wanted == generation) {
+                      view.showEmpty("This session's timeline could not be built.");
+                    }
+                  });
             } else {
               log.debug("live timeline refresh failed", failure);
             }

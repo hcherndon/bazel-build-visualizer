@@ -18,6 +18,7 @@ java_library(
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/entities",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/metrics",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/metrics",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/overview",

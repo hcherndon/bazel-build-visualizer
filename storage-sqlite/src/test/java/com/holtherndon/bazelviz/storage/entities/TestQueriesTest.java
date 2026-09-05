@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.core.domain.TestOutcome;
 import com.holtherndon.bazelviz.core.entity.EntityCommand;
+import com.holtherndon.bazelviz.storage.CountedPage;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import java.nio.file.Path;
@@ -134,6 +135,51 @@ final class TestQueriesTest {
       assertThat(row.attemptRows()).isZero();
       assertThat(row.firstStartMicros()).isEmpty();
       assertThat(row.wallMicros()).isEmpty();
+    }
+  }
+
+  @Test
+  @DisplayName("attempt and log details use stable counted pages")
+  void detailRowsAreCountedAndPaged() throws Exception {
+    long testId = scalar("SELECT id FROM tests WHERE overall_status = 'FLAKY'");
+    exec(
+        "INSERT INTO test_logs (test_id, name, uri, summary_status) VALUES"
+            + " ("
+            + testId
+            + ", 'test.log', 'file:///tmp/test.log', 'FAILED'),"
+            + " ("
+            + testId
+            + ", 'test.xml', 'file:///tmp/test.xml', 'PASSED')");
+
+    try (TestQueries queries = new TestQueries(database.newReadConnection())) {
+      CountedPage<TestAttemptRow, TestQueries.TestAttemptAnchor> firstAttempts =
+          queries.attemptPage(testId, Optional.empty(), 2);
+      assertThat(firstAttempts.rows()).extracting(TestAttemptRow::attempt).containsExactly(1, 2);
+      assertThat(firstAttempts.totalRows()).isEqualTo(3);
+      assertThat(firstAttempts.shownThrough()).isEqualTo(2);
+      assertThat(firstAttempts.remainingRows()).isEqualTo(1);
+
+      CountedPage<TestAttemptRow, TestQueries.TestAttemptAnchor> finalAttempt =
+          queries.attemptPage(testId, firstAttempts.nextAnchor(), 2);
+      assertThat(finalAttempt.rows()).extracting(TestAttemptRow::attempt).containsExactly(3);
+      assertThat(finalAttempt.totalRows()).isEqualTo(3);
+      assertThat(finalAttempt.remainingRows()).isZero();
+
+      CountedPage<TestQueries.TestLog, Long> firstLog =
+          queries.logPage(testId, Optional.empty(), 1);
+      assertThat(firstLog.rows())
+          .extracting(log -> log.name().orElseThrow())
+          .containsExactly("test.log");
+      assertThat(firstLog.totalRows()).isEqualTo(2);
+      assertThat(firstLog.remainingRows()).isEqualTo(1);
+
+      CountedPage<TestQueries.TestLog, Long> finalLog =
+          queries.logPage(testId, firstLog.nextAnchor(), 1);
+      assertThat(finalLog.rows())
+          .extracting(log -> log.name().orElseThrow())
+          .containsExactly("test.xml");
+      assertThat(finalLog.remainingRows()).isZero();
+      assertThat(finalLog.nextAnchor()).isEmpty();
     }
   }
 
