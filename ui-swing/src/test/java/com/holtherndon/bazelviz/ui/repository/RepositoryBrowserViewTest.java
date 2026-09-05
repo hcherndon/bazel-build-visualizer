@@ -33,6 +33,49 @@ import org.junit.jupiter.api.Test;
 final class RepositoryBrowserViewTest {
 
   @Test
+  @DisplayName("Enter opens the selected regular file and ignores other selections")
+  void enterOpensOnlySelectedFiles() throws Exception {
+    ExecutionPath root = path("/workspace");
+    ExecutionPath directory = path("/workspace/src");
+    ExecutionPath file = path("/workspace/BUILD.bazel");
+    FakeFileSystem files =
+        new FakeFileSystem(
+            "ssh:builder",
+            root,
+            List.of(
+                metadata(directory, FileMetadata.Kind.DIRECTORY, OptionalLong.empty()),
+                metadata(file, FileMetadata.Kind.REGULAR_FILE, OptionalLong.of(42))));
+    List<ExecutionPath> opened = new ArrayList<>();
+    RepositoryBrowserView view = onEdt(RepositoryBrowserView::new);
+
+    onEdt(
+        () -> {
+          view.onOpenFile(opened::add);
+          view.openRepository("builder.example", files, root);
+          return null;
+        });
+    await(() -> onEdt(() -> view.visibleEntriesForTest() == 2));
+
+    onEdt(
+        () -> {
+          view.selectRootChildForTest(1);
+          view.pressEnterForTest();
+          view.selectRootChildForTest(0);
+          view.pressEnterForTest();
+          view.clearSelectionForTest();
+          view.pressEnterForTest();
+          return null;
+        });
+
+    assertThat(opened).containsExactly(file);
+    onEdt(
+        () -> {
+          view.close();
+          return null;
+        });
+  }
+
+  @Test
   @DisplayName("only the root is listed until a directory expands")
   void loadsOneDirectoryAtATimeAndIgnoresOrdinarySymlinks() throws Exception {
     ExecutionPath root = path("/workspace");
