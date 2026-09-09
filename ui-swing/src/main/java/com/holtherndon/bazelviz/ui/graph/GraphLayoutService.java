@@ -4,6 +4,7 @@ import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
 import com.holtherndon.bazelviz.analysis.GraphWeights;
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.graph.Bfs;
 import com.holtherndon.bazelviz.graph.CsrFile;
@@ -16,6 +17,7 @@ import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -717,6 +719,14 @@ public final class GraphLayoutService implements AutoCloseable {
       List<Integer> nodes,
       Consumer<Rendered> onDone,
       Consumer<Throwable> onError) {
+    if (!request.filter().isEmpty()) {
+      SwingUtilities.invokeLater(
+          () ->
+              onError.accept(
+                  new IllegalArgumentException(
+                      "Clear node filters before opening an explicit path.")));
+      return;
+    }
     inFlight.set(true);
     preparationInFlight.set(true);
     AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -813,7 +823,7 @@ public final class GraphLayoutService implements AutoCloseable {
   private Rendered compute(Request request, AtomicBoolean cancelled)
       throws IOException, SQLException {
     Optional<Rendered> rendered;
-    if (request.mode() == GraphExtract.Mode.NEIGHBOURHOOD) {
+    if (request.mode() == GraphExtract.Mode.NEIGHBOURHOOD || !request.filter().isEmpty()) {
       rendered =
           queries.withIndexPair(
               request.graph(), (forward, reverse) -> compute(request, cancelled, forward, reverse));
@@ -863,6 +873,11 @@ public final class GraphLayoutService implements AutoCloseable {
       throws SQLException, IOException {
 
     if (request.mode() == GraphExtract.Mode.CLUSTERS) {
+      if (!request.filter().isEmpty()) {
+        throw new IOException(
+            "Node filters cannot be applied to grouped summaries. Choose Whole graph or a node"
+                + " scope, or clear the filters.");
+      }
       try (GraphQueries.ClusterKeyData keyData =
           clusterKeys(request.graph(), request.clusterBy(), Math.toIntExact(graph.nodeCount()))) {
         String[] keys = keyData.keys();
@@ -939,13 +954,20 @@ public final class GraphLayoutService implements AutoCloseable {
                       + "submitPath(Request, List, ...)");
           case CLUSTERS -> throw new IllegalStateException("handled above");
         };
+    String description = extract.describe(nounFor(request.graph()));
+    if (!request.filter().isEmpty()) {
+      GraphFilter.Result filtered =
+          GraphFilter.apply(request, extract, queries, graph, reverse, cancelled);
+      extract = filtered.extract();
+      description = filtered.description();
+    }
     GraphLayout.Result layout = GraphLayout.run(request.layout(), extract, cancelled);
     return Rendered.charged(
         request,
         extract,
         layout,
         null,
-        extract.describe(nounFor(request.graph())),
+        description,
         queries.resourceBudget(),
         retainedBytes,
         retained);
@@ -961,7 +983,13 @@ public final class GraphLayoutService implements AutoCloseable {
       nodes = Math.min(graph.nodeCount(), request.nodeLimit());
       edges = Math.min(graph.edgeCount(), request.edgeLimit());
     }
-    return estimate("retained graph rendering", 4_096, nodes, 128, edges, 96);
+    return estimate(
+        "retained graph rendering",
+        4_096 + GraphFilter.retainedBytes(request.filter()),
+        nodes,
+        128,
+        edges,
+        96);
   }
 
   private static long scratchBytes(Request request, CsrGraph graph) throws IOException {
@@ -972,7 +1000,10 @@ public final class GraphLayoutService implements AutoCloseable {
     }
     long nodes = Math.min(graph.nodeCount(), request.nodeLimit());
     long edges = Math.min(graph.edgeCount(), request.edgeLimit());
-    return estimate("graph extraction and layout scratch", 8_192, nodes, 256, edges, 128);
+    return request.filter().isEmpty()
+        ? estimate("graph extraction and layout scratch", 8_192, nodes, 256, edges, 128)
+        : estimate(
+            "graph filtering, extraction and layout scratch", 32_768, nodes, 512, edges, 256);
   }
 
   private static long square(long value) throws IOException {
@@ -1160,7 +1191,50 @@ public final class GraphLayoutService implements AutoCloseable {
       int edgeLimit,
       GraphLayout.Kind layout,
       GraphClustering.By clusterBy,
-      int clusterLimit) {
+      int clusterLimit,
+      FilterExpression filter) {
+
+    public Request {
+      Objects.requireNonNull(filter, "filter");
+      GraphFilter.validate(filter);
+    }
+
+    public Request(
+        GraphKind graph,
+        GraphExtract.Mode mode,
+        int sourceNode,
+        int maxDepth,
+        int nodeLimit,
+        int edgeLimit,
+        GraphLayout.Kind layout,
+        GraphClustering.By clusterBy,
+        int clusterLimit) {
+      this(
+          graph,
+          mode,
+          sourceNode,
+          maxDepth,
+          nodeLimit,
+          edgeLimit,
+          layout,
+          clusterBy,
+          clusterLimit,
+          FilterExpression.ALL);
+    }
+
+    public Request withFilter(FilterExpression value) {
+      return new Request(
+          graph,
+          mode,
+          sourceNode,
+          maxDepth,
+          nodeLimit,
+          edgeLimit,
+          layout,
+          clusterBy,
+          clusterLimit,
+          value);
+    }
 
     /** One of the three views rooted at a node, at the default limits. */
     public static Request around(GraphKind graph, GraphExtract.Mode mode, int node, int depth) {
@@ -1221,19 +1295,37 @@ public final class GraphLayoutService implements AutoCloseable {
     /** The same query drawn a different way. */
     public Request withLayout(GraphLayout.Kind kind) {
       return new Request(
-          graph, mode, sourceNode, maxDepth, nodeLimit, edgeLimit, kind, clusterBy, clusterLimit);
+          graph,
+          mode,
+          sourceNode,
+          maxDepth,
+          nodeLimit,
+          edgeLimit,
+          kind,
+          clusterBy,
+          clusterLimit,
+          filter);
     }
 
     /** The same query with a raised ceiling; plan 13.6's explicit opt-in. */
     public Request withLimits(int nodes, int edges) {
       return new Request(
-          graph, mode, sourceNode, maxDepth, nodes, edges, layout, clusterBy, clusterLimit);
+          graph, mode, sourceNode, maxDepth, nodes, edges, layout, clusterBy, clusterLimit, filter);
     }
 
     /** The same cluster query with an explicitly raised group ceiling. */
     public Request withClusterLimit(int groups) {
       return new Request(
-          graph, mode, sourceNode, maxDepth, nodeLimit, edgeLimit, layout, clusterBy, groups);
+          graph,
+          mode,
+          sourceNode,
+          maxDepth,
+          nodeLimit,
+          edgeLimit,
+          layout,
+          clusterBy,
+          groups,
+          filter);
     }
   }
 

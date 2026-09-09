@@ -18,6 +18,7 @@ import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.KeyEvent;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -385,7 +386,10 @@ public final class FilterBuilder extends JPanel {
       fieldChanged();
       if (existing != null) {
         operator.setSelectedItem(existing.operator());
-        text.setText(existing.values().isEmpty() ? "" : existing.values().getFirst());
+        text.setText(
+            existing.operator().multipleValues()
+                ? String.join(", ", existing.values())
+                : existing.values().isEmpty() ? "" : existing.values().getFirst());
         for (int i = 0; i < choices.size(); i++) {
           choices
               .get(i)
@@ -419,7 +423,15 @@ public final class FilterBuilder extends JPanel {
       if (op.requiresValue()) {
         if (selectedField().choices().isEmpty()) {
           JPanel input = new JPanel(new BorderLayout());
+          text.setToolTipText(
+              op.multipleValues()
+                  ? "Separate values with commas. For a value containing a comma, use an ‘is’"
+                        + " condition."
+                  : null);
           input.add(text, BorderLayout.NORTH);
+          if (op.multipleValues()) {
+            input.add(new JLabel("Separate values with commas"), BorderLayout.SOUTH);
+          }
           values.add(input, BorderLayout.CENTER);
         } else {
           JPanel list = new JPanel();
@@ -477,7 +489,13 @@ public final class FilterBuilder extends JPanel {
           } else if (input.isEmpty()) {
             throw new IllegalArgumentException("Enter a value.");
           }
-          selected = List.of(input);
+          selected =
+              op.multipleValues()
+                  ? Arrays.stream(input.split(",", -1)).map(String::strip).toList()
+                  : List.of(input);
+          if (selected.stream().anyMatch(String::isEmpty)) {
+            throw new IllegalArgumentException("Enter a value between each comma.");
+          }
         }
       }
       return new Condition(field.id(), op, selected);

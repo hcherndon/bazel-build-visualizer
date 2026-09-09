@@ -185,6 +185,14 @@ final class GraphCanvasPanelTest {
     Component helpPanel = namedComponent(panel, "graph.controlsHelpPanel");
     assertThat(controls.getLayout()).isInstanceOf(WrapLayout.class);
     assertThat(helpPanel.isVisible()).isFalse();
+    Component filters = namedComponent(panel, "graph.filters");
+    assertThat(filters.isVisible()).isFalse();
+    JToggleButton filterToggle = (JToggleButton) namedComponent(panel, "graph.filterToggle");
+    SwingUtilities.invokeAndWait(filterToggle::doClick);
+    assertThat(filters.isVisible()).isTrue();
+    SwingUtilities.invokeAndWait(filterToggle::doClick);
+    assertThat(filters.isVisible()).isFalse();
+    assertThat(namedComponent(panel, "graph.displayOptions").getParent()).isSameAs(helpPanel);
     assertThat(((JTextArea) namedComponent(panel, "graph.limitWarningText")).getLineWrap())
         .isTrue();
     assertThat(((Container) namedComponent(panel, "graph.limitActions")).getLayout())

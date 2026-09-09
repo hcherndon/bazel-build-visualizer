@@ -3,7 +3,9 @@ package com.holtherndon.bazelviz.ui.graph;
 import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
+import com.holtherndon.bazelviz.ui.filter.FilterBuilder;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
@@ -125,8 +127,11 @@ public final class GraphCanvasPanel extends JPanel {
   private final JPanel budgetSetting;
   private final JLabel budgetLabel;
   private final JPanel groupBySetting;
-  private final JToggleButton controlsHelp = new JToggleButton("Control help");
+  private final JToggleButton controlsHelp = new JToggleButton("Display options");
   private final JPanel controlsHelpPanel = new JPanel();
+  private final FilterBuilder filters = new FilterBuilder(GraphFilter.fields());
+  private final JToggleButton filterToggle = new JToggleButton("Filters");
+  private FilterExpression filter = FilterExpression.ALL;
 
   /**
    * The bar plan 13.6 requires above the limit.
@@ -241,19 +246,19 @@ public final class GraphCanvasPanel extends JPanel {
 
     JPanel controlsRow = new JPanel(new WrapLayout(FlowLayout.LEADING, 8, 3));
     controlsRow.setName("graph.controlsRow");
-    controlsRow.setBorder(BorderFactory.createTitledBorder("Graph controls"));
+    JPanel options = new JPanel(new WrapLayout(FlowLayout.LEADING, 8, 3));
+    options.setName("graph.displayOptions");
     controlsRow.add(labeledSetting("Scope", mode, "graph.scopeLabel"));
     depthSetting = labeledSetting("Traversal depth", depth, "graph.depthLabel");
     controlsRow.add(depthSetting);
     budgetSetting = labeledSetting("Node budget", nodeLimitControl, "graph.nodeBudgetLabel");
     budgetLabel = (JLabel) budgetSetting.getComponent(0);
-    controlsRow.add(budgetSetting);
+    options.add(budgetSetting);
     groupBySetting = labeledSetting("Group nodes by", groupBy, "graph.groupByLabel");
-    controlsRow.add(groupBySetting);
+    options.add(groupBySetting);
     controlsRow.add(labeledSetting("Layout", layout, "graph.layoutLabel"));
-    controlsRow.add(labeledSetting("Dependencies", edgeDisplay, "graph.edgesLabel"));
-    controlsRow.add(
-        labeledSetting("Node size and colour", weightChoice, "graph.nodeEncodingLabel"));
+    options.add(labeledSetting("Dependencies", edgeDisplay, "graph.edgesLabel"));
+    options.add(labeledSetting("Node size and colour", weightChoice, "graph.nodeEncodingLabel"));
 
     JButton fit = new JButton("Fit graph");
     fit.setName("graph.fit");
@@ -275,26 +280,30 @@ public final class GraphCanvasPanel extends JPanel {
 
     controlsHelp.setName("graph.controlsHelp");
     controlsHelp.setToolTipText(
-        PlainText.tooltip("Show plain-language explanations for the selected graph controls."));
+        PlainText.tooltip(
+            "Show budgets, grouping, edge visibility, node encoding, and their explanations."));
     controlsHelp
         .getAccessibleContext()
         .setAccessibleDescription(
             "Show plain-language explanations for the selected graph controls.");
+    controlsRow.add(filterToggle);
     controlsRow.add(controlsHelp);
     controlsRow.add(fit);
-    controlsRow.add(resetPositions);
+    options.add(resetPositions);
     controlsRow.add(export);
 
     controlsHelpPanel.setName("graph.controlsHelpPanel");
     controlsHelpPanel.setLayout(new BoxLayout(controlsHelpPanel, BoxLayout.Y_AXIS));
     controlsHelpPanel.setBorder(BorderFactory.createEmptyBorder(0, 4, 2, 4));
+    controlsHelpPanel.add(options);
     controlsHelpPanel.add(scopeExplanation);
     controlsHelpPanel.add(appearanceExplanation);
     controlsHelpPanel.setVisible(false);
     controlsHelp.addActionListener(
         event -> {
           controlsHelpPanel.setVisible(controlsHelp.isSelected());
-          controlsHelp.setText(controlsHelp.isSelected() ? "Hide control help" : "Control help");
+          controlsHelp.setText(
+              controlsHelp.isSelected() ? "Hide display options" : "Display options");
           revalidate();
           repaint();
         });
@@ -303,7 +312,36 @@ public final class GraphCanvasPanel extends JPanel {
     controls.setName("graph.controls");
     controls.setBorder(BorderFactory.createEmptyBorder(2, 8, 1, 8));
     controls.add(controlsRow, BorderLayout.NORTH);
-    controls.add(controlsHelpPanel, BorderLayout.CENTER);
+    JPanel expandable = new JPanel();
+    expandable.setLayout(new BoxLayout(expandable, BoxLayout.Y_AXIS));
+    expandable.add(filters);
+    expandable.add(controlsHelpPanel);
+    controls.add(expandable, BorderLayout.CENTER);
+    filters.setName("graph.filters");
+    filters.setVisible(false);
+    filterToggle.setName("graph.filterToggle");
+    filterToggle.setToolTipText(
+        PlainText.tooltip(
+            "Compose node filters using All/Any groups. Hidden nodes and their incident edges are"
+                + " removed before layout."));
+    filterToggle.addActionListener(
+        event -> {
+          filters.setVisible(filterToggle.isSelected());
+          revalidate();
+        });
+    filters.onChange(
+        value -> {
+          filter = value;
+          filterToggle.setText(
+              value.isEmpty() ? "Filters" : "Filters (" + (value.components() - 1) + ")");
+          if (mode.getSelectedItem() == GraphExtract.Mode.PATH
+              || mode.getSelectedItem() == GraphExtract.Mode.CRITICAL_PATH) {
+            showNothing(
+                "Filters apply to node scopes. Choose a scope above to draw matching nodes.");
+          } else {
+            refresh();
+          }
+        });
 
     overLimit.setLayout(new BorderLayout(6, 2));
     overLimit.setName("graph.limitWarning");
@@ -439,6 +477,7 @@ public final class GraphCanvasPanel extends JPanel {
   /** Lets go of the session. */
   public void detach() {
     this.service = null;
+    filters.setExpression(FilterExpression.ALL);
     this.shownGraph = GraphKind.DECLARED_ACTIONS;
     this.rootNode = -1;
     this.aggregatedAutomatically = false;
@@ -455,6 +494,12 @@ public final class GraphCanvasPanel extends JPanel {
    */
   public boolean showPath(List<Integer> nodes, GraphExtract.Mode pathMode) {
     if (service == null || nodes.isEmpty()) {
+      return false;
+    }
+    if (!filter.isEmpty()) {
+      showNothing(
+          "Clear node filters before opening an explicit path. A filtered path could omit its"
+              + " intermediate steps.");
       return false;
     }
     try {
@@ -906,7 +951,8 @@ public final class GraphCanvasPanel extends JPanel {
     request =
         request
             .withLayout((GraphLayout.Kind) layout.getSelectedItem())
-            .withLimits(nodeLimit, edgeLimit);
+            .withLimits(nodeLimit, edgeLimit)
+            .withFilter(filter);
 
     weightGeneration++;
     exportGeneration++;
@@ -944,6 +990,7 @@ public final class GraphCanvasPanel extends JPanel {
     // grouped by package has been answered.
     if (result.refused()
         && result.request() != null
+        && result.request().filter().isEmpty()
         && result.request().mode() == GraphExtract.Mode.WHOLE) {
       aggregatedAutomatically = true;
       setText(description, result.description());
@@ -1004,8 +1051,9 @@ public final class GraphCanvasPanel extends JPanel {
       return;
     }
     boolean clustered = result.isCluster() && !aggregatedAutomatically;
-    showClusters.setVisible(!result.isCluster());
-    refine.setText(clustered ? "Try another grouping" : "Narrow it");
+    showClusters.setVisible(!result.isCluster() && filter.isEmpty());
+    refine.setText(
+        !filter.isEmpty() ? "Refine filters" : clustered ? "Try another grouping" : "Narrow it");
     if (aggregatedAutomatically) {
       setText(overLimitText, "Grouped because the whole build is too big to draw.");
     } else if (clustered) {
@@ -1032,13 +1080,15 @@ public final class GraphCanvasPanel extends JPanel {
     } else {
       raiseLimit.setToolTipText(
           PlainText.tooltip(
-              result.refused()
-                  ? "Raise the limit to "
-                      + result.extract().totalNodes()
-                      + " "
-                      + noun()
-                      + "s and draw all of it."
-                  : "Double the search budget and look further."));
+              !filter.isEmpty()
+                  ? "Raise the drawing budget and reevaluate the filters."
+                  : result.refused()
+                      ? "Raise the limit to "
+                          + result.extract().totalNodes()
+                          + " "
+                          + noun()
+                          + "s and draw all of it."
+                      : "Double the search budget and look further."));
     }
   }
 
@@ -1051,6 +1101,12 @@ public final class GraphCanvasPanel extends JPanel {
    * nothing.
    */
   private void narrow() {
+    if (!filter.isEmpty()) {
+      filterToggle.setSelected(true);
+      filters.setVisible(true);
+      revalidate();
+      return;
+    }
     GraphExtract.Mode chosen = (GraphExtract.Mode) mode.getSelectedItem();
     boolean rooted =
         chosen == GraphExtract.Mode.NEIGHBOURHOOD

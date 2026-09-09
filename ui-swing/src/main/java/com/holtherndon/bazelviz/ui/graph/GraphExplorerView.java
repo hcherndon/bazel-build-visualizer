@@ -214,10 +214,7 @@ public final class GraphExplorerView extends JPanel implements PageChrome {
 
     localTop.setName("graph.dataHeader");
     localTop.setLayout(new BoxLayout(localTop, BoxLayout.Y_AXIS));
-    localTop.setBorder(
-        BorderFactory.createCompoundBorder(
-            BorderFactory.createEmptyBorder(2, 8, 1, 8),
-            BorderFactory.createTitledBorder("Graph data")));
+    localTop.setBorder(BorderFactory.createEmptyBorder(0, 8, 0, 8));
     rootControls.setName("graph.dataControls");
     localTop.add(rootControls);
     localTop.add(sourceDetail);
@@ -245,13 +242,13 @@ public final class GraphExplorerView extends JPanel implements PageChrome {
     pageToolbar = toolbar;
     rootControls.remove(sourceHelp);
     localTop.remove(rootControls);
-    localTop.add(row(sourceHelp), 0);
     toolbar.addAction(sourceLabel);
     toolbar.addAction(sourceChoice);
     toolbar.addAction(findLabel);
     toolbar.addAction(search);
     toolbar.addAction(open);
     toolbar.addAction(browse);
+    toolbar.addAction(sourceHelp);
     syncPageMetadata();
     localTop.revalidate();
     localTop.repaint();

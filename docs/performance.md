@@ -1019,3 +1019,15 @@ repository-wide build action. Their markers are cached with the Java targets,
 and independent packages can check in parallel. The explicit formatter command
 is repository-wide because it is a developer rewrite operation, not a build
 action. No build-speed claim is made without a controlled measurement.
+
+### Graph visual filtering
+
+Graph filters run on the graph worker, not Swing's event thread. Whole-source
+text/direct-count filtering reads metadata in batches of 400 nodes, retains at
+most the requested node/edge drawing budgets, and counts all matching nodes.
+Metadata, filter cache keys, retained models, and extraction scratch remain
+under graph resource admission. Transitive filters use the existing bounded
+scope algorithm and refuse incomplete counts; no full-graph closure is stored.
+Large metadata scans may take time, especially configured-label queries; no
+interactive latency guarantee is claimed. Superseded scans are cancellable
+between batches and while collecting edges.

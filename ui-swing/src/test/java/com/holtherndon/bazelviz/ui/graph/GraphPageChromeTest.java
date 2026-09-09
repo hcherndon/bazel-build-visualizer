@@ -36,13 +36,12 @@ final class GraphPageChromeTest {
           view.installPageToolbar(toolbar);
           view.installPageToolbar(toolbar);
 
-          assertThat(toolbar.actionCount()).isEqualTo(6);
+          assertThat(toolbar.actionCount()).isEqualTo(7);
           assertThat(labels(toolbar)).contains("Graph source:", "Find node:");
-          assertThat(buttons(toolbar)).contains("Open", "Browse nodes…");
+          assertThat(buttons(toolbar)).contains("Open", "Browse nodes…", "Source help");
           assertThat(buttons(toolbar))
-              .doesNotContain("Fit graph", "Reset moved nodes", "Export graph…", "Source help");
-          assertThat(buttons(view))
-              .contains("Fit graph", "Reset moved nodes", "Export graph…", "Source help");
+              .doesNotContain("Fit graph", "Reset moved nodes", "Export graph…");
+          assertThat(buttons(view)).contains("Fit graph", "Reset moved nodes", "Export graph…");
           assertThat(toolbar.metadata()).isEmpty();
           return null;
         });

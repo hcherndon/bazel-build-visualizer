@@ -107,6 +107,25 @@ class FilterBuilderTest {
   }
 
   @Test
+  void textSetEditorPreservesMultipleValuesAndRejectsEmptyEntries() throws Exception {
+    SwingUtilities.invokeAndWait(
+        () -> {
+          FilterBuilder builder = new FilterBuilder(FIELDS);
+          Condition selected = new Condition("event_id", Operator.IN, List.of("Javac", "Turbine"));
+          FilterBuilder.ConditionEditor editor =
+              builder.new ConditionEditor(selected, ignored -> {}, () -> {});
+          assertThat(editor.readCondition()).isEqualTo(selected);
+          JTextField value = controls(editor, JTextField.class).getFirst();
+          value.setText("Javac, Genrule");
+          assertThat(editor.readCondition().values()).containsExactly("Javac", "Genrule");
+          value.setText("Javac,");
+          assertThatThrownBy(editor::readCondition).isInstanceOf(IllegalArgumentException.class);
+          controls(editor, JComboBox.class).get(1).setSelectedItem(Operator.EQUALS);
+          assertThat(editor.readCondition().values()).containsExactly("Javac,");
+        });
+  }
+
+  @Test
   void manyFiltersStayInAScrollableCompactArea() throws Exception {
     SwingUtilities.invokeAndWait(
         () -> {

@@ -410,3 +410,34 @@ reveal its incident cross-links without an edge-list scan or event-thread
 computation; a multi-node marquee does not reveal an unbounded union. Source
 changes clear the old model before the new graph can be clicked or exported,
 because node indices are source-specific.
+
+## Visual node filters
+
+Graph uses the same immutable `FilterExpression` and visual filter builder as
+Events: All/Any groups, editable conditions, and an × to remove each component.
+Open **Filters** beside Scope to filter target labels, action mnemonics, display
+names, duration (microseconds), and direct or transitive dependency counts.
+Text supports literal contains, starts/ends with, their negations, and multiple
+values. Graph text comparisons ignore case. For example, label starts with `//`
+keeps workspace labels; mnemonic is one of `Javac, Turbine` narrows action nodes.
+Unknown values require **is unknown**; they do not satisfy negative comparisons.
+
+Direct deps/rdeps count the full selected source graph. Transitive counts count
+other reachable nodes in the chosen scope **before filtering**, excluding self.
+They require a complete scope and the existing transitive work budget; exceeding
+either refuses the filter rather than using partial counts. Configured-target
+label nodes have no action mnemonic or recorded action duration.
+
+Whole-graph filters without transitive conditions scan metadata in bounded
+batches before applying the drawing limits, so a large source can be narrowed
+enough to display. Other scopes must fit their extraction budgets first. Only
+edges whose endpoints both match remain: filtering never bridges hidden nodes.
+The description reports matching/hidden counts and source totals. Over-budget
+matches are refused, without silently switching to unfiltered clusters.
+Cluster summaries and explicit paths require clearing node filters first.
+Hiding the filter controls does not clear active filters.
+
+The shared header holds source/find/browse and Source help; there is no separate
+help-only Graph data row. Scope, depth, layout, Filters, fit and export stay
+visible. **Display options** collapses budgets, grouping, edge/weight encoding,
+reset positions, and longer explanations.

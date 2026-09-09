@@ -820,7 +820,7 @@ public final class GraphQueries implements AutoCloseable {
             Math.addExact(
                 4_096,
                 Math.addExact(
-                    Math.multiplyExact((long) nodeIndexes.size(), 80L),
+                    Math.multiplyExact((long) nodeIndexes.size(), 96L),
                     Math.multiplyExact(encodedBytes, 4L)));
       } catch (ArithmeticException overflow) {
         throw new IOException("extraction metadata is too large to account safely", overflow);
@@ -830,6 +830,7 @@ public final class GraphQueries implements AutoCloseable {
       try {
         String[] display = new String[nodeIndexes.size()];
         String[] owners = new String[nodeIndexes.size()];
+        String[] mnemonics = new String[nodeIndexes.size()];
         long[] durations = new long[nodeIndexes.size()];
         long[] actionIds = new long[nodeIndexes.size()];
         Arrays.fill(durations, -1);
@@ -848,6 +849,7 @@ public final class GraphQueries implements AutoCloseable {
               }
               String owner = rows.getString(2);
               String mnemonic = rows.getString(3);
+              mnemonics[position] = mnemonic;
               String output = rows.getString(4);
               display[position] = composeDisplayLabel(mnemonic, output, owner);
               owners[position] = owner;
@@ -860,7 +862,7 @@ public final class GraphQueries implements AutoCloseable {
                 durations[position] = duration;
               }
             });
-        return new NodeMetadata(display, owners, durations, actionIds, reservation);
+        return new NodeMetadata(display, owners, mnemonics, durations, actionIds, reservation);
       } catch (SQLException | RuntimeException failure) {
         reservation.close();
         throw failure;
@@ -1007,6 +1009,7 @@ public final class GraphQueries implements AutoCloseable {
   public static final class NodeMetadata implements AutoCloseable {
     private final String[] displayLabels;
     private final String[] ownerLabels;
+    private final String[] mnemonics;
     private final long[] durations;
     private final long[] actionIds;
     private GraphResourceBudget.Reservation reservation;
@@ -1014,11 +1017,13 @@ public final class GraphQueries implements AutoCloseable {
     NodeMetadata(
         String[] displayLabels,
         String[] ownerLabels,
+        String[] mnemonics,
         long[] durations,
         long[] actionIds,
         GraphResourceBudget.Reservation reservation) {
       this.displayLabels = displayLabels;
       this.ownerLabels = ownerLabels;
+      this.mnemonics = mnemonics;
       this.durations = durations;
       this.actionIds = actionIds;
       this.reservation = reservation;
@@ -1030,6 +1035,10 @@ public final class GraphQueries implements AutoCloseable {
 
     public String[] ownerLabels() {
       return ownerLabels;
+    }
+
+    public String[] mnemonics() {
+      return mnemonics;
     }
 
     public long[] durations() {

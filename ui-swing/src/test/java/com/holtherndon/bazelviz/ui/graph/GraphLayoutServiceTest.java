@@ -6,6 +6,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import com.holtherndon.bazelviz.analysis.GraphClustering;
 import com.holtherndon.bazelviz.analysis.GraphExtract;
 import com.holtherndon.bazelviz.analysis.GraphLayout;
+import com.holtherndon.bazelviz.core.filter.FilterExpression;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Condition;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Group;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Junction;
+import com.holtherndon.bazelviz.core.filter.FilterExpression.Operator;
 import com.holtherndon.bazelviz.core.graph.EdgeDerivation;
 import com.holtherndon.bazelviz.core.graph.GraphKind;
 import com.holtherndon.bazelviz.graph.GraphResourceBudget;
@@ -149,6 +154,117 @@ final class GraphLayoutServiceTest {
     assertThat(rendered.layout().size()).isEqualTo(rendered.extract().nodes().size());
     assertThat(rendered.description()).contains("from a graph of 6");
     assertThat(rendered.isCluster()).isFalse();
+  }
+
+  private static Condition filter(String field, Operator operator, String... values) {
+    return new Condition(field, operator, List.of(values));
+  }
+
+  @Test
+  void incompleteTransitiveScopesAndClusterFilteringFailClearly() throws Exception {
+    var requests =
+        List.of(
+            GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 2, 2)
+                .withFilter(filter("transitive_deps", Operator.GREATER_THAN, "0")),
+            GraphLayoutService.Request.clustered(
+                    GraphKind.DECLARED_ACTIONS, GraphClustering.By.PACKAGE)
+                .withFilter(filter("mnemonic", Operator.EQUALS, "Javac")));
+    for (var request : requests) {
+      CountDownLatch done = new CountDownLatch(1);
+      AtomicReference<Throwable> failure = new AtomicReference<>();
+      service.submit(
+          request,
+          rendered -> {
+            rendered.close();
+            done.countDown();
+          },
+          error -> {
+            failure.set(error);
+            done.countDown();
+          });
+      assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(failure.get()).isNotNull();
+      assertThat(failure.get().getMessage()).containsIgnoringCase("scope");
+    }
+  }
+
+  @Test
+  void filtersNarrowAnOversizedWholeGraphBeforeItsDrawingBudget() throws Exception {
+    var request =
+        GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 3, 2)
+            .withFilter(filter("label", Operator.STARTS_WITH, "//B:"));
+    try (var rendered = await(request)) {
+      assertThat(rendered.extract().nodes()).containsExactly(3, 4, 5);
+      assertThat(rendered.extract().edges())
+          .containsExactly(new GraphExtract.Edge(3, 4), new GraphExtract.Edge(4, 5));
+      assertThat(rendered.extract().hitLimit()).isFalse();
+      assertThat(rendered.description()).contains("3 of 6", "3 hidden");
+    }
+    try (var rendered = await(request.withFilter(FilterExpression.ALL))) {
+      assertThat(rendered.extract().hitLimit()).isTrue();
+    }
+  }
+
+  @Test
+  void composedFiltersUseFullSourceDegreesAndNeverBridgeHiddenNodes() throws Exception {
+    var request = GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 10, 10);
+    var composed =
+        new Group(
+            Junction.ALL,
+            List.of(
+                filter("mnemonic", Operator.IN, "Javac"),
+                filter("deps", Operator.GREATER_THAN, "0"),
+                filter("rdeps", Operator.GREATER_THAN, "0")));
+    try (var rendered = await(request.withFilter(composed))) {
+      assertThat(rendered.extract().nodes()).containsExactly(1, 2);
+    }
+    var separated =
+        new Group(
+            Junction.ANY,
+            List.of(
+                filter("label", Operator.ENDS_WITH, "target0"),
+                filter("label", Operator.ENDS_WITH, "target5")));
+    try (var rendered = await(request.withFilter(separated))) {
+      assertThat(rendered.extract().nodes()).containsExactly(0, 5);
+      assertThat(rendered.extract().edges()).isEmpty();
+    }
+  }
+
+  @Test
+  void transitiveCountsUseTheUnfilteredScopeAndCorrectDirection() throws Exception {
+    var request = GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 10, 10);
+    try (var rendered =
+        await(request.withFilter(filter("transitive_deps", Operator.GREATER_THAN, "2")))) {
+      assertThat(rendered.extract().nodes()).containsExactly(3, 4, 5);
+      assertThat(rendered.description()).contains("scope before filtering");
+    }
+    try (var rendered =
+        await(request.withFilter(filter("transitive_rdeps", Operator.GREATER_THAN, "2")))) {
+      assertThat(rendered.extract().nodes()).containsExactly(0, 1, 2);
+    }
+  }
+
+  @Test
+  void unknownDurationsAreNotZeroAndFilteredBudgetRefusalIsExplicit() throws Exception {
+    var request = GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 10, 10);
+    try (var rendered = await(request.withFilter(filter("duration", Operator.EQUALS, "0")))) {
+      assertThat(rendered.extract().nodes()).isEmpty();
+      assertThat(rendered.extract().hitLimit()).isFalse();
+    }
+    try (var rendered = await(request.withFilter(filter("duration", Operator.IS_ABSENT)))) {
+      assertThat(rendered.extract().nodes()).hasSize(6);
+    }
+    try (var rendered =
+        await(request.withLimits(2, 10).withFilter(filter("label", Operator.STARTS_WITH, "//")))) {
+      assertThat(rendered.extract().nodes()).isEmpty();
+      assertThat(rendered.extract().hitNodeLimit()).isTrue();
+      assertThat(rendered.description()).contains("6 of 6", "nothing was drawn");
+    }
+    try (var rendered =
+        await(request.withLimits(10, 2).withFilter(filter("label", Operator.STARTS_WITH, "//")))) {
+      assertThat(rendered.extract().nodes()).isEmpty();
+      assertThat(rendered.extract().hitEdgeLimit()).isTrue();
+    }
   }
 
   @Test

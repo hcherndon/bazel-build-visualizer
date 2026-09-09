@@ -8,10 +8,12 @@ java_library(
     deps = [
         "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/text",
         "//graph-core/src/main/java/com/holtherndon/bazelviz/graph",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/graph",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/nav",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/filter",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
         "@maven//:org_slf4j_slf4j_api",

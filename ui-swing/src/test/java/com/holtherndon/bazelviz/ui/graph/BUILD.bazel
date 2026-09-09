@@ -10,6 +10,7 @@ java_library(
     srcs = glob(["*.java"]),
     deps = JUNIT_DEPS + [
         "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/graph",
         "//graph-core/src/main/java/com/holtherndon/bazelviz/graph",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage",

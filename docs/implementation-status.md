@@ -3337,3 +3337,15 @@ it is a different tab and was not reported.
   off-event-thread tests cover these seams. No new dependency or architectural
   decision was added; the named graph resource and format limits are recorded
   in `docs/limits.md`.
+
+**Graph filters and compact controls (2026-09-09).** Graph now shares Events'
+composable All/Any filter builder, with removable conditions for labels,
+mnemonics, display names, duration, and direct/transitive deps/rdeps. Prefix and
+suffix operators are also available to Events. Direct counts describe the
+source; transitive counts describe the complete pre-filter scope. Whole-graph
+text/direct filters can narrow an oversized source before drawing admission.
+Hidden nodes do not create replacement edges; unknowns and budget refusals are
+explicit. Source help moves into the common header, while Display options and
+Filters collapse independently. See `docs/graph-model.md` for scope semantics
+and cluster/path restrictions. Regression tests cover composition, direction,
+unknown metadata, budgets, literal SQL comparisons, and toolbar ownership.
