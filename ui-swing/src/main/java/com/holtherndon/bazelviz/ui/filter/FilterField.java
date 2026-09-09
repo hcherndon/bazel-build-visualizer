@@ -39,8 +39,14 @@ public record FilterField(String id, String label, Kind kind, List<Choice> choic
           List.of(
               Operator.CONTAINS,
               Operator.NOT_CONTAINS,
+              Operator.STARTS_WITH,
+              Operator.NOT_STARTS_WITH,
+              Operator.ENDS_WITH,
+              Operator.NOT_ENDS_WITH,
               Operator.EQUALS,
               Operator.NOT_EQUALS,
+              Operator.IN,
+              Operator.NOT_IN,
               Operator.IS_PRESENT,
               Operator.IS_ABSENT);
       case NUMBER ->

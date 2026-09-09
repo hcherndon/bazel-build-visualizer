@@ -23,6 +23,26 @@ class EventFilterTest {
   @TempDir Path temporary;
 
   @Test
+  void prefixAndSuffixFiltersAreLiteralCaseInsensitiveAndKeepUnknownsUnknown() throws Exception {
+    try (SessionDatabase db = seeded();
+        Connection read = db.newReadConnection();
+        EventQueries queries = new EventQueries(read)) {
+      assertThat(queries.eventCount(condition("event_id", Operator.STARTS_WITH, "TARGET://x/1")))
+          .isEqualTo(111);
+      assertThat(queries.eventCount(condition("event_id", Operator.ENDS_WITH, "/1"))).isEqualTo(1);
+      for (Operator op : List.of(Operator.STARTS_WITH, Operator.ENDS_WITH)) {
+        assertThat(queries.eventCount(condition("event_id", op, ""))).isEqualTo(300);
+        assertThat(queries.eventCount(condition("event_id", op, "%"))).isZero();
+        assertThat(queries.eventCount(condition("event_id", op, "' OR 1=1 --"))).isZero();
+      }
+      for (Operator op : List.of(Operator.NOT_STARTS_WITH, Operator.NOT_ENDS_WITH)) {
+        assertThat(queries.eventCount(condition("event_id", op, ""))).isZero();
+        assertThat(queries.eventCount(condition("event_id", op, "%"))).isEqualTo(300);
+      }
+    }
+  }
+
+  @Test
   void composedFiltersCountAndPageAcrossTheWholeStoreInBothDirections() throws Exception {
     try (SessionDatabase db = seeded();
         Connection read = db.newReadConnection();

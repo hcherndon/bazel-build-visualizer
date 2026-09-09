@@ -125,6 +125,21 @@ final class EventFilterSql {
             };
         yield column + " " + comparison + " ?";
       }
+      case STARTS_WITH, NOT_STARTS_WITH, ENDS_WITH, NOT_ENDS_WITH -> {
+        requireKind(field, Kind.TEXT);
+        values.add(condition.values().getFirst());
+        boolean prefix = operator == Operator.STARTS_WITH || operator == Operator.NOT_STARTS_WITH;
+        boolean negative =
+            operator == Operator.NOT_STARTS_WITH || operator == Operator.NOT_ENDS_WITH;
+        String start = prefix ? "1" : "length(" + column + ") - length(?) + 1";
+        yield "substr(lower("
+            + column
+            + "), "
+            + start
+            + (prefix ? ", length(?))" : ")")
+            + (negative ? " <> " : " = ")
+            + "lower(?)";
+      }
       default -> throw new IllegalArgumentException("Unsupported filter operator: " + operator);
     };
   }
