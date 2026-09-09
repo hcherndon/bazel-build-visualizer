@@ -418,6 +418,12 @@ public final class FilterBuilder extends JPanel {
         return;
       }
       List<String> selected = selectedChoices();
+      boolean regex = op == Operator.REGEX || op == Operator.NOT_REGEX;
+      help.setText(
+          regex
+              ? "Java regex search; case-sensitive. Use ^ and $ for anchors, (?i) to ignore case."
+                  + " Example: ^//(app|lib):"
+              : selectedField().help());
       choices.clear();
       values.removeAll();
       if (op.requiresValue()) {
@@ -426,7 +432,7 @@ public final class FilterBuilder extends JPanel {
           text.setToolTipText(
               op.multipleValues()
                   ? "Separate values with commas. For a value containing a comma, use an ‘is’"
-                        + " condition."
+                      + " condition."
                   : null);
           input.add(text, BorderLayout.NORTH);
           if (op.multipleValues()) {

@@ -43,6 +43,8 @@ public record FilterField(String id, String label, Kind kind, List<Choice> choic
               Operator.NOT_STARTS_WITH,
               Operator.ENDS_WITH,
               Operator.NOT_ENDS_WITH,
+              Operator.REGEX,
+              Operator.NOT_REGEX,
               Operator.EQUALS,
               Operator.NOT_EQUALS,
               Operator.IN,

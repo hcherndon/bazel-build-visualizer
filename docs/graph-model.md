@@ -418,9 +418,17 @@ Events: All/Any groups, editable conditions, and an × to remove each component.
 Open **Filters** beside Scope to filter target labels, action mnemonics, display
 names, duration (microseconds), and direct or transitive dependency counts.
 Text supports literal contains, starts/ends with, their negations, and multiple
-values. Graph text comparisons ignore case. For example, label starts with `//`
+values. Literal Graph text comparisons ignore case. For example, label starts with `//`
 keeps workspace labels; mnemonic is one of `Javac, Turbine` narrows action nodes.
 Unknown values require **is unknown**; they do not satisfy negative comparisons.
+
+**Matches regex** and **does not match regex** use Java regex search semantics,
+shared with Events. Patterns are case-sensitive unless they include `(?i)`;
+use `^` and `$` to anchor a complete value. For example, `^//(app|lib):` matches
+labels in either package. Commas and backslashes are entered literally, without
+quotes or slash delimiters. Invalid patterns are rejected in the editor. A
+matching-work or regex-stack limit aborts the operation with an error, never a
+partial match count. Unknown values match neither regex nor its negation.
 
 Direct deps/rdeps count the full selected source graph. Transitive counts count
 other reachable nodes in the chosen scope **before filtering**, excluding self.

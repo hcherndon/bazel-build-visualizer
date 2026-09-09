@@ -14,6 +14,20 @@ import org.junit.jupiter.api.Test;
 
 class FilterExpressionTest {
   @Test
+  void regexSupportsSearchAnchorsFlagsAndRejectsInvalidOrExcessivePatterns() {
+    assertThat(RegexFilter.matches("(app|lib):", "//app:main")).isTrue();
+    assertThat(RegexFilter.matches("^app:", "//app:main")).isFalse();
+    assertThat(RegexFilter.matches("Javac", "javac")).isFalse();
+    assertThat(RegexFilter.matches("(?i)^javac$", "Javac")).isTrue();
+    assertThatThrownBy(() -> new Condition("name", Operator.REGEX, List.of("[")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid regex");
+    assertThatThrownBy(() -> RegexFilter.matches("(a+)+$", "a".repeat(5000) + "!"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("work limit");
+  }
+
+  @Test
   void groupsAreImmutableAndEmptyPlaceholdersDoNotRestrictResults() {
     List<FilterExpression> children = new ArrayList<>();
     Group group = new Group(Junction.ANY, children);

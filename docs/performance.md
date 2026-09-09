@@ -1047,3 +1047,10 @@ scope algorithm and refuse incomplete counts; no full-graph closure is stored.
 Large metadata scans may take time, especially configured-label queries; no
 interactive latency guarantee is claimed. Superseded scans are cancellable
 between batches and while collecting edges.
+
+Regex string filters share a bounded compiled-pattern cache across Events and
+Graph. Events evaluates bound patterns through a connection-local SQLite
+function, so paging and counts use the same predicate without loading all rows
+into Java. Matching checks a per-value character-read budget and interruption;
+budget or stack exhaustion fails the query rather than silently skipping rows.
+Regex predicates can still require a full scan and are not index-accelerated.

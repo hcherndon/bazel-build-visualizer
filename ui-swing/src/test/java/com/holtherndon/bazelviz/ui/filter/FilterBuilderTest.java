@@ -126,6 +126,23 @@ class FilterBuilderTest {
   }
 
   @Test
+  void regexEditorTreatsCommasLiterallyAndReportsInvalidPatterns() throws Exception {
+    SwingUtilities.invokeAndWait(
+        () -> {
+          FilterBuilder builder = new FilterBuilder(FIELDS);
+          Condition pattern = new Condition("event_id", Operator.REGEX, List.of("^a{1,3}$"));
+          FilterBuilder.ConditionEditor editor =
+              builder.new ConditionEditor(pattern, ignored -> {}, () -> {});
+          assertThat(editor.readCondition()).isEqualTo(pattern);
+          controls(editor, JTextField.class).getFirst().setText("[");
+          assertThatThrownBy(editor::readCondition)
+              .isInstanceOf(IllegalArgumentException.class)
+              .hasMessageContaining("Invalid regex");
+          assertThat(FIELDS.get(1).operators()).doesNotContain(Operator.REGEX, Operator.NOT_REGEX);
+        });
+  }
+
+  @Test
   void manyFiltersStayInAScrollableCompactArea() throws Exception {
     SwingUtilities.invokeAndWait(
         () -> {

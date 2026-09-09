@@ -6,6 +6,7 @@ import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.core.filter.FilterExpression.Condition;
 import com.holtherndon.bazelviz.core.filter.FilterExpression.Group;
 import com.holtherndon.bazelviz.core.filter.FilterExpression.Operator;
+import com.holtherndon.bazelviz.core.filter.RegexFilter;
 import com.holtherndon.bazelviz.graph.CsrGraph;
 import com.holtherndon.bazelviz.storage.graph.GraphQueries;
 import com.holtherndon.bazelviz.ui.filter.FilterField;
@@ -137,6 +138,9 @@ final class GraphFilter {
       return false;
     }
     String wanted = condition.values().getFirst();
+    if (op == Operator.REGEX || op == Operator.NOT_REGEX) {
+      return RegexFilter.matches(wanted, actual.toString()) == (op == Operator.REGEX);
+    }
     if (actual instanceof Long number) {
       int comparison = Long.compare(number, Long.parseLong(wanted));
       return switch (op) {

@@ -23,6 +23,33 @@ class EventFilterTest {
   @TempDir Path temporary;
 
   @Test
+  void regexCountAndPagesShareSemanticsIncludingUnknownsAndComposition() throws Exception {
+    try (SessionDatabase db = seeded();
+        Connection read = db.newReadConnection();
+        EventQueries queries = new EventQueries(read)) {
+      var regex = condition("event_id", Operator.REGEX, "^target://x/(1|2)$");
+      assertThat(queries.eventCount(regex)).isEqualTo(2);
+      assertThat(queries.pageForward(OptionalLong.empty(), 10, regex).events())
+          .extracting(EventSummary::id)
+          .containsExactly(1L, 2L);
+      assertThat(queries.pageBackward(OptionalLong.empty(), 10, regex).events())
+          .extracting(EventSummary::id)
+          .containsExactly(1L, 2L);
+      assertThat(
+              queries.eventCount(condition("event_id", Operator.NOT_REGEX, "^target://x/(1|2)$")))
+          .isEqualTo(298);
+      assertThat(queries.eventCount(condition("event_id", Operator.REGEX, "^TARGET"))).isZero();
+      assertThat(queries.eventCount(condition("event_id", Operator.REGEX, "(?i)^TARGET")))
+          .isEqualTo(300);
+      assertThat(
+              queries.eventCount(
+                  new Group(
+                      Junction.ALL, List.of(regex, condition("id", Operator.GREATER_THAN, "1")))))
+          .isEqualTo(1);
+    }
+  }
+
+  @Test
   void prefixAndSuffixFiltersAreLiteralCaseInsensitiveAndKeepUnknownsUnknown() throws Exception {
     try (SessionDatabase db = seeded();
         Connection read = db.newReadConnection();

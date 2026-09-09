@@ -161,6 +161,24 @@ final class GraphLayoutServiceTest {
   }
 
   @Test
+  void regexFiltersUseOriginalCaseAndDoNotMatchUnknowns() throws Exception {
+    var request = GraphLayoutService.Request.whole(GraphKind.DECLARED_ACTIONS, 10, 10);
+    try (var rendered =
+        await(request.withFilter(filter("label", Operator.REGEX, "^//b:target[34]$")))) {
+      assertThat(rendered.extract().nodes()).containsExactly(3, 4);
+    }
+    try (var rendered = await(request.withFilter(filter("mnemonic", Operator.REGEX, "^javac$")))) {
+      assertThat(rendered.extract().nodes()).isEmpty();
+    }
+    try (var rendered =
+        await(request.withFilter(filter("mnemonic", Operator.NOT_REGEX, "(?i)^javac$")))) {
+      assertThat(rendered.extract().nodes()).containsExactly(3, 4, 5);
+    }
+    assertThat(GraphFilter.matches(filter("label", Operator.NOT_REGEX, ".*"), ignored -> null))
+        .isFalse();
+  }
+
+  @Test
   void incompleteTransitiveScopesAndClusterFilteringFailClearly() throws Exception {
     var requests =
         List.of(

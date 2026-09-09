@@ -119,6 +119,15 @@ public final class EventQueries implements AutoCloseable {
   private final Map<String, PreparedStatement> statements = new HashMap<>();
   private volatile Statement active;
   private boolean closed;
+  private boolean regexRegistered;
+
+  private EventFilterSql.Predicate compileFilter(FilterExpression filter) throws SQLException {
+    if (!regexRegistered) {
+      EventFilterSql.registerRegex(connection);
+      regexRegistered = true;
+    }
+    return EventFilterSql.compile(filter);
+  }
 
   /** Wraps a caller-owned read connection; closing this does not close it. */
   public EventQueries(Connection connection) {
@@ -158,7 +167,7 @@ public final class EventQueries implements AutoCloseable {
     if (filter.isEmpty()) {
       return eventCount();
     }
-    EventFilterSql.Predicate predicate = EventFilterSql.compile(filter);
+    EventFilterSql.Predicate predicate = compileFilter(filter);
     // Filter shapes are user-controlled, so these statements never enter the fixed SQL cache.
     try (PreparedStatement statement =
         connection.prepareStatement("SELECT COUNT(*)" + EVENT_FROM + " WHERE " + predicate.sql())) {
@@ -190,7 +199,7 @@ public final class EventQueries implements AutoCloseable {
       OptionalLong anchor, int limit, FilterExpression filter, boolean forward)
       throws SQLException {
     requireLimit(limit);
-    EventFilterSql.Predicate predicate = EventFilterSql.compile(filter);
+    EventFilterSql.Predicate predicate = compileFilter(filter);
     String sql =
         "SELECT "
             + EVENT_COLUMNS

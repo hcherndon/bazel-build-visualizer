@@ -29,6 +29,8 @@ public sealed interface FilterExpression {
     NOT_STARTS_WITH("does not start with"),
     ENDS_WITH("ends with"),
     NOT_ENDS_WITH("does not end with"),
+    REGEX("matches regex"),
+    NOT_REGEX("does not match regex"),
     GREATER_THAN(">"),
     AT_LEAST("≥"),
     LESS_THAN("<"),
@@ -75,6 +77,9 @@ public sealed interface FilterExpression {
       if (values.stream().anyMatch(value -> value.length() > MAX_VALUE_CHARACTERS)) {
         throw new IllegalArgumentException(
             "Filter values are limited to " + MAX_VALUE_CHARACTERS + " characters.");
+      }
+      if (operator == Operator.REGEX || operator == Operator.NOT_REGEX) {
+        RegexFilter.compile(values.getFirst());
       }
     }
   }

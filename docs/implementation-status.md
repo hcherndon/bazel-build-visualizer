@@ -3383,3 +3383,11 @@ explicit. Source help moves into the common header, while Display options and
 Filters collapse independently. See `docs/graph-model.md` for scope semantics
 and cluster/path restrictions. Regression tests cover composition, direction,
 unknown metadata, budgets, literal SQL comparisons, and toolbar ownership.
+
+**Regex string filters (2026-09-09).** The shared filter builder adds matches
+regex and does not match regex for text fields in Events and Graph. Both use
+case-sensitive Java regex search (`(?i)` opts into case-insensitive matching),
+with inline pattern validation, bounded compiled-pattern caching, and explicit
+failure on matching-work exhaustion. Unknown values satisfy neither operator.
+Tests cover anchors, alternatives, flags, invalid patterns, work limits,
+count/page agreement, composition, and editor round-tripping.

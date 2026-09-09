@@ -3,12 +3,15 @@ package com.holtherndon.bazelviz.storage.events;
 import com.holtherndon.bazelviz.core.filter.FilterExpression;
 import com.holtherndon.bazelviz.core.filter.FilterExpression.Condition;
 import com.holtherndon.bazelviz.core.filter.FilterExpression.Operator;
+import com.holtherndon.bazelviz.core.filter.RegexFilter;
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import org.sqlite.Function;
 
 /** Compiles allowlisted event fields and operators into SQL with bound values. */
 final class EventFilterSql {
@@ -37,6 +40,28 @@ final class EventFilterSql {
           Map.entry("last_message", new Field(readable("e.last_message"), Kind.BOOLEAN)));
 
   private EventFilterSql() {}
+
+  static void registerRegex(Connection connection) throws SQLException {
+    Function.create(
+        connection,
+        "bbv_regex",
+        new Function() {
+          @Override
+          protected void xFunc() throws SQLException {
+            String pattern = value_text(0);
+            String value = value_text(1);
+            if (value == null || pattern == null) {
+              result();
+              return;
+            }
+            try {
+              result(RegexFilter.matches(pattern, value) ? 1 : 0);
+            } catch (IllegalArgumentException failure) {
+              error(failure.getMessage());
+            }
+          }
+        });
+  }
 
   private static String readable(String column) {
     return "CASE WHEN e.decode_status IN ('OK', 'UNKNOWN_FIELDS') THEN " + column + " END";
@@ -99,6 +124,10 @@ final class EventFilterSql {
           });
     }
     return switch (operator) {
+      case REGEX, NOT_REGEX -> {
+        requireKind(field, Kind.TEXT);
+        yield "bbv_regex(?, " + column + ") = " + (operator == Operator.REGEX ? "1" : "0");
+      }
       case EQUALS -> column + " = ?";
       case NOT_EQUALS -> column + " <> ?";
       case IN, NOT_IN ->
