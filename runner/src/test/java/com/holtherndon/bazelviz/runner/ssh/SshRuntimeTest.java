@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -233,11 +234,61 @@ final class SshRuntimeTest {
   }
 
   @Test
-  void sftpUsesTheSameControlSocketAndEscapesGlobs() {
+  void snapshotDownloadsRetryOnceButUploadsAreNeverReplayed() throws Exception {
+    Path destination = temporary.resolve("download-recovery");
+    Path calls = temporary.resolve("sftp-recovery-calls");
+    Path fake =
+        executable(
+            "sftp-recovery",
+            """
+            #!/bin/sh
+            cat >/dev/null
+            if [ ! -f '%s' ]; then
+              echo first > '%s'
+              printf partial > '%s'
+              exit 1
+            fi
+            echo second >> '%s'
+            printf complete > '%s'
+            """
+                .formatted(calls, calls, destination, calls, destination));
+    AtomicInteger recoveries = new AtomicInteger();
+    SshConnectionAccess connection =
+        new SshConnectionAccess() {
+          @Override
+          public Path socket() {
+            return temporary.resolve("socket");
+          }
+
+          @Override
+          public IOException failed(Path socket, IOException failure) {
+            recoveries.incrementAndGet();
+            return new SshConnectionAccess.RecoveredFailure(failure);
+          }
+        };
+    SftpClient client = new SftpClient(SshTarget.of("fake"), fake, connection);
+    client.download("/private/snapshot", destination, 8);
+    assertThat(Files.readString(destination)).isEqualTo("complete");
+    assertThat(Files.readAllLines(calls)).hasSize(2);
+    assertThat(recoveries.get()).isEqualTo(1);
+
+    Files.delete(calls);
+    assertThatThrownBy(() -> client.upload(destination, "/remote/save", 8))
+        .isInstanceOf(SshConnectionAccess.RecoveredFailure.class);
+    assertThat(Files.readAllLines(calls)).hasSize(1);
+    assertThat(recoveries.get()).isEqualTo(2);
+  }
+
+  @Test
+  void sftpUsesTheSameControlSocketAndEscapesGlobs() throws Exception {
     SftpClient client =
         new SftpClient(SshTarget.of("host"), Path.of("/usr/bin/sftp"), Path.of("/tmp/private/c"));
     assertThat(client.arguments())
-        .contains("BatchMode=yes", "ControlPath=/tmp/private/c", "ClearAllForwardings=yes")
+        .contains(
+            "BatchMode=yes",
+            "ControlPath=/tmp/private/c",
+            "ClearAllForwardings=yes",
+            "ProxyCommand=false")
         .doesNotContain("StrictHostKeyChecking=no");
     assertThat(SftpClient.quoteBatchPath("/repo/a [x]*?.txt"))
         .isEqualTo("\"/repo/a \\[x\\]\\*\\?.txt\"");
@@ -643,6 +694,9 @@ final class SshRuntimeTest {
             fi
             (sleep 10) &
             printf '%%s' $! > "$pid_file"
+            # Let the caller attach both drains before the root exits. Otherwise the JVM
+            # can close an unread process pipe before the inherited writer is observed.
+            sleep 0.2
             exit 0
             """
                 .formatted(

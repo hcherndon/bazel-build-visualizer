@@ -18,6 +18,32 @@ import org.junit.jupiter.api.Test;
 class ConsoleViewTest {
 
   @Test
+  void remoteCrLfOutputReachesTheDocumentAcrossSeparateRenders() throws Exception {
+    ConsoleView view = onEdt(ConsoleView::new);
+    onEdt(
+        () -> {
+          append(view, "\u001b[32mINFO:\u001b[0m starting\r");
+          return null;
+        });
+    flushEdt();
+    assertThat(text(view)).isEqualTo("INFO: starting");
+    onEdt(
+        () -> {
+          append(view, "\nold progress\r\n");
+          return null;
+        });
+    flushEdt();
+    onEdt(
+        () -> {
+          append(view, "\r\u001b[1A\u001b[KBuild completed successfully\r\n");
+          return null;
+        });
+    flushEdt();
+    assertThat(text(view)).isEqualTo("INFO: starting\nBuild completed successfully\n");
+    assertThat(onEdt(() -> view.foregroundAtForTest(0))).isEqualTo(new Color(0x00AA00));
+  }
+
+  @Test
   @DisplayName("committed lines and the unfinished line both reach the document")
   void rendersLinesAndThePartialLine() throws Exception {
     ConsoleView view = onEdt(ConsoleView::new);

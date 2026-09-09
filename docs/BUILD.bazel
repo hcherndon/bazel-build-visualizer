@@ -12,7 +12,7 @@ sh_test(
     srcs = ["release_docs_test.sh"],
     data = glob([
         "*.md",
-        "images/*.svg",
+        "images/*.png",
     ]) + [
         "//:CHANGELOG.md",
         "//:LICENSE",

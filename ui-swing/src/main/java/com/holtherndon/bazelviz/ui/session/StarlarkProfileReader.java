@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.ui.session;
 
+import java.text.NumberFormat;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -16,6 +17,36 @@ import java.util.OptionalLong;
  * the same thing as one that did not report a value.
  */
 public interface StarlarkProfileReader extends AutoCloseable {
+
+  /** Maximum type/unit label length before a standalone metric is refused for display. */
+  int MAX_METRIC_TEXT_CHARACTERS = 256;
+
+  /** Standalone values retain original units; legacy CPU field names are storage adapters. */
+  record SampleMetric(String type, String unit) {
+    public SampleMetric {
+      Objects.requireNonNull(type, "type");
+      Objects.requireNonNull(unit, "unit");
+      if (type.length() > MAX_METRIC_TEXT_CHARACTERS
+          || unit.length() > MAX_METRIC_TEXT_CHARACTERS) {
+        throw new IllegalArgumentException(
+            "Profile sample type or unit exceeds the "
+                + MAX_METRIC_TEXT_CHARACTERS
+                + "-character display limit");
+      }
+    }
+
+    public String format(OptionalLong value) {
+      return value.isEmpty()
+          ? "—"
+          : NumberFormat.getIntegerInstance().format(value.getAsLong())
+              + (unit.isBlank() ? "" : " " + unit);
+    }
+  }
+
+  /** Empty for the Bazel-specific CPU presentation. Called on the reader worker. */
+  default Optional<SampleMetric> sampleMetric() {
+    return Optional.empty();
+  }
 
   /** Why a profile page does or does not have queryable rows. */
   enum Availability {
@@ -39,6 +70,7 @@ public interface StarlarkProfileReader extends AutoCloseable {
 
   /** How confidently this profile is associated with the open invocation. */
   enum Correlation {
+    STANDALONE("Standalone profile; not associated with a build"),
     CAPTURED_WITH_INVOCATION("Captured by this invocation"),
     MANUAL_UNVERIFIED("Manually attached; build association is unverified"),
     UNKNOWN("Build association is unknown");
@@ -56,8 +88,8 @@ public interface StarlarkProfileReader extends AutoCloseable {
 
   /** Supported orderings for the hot-function table. */
   enum FunctionSort {
-    SELF_CPU("Self CPU"),
-    CUMULATIVE_CPU("Cumulative CPU"),
+    SELF_CPU("Self"),
+    CUMULATIVE_CPU("Cumulative"),
     NAME("Function"),
     FILE("Source file");
 
@@ -75,8 +107,8 @@ public interface StarlarkProfileReader extends AutoCloseable {
 
   /** Supported orderings for source-file aggregates. */
   enum FileSort {
-    SELF_CPU("Self CPU"),
-    CUMULATIVE_CPU("Cumulative CPU"),
+    SELF_CPU("Self"),
+    CUMULATIVE_CPU("Cumulative"),
     PATH("Path");
 
     private final String displayName;

@@ -7,6 +7,10 @@ page explains sampled CPU consumed by Starlark evaluation.
 
 ## Capture
 
+To inspect an existing pprof outside a build, use **File › Open pprof…**.
+The [standalone viewer](pprof-viewer.md) shares these views but does not attach
+the file to a session or imply a relationship to the current invocation.
+
 **Performance Diagnostics** and **Full Graph Diagnostics** request the profile.
 After probing the selected local or SSH Bazel, the launch review adds:
 

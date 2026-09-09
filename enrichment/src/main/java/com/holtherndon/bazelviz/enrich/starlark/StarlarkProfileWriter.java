@@ -10,6 +10,7 @@ import com.holtherndon.bazelviz.enrich.starlark.StarlarkCpuProfileParser.ParseRe
 import com.holtherndon.bazelviz.enrich.starlark.StarlarkCpuProfileParser.SampleRecord;
 import com.holtherndon.bazelviz.enrich.starlark.StarlarkCpuProfileParser.ValueTypeRecord;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -263,18 +264,54 @@ final class StarlarkProfileWriter implements StarlarkCpuProfileParser.Sink, Auto
   }
 
   ImportSummary finish(long taskId, ParseResult parsed) throws IOException {
+    return finish(taskId, parsed, false);
+  }
+
+  ImportSummary finish(long taskId, ParseResult parsed, boolean generic) throws IOException {
     flushRaw();
     Metadata metadata = parsed.metadata();
     validateRaw(metadata);
-    int selectedOrdinal = selectCpuSampleType();
+    int selectedOrdinal = generic ? selectDefaultSampleType(metadata) : selectCpuSampleType();
     PeriodNormalization normalizedPeriod = normalizePeriod(metadata);
     Total total = selectedTotal(selectedOrdinal);
     DerivationSummary attribution = derive(selectedOrdinal, total);
     materializePageCounts();
     validateDerivedIntegers();
     insertMetadata(taskId, parsed, metadata, normalizedPeriod, selectedOrdinal, total, attribution);
+    if (generic) {
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate(
+            "UPDATE starlark_profile_metadata SET validation_detail="
+                + "'Standalone pprof. Values use the selected sample type and its original unit.'");
+      } catch (SQLException failure) {
+        throw writeFailure("profile description", failure);
+      }
+    }
     dropComments();
     return new ImportSummary(sampleCount, total.value(), selectedOrdinal, attribution);
+  }
+
+  private int selectDefaultSampleType(Metadata metadata) throws IOException {
+    // pprof's default is the named default_sample_type, or the last sample type.
+    boolean named = metadata.defaultSampleType() != null && metadata.defaultSampleType() != 0;
+    String sql =
+        "SELECT s.ordinal FROM starlark_profile_sample_types s"
+            + " JOIN starlark_profile_strings t ON t.string_index=s.type_string_index"
+            + (named ? " WHERE t.value=?" : "")
+            + " ORDER BY s.ordinal DESC LIMIT 1";
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      if (named) {
+        statement.setString(1, stringAt(metadata.defaultSampleType()));
+      }
+      try (ResultSet rows = statement.executeQuery()) {
+        if (!rows.next()) {
+          throw invalid("profile has no sample type matching its declared default");
+        }
+        return rows.getInt(1);
+      }
+    } catch (SQLException failure) {
+      throw writeFailure("selecting default sample type", failure);
+    }
   }
 
   private void validateRaw(Metadata metadata) throws IOException {
@@ -435,9 +472,15 @@ final class StarlarkProfileWriter implements StarlarkCpuProfileParser.Sink, Auto
       statement.setInt(1, selectedOrdinal);
       try (ResultSet rows = statement.executeQuery()) {
         while (rows.next()) {
+          checkInterrupted();
           long value = rows.getLong(2);
           if (value < 0) {
-            throw invalid("CPU sample " + rows.getLong(1) + " has negative value " + value);
+            throw invalid(
+                "Selected sample "
+                    + rows.getLong(1)
+                    + " has negative value "
+                    + value
+                    + "; signed/difference profiles are not supported");
           }
           try {
             total = Math.addExact(total, value);
@@ -506,6 +549,7 @@ final class StarlarkProfileWriter implements StarlarkCpuProfileParser.Sink, Auto
         List<Frame> frames = new ArrayList<>();
         int expandedSymbols = 0;
         while (rows.next()) {
+          checkInterrupted();
           long sampleId = rows.getLong(1);
           if (currentSample != -1 && sampleId != currentSample) {
             deriver.accept(currentValue, frames);
@@ -618,7 +662,7 @@ final class StarlarkProfileWriter implements StarlarkCpuProfileParser.Sink, Auto
             + " VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
     try (PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setLong(1, taskId);
-      statement.setString(2, "pprof-gzip");
+      statement.setString(2, parsed.gzip() ? "pprof-gzip" : "pprof");
       statement.setLong(3, parsed.compressedBytes());
       statement.setLong(4, parsed.uncompressedBytes());
       setNullableLong(statement, 5, metadata.timeNanos());
@@ -796,10 +840,17 @@ final class StarlarkProfileWriter implements StarlarkCpuProfileParser.Sink, Auto
   }
 
   private void add(PreparedStatement statement) throws SQLException, IOException {
+    checkInterrupted();
     statement.addBatch();
     pendingRows++;
     if (pendingRows >= JDBC_BATCH_SIZE) {
       flushRaw();
+    }
+  }
+
+  private static void checkInterrupted() throws InterruptedIOException {
+    if (Thread.currentThread().isInterrupted()) {
+      throw new InterruptedIOException("Profile import cancelled");
     }
   }
 

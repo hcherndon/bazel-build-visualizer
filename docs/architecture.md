@@ -39,6 +39,24 @@ repository-wide formatting entry point; it skips nested repositories.
 | `test-support` | Test and benchmark fixtures, notably the deterministic synthetic data generators (`SyntheticActionGenerator`, `SyntheticEdges`, `SyntheticScale`) with O(1) random access so Tier 3 scale never requires materialized fixtures. |
 | `benchmarks` | Phase 0 architectural spikes (table/timeline/graph/SQL-paging, each with `--offscreen`) and JMH microbenchmarks. Never shipped. |
 
+## Shared profile explorer
+
+`ui.starlark.ProfileView` owns profile tabs, worker lifecycle, paged models,
+and graph interaction independently of a build. `StarlarkProfileView` is the
+build-page compatibility wrapper; `PprofWindow` hosts the same component in
+an independent JFrame. `PprofSource` is the service boundary for disposable
+standalone imports. It reuses the bounded streaming importer and SQL reader
+with a private temporary database, not a session-library entry.
+
+The importer keeps Bazel's strict CPU/microseconds validation for managed
+captures. Standalone imports select the profile's default sample dimension
+without converting raw values. `SampleMetric` supplies the type and unit;
+the shared graph components accept a value formatter. Existing reader field
+names ending in `CpuMicros` are compatibility names: when `sampleMetric()`
+is present they contain values in that metric's original unit. Standalone
+tables are isolated from build databases and cannot pollute build CPU metrics.
+No schema migration, new dependency, or external symbolizer is required.
+
 ## Shared visual filters
 
 `core.filter.FilterExpression` is a bounded immutable tree of conditions and

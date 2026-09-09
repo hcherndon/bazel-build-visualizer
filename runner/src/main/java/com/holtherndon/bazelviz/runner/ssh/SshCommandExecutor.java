@@ -56,18 +56,29 @@ public final class SshCommandExecutor implements CommandExecutor {
 
   private final SshTarget target;
   private final Path ssh;
-  private final Path controlSocket;
-  private final BooleanSupplier sessionOpen;
+  private final SshConnectionAccess connection;
 
   SshCommandExecutor(SshTarget target, Path ssh, Path controlSocket) {
     this(target, ssh, controlSocket, () -> true);
   }
 
   SshCommandExecutor(SshTarget target, Path ssh, Path controlSocket, BooleanSupplier sessionOpen) {
+    this(target, ssh, SshConnectionAccess.fixed(controlSocket, sessionOpen));
+  }
+
+  SshCommandExecutor(SshTarget target, Path ssh, SshConnectionAccess connection) {
     this.target = Objects.requireNonNull(target, "target");
     this.ssh = Objects.requireNonNull(ssh, "ssh");
-    this.controlSocket = Objects.requireNonNull(controlSocket, "controlSocket");
-    this.sessionOpen = Objects.requireNonNull(sessionOpen, "sessionOpen");
+    this.connection = Objects.requireNonNull(connection, "connection");
+  }
+
+  CommandResult runReadOnly(CommandRequest request, Duration timeout)
+      throws IOException, InterruptedException {
+    try {
+      return run(request, timeout);
+    } catch (SshConnectionAccess.RecoveredFailure recovered) {
+      return run(request, timeout);
+    }
   }
 
   public SshTarget target() {
@@ -113,6 +124,9 @@ public final class SshCommandExecutor implements CommandExecutor {
       CommandResult result =
           new CommandResult(exited ? command.exitValue() : -1, out, err, !exited);
       command.close();
+      if (result.exitCode() == 255) {
+        recoverExit(command.socket, result);
+      }
       logCommandResult(
           "bounded",
           request,
@@ -123,6 +137,9 @@ public final class SshCommandExecutor implements CommandExecutor {
       return result;
     } catch (IOException | InterruptedException | RuntimeException failure) {
       cleanupFailedCommandDrains(command, failure, stdout, stderr);
+      if (failure instanceof IOException io) {
+        throw connection.failed(command.socket, io);
+      }
       throw failure;
     }
   }
@@ -171,6 +188,9 @@ public final class SshCommandExecutor implements CommandExecutor {
       String err = capturedErr.text();
       CommandResult result = new CommandResult(exited ? command.exitValue() : -1, "", err, !exited);
       command.close();
+      if (result.exitCode() == 255) {
+        recoverExit(command.socket, result);
+      }
       if (result.isSuccess()) {
         moveReplacement(temporary, destination);
         moved = true;
@@ -186,6 +206,9 @@ public final class SshCommandExecutor implements CommandExecutor {
     } catch (IOException | InterruptedException | RuntimeException failure) {
       if (command != null) {
         cleanupFailedCommandCopy(command, failure, stderr, copy);
+        if (failure instanceof IOException io) {
+          throw connection.failed(command.socket, io);
+        }
       }
       throw failure;
     } finally {
@@ -201,9 +224,18 @@ public final class SshCommandExecutor implements CommandExecutor {
     return startRemote(request);
   }
 
+  private void recoverExit(Path socket, CommandResult result) throws IOException {
+    IOException failure =
+        new IOException("SSH command exited with status 255: " + result.failureDetail());
+    IOException recovered = connection.failed(socket, failure);
+    if (recovered != failure) {
+      throw recovered;
+    }
+  }
+
   @Override
   public InteractiveChannel openTerminal(String workingDirectory) throws IOException {
-    requireSessionOpen();
+    Path controlSocket = connection.socket();
     long startedNanos = System.nanoTime();
     log.info(
         "SSH terminal opening target={} workingDirectorySet={}",
@@ -227,7 +259,7 @@ public final class SshCommandExecutor implements CommandExecutor {
         target.displayName(),
         process.pid(),
         elapsedMillis(startedNanos));
-    return new TerminalChannel(process, target.displayName());
+    return new TerminalChannel(process, target.displayName(), connection, controlSocket);
   }
 
   static String terminalCommand(String workingDirectory) {
@@ -278,7 +310,7 @@ public final class SshCommandExecutor implements CommandExecutor {
   }
 
   private RemoteRunningCommand startRemote(CommandRequest request) throws IOException {
-    requireSessionOpen();
+    Path controlSocket = connection.socket();
     Objects.requireNonNull(request, "request");
     long startedNanos = System.nanoTime();
     log.trace(
@@ -315,7 +347,14 @@ public final class SshCommandExecutor implements CommandExecutor {
           request.forceTty(),
           elapsedMillis(startedNanos));
       return new RemoteRunningCommand(
-          this, process, replay, error, request.forceTty(), parsed.pid(), parsed.pgid());
+          this,
+          process,
+          replay,
+          error,
+          request.forceTty(),
+          parsed.pid(),
+          parsed.pgid(),
+          controlSocket);
     } catch (IOException | RuntimeException failure) {
       log.debug(
           "SSH command transport failed target={} tty={} argumentCount={}"
@@ -328,9 +367,13 @@ public final class SshCommandExecutor implements CommandExecutor {
       String detail = startupDiagnostic(process, request.forceTty());
       cleanupManagedProcess(process, failure);
       if (detail.isEmpty()) {
+        if (failure instanceof IOException io) {
+          throw connection.failed(controlSocket, io);
+        }
         throw failure;
       }
-      throw new IOException(failure.getMessage() + ": " + detail, failure);
+      throw connection.failed(
+          controlSocket, new IOException(failure.getMessage() + ": " + detail, failure));
     }
   }
 
@@ -387,7 +430,8 @@ public final class SshCommandExecutor implements CommandExecutor {
     boolean restoreInterrupt = Thread.interrupted();
     if (command.localProcess.isAlive()) {
       try {
-        command.owner.signal(command.remotePid, command.remotePgid, CancellationMode.FORCE_KILL);
+        command.owner.signal(
+            command.socket, command.remotePid, command.remotePgid, CancellationMode.FORCE_KILL);
       } catch (IOException | InterruptedException | RuntimeException failure) {
         signalFailure = failure;
         restoreInterrupt |= failure instanceof InterruptedException;
@@ -544,9 +588,14 @@ public final class SshCommandExecutor implements CommandExecutor {
     }
   }
 
-  private void signal(long pid, long pgid, CancellationMode mode)
+  private void signal(Path expectedSocket, long pid, long pgid, CancellationMode mode)
       throws IOException, InterruptedException {
-    requireSessionOpen();
+    Path controlSocket = connection.socket();
+    if (!controlSocket.equals(expectedSocket)) {
+      throw new IOException(
+          "the SSH connection changed; the old remote process was not signalled because its"
+              + " identity is no longer certain");
+    }
     long startedNanos = System.nanoTime();
     log.debug(
         "SSH remote signal started target={} mode={} remoteProcessId={}" + " processGroupKnown={}",
@@ -568,8 +617,10 @@ public final class SshCommandExecutor implements CommandExecutor {
             SshControlSession.commandArguments(ssh, controlSocket, target, false, command),
             Duration.ofSeconds(10));
     if (!result.isSuccess()) {
-      throw new IOException(
-          "could not signal remote process " + pid + ": " + result.failureDetail());
+      throw connection.failed(
+          controlSocket,
+          new IOException(
+              "could not signal remote process " + pid + ": " + result.failureDetail()));
     }
     log.debug(
         "SSH remote signal completed target={} mode={} remoteProcessId={}" + " durationMs={}",
@@ -740,12 +791,6 @@ public final class SshCommandExecutor implements CommandExecutor {
     return path;
   }
 
-  private void requireSessionOpen() throws IOException {
-    if (!sessionOpen.getAsBoolean()) {
-      throw new IOException("the SSH control session is closed");
-    }
-  }
-
   private static void requireTimeout(Duration timeout) {
     Objects.requireNonNull(timeout, "timeout");
     if (timeout.isZero() || timeout.isNegative()) {
@@ -771,6 +816,7 @@ public final class SshCommandExecutor implements CommandExecutor {
     private final boolean merged;
     private final long remotePid;
     private final long remotePgid;
+    private final Path socket;
 
     private RemoteRunningCommand(
         SshCommandExecutor owner,
@@ -779,7 +825,8 @@ public final class SshCommandExecutor implements CommandExecutor {
         InputStream stderr,
         boolean merged,
         long remotePid,
-        long remotePgid) {
+        long remotePgid,
+        Path socket) {
       this.owner = owner;
       this.localProcess = localProcess;
       this.stdout = stdout;
@@ -787,6 +834,7 @@ public final class SshCommandExecutor implements CommandExecutor {
       this.merged = merged;
       this.remotePid = remotePid;
       this.remotePgid = remotePgid;
+      this.socket = socket;
     }
 
     @Override
@@ -827,7 +875,9 @@ public final class SshCommandExecutor implements CommandExecutor {
     @Override
     public int waitFor() throws InterruptedException {
       try {
-        return localProcess.waitForRoot();
+        int exit = localProcess.waitForRoot();
+        recoverExitedTransport(exit);
+        return exit;
       } finally {
         closeQuietly();
       }
@@ -837,6 +887,7 @@ public final class SshCommandExecutor implements CommandExecutor {
     public boolean waitFor(Duration timeout) throws InterruptedException {
       boolean exited = localProcess.waitForRoot(timeout);
       if (exited) {
+        recoverExitedTransport(localProcess.exitValue());
         closeQuietly();
       }
       return exited;
@@ -858,7 +909,7 @@ public final class SshCommandExecutor implements CommandExecutor {
         localProcess.stdin().write(3);
         localProcess.stdin().flush();
       } else {
-        owner.signal(remotePid, remotePgid, Objects.requireNonNull(mode, "mode"));
+        owner.signal(socket, remotePid, remotePgid, Objects.requireNonNull(mode, "mode"));
       }
     }
 
@@ -878,6 +929,19 @@ public final class SshCommandExecutor implements CommandExecutor {
         // The command has exited; failure to remove its private control file is non-fatal here.
       }
     }
+
+    private void recoverExitedTransport(int exit) {
+      if (exit == 255) {
+        IOException failure =
+            owner.connection.failed(
+                socket,
+                new IOException("SSH command connection ended; the command was not restarted"));
+        log.warn(
+            "SSH command disconnected target={} detail={}",
+            owner.target.displayName(),
+            failure.getMessage());
+      }
+    }
   }
 
   private static final class TerminalChannel implements InteractiveChannel {
@@ -886,11 +950,16 @@ public final class SshCommandExecutor implements CommandExecutor {
     private final InputStream input;
     private final String target;
     private final long startedNanos = System.nanoTime();
+    private final SshConnectionAccess connection;
+    private final Path socket;
 
-    private TerminalChannel(PtyProcess process, String target) {
+    private TerminalChannel(
+        PtyProcess process, String target, SshConnectionAccess connection, Path socket) {
       this.process = process;
       this.target = target;
       input = process.getInputStream();
+      this.connection = connection;
+      this.socket = socket;
     }
 
     @Override
@@ -928,7 +997,14 @@ public final class SshCommandExecutor implements CommandExecutor {
 
     @Override
     public int awaitExit() throws InterruptedException {
-      return process.waitFor();
+      int exit = process.waitFor();
+      if (exit == 255) {
+        IOException failure =
+            connection.failed(
+                socket, new IOException("SSH terminal disconnected; the shell was not restarted"));
+        log.warn("SSH terminal disconnected target={} detail={}", target, failure.getMessage());
+      }
+      return exit;
     }
 
     @Override

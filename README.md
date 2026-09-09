@@ -63,6 +63,8 @@ expected to refuse them on another machine.
   trees, and bounded dependency graphs.
 - Profile Starlark CPU use with hot-function, caller/callee, graph, and flame
   views.
+- Open [standalone pprof files](docs/pprof-viewer.md) in the same profile explorer,
+  without a build session.
 - Enrich managed captures with execution logs, trace profiles, `aquery`, and
   `cquery`.
 - Query normalized session data with a syntax-aware SQL editor.

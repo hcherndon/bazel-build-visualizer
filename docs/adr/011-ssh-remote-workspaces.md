@@ -1,6 +1,6 @@
 # ADR-011: SSH remote workspaces and execution-scoped I/O
 
-Status: accepted (2026-08-28; amended 2026-08-30 for saved workspaces and local terminals; amended 2026-09-03 for per-workspace Bazel selection; amended 2026-09-04 for bounded remote I/O)
+Status: accepted (2026-08-28; amended 2026-08-30 for saved workspaces and local terminals; amended 2026-09-03 for per-workspace Bazel selection; amended 2026-09-04 for bounded remote I/O; amended 2026-09-09 for live-workspace SSH recovery)
 
 ## Context
 
@@ -100,6 +100,27 @@ logical workspace paths, not `java.nio.file.Path`, because a remote Linux path
 must never be mistaken for a path on the desktop. Reads, directory listings,
 metadata, and saves are blocking service calls; Swing callers run them on
 workers and install immutable results on the EDT.
+
+### Recovering a selected workspace connection
+
+Operations on an explicitly selected live workspace may reestablish its failed
+control connection once before reporting failure. Recovery is serialized per
+workspace, uses the same OpenSSH destination and host-key policy, and preserves
+filesystem identities. Closing the workspace disables recovery. This does not
+authorize connecting to hosts from imported sessions.
+
+Read-only metadata and immutable snapshot downloads may retry once after
+successful recovery. Arbitrary commands, uploads, and atomic saves are not
+replayed after dispatch: transport loss cannot prove they did not take effect.
+Their failure remains visible even when the connection was restored. Existing
+shells and builds are not restarted. Active BES forwards must be restored on
+their original remote ports; inability to do so is a recovery failure.
+Old process identifiers are not signalled through a replacement transport,
+because a restarted host may have reused them. Multiplexed SSH and SFTP clients
+use `ProxyCommand=false` to refuse independent connections if their control
+socket disappears. Only the owning master connects using the user's configured
+proxy/jump-host route. This addresses OpenSSH's documented
+[fallback to a normal connection when multiplexing fails](https://man.openbsd.org/ssh_config#ControlMaster).
 
 ### The BES stays local; SSH carries it
 

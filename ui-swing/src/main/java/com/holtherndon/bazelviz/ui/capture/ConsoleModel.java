@@ -55,6 +55,7 @@ public final class ConsoleModel {
   private long droppedLines;
   private long changedFromLine = Long.MAX_VALUE;
   private boolean csiOverflow;
+  private boolean carriageReturnPending;
   private EscapeState escape = EscapeState.NONE;
 
   private enum EscapeState {
@@ -97,11 +98,20 @@ public final class ConsoleModel {
       }
       switch (character) {
         case ESCAPE -> escape = EscapeState.AFTER_ESCAPE;
-        case '\n' -> commitLine();
-        case '\r' -> current.clear();
+        case '\n' -> {
+          carriageReturnPending = false;
+          commitLine();
+        }
+        case '\r' -> carriageReturnPending = true;
         case '\b' -> current.backspace();
         default -> {
           if (character >= ' ' || character == '\t') {
+            // A CR starts a progress replacement only when new text follows.
+            // CRLF (including across pump chunks) must commit the existing line.
+            if (carriageReturnPending) {
+              current.clear();
+              carriageReturnPending = false;
+            }
             current.append(character, ansi.snapshot());
           }
         }
@@ -168,8 +178,9 @@ public final class ConsoleModel {
       case 'A', 'F' -> rewindLines(countParameter(rawParameters));
       case 'K' -> {
         int mode = firstParameter(rawParameters);
-        if (mode == 1 || mode == 2) {
+        if (mode == 1 || mode == 2 || (mode == 0 && carriageReturnPending)) {
           current.clear();
+          carriageReturnPending = false;
         }
       }
       default -> {
@@ -197,6 +208,7 @@ public final class ConsoleModel {
       }
     }
     current.clear();
+    carriageReturnPending = false;
   }
 
   private void applySgr(String rawParameters) {
@@ -448,6 +460,7 @@ public final class ConsoleModel {
     droppedLines = 0;
     changedFromLine = Long.MAX_VALUE;
     escape = EscapeState.NONE;
+    carriageReturnPending = false;
   }
 
   /** Everything retained, as plain text, for copy/search and tests. */

@@ -97,7 +97,7 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     long startedNanos = System.nanoTime();
     log.trace("SSH filesystem operation started operation=canonicalize execution={}", executionId);
     String remote = requireOwned(requested);
-    CommandResult result = run(List.of("/usr/bin/readlink", "-f", "--", remote));
+    CommandResult result = runReadOnly(List.of("/usr/bin/readlink", "-f", "--", remote));
     if (!result.isSuccess()) {
       throw new IOException(
           "cannot resolve remote path " + requested + ": " + result.failureDetail());
@@ -125,7 +125,8 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     long startedNanos = System.nanoTime();
     log.trace("SSH filesystem operation started operation=stat execution={}", executionId);
     String remote = requireOwned(requested);
-    CommandResult result = run(List.of("/usr/bin/stat", "--printf=%F\\0%s\\0%Y\\0", "--", remote));
+    CommandResult result =
+        runReadOnly(List.of("/usr/bin/stat", "--printf=%F\\0%s\\0%Y\\0", "--", remote));
     if (!result.isSuccess()) {
       String detail = result.failureDetail();
       String lower = detail.toLowerCase(Locale.ROOT);
@@ -188,7 +189,7 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
       for (int index = start; index < end; index++) {
         argv.add(requireOwned(requested.get(index)));
       }
-      CommandResult result = run(argv);
+      CommandResult result = runReadOnly(argv);
       if (!result.isSuccess()) {
         throw new IOException("cannot read remote file metadata: " + result.failureDetail());
       }
@@ -255,7 +256,7 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     }
     int requested = Math.addExact(maxEntries, 1);
     CommandResult result =
-        run(
+        runReadOnly(
             directoryListingCommand(
                 canonical.value(), after, requested, "/usr/bin/find", "/bin/bash"));
     if (!result.isSuccess()) {
@@ -730,6 +731,15 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
     return run(argv, Duration.ofSeconds(30));
   }
 
+  private CommandResult runReadOnly(List<String> argv) throws IOException {
+    try {
+      return commands.runReadOnly(CommandRequest.of(argv, (String) null), Duration.ofSeconds(30));
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw new IOException("interrupted while reading the remote filesystem", interrupted);
+    }
+  }
+
   private CommandResult run(List<String> argv, Duration timeout) throws IOException {
     try {
       return commands.run(CommandRequest.of(argv, (String) null), timeout);
@@ -745,7 +755,8 @@ public final class SshExecutionFileSystem implements ExecutionFileSystem {
 
   private String directoryRevision(ExecutionPath directory) throws IOException {
     CommandResult result =
-        run(List.of("/usr/bin/stat", "--printf=%d:%i:%s:%y", "--", requireOwned(directory)));
+        runReadOnly(
+            List.of("/usr/bin/stat", "--printf=%d:%i:%s:%y", "--", requireOwned(directory)));
     if (!result.isSuccess()) {
       throw new IOException("cannot read remote directory revision: " + result.failureDetail());
     }

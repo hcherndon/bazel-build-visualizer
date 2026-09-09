@@ -2,10 +2,12 @@ package com.holtherndon.bazelviz.enrich.starlark;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.google.perftools.profiles.ProfileProto;
 import com.holtherndon.bazelviz.core.enrich.EnrichmentTask;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.enrich.EnrichmentTaskStore;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -131,6 +133,61 @@ final class StarlarkCpuProfileImporterTest {
         .singleElement()
         .extracting(EnrichmentTask::state)
         .isEqualTo(EnrichmentTask.State.SUCCEEDED);
+  }
+
+  @Test
+  void standaloneKeepsNanosecondsAndAcceptsUncompressedProtobuf() throws Exception {
+    ProfileProto.Profile profile =
+        StarlarkProfileFixture.standard().toBuilder()
+            .setStringTable(1, "cpu")
+            .setStringTable(2, "nanoseconds")
+            .build();
+    Path file = tempDir.resolve("cpu.pprof");
+    Files.write(file, profile.toByteArray());
+    assertThat(new StarlarkCpuProfileImporter(connection).importPprof(file).state())
+        .isEqualTo(EnrichmentTask.State.SUCCEEDED);
+    assertThat(number("SELECT total_value FROM starlark_profile_metadata")).isEqualTo(30);
+    assertThat(text("SELECT format FROM starlark_profile_metadata")).isEqualTo("pprof");
+    assertThat(number("SELECT sum(self_value) FROM starlark_function_metrics")).isEqualTo(30);
+    assertThat(Files.readAllBytes(file)).isEqualTo(profile.toByteArray());
+    assertThat(new StarlarkCpuProfileImporter(connection).importFrom(file).state())
+        .isEqualTo(EnrichmentTask.State.FAILED);
+  }
+
+  @Test
+  void standaloneUsesLastSampleTypeUnlessAnExplicitDefaultExists() throws Exception {
+    ProfileProto.Profile.Builder profile =
+        StarlarkProfileFixture.standard().toBuilder()
+            .clearDefaultSampleType()
+            .addStringTable("inuse_space")
+            .addStringTable("bytes")
+            .addSampleType(ProfileProto.ValueType.newBuilder().setType(10).setUnit(11));
+    for (int i = 0; i < profile.getSampleCount(); i++) {
+      profile.setSample(i, profile.getSample(i).toBuilder().addValue(4096));
+    }
+    Path file =
+        StarlarkProfileFixture.writePacked(tempDir.resolve("heap.pprof.gz"), profile.build());
+    assertThat(new StarlarkCpuProfileImporter(connection).importPprof(file).state())
+        .isEqualTo(EnrichmentTask.State.SUCCEEDED);
+    assertThat(number("SELECT total_value FROM starlark_profile_metadata")).isEqualTo(8192);
+    assertThat(number("SELECT selected_sample_type_ordinal FROM starlark_profile_metadata"))
+        .isEqualTo(1);
+    StarlarkProfileFixture.writePacked(file, profile.setDefaultSampleType(1).build());
+    assertThat(new StarlarkCpuProfileImporter(connection).importPprof(file).state())
+        .isEqualTo(EnrichmentTask.State.SUCCEEDED);
+    assertThat(number("SELECT total_value FROM starlark_profile_metadata")).isEqualTo(30);
+  }
+
+  @Test
+  void standaloneRejectsSignedProfilesRatherThanDroppingNegativeSamples() throws Exception {
+    Path file =
+        StarlarkProfileFixture.writePacked(
+            tempDir.resolve("diff.pprof.gz"), StarlarkProfileFixture.oneSample(-1));
+    var result = new StarlarkCpuProfileImporter(connection).importPprof(file);
+    assertThat(result.state()).isEqualTo(EnrichmentTask.State.FAILED);
+    assertThat(result.error())
+        .hasValueSatisfying(message -> assertThat(message).contains("signed/difference"));
+    assertThat(number("SELECT count(*) FROM starlark_profile_metadata")).isZero();
   }
 
   @Test

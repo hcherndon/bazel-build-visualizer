@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -11,6 +12,21 @@ import org.junit.jupiter.api.io.TempDir;
 final class StarlarkCpuProfileParserTest {
 
   @TempDir Path tempDir;
+
+  @Test
+  void stopsParsingWhenTheViewerWorkerIsCancelled() throws Exception {
+    Path profile =
+        StarlarkProfileFixture.writePacked(
+            tempDir.resolve("cancelled.gz"), StarlarkProfileFixture.standard());
+    try {
+      Thread.currentThread().interrupt();
+      assertThatThrownBy(() -> new StarlarkCpuProfileParser().parse(profile, new CountingSink()))
+          .isInstanceOf(InterruptedIOException.class)
+          .hasMessageContaining("cancelled");
+    } finally {
+      Thread.interrupted();
+    }
+  }
 
   @Test
   void readsProtoPackedRepeatedValues() throws Exception {

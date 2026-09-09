@@ -331,6 +331,10 @@ are stated on screen.
 
 ### Starlark Profile
 
+For an existing profile outside a build, **File › Open pprof…** opens the
+[standalone pprof explorer](pprof-viewer.md) in a separate window. It shares
+these views without requiring a Workspace or attaching the file to a session.
+
 This page answers which Starlark functions, source files, and call contexts
 used CPU during rule and macro execution. It is available when the build used
 the Performance or Full capture preset and Bazel produced a valid
@@ -566,6 +570,14 @@ screen. Reopening a session recorded as remote never reconnects, opens a shell
 or executes its saved command. Choose an SSH Workspace explicitly when live
 file access is wanted; capture preflight is needed only when starting a build.
 
+If the selected SSH Workspace loses its connection, the next operation attempts
+to reconnect before showing an error. Metadata reads and snapshot downloads can
+retry once. Existing file editors keep their paths and conflict checks. Commands
+and saves already sent are **not** repeated automatically, because they may
+already have taken effect. Check their outcome before trying again. A dropped
+build or Terminal shell is not restarted; restored BES tunnels keep their
+original ports. Failed reconnects show an error, without an endless retry loop.
+
 ---
 
 ## When something is missing
@@ -655,8 +667,9 @@ Stated so you do not go looking:
 - **Preferences currently has Theme and Discovery tabs.** The limits in
   `docs/limits.md` are not editable there. Workspaces and launcher command
   history remain direct controls.
-- **No implicit reconnect or historical remote storage.** SSH access exists
-  only for a live connection the user started; no team server is provided.
+- **No reconnect from historical session data or remote storage service.** SSH
+  recovery applies only to the live Workspace the user selected; no team server
+  is provided.
 - **The 0.1.0 packaged desktop target is Apple Silicon macOS; SSH execution
   hosts are Linux.** Intel macOS packaging is currently unavailable, and other
   desktop/remote combinations have not been tested.

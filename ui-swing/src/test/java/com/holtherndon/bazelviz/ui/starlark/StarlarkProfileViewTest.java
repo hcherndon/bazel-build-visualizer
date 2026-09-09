@@ -7,6 +7,7 @@ import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
 import com.holtherndon.bazelviz.ui.theme.PageToolbar;
 import java.awt.GraphicsEnvironment;
 import java.lang.reflect.Proxy;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionStage;
@@ -21,6 +22,48 @@ import org.junit.jupiter.api.Test;
 
 /** Headless behavior and threading contract for the Starlark profile page. */
 final class StarlarkProfileViewTest {
+
+  @Test
+  void standaloneViewUsesOriginalUnitsAndDoesNotClaimCpuOrBuildAssociation() throws Exception {
+    FakeStarlarkProfileReader reader =
+        new FakeStarlarkProfileReader() {
+          @Override
+          public Optional<SampleMetric> sampleMetric() {
+            assertThat(SwingUtilities.isEventDispatchThread()).isFalse();
+            return Optional.of(new SampleMetric("inuse_space", "bytes"));
+          }
+        };
+    ProfileView view = onEdt(ProfileView::new);
+    onEdt(
+        () -> {
+          view.openProfile(() -> reader);
+          return null;
+        });
+    waitUntil(() -> onEdt(() -> view.tabsForTest().isEnabledAt(1)));
+    assertThat(onEdt(view::summaryCardsTextForTest))
+        .contains("inuse_space", "bytes")
+        .doesNotContain("CPU", "Captured by this invocation", "Average sampled CPU cores");
+    assertThat(onEdt(() -> view.summaryDetailForTest().getText()))
+        .contains("not associated with a build", "original units");
+    onEdt(view::closeSessionAsync).toCompletableFuture().get(5, TimeUnit.SECONDS);
+    assertThat(reader.closed).isTrue();
+    assertThat(reader.closedOnEdt).isFalse();
+  }
+
+  @Test
+  void standaloneImportFailureIsVisibleAndDoesNotEnableDataTabs() throws Exception {
+    ProfileView view = onEdt(ProfileView::new);
+    onEdt(
+        () -> {
+          view.openProfile(
+              () -> {
+                throw new IllegalArgumentException("Malformed pprof fixture");
+              });
+          return null;
+        });
+    waitUntil(() -> onEdt(() -> view.emptyMessageForTest().contains("Malformed pprof fixture")));
+    onEdt(view::closeSessionAsync).toCompletableFuture().get(5, TimeUnit.SECONDS);
+  }
 
   @BeforeAll
   static void requireHeadless() {
@@ -125,7 +168,7 @@ final class StarlarkProfileViewTest {
             onEdt(() -> view.directedCallGraphStatusForTest().getText())
                 .contains("Showing all 2 functions"));
     assertThat(onEdt(() -> view.directedCallGraphStatusForTest().getText()))
-        .contains("Box size is Self CPU")
+        .contains("Box size is Self")
         .contains("Drag a function to move it");
     assertThat(onEdt(() -> view.directedCallGraphForTest().layoutForTest().nodes().size()))
         .isEqualTo(2);

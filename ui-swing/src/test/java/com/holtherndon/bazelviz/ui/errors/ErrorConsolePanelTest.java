@@ -9,6 +9,19 @@ import org.junit.jupiter.api.Test;
 final class ErrorConsolePanelTest {
 
   @Test
+  void recordedCrLfOutputIsVisibleInBothStreams() throws Exception {
+    ErrorConsolePanel.Content content =
+        ErrorConsolePanel.parse("\u001b[31mERROR:\u001b[0m failed\r\n", "Build output\r\n");
+    SwingUtilities.invokeAndWait(
+        () -> {
+          ErrorConsolePanel panel = new ErrorConsolePanel();
+          panel.show(content);
+          assertThat(panel.textForTest("stderr")).isEqualTo("ERROR: failed\n");
+          assertThat(panel.textForTest("stdout")).isEqualTo("Build output\n");
+        });
+  }
+
+  @Test
   @DisplayName("the Errors transcript discloses lines omitted from its bounded tail")
   void disclosesDroppedLines() throws Exception {
     StringBuilder stderr = new StringBuilder();

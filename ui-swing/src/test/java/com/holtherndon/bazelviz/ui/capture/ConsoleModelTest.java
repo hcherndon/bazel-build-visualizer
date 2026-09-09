@@ -12,6 +12,77 @@ class ConsoleModelTest {
   private static final String ESC = String.valueOf((char) 0x1B);
 
   @Test
+  void crlfPreservesTextAndStylesAtEveryChunkBoundary() {
+    String output = ESC + "[32mINFO:" + ESC + "[0m Build completed successfully\r\n";
+    byte[] bytes = output.getBytes(StandardCharsets.UTF_8);
+    for (int split = 0; split <= bytes.length; split++) {
+      ConsoleModel model = new ConsoleModel();
+      model.append(bytes, 0, split);
+      model.append(bytes, split, bytes.length - split);
+      assertThat(model.lines()).containsExactly("INFO: Build completed successfully");
+      assertThat(model.styledLines().getFirst().runs().getFirst().style().foregroundRgb())
+          .isEqualTo(0x00AA00);
+    }
+  }
+
+  @Test
+  void remoteBazelCrLfProgressRedrawKeepsFinalSummary() {
+    ConsoleModel model = new ConsoleModel();
+    String output =
+        "[94 / 100] 2 actions running\r\n    deps; 0s\r\n    logging; 0s\r\n"
+            + clearPreviousLines(3)
+            + ESC
+            + "[32m[98 / 100]"
+            + ESC
+            + "[0m logging; 0s\r\n"
+            + clearPreviousLines(1)
+            + ESC
+            + "[32mINFO: "
+            + ESC
+            + "[0mFound 374 targets...\r\n"
+            + "[100 / 100] no actions running\r\n"
+            + clearPreviousLines(1)
+            + ESC
+            + "[32mINFO: "
+            + ESC
+            + "[0mBuild completed successfully, 31 total actions\r\n"
+            + ESC
+            + "[32mINFO:"
+            + ESC
+            + "[0m \r\n"
+            + clearPreviousLines(1)
+            + ESC
+            + "[0m"
+            + "Shared connection to host closed.\r\n";
+    byte[] bytes = output.getBytes(StandardCharsets.UTF_8);
+    for (int index = 0; index < bytes.length; index++) {
+      model.append(bytes, index, 1);
+    }
+    assertThat(model.lines())
+        .containsExactly(
+            "INFO: Found 374 targets...",
+            "INFO: Build completed successfully, 31 total actions",
+            "Shared connection to host closed.");
+  }
+
+  @Test
+  void pendingCarriageReturnPreservesTextUntilReplacementOrErase() {
+    ConsoleModel model = new ConsoleModel();
+    model.append("progress\r");
+    assertThat(model.partialLine()).isEqualTo("progress");
+    model.append(ESC + "[0m\n");
+    assertThat(model.lines()).containsExactly("progress");
+    model.append("old\r" + ESC + "[K");
+    assertThat(model.partialLine()).isEmpty();
+    model.append("replacement\rnew\n");
+    assertThat(model.lines()).containsExactly("progress", "new");
+    model.append("discarded\r");
+    model.clear();
+    model.append("fresh\r\n");
+    assertThat(model.lines()).containsExactly("fresh");
+  }
+
+  @Test
   @DisplayName("a carriage return replaces the line being built, as a progress repaint does")
   void carriageReturnReplacesTheLine() {
     ConsoleModel model = new ConsoleModel();

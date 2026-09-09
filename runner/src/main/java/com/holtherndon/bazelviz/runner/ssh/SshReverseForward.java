@@ -26,6 +26,10 @@ public final class SshReverseForward implements AutoCloseable {
     return remotePort;
   }
 
+  boolean isClosed() {
+    return closed.get();
+  }
+
   /** The address Bazel must use on the SSH host. */
   public URI besBackendUri() {
     return URI.create("grpc://127.0.0.1:" + remotePort);

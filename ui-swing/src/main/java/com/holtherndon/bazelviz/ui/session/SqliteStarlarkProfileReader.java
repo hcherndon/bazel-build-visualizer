@@ -14,7 +14,7 @@ import java.util.OptionalLong;
 import java.util.concurrent.Callable;
 
 /** SQLite-backed, single-worker reader for one imported Starlark CPU profile. */
-final class SqliteStarlarkProfileReader implements StarlarkProfileReader {
+class SqliteStarlarkProfileReader implements StarlarkProfileReader {
 
   private static final String FUNCTION_FILTER =
       " WHERE (h.function_name LIKE ? ESCAPE '\\'" + " OR h.filename LIKE ? ESCAPE '\\')";
@@ -23,12 +23,19 @@ final class SqliteStarlarkProfileReader implements StarlarkProfileReader {
 
   private final String describedSession;
   private final Connection connection;
+  private final Correlation correlation;
   private volatile Statement running;
   private volatile boolean closed;
 
   SqliteStarlarkProfileReader(String describedSession, Connection connection) {
+    this(describedSession, connection, Correlation.CAPTURED_WITH_INVOCATION);
+  }
+
+  SqliteStarlarkProfileReader(
+      String describedSession, Connection connection, Correlation correlation) {
     this.describedSession = Objects.requireNonNull(describedSession, "describedSession");
     this.connection = Objects.requireNonNull(connection, "connection");
+    this.correlation = Objects.requireNonNull(correlation, "correlation");
   }
 
   @Override
@@ -71,7 +78,7 @@ final class SqliteStarlarkProfileReader implements StarlarkProfileReader {
               return new Summary(
                   Availability.AVAILABLE,
                   detail,
-                  Correlation.CAPTURED_WITH_INVOCATION,
+                  correlation,
                   optionalLong(rows, 1),
                   nanosToMicros(optionalLong(rows, 2)),
                   optionalLong(rows, 3),

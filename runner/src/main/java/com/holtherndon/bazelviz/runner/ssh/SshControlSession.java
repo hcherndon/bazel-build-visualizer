@@ -43,6 +43,22 @@ public final class SshControlSession implements AutoCloseable {
   private final ExecutionFileSystem fileSystem;
   private final List<SshReverseForward> forwards = new CopyOnWriteArrayList<>();
   private final AtomicBoolean closed;
+  private final Duration connectionTimeout;
+  private SshControlSession replacement;
+  private boolean originalRetired;
+
+  private final SshConnectionAccess connection =
+      new SshConnectionAccess() {
+        @Override
+        public Path socket() throws IOException {
+          return connectedSocket();
+        }
+
+        @Override
+        public IOException failed(Path socket, IOException failure) {
+          return recoverFailure(socket, failure);
+        }
+      };
 
   /** Connects using the system OpenSSH client and the user's normal host-key policy. */
   public static SshControlSession connect(SshTarget target, Duration timeout)
@@ -236,10 +252,17 @@ public final class SshControlSession implements AutoCloseable {
     log.debug("SSH remote toolchain verified target={}", target.displayName());
     SftpClient sftp = new SftpClient(target, binaries.sftp(), socket, open);
     sftp.checkAvailable();
-    SshExecutionFileSystem files =
-        new SshExecutionFileSystem("ssh-" + UUID.randomUUID(), directoryOnTarget, executor, sftp);
     return new SshControlSession(
-        target, binaries, directory, socket, process, output, errors, executor, files, closed);
+        target,
+        binaries,
+        directory,
+        socket,
+        process,
+        output,
+        errors,
+        directoryOnTarget,
+        closed,
+        timeout);
   }
 
   private SshControlSession(
@@ -250,9 +273,9 @@ public final class SshControlSession implements AutoCloseable {
       ManagedProcess master,
       Subprocess.BoundedDrain masterOutput,
       Subprocess.BoundedDrain masterErrors,
-      SshCommandExecutor commandExecutor,
-      ExecutionFileSystem fileSystem,
-      AtomicBoolean closed) {
+      String directoryOnTarget,
+      AtomicBoolean closed,
+      Duration timeout) {
     this.target = target;
     this.binaries = binaries;
     this.controlDirectory = controlDirectory;
@@ -260,9 +283,15 @@ public final class SshControlSession implements AutoCloseable {
     this.master = master;
     this.masterOutput = masterOutput;
     this.masterErrors = masterErrors;
-    this.commandExecutor = commandExecutor;
-    this.fileSystem = fileSystem;
     this.closed = closed;
+    this.connectionTimeout = timeout;
+    this.commandExecutor = new SshCommandExecutor(target, binaries.ssh(), connection);
+    this.fileSystem =
+        new SshExecutionFileSystem(
+            "ssh-" + UUID.randomUUID(),
+            directoryOnTarget,
+            commandExecutor,
+            new SftpClient(target, binaries.sftp(), connection));
   }
 
   public SshTarget target() {
@@ -284,9 +313,9 @@ public final class SshControlSession implements AutoCloseable {
   }
 
   /** Requests a loopback-only remote port chosen by OpenSSH. */
-  public SshReverseForward openReverseForward(int localPort)
+  public synchronized SshReverseForward openReverseForward(int localPort)
       throws IOException, InterruptedException {
-    ensureOpen();
+    Path socket = connectedSocket();
     if (localPort < 1 || localPort > 65_535) {
       throw new IllegalArgumentException("local port must be between 1 and 65535");
     }
@@ -296,10 +325,15 @@ public final class SshControlSession implements AutoCloseable {
     OpenSshProcess.Result result =
         OpenSshProcess.run(
             controlArguments(
-                binaries.ssh(), controlSocket, target, "forward", List.of("-R", specification)),
+                binaries.ssh(), socket, target, "forward", List.of("-R", specification)),
             Duration.ofSeconds(10));
     if (!result.isSuccess()) {
-      throw new IOException("could not open the reverse SSH tunnel: " + result.failureDetail());
+      IOException failure =
+          connection.failed(
+              socket,
+              new IOException("could not open the reverse SSH tunnel: " + result.failureDetail()));
+      // Forward creation is not replayed: its allocated port may have been lost with the reply.
+      throw failure;
     }
     int remotePort = parseAllocatedPort(result.stdout());
     final SshReverseForward[] holder = new SshReverseForward[1];
@@ -327,6 +361,12 @@ public final class SshControlSession implements AutoCloseable {
     if (!closed.compareAndSet(false, true)) {
       return;
     }
+    synchronized (this) {
+      closeResources();
+    }
+  }
+
+  private void closeResources() {
     long startedNanos = System.nanoTime();
     log.info(
         "SSH connection closing target={} reverseForwardCount={}",
@@ -334,6 +374,13 @@ public final class SshControlSession implements AutoCloseable {
         forwards.size());
     for (SshReverseForward forward : List.copyOf(forwards)) {
       forward.close();
+    }
+    if (replacement != null) {
+      replacement.close();
+      replacement = null;
+    }
+    if (originalRetired) {
+      return;
     }
     try {
       OpenSshProcess.Result exit =
@@ -370,7 +417,7 @@ public final class SshControlSession implements AutoCloseable {
         elapsedMillis(startedNanos));
   }
 
-  private void cancelForward(int localPort, int remotePort) {
+  private synchronized void cancelForward(int localPort, int remotePort) {
     long startedNanos = System.nanoTime();
     log.trace(
         "SSH reverse forward closing target={} localPort={} remotePort={}",
@@ -382,7 +429,7 @@ public final class SshControlSession implements AutoCloseable {
       OpenSshProcess.Result result =
           OpenSshProcess.run(
               controlArguments(
-                  binaries.ssh(), controlSocket, target, "cancel", List.of("-R", specification)),
+                  binaries.ssh(), activeSocket(), target, "cancel", List.of("-R", specification)),
               Duration.ofSeconds(5));
       log.trace(
           "SSH reverse forward closed target={} localPort={} remotePort={}"
@@ -405,8 +452,142 @@ public final class SshControlSession implements AutoCloseable {
   }
 
   void ensureOpen() {
-    if (closed.get() || !master.isAlive()) {
+    if (closed.get()) {
       throw new IllegalStateException("the SSH control session is closed");
+    }
+  }
+
+  private Path activeSocket() {
+    return replacement == null ? controlSocket : replacement.controlSocket;
+  }
+
+  private boolean transportAlive() {
+    return replacement == null
+        ? !originalRetired && master.isAlive()
+        : replacement.master.isAlive();
+  }
+
+  private synchronized Path connectedSocket() throws IOException {
+    if (closed.get()) {
+      throw new IOException("the SSH control session is closed");
+    }
+    if (Thread.currentThread().isInterrupted()) {
+      throw new IOException("SSH operation interrupted");
+    }
+    if (!transportAlive()) {
+      reconnect();
+    }
+    if (closed.get()) {
+      throw new IOException("the SSH control session is closed");
+    }
+    return activeSocket();
+  }
+
+  private synchronized IOException recoverFailure(Path failedSocket, IOException failure) {
+    if (failure instanceof SshConnectionAccess.RecoveryFailure
+        || closed.get()
+        || Thread.currentThread().isInterrupted()) {
+      return failure;
+    }
+    try {
+      if (transportAlive() && !failedSocket.equals(activeSocket())) {
+        return new SshConnectionAccess.RecoveredFailure(failure);
+      }
+      // A command exit or file permission failure is not evidence of a lost connection.
+      if (transportAlive()) {
+        try {
+          OpenSshProcess.Result probe =
+              OpenSshProcess.run(
+                  commandArguments(binaries.ssh(), activeSocket(), target, false, "/bin/true"),
+                  Duration.ofSeconds(5));
+          // Any ordinary remote exit status proves the channel is still usable.
+          if (!probe.timedOut() && probe.exitCode() != 255) {
+            return failure;
+          }
+        } catch (IOException probeFailure) {
+          failure.addSuppressed(probeFailure);
+        }
+      }
+      reconnect();
+      return new SshConnectionAccess.RecoveredFailure(failure);
+    } catch (IOException recoveryFailure) {
+      IOException reported =
+          new SshConnectionAccess.RecoveryFailure(
+              "SSH connection recovery failed: " + recoveryFailure.getMessage(), failure);
+      reported.addSuppressed(recoveryFailure);
+      return reported;
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      failure.addSuppressed(interrupted);
+      return failure;
+    }
+  }
+
+  private void reconnect() throws IOException {
+    log.info("SSH connection recovery started target={}", target.displayName());
+    if (replacement != null) {
+      replacement.close();
+      replacement = null;
+    }
+    if (!originalRetired) {
+      MasterCleanup cleanup = cleanupMaster(master, masterOutput, masterErrors);
+      if (!cleanup.terminated()) {
+        throw new IOException("could not retire the failed SSH connection", cleanup.failure());
+      }
+      deletePrivateDirectory(controlDirectory, controlSocket);
+      originalRetired = true;
+    }
+    SshControlSession next = null;
+    try {
+      if (Thread.currentThread().isInterrupted()) {
+        throw new InterruptedException("SSH recovery interrupted");
+      }
+      next = connect(target, connectionTimeout, binaries);
+      if (closed.get()) {
+        throw new IOException("the SSH control session was closed during recovery");
+      }
+      for (SshReverseForward forward : forwards) {
+        if (forward.isClosed()) {
+          continue;
+        }
+        String specification =
+            "127.0.0.1:" + forward.remotePort() + ":127.0.0.1:" + forward.localPort();
+        OpenSshProcess.Result restored =
+            OpenSshProcess.run(
+                controlArguments(
+                    binaries.ssh(),
+                    next.controlSocket,
+                    target,
+                    "forward",
+                    List.of("-R", specification)),
+                Duration.ofSeconds(10));
+        if (!restored.isSuccess()) {
+          throw new IOException(
+              "could not restore the BES tunnel on remote port "
+                  + forward.remotePort()
+                  + ": "
+                  + restored.failureDetail());
+        }
+      }
+      replacement = next;
+      next = null;
+      log.info(
+          "SSH connection recovered target={} reverseForwardCount={}",
+          target.displayName(),
+          forwards.size());
+    } catch (IOException failure) {
+      log.warn(
+          "SSH recovery failed target={} failureType={}",
+          target.displayName(),
+          failureType(failure));
+      throw failure;
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw new IOException("SSH recovery interrupted", interrupted);
+    } finally {
+      if (next != null) {
+        next.close();
+      }
     }
   }
 
@@ -420,6 +601,7 @@ public final class SshControlSession implements AutoCloseable {
   static List<String> commandArguments(
       Path ssh, Path socket, SshTarget target, boolean tty, String remoteCommand) {
     List<String> argv = commonArguments(ssh, socket, target, true);
+    option(argv, "ProxyCommand=false");
     if (tty) {
       argv.add("-tt");
       argv.add("-e");

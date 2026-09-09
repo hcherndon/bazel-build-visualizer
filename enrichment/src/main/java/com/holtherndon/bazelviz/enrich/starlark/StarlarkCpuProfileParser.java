@@ -6,6 +6,7 @@ import java.io.BufferedInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,8 +17,8 @@ import java.util.Objects;
 import java.util.zip.GZIPInputStream;
 
 /**
- * Bounded streaming reader for gzip-compressed pprof files emitted by Bazel's {@code
- * --starlark_cpu_profile} flag.
+ * Bounded streaming reader for gzip-compressed or raw protobuf pprof files, including Bazel's
+ * {@code --starlark_cpu_profile} output.
  *
  * <p>The outer {@code Profile} message is deliberately never materialized. One embedded record is
  * decoded at a time and handed to a sink. This both accepts Bazel's unpacked repeated fields and
@@ -82,8 +83,9 @@ public final class StarlarkCpuProfileParser {
     long compressedBytes = Files.size(file);
     MetadataBuilder metadata = new MetadataBuilder();
     try (InputStream raw = new BufferedInputStream(Files.newInputStream(file), 1 << 16);
-        GZIPInputStream gzip = new GZIPInputStream(raw, 1 << 16);
-        LimitedInputStream bounded = new LimitedInputStream(gzip, limits.maxDecompressedBytes())) {
+        InputStream decoded = decode(raw);
+        LimitedInputStream bounded =
+            new LimitedInputStream(decoded, limits.maxDecompressedBytes())) {
       CodedInputStream input = CodedInputStream.newInstance(bounded);
       // The counting stream supplies the user-facing bound and error. Leave protobuf's
       // internal int-sized ceiling at its maximum so it cannot fail first with a generic
@@ -91,13 +93,29 @@ public final class StarlarkCpuProfileParser {
       input.setSizeLimit(Integer.MAX_VALUE);
       parseProfile(input, sink, metadata);
       return new ParseResult(
-          compressedBytes, bounded.bytesRead(), topLevelRecords, childRecords, metadata.build());
+          compressedBytes,
+          bounded.bytesRead(),
+          topLevelRecords,
+          childRecords,
+          metadata.build(),
+          decoded instanceof GZIPInputStream);
     }
+  }
+
+  private static InputStream decode(InputStream raw) throws IOException {
+    raw.mark(2);
+    int first = raw.read();
+    int second = raw.read();
+    raw.reset();
+    return first == 0x1f && second == 0x8b ? new GZIPInputStream(raw, 1 << 16) : raw;
   }
 
   private void parseProfile(CodedInputStream input, Sink sink, MetadataBuilder metadata)
       throws IOException {
     while (true) {
+      if (Thread.currentThread().isInterrupted()) {
+        throw new InterruptedIOException("Profile import cancelled");
+      }
       int tag = input.readTag();
       if (tag == 0) {
         return;
@@ -704,7 +722,8 @@ public final class StarlarkCpuProfileParser {
       long uncompressedBytes,
       long topLevelRecords,
       long childRecords,
-      Metadata metadata) {}
+      Metadata metadata,
+      boolean gzip) {}
 
   record Metadata(
       Long timeNanos,

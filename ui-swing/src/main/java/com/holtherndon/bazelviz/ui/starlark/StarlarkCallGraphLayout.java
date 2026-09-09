@@ -184,13 +184,13 @@ final class StarlarkCallGraphLayout {
   }
 
   enum NodeWeight {
-    SELF_CPU("Self CPU") {
+    SELF_CPU("Self") {
       @Override
       OptionalLong value(StarlarkProfileReader.CallGraphNode node) {
         return node.selfCpuMicros();
       }
     },
-    CUMULATIVE_CPU("Cumulative CPU") {
+    CUMULATIVE_CPU("Cumulative") {
       @Override
       OptionalLong value(StarlarkProfileReader.CallGraphNode node) {
         return node.cumulativeCpuMicros();

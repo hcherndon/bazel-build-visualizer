@@ -47,6 +47,15 @@ public final class StarlarkCpuProfileImporter {
    * a failed result. A failed retry rolls back to the last complete row set.
    */
   public Result importFrom(Path file) throws SQLException {
+    return importFrom(file, false);
+  }
+
+  /** Imports a standalone pprof using its declared default sample type and original units. */
+  public Result importPprof(Path file) throws SQLException {
+    return importFrom(file, true);
+  }
+
+  private Result importFrom(Path file, boolean generic) throws SQLException {
     Objects.requireNonNull(file, "file");
     EnrichmentTaskStore tasks = new EnrichmentTaskStore(connection);
     long taskId =
@@ -64,12 +73,15 @@ public final class StarlarkCpuProfileImporter {
       StarlarkProfileWriter.ImportSummary imported;
       try (StarlarkProfileWriter writer = new StarlarkProfileWriter(connection)) {
         parsed = parser.parse(file, writer);
-        imported = writer.finish(taskId, parsed);
+        imported = writer.finish(taskId, parsed, generic);
       }
       connection.commit();
 
       String summary =
-          imported.sampleCount() + " samples, " + imported.totalValue() + " CPU microseconds";
+          imported.sampleCount()
+              + " samples, "
+              + imported.totalValue()
+              + (generic ? " selected sample units" : " CPU microseconds");
       tasks.finish(
           taskId,
           EnrichmentTask.State.SUCCEEDED,

@@ -6,6 +6,7 @@ java_library(
     name = "starlark",
     srcs = glob(["*.java"]),
     deps = [
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/files",
         "//analysis-core/src/main/java/com/holtherndon/bazelviz/analysis",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/graph",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/inspect",

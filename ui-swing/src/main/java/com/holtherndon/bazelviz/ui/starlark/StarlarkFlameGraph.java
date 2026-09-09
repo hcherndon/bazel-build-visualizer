@@ -29,6 +29,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.LongConsumer;
 import javax.accessibility.AccessibleContext;
 import javax.swing.JComponent;
@@ -51,6 +52,13 @@ import javax.swing.event.ChangeListener;
 public final class StarlarkFlameGraph extends JComponent {
 
   private static final long serialVersionUID = 1L;
+  private Function<OptionalLong, String> valueFormatter = EntityFormat::duration;
+
+  public void setValueFormatter(Function<OptionalLong, String> formatter) {
+    valueFormatter = formatter;
+    repaint();
+  }
+
   private static final int OUTER_GAP = 10;
   private static final int NOTICE_HEIGHT = 48;
   private static final int ROW_HEIGHT = 28;
@@ -78,7 +86,7 @@ public final class StarlarkFlameGraph extends JComponent {
     setOpaque(true);
     setLayout(null);
     CanvasAccessibility.configure(
-        this, "Starlark CPU flame graph", "No call contexts are shown. " + KEYBOARD_HELP);
+        this, "Profile flame graph", "No call contexts are shown. " + KEYBOARD_HELP);
     installKeyboardActions();
     PlainText.disableHtml(hoverToolTip);
     hoverToolTip.setComponent(this);
@@ -196,9 +204,7 @@ public final class StarlarkFlameGraph extends JComponent {
       if (slice.nodes().isEmpty()) {
         canvas.setColor(foreground());
         canvas.drawString(
-            "No sampled Starlark call contexts were recorded.",
-            OUTER_GAP,
-            NOTICE_HEIGHT + ROW_HEIGHT);
+            "No sampled call contexts were recorded.", OUTER_GAP, NOTICE_HEIGHT + ROW_HEIGHT);
         return;
       }
       for (NodeCell cell : nodeCells) {
@@ -428,18 +434,18 @@ public final class StarlarkFlameGraph extends JComponent {
     }
   }
 
-  private static String nodeToolTipText(StarlarkProfileReader.FlameNode node) {
+  private String nodeToolTipText(StarlarkProfileReader.FlameNode node) {
     return node.function()
         + " — cumulative "
-        + EntityFormat.duration(node.inclusiveCpuMicros())
+        + valueFormatter.apply(node.inclusiveCpuMicros())
         + ", self "
-        + EntityFormat.duration(node.selfCpuMicros());
+        + valueFormatter.apply(node.selfCpuMicros());
   }
 
-  private static String aggregateToolTipText(AggregateCell cell) {
+  private String aggregateToolTipText(AggregateCell cell) {
     return cell.count()
         + " contexts combined for display — "
-        + EntityFormat.duration(cell.cpuMicros());
+        + valueFormatter.apply(cell.cpuMicros());
   }
 
   private void showHoverToolTip(MouseEvent event, String text) {

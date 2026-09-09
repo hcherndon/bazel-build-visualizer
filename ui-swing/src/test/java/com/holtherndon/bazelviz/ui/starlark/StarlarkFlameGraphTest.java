@@ -221,7 +221,7 @@ final class StarlarkFlameGraphTest {
           assertThat(graph.getFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS))
               .contains(AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_TAB, 0));
           assertThat(graph.getAccessibleContext().getAccessibleName())
-              .isEqualTo("Starlark CPU flame graph");
+              .isEqualTo("Profile flame graph");
           assertThat(graph.getAccessibleContext().getAccessibleDescription())
               .contains("Showing 2 call contexts")
               .contains("arrow keys");

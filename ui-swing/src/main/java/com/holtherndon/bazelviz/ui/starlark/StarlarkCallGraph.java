@@ -33,6 +33,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import javax.accessibility.AccessibleContext;
 import javax.swing.JComponent;
 import javax.swing.JMenuItem;
@@ -46,6 +47,13 @@ import javax.swing.UIManager;
 public final class StarlarkCallGraph extends JComponent {
 
   private static final long serialVersionUID = 1L;
+  private Function<OptionalLong, String> valueFormatter = EntityFormat::duration;
+
+  public void setValueFormatter(Function<OptionalLong, String> formatter) {
+    valueFormatter = formatter;
+    repaint();
+  }
+
   private static final double FIT_MARGIN = 30;
   private static final double EDGE_LABEL_SCALE = 0.58;
   private static final double ARROW_LENGTH = 8;
@@ -82,7 +90,7 @@ public final class StarlarkCallGraph extends JComponent {
     setLayout(null);
     setPreferredSize(new Dimension(760, 500));
     CanvasAccessibility.configure(
-        this, "Starlark directed call graph", "No functions are shown. " + KEYBOARD_HELP);
+        this, "Profile directed call graph", "No functions are shown. " + KEYBOARD_HELP);
     installKeyboardActions();
     PlainText.disableHtml(nodeToolTip);
     nodeToolTip.setComponent(this);
@@ -246,7 +254,7 @@ public final class StarlarkCallGraph extends JComponent {
   }
 
   private void drawEmpty(Graphics2D canvas) {
-    String message = "No attributed Starlark call relationships were recorded.";
+    String message = "No attributed call relationships were recorded.";
     FontMetrics metrics = canvas.getFontMetrics();
     canvas.setColor(GraphColours.label());
     canvas.drawString(
@@ -350,7 +358,7 @@ public final class StarlarkCallGraph extends JComponent {
   }
 
   private void drawEdgeLabel(Graphics2D canvas, OptionalLong cpuMicros, double x, double y) {
-    String text = EntityFormat.duration(cpuMicros);
+    String text = valueFormatter.apply(cpuMicros);
     Font font = baseFont().deriveFont(Math.max(10f, baseFont().getSize2D() - 1f));
     canvas.setFont(font);
     FontMetrics metrics = canvas.getFontMetrics();
@@ -441,9 +449,9 @@ public final class StarlarkCallGraph extends JComponent {
     if (value.isEmpty()
         || layout.graph().totalCpuMicros().isEmpty()
         || layout.graph().totalCpuMicros().getAsLong() <= 0) {
-      return EntityFormat.duration(value);
+      return valueFormatter.apply(value);
     }
-    return EntityFormat.duration(value)
+    return valueFormatter.apply(value)
         + " (%.1f%%)"
             .formatted(100.0 * value.getAsLong() / layout.graph().totalCpuMicros().getAsLong());
   }
@@ -643,12 +651,12 @@ public final class StarlarkCallGraph extends JComponent {
     return boxAt(event.getX(), event.getY()).map(box -> nodeToolTipText(box.node())).orElse(null);
   }
 
-  private static String nodeToolTipText(StarlarkProfileReader.CallGraphNode node) {
+  private String nodeToolTipText(StarlarkProfileReader.CallGraphNode node) {
     return node.function()
         + " — self "
-        + EntityFormat.duration(node.selfCpuMicros())
+        + valueFormatter.apply(node.selfCpuMicros())
         + ", cumulative "
-        + EntityFormat.duration(node.cumulativeCpuMicros());
+        + valueFormatter.apply(node.cumulativeCpuMicros());
   }
 
   private void showNodeToolTip(MouseEvent event, StarlarkProfileReader.CallGraphNode node) {

@@ -1,9 +1,43 @@
 # Implementation status
 
-Last updated: 2026-09-05. This file states what exists in the tree, not what
+Last updated: 2026-09-09. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
+
+**Console CRLF rendering (2026-09-09).** Carriage returns no longer erase text
+before a following newline. This fixes blank Console and recorded Errors output
+from environments that emit CRLF (including SSH TTY output). The shared ANSI
+transcript distinguishes line endings from progress replacements across input
+chunks, preserving colours and cursor-up/erase-line updates. Raw logs are unchanged.
+
+**SSH recovery (2026-09-09).** Operations on a selected SSH Workspace reconnect
+its failed control master before reporting a transport error. Recovery is
+serialized, preserves existing filesystem identities, and restores active BES
+forwards on their original remote ports. Metadata/listing helpers and immutable
+SFTP snapshot downloads retry once after recovery. Dispatched commands, uploads,
+and saves are not replayed: their outcome may be unknown after a disconnect.
+Existing builds and shells are not restarted. Close and interruption suppress
+recovery; ordinary command failures do not reconnect a healthy transport.
+Recovery uses the original timeout and OpenSSH configuration and runs off the
+EDT. Failed recovery retains both operation and reconnect diagnostics.
+
+**Standalone pprof explorer (2026-09-09).** File › Open pprof… opens an
+independent window, without a build session or Workspace. The Starlark page
+and standalone window share `ProfileView`, paged tables, directed graph,
+flame graph, and reader lifecycle. Standalone gzip or raw protobuf profiles
+use their default sample type (the last type if no default is named), with
+original units throughout tables, graph labels, and hover details. CPU,
+heap, and other nonnegative sample values do not imply CPU microseconds.
+Imports and queries run off the EDT in a private temporary SQLite database;
+closing the window releases it and deletes its files, without modifying the
+original profile or adding a session to the library. Cmd/Ctrl+W closes the
+viewer. Source actions ask the user to locate the source file locally; no
+recorded path starts an SSH connection or external symbolization command.
+Metric switching, signed/difference profiles, automatic symbolization, and
+pprof label-based filtering are not implemented. An interrupted application
+may leave temporary profile databases in the OS temporary directory.
+See [Standalone pprof files](pprof-viewer.md) for interpretation and limits.
 
 Preferences uses the native application menu on macOS, without a duplicate
 Settings menu. Desktops without native Preferences retain Settings › Preferences….

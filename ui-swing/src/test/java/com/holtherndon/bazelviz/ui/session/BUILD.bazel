@@ -9,6 +9,8 @@ java_library(
     testonly = True,
     srcs = glob(["*.java"]),
     deps = JUNIT_DEPS + [
+        "//proto:proto",
+        "@maven//:com_google_protobuf_protobuf_java",
         "//capture-file/src/main/java/com/holtherndon/bazelviz/capture/file/importer",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
@@ -83,6 +85,7 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":PprofSourceTest",
         ":CatalogAccessTest",
         ":DamagedSessionTest",
         ":ImportControllerTest",
@@ -92,4 +95,11 @@ test_suite(
         ":SessionMutationCoordinatorTest",
         ":SqliteStarlarkProfileReaderTest",
     ],
+)
+
+java_junit5_test(
+    name = "PprofSourceTest",
+    test_class = "com.holtherndon.bazelviz.ui.session.PprofSourceTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
 )

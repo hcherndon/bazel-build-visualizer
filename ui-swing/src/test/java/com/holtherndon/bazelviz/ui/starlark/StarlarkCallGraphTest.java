@@ -247,6 +247,9 @@ final class StarlarkCallGraphTest {
               .doesNotContain("rules/compile.bzl")
               .doesNotContain(":42");
           assertThat(canvas.getToolTipText(hover)).isEqualTo(canvas.nodeToolTipTextForTest());
+          canvas.setValueFormatter(
+              new StarlarkProfileReader.SampleMetric("inuse_space", "bytes")::format);
+          assertThat(canvas.getToolTipText(hover)).contains("bytes").doesNotContain("1.25 s");
         });
   }
 
@@ -268,7 +271,7 @@ final class StarlarkCallGraphTest {
           assertThat(canvas.getFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS))
               .contains(AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_TAB, 0));
           assertThat(canvas.getAccessibleContext().getAccessibleName())
-              .isEqualTo("Starlark directed call graph");
+              .isEqualTo("Profile directed call graph");
           assertThat(canvas.getAccessibleContext().getAccessibleDescription())
               .contains("Showing 2 functions")
               .contains("arrow keys")

@@ -1,5 +1,21 @@
 # Performance
 
+SSH recovery is on demand, not periodic polling. Healthy operations check the
+owned master process locally. After a possible transport failure, a bounded
+five-second remote liveness probe distinguishes ordinary operation errors from
+connection loss. Reconnection uses the original connection timeout and is
+serialized per Workspace; each active BES forward has a ten-second restoration
+timeout. Read-only helpers and immutable snapshot downloads replay at most
+once; no unbounded retry loop or extra permanent worker is introduced. No
+reconnection latency benchmark is claimed.
+
+Standalone pprof windows reuse the bounded profile parser, disk-backed
+aggregations, paged tables, and graph projection limits of the Starlark page.
+Each open profile owns one temporary SQLite database and one view worker.
+Total resource use grows with the number of open windows. Import requires a
+full sequential parse and aggregation before the summary appears; graph and
+flame queries remain lazy. No standalone-profile latency benchmark is claimed.
+
 Performance is a feature gate, not an aspiration. Measurements and analytic
 estimates are labelled separately; an estimate is never presented as a
 measurement. A row with no measurement says so explicitly. The plan's own

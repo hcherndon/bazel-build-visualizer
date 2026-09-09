@@ -83,6 +83,7 @@ import com.holtherndon.bazelviz.ui.session.SessionMutationCoordinator;
 import com.holtherndon.bazelviz.ui.session.SessionSource;
 import com.holtherndon.bazelviz.ui.session.SqliteSessionSource;
 import com.holtherndon.bazelviz.ui.session.StarlarkProfileReader;
+import com.holtherndon.bazelviz.ui.starlark.PprofWindow;
 import com.holtherndon.bazelviz.ui.starlark.StarlarkProfileView;
 import com.holtherndon.bazelviz.ui.targets.AllTargetsView;
 import com.holtherndon.bazelviz.ui.targets.TargetsView;
@@ -1342,6 +1343,18 @@ public final class MainWindow extends JFrame {
     file.add(openFile);
     file.add(openSession);
     file.add(openArchive);
+    JMenuItem openPprof = new JMenuItem("Open pprof…");
+    openPprof.addActionListener(
+        event -> {
+          JFileChooser chooser = new JFileChooser();
+          chooser.setDialogTitle("Open pprof");
+          chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+          applyLastDirectory(chooser);
+          if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            PprofWindow.open(this, chooser.getSelectedFile().toPath());
+          }
+        });
+    file.add(openPprof);
     file.add(recentMenu);
     file.add(cleanUp);
     file.addSeparator();

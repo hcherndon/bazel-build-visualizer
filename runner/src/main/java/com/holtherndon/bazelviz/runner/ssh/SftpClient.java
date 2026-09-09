@@ -20,27 +20,33 @@ final class SftpClient {
 
   private final SshTarget target;
   private final Path sftp;
-  private final Path controlSocket;
-  private final BooleanSupplier sessionOpen;
+  private final SshConnectionAccess connection;
 
   SftpClient(SshTarget target, Path sftp, Path controlSocket) {
     this(target, sftp, controlSocket, () -> true);
   }
 
   SftpClient(SshTarget target, Path sftp, Path controlSocket, BooleanSupplier sessionOpen) {
+    this(target, sftp, SshConnectionAccess.fixed(controlSocket, sessionOpen));
+  }
+
+  SftpClient(SshTarget target, Path sftp, SshConnectionAccess connection) {
     this.target = Objects.requireNonNull(target, "target");
     this.sftp = Objects.requireNonNull(sftp, "sftp");
-    this.controlSocket = Objects.requireNonNull(controlSocket, "controlSocket");
-    this.sessionOpen = Objects.requireNonNull(sessionOpen, "sessionOpen");
+    this.connection = Objects.requireNonNull(connection, "connection");
   }
 
   void download(String remote, Path local, long expectedBytes)
       throws IOException, InterruptedException {
     try {
-      transfer(
-          "download",
-          "get " + quoteBatchPath(remote) + " " + quoteBatchPath(local.toString()),
-          expectedBytes);
+      String instruction = "get " + quoteBatchPath(remote) + " " + quoteBatchPath(local.toString());
+      try {
+        transfer("download", instruction, expectedBytes);
+      } catch (SshConnectionAccess.RecoveredFailure recovered) {
+        // Downloads read a private immutable remote snapshot, not the changing source.
+        Files.deleteIfExists(local);
+        transfer("download", instruction, expectedBytes);
+      }
       long actual = Files.size(local);
       if (actual != expectedBytes) {
         throw new IOException(
@@ -88,9 +94,7 @@ final class SftpClient {
 
   private void transfer(String operation, String instruction, long expectedMaximumBytes)
       throws IOException, InterruptedException {
-    if (!sessionOpen.getAsBoolean()) {
-      throw new IOException("the SSH control session is closed");
-    }
+    Path socket = connection.socket();
     long startedNanos = System.nanoTime();
     log.debug(
         "SFTP transfer started operation={} target={} maximumBytes={}",
@@ -98,11 +102,16 @@ final class SftpClient {
         target.displayName(),
         Math.max(0, expectedMaximumBytes));
     String batch = instruction + "\nquit\n";
-    OpenSshProcess.Result result =
-        OpenSshProcess.run(
-            arguments(),
-            transferTimeout(expectedMaximumBytes),
-            batch.getBytes(StandardCharsets.UTF_8));
+    OpenSshProcess.Result result;
+    try {
+      result =
+          OpenSshProcess.run(
+              arguments(socket),
+              transferTimeout(expectedMaximumBytes),
+              batch.getBytes(StandardCharsets.UTF_8));
+    } catch (IOException failure) {
+      throw connection.failed(socket, failure);
+    }
     if (!result.isSuccess()) {
       log.warn(
           "SFTP transfer failed operation={} target={} exitCode={} timedOut={}" + " durationMs={}",
@@ -111,7 +120,8 @@ final class SftpClient {
           result.exitCode(),
           result.timedOut(),
           elapsedMillis(startedNanos));
-      throw new IOException("SFTP transfer failed: " + result.failureDetail());
+      throw connection.failed(
+          socket, new IOException("SFTP transfer failed: " + result.failureDetail()));
     }
     log.debug(
         "SFTP transfer completed operation={} target={} durationMs={}",
@@ -120,7 +130,11 @@ final class SftpClient {
         elapsedMillis(startedNanos));
   }
 
-  List<String> arguments() {
+  List<String> arguments() throws IOException {
+    return arguments(connection.socket());
+  }
+
+  private List<String> arguments(Path controlSocket) {
     List<String> argv = new ArrayList<>();
     argv.add(sftp.toString());
     argv.add("-q");
@@ -128,6 +142,7 @@ final class SftpClient {
     argv.add("-");
     option(argv, "BatchMode=yes");
     option(argv, "ControlPath=" + controlSocket);
+    option(argv, "ProxyCommand=false");
     option(argv, "ClearAllForwardings=yes");
     option(argv, "ForwardAgent=no");
     option(argv, "ForwardX11=no");

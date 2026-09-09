@@ -54,11 +54,11 @@ grep -Fq 'security checks have known open blockers' "$docs/implementation-status
     fail "implementation status counts blocked security checks as complete"
 
 [[ "$(grep -Ec '^!\[' "$readme")" -eq 3 ]] ||
-    fail "README must contain exactly three screenshot placeholders"
+    fail "README must contain exactly three screenshots"
 for image in \
-    readme-overview-placeholder.svg \
-    readme-analysis-placeholder.svg \
-    readme-workspaces-placeholder.svg; do
+    workspace-overview.png \
+    timeline.png \
+    workspaces.png; do
     [[ "$(grep -Fc "docs/images/$image" "$readme")" -eq 1 ]] ||
         fail "README must reference $image exactly once"
     [[ -f "$docs/images/$image" ]] || fail "missing docs/images/$image"
