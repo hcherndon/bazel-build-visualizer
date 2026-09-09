@@ -9,6 +9,9 @@
 
 ## Verification and resource safety
 
+- Commit completed work at clear task boundaries, including during rapid feature and bugfix work. Prefer small, focused commits with descriptive messages over one large batch.
+- Review each staged diff and run the relevant tests before committing. Keep unrelated existing changes out of the commit; do not push unless requested.
+
 - Use scoped Bazel targets while iterating. The default full gate after a meaningful code or build change is:
 
   ```bash
