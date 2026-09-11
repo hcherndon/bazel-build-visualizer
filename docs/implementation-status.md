@@ -5,7 +5,13 @@ is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
 
-**Hermeticity research (2026-09-11; proposal only).**
+**Hermeticity implementation (2026-09-11; in progress).**
+[ADR-014](adr/014-reproducibility-audits.md) accepts the private paired-comparison
+boundary and reviewed local/SSH repeat-build protocol. The approved delivery
+sequence is evidence indexing, offline comparison, then managed audits and UI.
+This contract commit does not enable a new run mode or comparison page.
+
+**Hermeticity research (2026-09-11).**
 [The feature plan](hermeticity-plan.md) describes a paired repeat-build audit,
 diagnostic pages, required execution-log observation data, and later cache/host
 checks. A disposable Bazel 9.2.0 fixture confirmed stable versus random output,
