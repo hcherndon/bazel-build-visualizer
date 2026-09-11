@@ -5,7 +5,7 @@ auxiliary-output formats drift across that range, and forks/release
 candidates make version strings unreliable.
 
 Policy: **observed capability over version comparison.** The tool never
-gates behavior on parsing `bazel version` output. Instead it probes: does
+gates ordinary capture behavior on parsing `bazel version` output. Instead it probes: does
 this binary accept this flag, does the stream contain this message field, did
 the execution log arrive in the expected format? Each probe result becomes a
 recorded capability on the session, and the instrumentation planner
@@ -15,7 +15,19 @@ messages are journaled and counted (ADR-004), never dropped — rather than a
 wrong guess based on a version threshold.
 
 Version strings are still *recorded* (they are useful diagnostics and
-display data); they are just never used as a behavior switch.
+display data). ADR-014 permits a narrow additional tested-version guard for
+the new managed clean/build audit protocol; it does not change ordinary capture.
+
+## Reproducibility protocol fixture (2026-09-11)
+
+`//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/reprofixture:RealBazelReproducibilityTest`
+passed on macOS arm64 with Bazel 9.2.0. Four sequential builds in one capped
+private base verify stable/random output digests, downstream propagation and
+disk-cache masking after clean. Existing `bazel-bin`, `bazel-out`,
+`bazel-testlogs` and workspace symlinks, plus their target contents, survive
+every clean/build with `--symlink_prefix=/`. The test shuts down its own server.
+This is not a Linux/SSH, worker, remote-execution or multi-version protocol
+certification. Automatic audit support requires additional orchestration tests.
 
 **Everything below was measured**, on real 6.5.0, 7.6.1, 8.4.1 and 9.2.0
 binaries on macOS arm64 during Phase 2. `docs/bazel-ground-truth.md` is the

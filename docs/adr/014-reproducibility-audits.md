@@ -75,6 +75,15 @@ build mislabelled as an audit. Repository download-cache reuse is outside the
 initial experiment. Actual spawn cache/runner evidence determines comparison
 coverage even after approved cache-bypass flags.
 
+The first managed protocol is explicitly rc-free (`--ignore_all_rc_files`),
+not a claim to reproduce the user's ordinary rc-configured invocation. Users
+must opt into that difference; unresolved command-line configuration/strategy
+conflicts are refused. As a narrow exception to the general capability-only
+policy, automatic destructive audit steps additionally require the tested
+Bazel 9.2.0 protocol. Required capabilities and resolved-path checks still apply;
+a matching version alone is never sufficient. Ordinary capture and offline
+comparison retain their independent format/capability policies.
+
 Preserve A's evidence outside the private output base before cleaning for B;
 SSH transfer failure stops the sequence. Source/configuration changes between
 runs are reported without reverting them. Auxiliary queries do not run between

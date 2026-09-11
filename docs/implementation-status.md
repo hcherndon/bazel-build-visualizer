@@ -11,6 +11,12 @@ boundary and reviewed local/SSH repeat-build protocol. The approved delivery
 sequence is evidence indexing, offline comparison, then managed audits and UI.
 This contract commit does not enable a new run mode or comparison page.
 
+The package-local real-Bazel reproducibility regression now passes on 9.2.0:
+four sequential builds expose stable/random output and downstream propagation,
+then show disk-cache masking after clean. Existing workspace convenience links
+and their target contents remain intact. This is a protocol fixture, not an
+enabled production audit.
+
 **Hermeticity research (2026-09-11).**
 [The feature plan](hermeticity-plan.md) describes a paired repeat-build audit,
 diagnostic pages, required execution-log observation data, and later cache/host

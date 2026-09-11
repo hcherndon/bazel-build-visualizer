@@ -1,0 +1,19 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "REAL_BAZEL_ENV", "REAL_BAZEL_TAGS", "TEST_JVM_FLAGS")
+
+java_junit5_test(
+    name = "RealBazelReproducibilityTest",
+    srcs = ["RealBazelReproducibilityTest.java"],
+    deps = JUNIT_DEPS + [
+        "//proto:proto",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
+    ],
+    env_inherit = REAL_BAZEL_ENV,
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    size = "large",
+    # Exactly one capped child server; keep it separate from other real-Bazel tests.
+    tags = REAL_BAZEL_TAGS + ["exclusive"],
+    test_class = "com.holtherndon.bazelviz.capture.reprofixture.RealBazelReproducibilityTest",
+    visibility = ["//visibility:public"],
+)

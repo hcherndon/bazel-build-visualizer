@@ -1054,3 +1054,12 @@ function, so paging and counts use the same predicate without loading all rows
 into Java. Matching checks a per-value character-read budget and interruption;
 budget or stack exhaustion fails the query rather than silently skipping rows.
 Regex predicates can still require a full scan and are not index-accelerated.
+
+### Reproducibility protocol fixture
+
+The 2026-09-11 real-Bazel regression uses one private server capped at 1 GiB,
+two jobs, and four sequential three-action builds. Its scoped macOS arm64 run
+took 21.4 seconds including startup, repeated clean and final shutdown. It is
+marked exclusive so it does not overlap other host-state tests. This tiny
+correctness fixture is not a comparison-engine throughput or large-build
+performance measurement.
