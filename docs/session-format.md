@@ -80,6 +80,15 @@ cannot remove files still being read by another native window. Archive imports
 extract into unique sibling staging directories and serialize adoption of the
 same UUID.
 
+ADR-014 audit-owned sessions can also carry `locks/audit-reference`, a bounded
+durable record naming their owning local audit directory. It is retention
+protection, not an executable instruction or a reconnect/cleanup permission.
+Catalog cleanup keeps a session with this marker even after restart, when its
+record is incomplete, or when its owner is currently unavailable. A different
+audit cannot replace the marker. Like other locks, it is not included in an
+ordinary portable archive. Releasing durable audit ownership requires a future
+explicit audit-removal workflow; ordinary session cleanup cannot do it.
+
 The manifest is small, human-readable JSON and is the only file read to list
 sessions cheaply besides the catalog; catalog and manifest must agree, with
 the manifest winning on conflict (the directory is the artifact). Writers use

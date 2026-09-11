@@ -236,6 +236,12 @@ capture, session database, build console file or terminal stream.
 | Application log queue records | `com.holtherndon.bazelviz.app.logging.ApplicationLogging.LOG_QUEUE_CAPACITY` | 8192 | The caller never blocks. Each record that cannot enter the queue increments an exact counter shown in Diagnostics; the writer emits an overflow warning when it catches up. Session and capture data are unaffected. |
 | Application log shutdown flush | `com.holtherndon.bazelviz.app.logging.ApplicationLogging.MAX_FLUSH_TIME` | 5 seconds | Close waits up to this long. Records still queued at the deadline are added to the exact dropped total. A record already inside the OS/file-appender write is no longer queued and may finish asynchronously after close returns. |
 
+## Reproducibility audit ownership
+
+| Limit | Constant | Default | Behavior |
+|---|---|---:|---|
+| Durable session audit reference | `com.holtherndon.bazelviz.format.session.SessionAuditReference.MAX_REFERENCE_BYTES` | 16384 | Oversized ownership text is refused; an existing unreadable or partial marker keeps the session protected from retention cleanup. |
+
 ## Timing
 
 | Limit | Constant | Default |

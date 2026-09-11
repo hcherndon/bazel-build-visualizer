@@ -7,6 +7,7 @@ java_library(
         "RetentionPolicy.java",
         "SessionCatalog.java",
     ],
+    deps = ["//session-format/src/main/java/com/holtherndon/bazelviz/format/session"],
     runtime_deps = ["@maven//:org_xerial_sqlite_jdbc"],
     visibility = ["//visibility:public"],
 )

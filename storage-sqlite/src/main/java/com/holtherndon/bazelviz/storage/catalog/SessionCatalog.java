@@ -1,5 +1,6 @@
 package com.holtherndon.bazelviz.storage.catalog;
 
+import com.holtherndon.bazelviz.format.session.SessionAuditReference;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -447,6 +448,11 @@ public final class SessionCatalog implements AutoCloseable {
         continue;
       }
       try {
+        if (SessionAuditReference.isProtected(entry.directory())) {
+          failures.add(
+              entry.displayName() + " is retained by a reproducibility audit and was kept");
+          continue;
+        }
         deleteRecursively(entry.directory());
         forget(entry.sessionUuid());
         removed++;

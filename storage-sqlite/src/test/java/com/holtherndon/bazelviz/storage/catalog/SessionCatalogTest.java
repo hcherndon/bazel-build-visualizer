@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.storage.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.holtherndon.bazelviz.format.session.SessionAuditReference;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -56,6 +57,24 @@ final class SessionCatalogTest {
     Files.createDirectories(directory);
     Files.writeString(directory.resolve("manifest.json"), "{}");
     return directory;
+  }
+
+  @Test
+  void cleanupKeepsAuditOwnedSessionsEvenWhenThePlanWasMadeBeforeProtection() throws Exception {
+    Path directory = sessionDirectory("audit-owned");
+    CatalogEntry entry = entry("audit-owned", directory, 1_000, 4_096);
+    RetentionPolicy.Plan plan =
+        new RetentionPolicy.Plan(
+            List.of(new RetentionPolicy.Candidate(entry, "test retention")), 0, 4_096);
+    try (SessionCatalog catalog = SessionCatalog.open(tempDir.resolve("catalog"))) {
+      catalog.record(entry);
+      SessionAuditReference.protect(directory, tempDir.resolve("audit"));
+      SessionCatalog.SweepResult result = catalog.apply(plan);
+      assertThat(result.removed()).isZero();
+      assertThat(result.failures()).singleElement().asString().contains("reproducibility audit");
+      assertThat(catalog.find("audit-owned")).isPresent();
+      assertThat(directory).exists();
+    }
   }
 
   @Test

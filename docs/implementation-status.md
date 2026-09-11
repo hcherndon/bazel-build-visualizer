@@ -17,6 +17,11 @@ then show disk-cache masking after clean. Existing workspace convenience links
 and their target contents remain intact. This is a protocol fixture, not an
 enabled production audit.
 
+Durable audit retention protection is implemented: `SessionAuditReference`
+creates a bounded owner marker, and catalog cleanup refuses protected sessions
+even after a cleanup plan was made. Focused marker and catalog tests pass.
+The capture integration that creates these references is still in progress.
+
 **Hermeticity research (2026-09-11).**
 [The feature plan](hermeticity-plan.md) describes a paired repeat-build audit,
 diagnostic pages, required execution-log observation data, and later cache/host

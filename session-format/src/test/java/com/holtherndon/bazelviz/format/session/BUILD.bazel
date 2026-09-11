@@ -16,6 +16,13 @@ java_library(
 )
 
 java_junit5_test(
+    name = "SessionAuditReferenceTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.format.session.SessionAuditReferenceTest",
+)
+
+java_junit5_test(
     name = "ManagedSessionLayoutTest",
     jvm_flags = TEST_JVM_FLAGS,
     runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
@@ -53,6 +60,7 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":SessionAuditReferenceTest",
         ":ManagedSessionLayoutTest",
         ":SessionLockTest",
         ":SessionManagerTest",

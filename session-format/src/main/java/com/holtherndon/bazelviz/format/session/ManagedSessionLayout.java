@@ -180,6 +180,11 @@ public final class ManagedSessionLayout {
     return directory(SessionDirectory.LOCKS);
   }
 
+  /** Durable audit ownership, excluded from portable single-session archives with other locks. */
+  public Path auditReferenceFile() {
+    return locksDirectory().resolve("audit-reference");
+  }
+
   /** Journal segment {@code index}, named by the frozen journal contract. */
   public Path journalSegment(int segmentIndex) {
     if (segmentIndex < 0) {
