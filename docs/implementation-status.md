@@ -36,8 +36,11 @@ passively with exact source checksum checks, never replaying commands or cleanup
 Real Bazel 9.2.0 fixtures on macOS arm64 cover a managed pair, cancellation
 between runs, stable/random outputs, downstream changes, cache masking after
 clean, and preservation of existing convenience links. Scoped comparison,
-retention, protocol, failure-path and UI regressions pass. Final broad build/test
-verification is pending. No Linux/SSH end-to-end audit fixture has been run.
+retention, protocol, failure-path and UI regressions pass. The final
+`bazel build //... --jobs=2` passed across 593 targets;
+`bazel test //... --test_tag_filters=-bazel-sweep --jobs=2 --local_test_jobs=2`
+passed all 359 test targets (306 cached). Normal and narrow comparison layouts
+were also visually checked. No Linux/SSH end-to-end audit fixture has been run.
 
 Later protocols for normal rc-configured builds, cache reuse and host variation
 remain deferred. There is no audit deletion UI, compound audit export, automatic
