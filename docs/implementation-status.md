@@ -1,9 +1,16 @@
 # Implementation status
 
-Last updated: 2026-09-09. This file states what exists in the tree, not what
+Last updated: 2026-09-11. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
+
+**Hermeticity research (2026-09-11; proposal only).**
+[The feature plan](hermeticity-plan.md) describes a paired repeat-build audit,
+diagnostic pages, required execution-log observation data, and later cache/host
+checks. A disposable Bazel 9.2.0 fixture confirmed stable versus random output,
+downstream input propagation, and disk-cache masking after clean. No audit mode,
+comparison schema or new production UI is implemented by this research change.
 
 **Console CRLF rendering (2026-09-09).** Carriage returns no longer erase text
 before a following newline. This fixes blank Console and recorded Errors output
