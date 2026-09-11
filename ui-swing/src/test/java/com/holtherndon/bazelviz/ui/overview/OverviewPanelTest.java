@@ -385,40 +385,57 @@ class OverviewPanelTest {
   @Timeout(60)
   @DisplayName("a build changing thousands of times refreshes on the interval, not per change")
   void liveUpdatesAreCoalesced() throws Exception {
-    FakeEntityReader reader = new FakeEntityReader();
+    List<Long> readStarts = new CopyOnWriteArrayList<>();
+    FakeEntityReader reader =
+        new FakeEntityReader() {
+          @Override
+          public OverviewSnapshot overview() {
+            readStarts.add(System.nanoTime());
+            return super.overview();
+          }
+        };
     Duration interval = Duration.ofMillis(40);
     OverviewPanel panel = onEdt(() -> new OverviewPanel(interval));
     AtomicInteger renders = new AtomicInteger();
-    onEdt(
-        () -> {
-          panel.onSnapshot(snapshot -> renders.incrementAndGet());
-          panel.openSession(new FakeSource(reader));
-          return null;
-        });
-
-    // Change the underlying numbers far faster than the refresh interval,
-    // as a build writing rows would.
-    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(400);
-    long changes = 0;
-    while (System.nanoTime() < deadline) {
-      reader.advance();
-      changes++;
+    CountDownLatch refreshed = new CountDownLatch(4);
+    try {
+      onEdt(
+          () -> {
+            panel.onSnapshot(
+                snapshot -> {
+                  renders.incrementAndGet();
+                  // A fixed burst, rather than a CPU-speed-dependent busy loop, makes the
+                  // underlying data change thousands of times between refresh deliveries.
+                  for (int change = 0; change < 10_000; change++) {
+                    reader.advance();
+                  }
+                  refreshed.countDown();
+                });
+            panel.openSession(new FakeSource(reader));
+            return null;
+          });
+      assertThat(refreshed.await(10, TimeUnit.SECONDS))
+          .as("the initial snapshot and three periodic refreshes are rendered")
+          .isTrue();
+    } finally {
+      CompletionStage<Void> closed = onEdt(panel::closeSessionAsync);
+      closed.toCompletableFuture().get(5, TimeUnit.SECONDS);
     }
-    TimeUnit.MILLISECONDS.sleep(100);
 
+    // Stop the worker before sampling either count. Otherwise a newly read snapshot can
+    // render after reads is sampled, making a correct refresher appear to render too often.
     long reads = reader.overviewReads();
-    assertThat(changes).isGreaterThan(1_000L);
-    // The property: reads follow the clock, not the data. Ten intervals
-    // elapsed, so a couple of dozen reads is generous headroom and still
-    // orders of magnitude below the number of changes.
-    assertThat(reads).isPositive().isLessThan(50L);
-    assertThat(renders.get()).isPositive().isLessThanOrEqualTo((int) reads);
-
-    onEdt(
-        () -> {
-          panel.closeSession();
-          return null;
-        });
+    assertThat(reads).isGreaterThanOrEqualTo(4L);
+    assertThat(renders.get()).isGreaterThanOrEqualTo(4).isLessThanOrEqualTo((int) reads);
+    assertThat(reader.actionCount()).isEqualTo(10_000L * renders.get());
+    assertThat(readStarts).hasSize((int) reads);
+    // Fixed-delay refreshes cannot begin faster than the interval. Checking their actual
+    // spacing preserves that guarantee without imposing a speed limit on a loaded host.
+    for (int read = 1; read < readStarts.size(); read++) {
+      assertThat(readStarts.get(read) - readStarts.get(read - 1))
+          .as("read %s waits for the refresh interval", read + 1)
+          .isGreaterThanOrEqualTo(interval.toNanos());
+    }
   }
 
   @Test
