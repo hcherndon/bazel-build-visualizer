@@ -8,7 +8,7 @@ import java.util.Locale;
  * phases come from the per-phase "UI deliverable" lists in docs/product-plan.md section 24 — change
  * them there first, then here.
  *
- * <h2>Eighteen entries, and not the plan's eleven</h2>
+ * <h2>Nineteen entries, and not the plan's eleven</h2>
  *
  * <p>The departures from plan 17.1's list came from use rather than from design:
  *
@@ -48,6 +48,8 @@ import java.util.Locale;
  *   <li><b>Repository and Terminal are workspace tools.</b> Both use the explicitly selected local
  *       or SSH workspace, never an imported session's recorded path. Terminal opens its shell when
  *       selected.
+ *   <li><b>Hermeticity compares two builds.</b> Its private comparison is independent of the
+ *       currently open session. Matching evidence is not proof of hermeticity (ADR-014).
  * </ul>
  */
 public enum NavEntry {
@@ -58,6 +60,7 @@ public enum NavEntry {
   TIMELINE("Timeline", 6),
   CRITICAL_PATH("Critical Path", 8),
   STARLARK_PROFILE("Starlark Profile", 10),
+  HERMETICITY("Hermeticity", 10),
   ACTIONS("Actions", 3),
   TARGETS("Top Level Targets", 3),
   ALL_TARGETS("All Targets", 3),

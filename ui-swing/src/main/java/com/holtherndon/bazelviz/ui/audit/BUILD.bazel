@@ -1,0 +1,24 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "audit",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/repro",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/repro",
+        "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/repro",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/repro",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/repro",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+    ],
+)

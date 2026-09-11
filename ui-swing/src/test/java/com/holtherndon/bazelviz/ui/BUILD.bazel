@@ -16,6 +16,7 @@ java_library(
         "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bep",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/actions",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture:capture_leases",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/criticalpath",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/errors",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/events",

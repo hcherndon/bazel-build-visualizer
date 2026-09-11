@@ -3,9 +3,12 @@ package com.holtherndon.bazelviz.ui.files;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.holtherndon.bazelviz.runner.files.ExecutionFileSystem;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
+import java.io.IOException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -30,6 +33,43 @@ import org.junit.jupiter.api.io.TempDir;
 
 /** Window semantics for the modeless file viewer. */
 final class FileEditorManagerTest {
+
+  @Test
+  void workspaceBuildFilePathsResolveOffEdtAndDrainBeforeClose() throws Exception {
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    ExecutionFileSystem files =
+        (ExecutionFileSystem)
+            Proxy.newProxyInstance(
+                ExecutionFileSystem.class.getClassLoader(),
+                new Class<?>[] {ExecutionFileSystem.class},
+                (proxy, method, arguments) -> {
+                  if (method.getName().equals("path")) {
+                    assertThat(SwingUtilities.isEventDispatchThread()).isFalse();
+                    waitForRelease(started, interrupted, release);
+                    throw new IOException("Cancelled path lookup");
+                  }
+                  throw new AssertionError("Unexpected filesystem call: " + method.getName());
+                });
+    FileEditorManager manager = new FileEditorManager(null, (owner, count) -> true);
+    try {
+      onEdt(
+          () -> {
+            manager.openBuildFile("//:target", files, "/workspace", "/workspace");
+            return null;
+          });
+      assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+      CompletableFuture<Void> closed = onEdt(() -> manager.closeAsync().toCompletableFuture());
+      assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+      assertThat(closed).isNotDone();
+      release.countDown();
+      closed.get(5, TimeUnit.SECONDS);
+    } finally {
+      release.countDown();
+      onEdt(() -> manager.closeAsync().toCompletableFuture()).get(5, TimeUnit.SECONDS);
+    }
+  }
 
   @Test
   @DisplayName("the native close shortcut invokes only its editor close request")

@@ -1,0 +1,14 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "repro",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/repro",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/filter",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+    ],
+)

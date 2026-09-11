@@ -227,6 +227,24 @@ public final class FileEditorManager implements AutoCloseable {
         true);
   }
 
+  /** Resolves selected workspace paths on the editor's worker, never from captured commands. */
+  public void openBuildFile(
+      String label, ExecutionFileSystem files, String workspaceRoot, String workingDirectory) {
+    Objects.requireNonNull(label, "label");
+    Objects.requireNonNull(files, "files");
+    resolve(
+        "Build file for " + label,
+        () -> {
+          WorkspaceFileAccess access =
+              new WorkspaceFileAccess(
+                  files,
+                  Optional.of(files.path(workspaceRoot)),
+                  Optional.of(files.path(workingDirectory)));
+          return new ResolvedFile(files, WorkspaceFileResolver.buildFile(access, label));
+        },
+        true);
+  }
+
   /** Resolves and opens a test log or action output read-only. */
   public void open(FileLink link, SessionInfo session) {
     Objects.requireNonNull(link, "link");

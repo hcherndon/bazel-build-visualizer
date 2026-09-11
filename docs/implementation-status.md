@@ -5,51 +5,46 @@ is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
 
-**Hermeticity implementation (2026-09-11; in progress).**
-[ADR-014](adr/014-reproducibility-audits.md) accepts the private paired-comparison
-boundary and reviewed local/SSH repeat-build protocol. The approved delivery
-sequence is evidence indexing, offline comparison, then managed audits and UI.
-This contract commit does not enable a new run mode or comparison page.
+**Build reproducibility checks (2026-09-11).** Console has a **Check
+reproducibility** mode, and **Hermeticity** has Summary, Action differences, and
+Coverage & runs tabs. The initial managed protocol requires Bazel 9.2.0 and
+explicit approval of an rc-free, on-machine `build` experiment. It performs two
+clean/build captures in one private output base, without touching the normal
+output base or workspace convenience links. Local and selected SSH workspaces
+use the same reviewed protocol; remote execution clusters are not supported.
+See [the user guide](hermeticity.md) and
+[ADR-014](adr/014-reproducibility-audits.md).
 
-The private comparison backend is implemented and its 24 scoped regressions pass.
-It snapshots compact/binary execution logs, checks framing and resource limits,
-compares semantic action recipes and file manifests, and exposes shared filters
-and paged, masked results. Findings distinguish output divergence, recipe/input/
-cache-identity drift, supported downstream propagation, unmatched actions, and
-incomplete evidence. Reopening an audit can bind exact snapshots to recorded
-SHA-256 identities. No normal session schema, Query table or archive export gains
-the sensitive comparison index. JSON execution logs, complex runfiles and missing
-platform/digest evidence are refused or explicitly incomplete, never equal by
-default. UI and managed-run integration are still being verified.
+Offline comparison accepts local compact/binary execution logs or managed
+session directories. Shared filters, paged action/field differences, selectable
+masked values and BUILD-file actions help investigate recipe/input/output drift,
+supported downstream changes, ambiguous matches and incomplete evidence. The
+private, bounded comparison index is separate from the normal session schema,
+Query and exports. Missing platform/digest evidence and unsupported complex
+runfiles remain incomplete; matching observations never prove hermeticity.
 
-The package-local real-Bazel reproducibility regression now passes on 9.2.0:
-four sequential builds expose stable/random output and downstream propagation,
-then show disk-cache masking after clean. Existing workspace convenience links
-and their target contents remain intact. This is a protocol fixture, not an
-enabled production audit.
-
-Durable audit retention protection is implemented: `SessionAuditReference`
-creates a bounded owner marker, and catalog cleanup refuses protected sessions
-even after a cleanup plan was made. Focused marker and catalog tests pass.
-The managed coordinator now creates these references, holds the workspace lease
-through both captures and cleanup, records the exact reviewed protocol, and
-verifies A's bounded raw log before cleaning for B. Its real Bazel 9.2.0 test
-passes for a complete pair and cancellation between runs. Source snapshots,
+A and B remain separate retained sessions. Durable audit references protect them
+from ordinary retention cleanup, including stale cleanup plans. Source snapshots,
 private-base identity checks, preserved invocation/checksum binding, and actual
-cached/remote-runner checks guard later steps. Normal auxiliary ingestion is
-deferred in these audit captures; the bounded verifier handles their raw logs.
-Unknown SSH termination retains staging and prevents private-base cleanup,
-including a later close through a recovered transport. Restart records expose
-failures and partial runs without authorizing replay or cleanup. The native UI
-integration is awaiting its final broad gate; no Linux/SSH end-to-end audit
-fixture has been run.
+cached/remote-runner observations guard later steps. The workspace lease stays
+held through review, both builds and cleanup. Audit captures defer ordinary
+auxiliary ingestion; the bounded verifier handles their raw execution logs.
+Unknown SSH termination retains staging and prevents private-base cleanup, even
+after local persistence fails or the transport recovers. Saved audits reopen
+passively with exact source checksum checks, never replaying commands or cleanup.
 
-**Hermeticity research (2026-09-11).**
-[The feature plan](hermeticity-plan.md) describes a paired repeat-build audit,
-diagnostic pages, required execution-log observation data, and later cache/host
-checks. A disposable Bazel 9.2.0 fixture confirmed stable versus random output,
-downstream input propagation, and disk-cache masking after clean. No audit mode,
-comparison schema or new production UI is implemented by this research change.
+Real Bazel 9.2.0 fixtures on macOS arm64 cover a managed pair, cancellation
+between runs, stable/random outputs, downstream changes, cache masking after
+clean, and preservation of existing convenience links. Scoped comparison,
+retention, protocol, failure-path and UI regressions pass. Final broad build/test
+verification is pending. No Linux/SSH end-to-end audit fixture has been run.
+
+Later protocols for normal rc-configured builds, cache reuse and host variation
+remain deferred. There is no audit deletion UI, compound audit export, automatic
+resume or orphan cleanup. Source checks compare names and bytes, not file modes
+or transient edits; their limits and potentially expensive SSH traversal are
+documented in [limits](limits.md) and [performance](performance.md). Ordinary
+auxiliary-import hardening remains a separate release blocker below.
 
 **Console CRLF rendering (2026-09-09).** Carriage returns no longer erase text
 before a following newline. This fixes blank Console and recorded Errors output

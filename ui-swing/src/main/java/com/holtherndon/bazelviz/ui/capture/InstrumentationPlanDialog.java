@@ -62,6 +62,11 @@ public final class InstrumentationPlanDialog extends JDialog {
   private Capability vetoedCapability;
 
   public InstrumentationPlanDialog(Window owner, Preflight preflight) {
+    this(owner, preflight, "Launch");
+  }
+
+  /** Review-only callers can accept these settings without claiming to launch a build. */
+  public InstrumentationPlanDialog(Window owner, Preflight preflight, String confirmationLabel) {
     super(owner, "Review build", ModalityType.APPLICATION_MODAL);
     InstrumentationPlan plan = preflight.plan();
 
@@ -112,12 +117,10 @@ public final class InstrumentationPlanDialog extends JDialog {
     scroll.setPreferredSize(new Dimension(820, 600));
     scroll.getVerticalScrollBar().setUnitIncrement(16);
 
-    JButton launch = new JButton("Launch");
+    JButton launch = new JButton(confirmationLabel);
     launch.setEnabled(plan.canLaunch());
     launch.setToolTipText(
-        plan.canLaunch()
-            ? "Run the command shown above"
-            : "Resolve the highlighted conflict first");
+        plan.canLaunch() ? confirmationLabel : "Resolve the highlighted conflict first");
     launch.addActionListener(
         event -> {
           choice = Choice.LAUNCH;

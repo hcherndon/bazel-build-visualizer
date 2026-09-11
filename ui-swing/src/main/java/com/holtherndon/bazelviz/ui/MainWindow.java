@@ -34,6 +34,7 @@ import com.holtherndon.bazelviz.storage.catalog.SessionCatalog;
 import com.holtherndon.bazelviz.storage.entities.ActionSort;
 import com.holtherndon.bazelviz.storage.export.TableExport;
 import com.holtherndon.bazelviz.ui.actions.ActionsView;
+import com.holtherndon.bazelviz.ui.audit.AuditWorkflow;
 import com.holtherndon.bazelviz.ui.capture.CaptureLeaseKey;
 import com.holtherndon.bazelviz.ui.capture.CaptureLeaseOwner;
 import com.holtherndon.bazelviz.ui.capture.CaptureLeaseRegistry;
@@ -72,6 +73,7 @@ import com.holtherndon.bazelviz.ui.preferences.ThemePreferencesPanel;
 import com.holtherndon.bazelviz.ui.preferences.WorkspaceDiscoveryPreferencesPanel;
 import com.holtherndon.bazelviz.ui.query.QueryView;
 import com.holtherndon.bazelviz.ui.repository.RepositoryBrowserView;
+import com.holtherndon.bazelviz.ui.repro.HermeticityView;
 import com.holtherndon.bazelviz.ui.session.ArchiveImport;
 import com.holtherndon.bazelviz.ui.session.CatalogAccess;
 import com.holtherndon.bazelviz.ui.session.CatalogEntries;
@@ -148,6 +150,7 @@ import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.DefaultListModel;
 import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JFileChooser;
@@ -264,6 +267,7 @@ public final class MainWindow extends JFrame {
   private final AllTargetsView allTargetsView = new AllTargetsView();
   private final ConfigurationsView configurationsView = new ConfigurationsView();
   private final TestsView testsView = new TestsView();
+  private final HermeticityView hermeticityView = new HermeticityView();
   private final ErrorsView errorsView = new ErrorsView();
   private final CoverageView coverageView = new CoverageView();
 
@@ -452,6 +456,9 @@ public final class MainWindow extends JFrame {
   private final JComponent buildCard = buildBuildCard();
 
   private final LaunchController launchController;
+  private final AuditWorkflow auditWorkflow;
+  private final JComboBox<String> buildMode =
+      new JComboBox<>(new String[] {"Build", "Check reproducibility"});
   private CaptureStatusModel captureStatus = CaptureStatusModel.idle();
 
   private final CardLayout cardLayout = new CardLayout();
@@ -687,6 +694,33 @@ public final class MainWindow extends JFrame {
             this::releaseCaptureLease);
     this.exports = new ExportController(worker, SwingUtilities::invokeLater);
     this.fileEditors = new FileEditorManager(this);
+    this.auditWorkflow =
+        new AuditWorkflow(
+            this,
+            hermeticityView,
+            sessionsRoot.resolveSibling("audits"),
+            sessionMutations,
+            new AuditWorkflow.Host() {
+              @Override
+              public void status(CaptureStatusModel status) {
+                setCaptureStatus(status);
+              }
+
+              @Override
+              public void ready() {
+                launcherPanel.setRunEnabled(true);
+              }
+
+              @Override
+              public void reveal() {
+                showCard(NavEntry.HERMETICITY);
+              }
+
+              @Override
+              public void openSession(Path directory) {
+                openSessionDirectory(directory, false);
+              }
+            });
     // The Query card's saved queries and views use the caller-resolved
     // settings directory. Compatibility constructors still infer that
     // directory for older tests and embedders. The libraries create their
@@ -763,6 +797,7 @@ public final class MainWindow extends JFrame {
     errorsView.installEntityActions(entityActions);
     treeView.installEntityActions(entityActions);
     graphExplorerView.installEntityActions(entityActions);
+    hermeticityView.onOpenBuildFile(this::openAuditBuildFile);
     criticalPathView.installEntityActions(entityActions);
     starlarkProfileView.onOpenSource(this::openStarlarkSource);
     actionsView.onOpenFile(this::openFile);
@@ -824,7 +859,7 @@ public final class MainWindow extends JFrame {
     // for a count that is in fact available.
     eventsView.setRowCountListener(
         count -> eventStatus.setText("Events: " + EventValueFormat.count(count)));
-    capturePanel.setStopAction(launchController::cancel);
+    capturePanel.setStopAction(this::cancelActiveCapture);
     cancelImportItem.setEnabled(false);
     closeSessionItem.setEnabled(false);
     // Once per launch, on a worker. A sessions root that moved while the
@@ -990,7 +1025,7 @@ public final class MainWindow extends JFrame {
           JOptionPane.INFORMATION_MESSAGE);
       return false;
     }
-    if (launchController.isBusy()) {
+    if (captureBusy()) {
       JOptionPane.showMessageDialog(
           this,
           "Finish or cancel the running Bazel command before editing this Workspace.",
@@ -1034,7 +1069,7 @@ public final class MainWindow extends JFrame {
     if (!fileEditors.confirmCloseAllowed()) {
       return false;
     }
-    if (launchController.isBusy()) {
+    if (captureBusy()) {
       Object[] options = {"Cancel Build and Close", "Keep Workspace Open"};
       int choice =
           JOptionPane.showOptionDialog(
@@ -1049,7 +1084,7 @@ public final class MainWindow extends JFrame {
       if (choice != 0) {
         return false;
       }
-      launchController.cancel(CancellationMode.CANCEL);
+      cancelActiveCapture(CancellationMode.CANCEL);
     }
     disposeAsync();
     return true;
@@ -1065,12 +1100,12 @@ public final class MainWindow extends JFrame {
 
   /** Whether application quit would need to cancel this window's capture. */
   public boolean hasActiveCapture() {
-    return launchController.isBusy();
+    return captureBusy();
   }
 
   /** Requests cancellation after the process-level quit confirmation succeeds. */
   public void cancelCaptureForApplicationClose() {
-    launchController.cancel(CancellationMode.CANCEL);
+    cancelActiveCapture(CancellationMode.CANCEL);
   }
 
   @Override
@@ -1147,7 +1182,10 @@ public final class MainWindow extends JFrame {
 
     RemoteExecution closingRemote = activeRemoteExecution;
     activeRemoteExecution = null;
-    CompletionStage<Void> captureClose = launchController.closeAsync();
+    CompletionStage<Void> captureClose =
+        CompletableFuture.allOf(
+            launchController.closeAsync().toCompletableFuture(),
+            auditWorkflow.closeAsync().toCompletableFuture());
     CompletionStage<Void> terminalClose = terminalView.closeAsync();
     // Preference saves use blockingIo. Keep both its virtual-thread executor
     // and this last displayable frame alive until the newest choice has
@@ -1422,9 +1460,9 @@ public final class MainWindow extends JFrame {
           @Override
           public void menuSelected(MenuEvent event) {
             boolean selected = activeWorkspace != null;
-            edit.setEnabled(selected && !activeWorkspaceDiscovered && !launchController.isBusy());
-            reconnect.setEnabled(selected && !launchController.isBusy());
-            close.setEnabled(selected && (applicationHost != null || !launchController.isBusy()));
+            edit.setEnabled(selected && !activeWorkspaceDiscovered && !captureBusy());
+            reconnect.setEnabled(selected && !captureBusy());
+            close.setEnabled(selected && (applicationHost != null || !captureBusy()));
             recent.removeAll();
             List<WorkspaceProfile> available =
                 applicationHost == null
@@ -2926,7 +2964,7 @@ public final class MainWindow extends JFrame {
       applicationHost.showWorkspaceManager();
       return true;
     }
-    if (launchController.isBusy()) {
+    if (captureBusy()) {
       JOptionPane.showMessageDialog(
           this,
           "Finish or cancel the running build before changing workspaces.",
@@ -2942,7 +2980,7 @@ public final class MainWindow extends JFrame {
   private void editCurrentWorkspace() {
     WorkspaceProfile current = activeWorkspace;
     if (current != null && applicationHost != null && !workspaceManagerWindow) {
-      if (!activeWorkspaceDiscovered && !launchController.isBusy()) {
+      if (!activeWorkspaceDiscovered && !captureBusy()) {
         applicationHost.editWorkspace(current);
       }
     } else if (current != null && !activeWorkspaceDiscovered && showWorkspaceHome()) {
@@ -3072,7 +3110,7 @@ public final class MainWindow extends JFrame {
 
   private void openWorkspace(
       WorkspaceProfile requested, boolean forceReconnect, boolean discovered) {
-    if (launchController.isBusy() || workspaceContextTransition) {
+    if (captureBusy() || workspaceContextTransition) {
       showWorkspaceHome();
       return;
     }
@@ -3368,7 +3406,7 @@ public final class MainWindow extends JFrame {
   }
 
   private void closeCurrentWorkspace(boolean showHome) {
-    if (launchController.isBusy() || workspaceContextTransition) {
+    if (captureBusy() || workspaceContextTransition) {
       showWorkspaceHome();
       return;
     }
@@ -3870,7 +3908,7 @@ public final class MainWindow extends JFrame {
     if (disposalStarted) {
       return;
     }
-    if (launchController.isBusy()) {
+    if (captureBusy()) {
       JOptionPane.showMessageDialog(
           this,
           "A build is already running. Cancel it before starting another.",
@@ -3942,6 +3980,8 @@ public final class MainWindow extends JFrame {
           CaptureRequest.of(sessionsRoot, APP_VERSION, executable, workingDirectory, arguments);
     }
     request = request.withPreset(launcherPanel.preset());
+    boolean audit = buildMode.getSelectedIndex() == 1;
+    if (audit && !auditWorkflow.confirmProtocol()) return;
 
     if (!acquireCaptureLease(workspace)) {
       return;
@@ -3954,7 +3994,27 @@ public final class MainWindow extends JFrame {
             CaptureStatusModel.Phase.PREPARING, "Resolving Bazel and probing capabilities…"));
     showCard(NavEntry.BUILD);
     try {
-      launchController.preflight(request);
+      if (audit) {
+        consoleView.clear();
+        auditWorkflow.start(
+            request
+                .withProgress(
+                    progress ->
+                        SwingUtilities.invokeLater(
+                            () -> {
+                              if (!disposalStarted)
+                                setCaptureStatus(captureStatus.withProgress(progress));
+                            }))
+                .withConsole(
+                    (stream, data, offset, length) -> {
+                      byte[] copy = Arrays.copyOfRange(data, offset, offset + length);
+                      SwingUtilities.invokeLater(
+                          () -> {
+                            if (!disposalStarted) consoleView.append(copy, 0, copy.length);
+                          });
+                    }),
+            auditLeaseRelease(activeCaptureLease));
+      } else launchController.preflight(request);
     } catch (RuntimeException failure) {
       releaseCaptureLease();
       launcherPanel.setRunEnabled(true);
@@ -4016,13 +4076,56 @@ public final class MainWindow extends JFrame {
     }
   }
 
+  /** Bind deferred audit cleanup to this reservation, never to a later retry's reservation. */
+  static AutoCloseable auditLeaseRelease(
+      AtomicReference<CaptureLeaseRegistry.CaptureLease> activeLease) {
+    CaptureLeaseRegistry.CaptureLease lease = activeLease.get();
+    return () -> {
+      if (lease != null) {
+        activeLease.compareAndSet(lease, null);
+        lease.close();
+      }
+    };
+  }
+
+  private boolean captureBusy() {
+    return launchController.isBusy() || auditWorkflow.isBusy();
+  }
+
+  private void openAuditBuildFile(String label) {
+    if (activeWorkspace == null || repositoryFileSystem == null || captureLeaseKey == null) {
+      JOptionPane.showMessageDialog(this, "Connect a workspace to open its BUILD files.");
+      return;
+    }
+    if (JOptionPane.showConfirmDialog(
+            this,
+            "Open the BUILD file for "
+                + label
+                + " in workspace ‘"
+                + activeWorkspace.label()
+                + "’?\nThe comparison may have come from a different repository.",
+            "Open in selected workspace",
+            JOptionPane.OK_CANCEL_OPTION)
+        != JOptionPane.OK_OPTION) return;
+    fileEditors.openBuildFile(
+        label,
+        repositoryFileSystem,
+        captureLeaseKey.canonicalRepositoryRoot(),
+        activeWorkspace.workingDirectory());
+  }
+
+  private void cancelActiveCapture(CancellationMode mode) {
+    launchController.cancel(mode);
+    auditWorkflow.cancel();
+  }
+
   /** Validates and persists a Console edit without reconnecting the Workspace. */
   private boolean updateManagedBazelExecutable(String executable) {
     WorkspaceProfile current = activeWorkspace;
     if (disposalStarted || current == null) {
       return false;
     }
-    if (launchController.isBusy()) {
+    if (captureBusy()) {
       JOptionPane.showMessageDialog(
           this,
           "Finish or cancel the running Bazel command before changing its executable.",
@@ -4372,6 +4475,7 @@ public final class MainWindow extends JFrame {
           case TIMELINE -> timeline.view();
           case CRITICAL_PATH -> criticalPathView;
           case STARLARK_PROFILE -> starlarkProfileView;
+          case HERMETICITY -> hermeticityView;
           case EVENTS -> eventsView;
           case BUILD -> buildCard;
           case FINDINGS -> findingsView;
@@ -4413,6 +4517,8 @@ public final class MainWindow extends JFrame {
     installPageChrome(NavEntry.TESTS, testsView);
     installPageChrome(NavEntry.CRITICAL_PATH, criticalPathView);
     installPageChrome(NavEntry.STARLARK_PROFILE, starlarkProfileView);
+    installPageChrome(NavEntry.HERMETICITY, hermeticityView);
+    auditWorkflow.installToolbar(pageToolbars.get(NavEntry.HERMETICITY));
     installPageChrome(NavEntry.CONFIGURATIONS, configurationsView);
     installPageChrome(NavEntry.TREE, treeView);
     installPageChrome(NavEntry.GRAPH, graphExplorerView);
@@ -4421,6 +4527,12 @@ public final class MainWindow extends JFrame {
     PageToolbar console = pageToolbars.get(NavEntry.BUILD);
     launcherPanel.installPageToolbar(console);
     capturePanel.installPageToolbar(console);
+    JLabel modeLabel = new JLabel("Mode:");
+    modeLabel.setLabelFor(buildMode);
+    buildMode.setToolTipText(
+        "Build normally, or compare two controlled rc-free builds with Bazel 9.2.0.");
+    console.addAction(modeLabel);
+    console.addAction(buildMode);
     console.setControls(launcherPanel);
     updateConsoleMetadata(captureStatus);
   }

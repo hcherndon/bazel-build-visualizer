@@ -1,9 +1,11 @@
 # Hermeticity and build reproducibility: proposed design
 
-Status: proposal, not implemented. Researched 2026-09-11 against the current
+Status: accepted for staged implementation in
+[ADR-014](adr/014-reproducibility-audits.md). Researched 2026-09-11 against the
 source tree, official Bazel documentation, and a small Bazel 9.2.0 fixture.
-This is a feature plan, not an accepted architectural decision or a claim of
-new production support.
+The research below is retained as design context. The ADR takes precedence;
+see the [user guide](hermeticity.md) and [implementation status](implementation-status.md)
+for the initial controlled protocol and deferred features.
 
 ## Recommendation
 

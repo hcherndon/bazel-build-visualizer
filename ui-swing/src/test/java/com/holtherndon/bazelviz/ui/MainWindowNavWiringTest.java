@@ -2,6 +2,11 @@ package com.holtherndon.bazelviz.ui;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.holtherndon.bazelviz.ui.capture.CaptureLeaseKey;
+import com.holtherndon.bazelviz.ui.capture.CaptureLeaseOwner;
+import com.holtherndon.bazelviz.ui.capture.CaptureLeaseRegistry;
+import com.holtherndon.bazelviz.ui.capture.CaptureLeaseRegistry.CaptureLease;
+import com.holtherndon.bazelviz.ui.capture.CaptureLeaseRegistry.Granted;
 import com.holtherndon.bazelviz.ui.nav.EntityActions;
 import com.holtherndon.bazelviz.ui.nav.EntityRef;
 import com.holtherndon.bazelviz.ui.nav.NavEntry;
@@ -52,12 +57,65 @@ final class MainWindowNavWiringTest {
   @TempDir Path tempDir;
 
   @Test
-  @DisplayName("all eighteen navigation cards receive exactly one matching page toolbar")
+  @DisplayName("late audit cleanup cannot release a retry's workspace reservation")
+  void auditLeaseReleaseRemainsBoundToItsOriginalReservation() throws Exception {
+    CaptureLeaseRegistry registry = new CaptureLeaseRegistry();
+    CaptureLeaseKey key = CaptureLeaseKey.localRealPath(tempDir.toRealPath());
+    CaptureLease original =
+        ((Granted) registry.tryAcquire(key, new CaptureLeaseOwner("first", "First attempt")))
+            .lease();
+    AtomicReference<CaptureLease> active = new AtomicReference<>(original);
+    AutoCloseable delayedCleanup = MainWindow.auditLeaseRelease(active);
+
+    // The caller releases after a failed enqueue before coordinator cleanup reaches the worker.
+    active.getAndSet(null).close();
+    CaptureLease replacement =
+        ((Granted) registry.tryAcquire(key, new CaptureLeaseOwner("retry", "Retry"))).lease();
+    active.set(replacement);
+    try {
+      delayedCleanup.close();
+      delayedCleanup.close();
+      assertThat(active.get()).isSameAs(replacement);
+      assertThat(replacement.isClosed()).isFalse();
+      assertThat(registry.activeLease(key).orElseThrow().owner().ownerId()).isEqualTo("retry");
+
+      AutoCloseable replacementCleanup = MainWindow.auditLeaseRelease(active);
+      replacementCleanup.close();
+      replacementCleanup.close();
+      assertThat(active.get()).isNull();
+      assertThat(replacement.isClosed()).isTrue();
+      assertThat(registry.activeLeaseCount()).isZero();
+    } finally {
+      original.close();
+      replacement.close();
+    }
+  }
+
+  @Test
+  @DisplayName("an audit without a reservation cannot release one acquired later")
+  void emptyAuditLeaseReleaseDoesNotAdoptALaterReservation() throws Exception {
+    CaptureLeaseRegistry registry = new CaptureLeaseRegistry();
+    AtomicReference<CaptureLease> active = new AtomicReference<>();
+    AutoCloseable emptyCleanup = MainWindow.auditLeaseRelease(active);
+    CaptureLeaseKey key = CaptureLeaseKey.localRealPath(tempDir.toRealPath());
+    try (CaptureLease later =
+        ((Granted) registry.tryAcquire(key, new CaptureLeaseOwner("later", "Later capture")))
+            .lease()) {
+      active.set(later);
+      emptyCleanup.close();
+      assertThat(active.get()).isSameAs(later);
+      assertThat(later.isClosed()).isFalse();
+      assertThat(registry.activeLeaseCount()).isEqualTo(1);
+    }
+  }
+
+  @Test
+  @DisplayName("all navigation cards receive exactly one matching page toolbar")
   void everyNavigationCardHasSharedChrome() throws Exception {
     EnumMap<NavEntry, PageToolbar> toolbars = onEdt(MainWindow::newPageToolbars);
 
     assertThat(toolbars.keySet()).containsExactlyInAnyOrder(NavEntry.values());
-    assertThat(toolbars).hasSize(18);
+    assertThat(toolbars).hasSize(NavEntry.values().length);
     onEdt(
         () -> {
           for (NavEntry entry : NavEntry.values()) {
@@ -297,6 +355,7 @@ final class MainWindowNavWiringTest {
             NavEntry.TIMELINE,
             NavEntry.CRITICAL_PATH,
             NavEntry.STARLARK_PROFILE,
+            NavEntry.HERMETICITY,
             NavEntry.ACTIONS,
             NavEntry.TARGETS,
             NavEntry.ALL_TARGETS,
@@ -317,6 +376,7 @@ final class MainWindowNavWiringTest {
             NavEntry.TIMELINE,
             NavEntry.CRITICAL_PATH,
             NavEntry.STARLARK_PROFILE,
+            NavEntry.HERMETICITY,
             NavEntry.ACTIONS,
             NavEntry.TARGETS,
             NavEntry.ALL_TARGETS,

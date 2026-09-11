@@ -1,0 +1,57 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("@rules_java//java:defs.bzl", "java_library")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["*.java"]),
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/repro",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/repro",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/repro",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/workspace",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/repro",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/catalog",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/audit",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+    ],
+)
+
+java_junit5_test(
+    name = "AuditLaunchControllerTest",
+    test_class = "com.holtherndon.bazelviz.ui.audit.AuditLaunchControllerTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "AuditReviewDialogTest",
+    test_class = "com.holtherndon.bazelviz.ui.audit.AuditReviewDialogTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
+    name = "ComparisonSourcesTest",
+    test_class = "com.holtherndon.bazelviz.ui.audit.ComparisonSourcesTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+test_suite(
+    name = "tests",
+    tests = [":AuditLaunchControllerTest", ":AuditReviewDialogTest", ":ComparisonSourcesTest"],
+)

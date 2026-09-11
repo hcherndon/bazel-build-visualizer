@@ -10,7 +10,7 @@ class NavEntryTest {
 
   @Test
   void sidebarEntriesMatchThePlanInDisplayOrder() {
-    // Eighteen, where plan 17.1 lists eleven. Console and Capture were
+    // Nineteen, where plan 17.1 lists eleven. Console and Capture were
     // merged into one Console card, Failures was renamed Errors, Query is
     // in no phase of the plan at all, and the old Graph card split into
     // Graph (the canvas) and Tree (the dependency trees); NavEntry's own
@@ -24,6 +24,7 @@ class NavEntryTest {
             "Timeline",
             "Critical Path",
             "Starlark Profile",
+            "Hermeticity",
             "Actions",
             "Top Level Targets",
             "All Targets",

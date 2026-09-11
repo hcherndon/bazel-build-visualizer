@@ -67,6 +67,8 @@ expected to refuse them on another machine.
   without a build session.
 - Enrich managed captures with execution logs, trace profiles, `aquery`, and
   `cquery`.
+- [Check build reproducibility](docs/hermeticity.md) with a controlled pair of
+  builds, or compare two execution logs for output, input and recipe changes.
 - Query normalized session data with a syntax-aware SQL editor.
 - Browse and edit local or remote repositories, and use a persistent terminal
   for each Workspace.
@@ -190,6 +192,8 @@ bazel run //tools:format_java
 ## Documentation
 
 - [User guide](docs/user-guide.md) — Workspaces, capture, analysis, and sharing
+- [Build reproducibility](docs/hermeticity.md) — controlled checks, log
+  comparisons, findings and coverage limits
 - [Implementation status](docs/implementation-status.md) — completed behavior
   and known gaps
 - [Architecture](docs/architecture.md) — modules, data flow, graphs, and

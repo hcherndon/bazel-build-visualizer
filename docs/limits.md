@@ -271,6 +271,7 @@ crash can leave them behind.
 | One result page text | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.MAX_PAGE_CHARACTERS` | 1048576 | Refuse the page without publishing a partial page. |
 | Zstd frame window | `com.holtherndon.bazelviz.enrich.repro.ZstdFrameGuard.MAX_WINDOW_BYTES` | 8388608 | Validate every frame before the decoder can allocate its window. |
 | Zstd frames per log | `com.holtherndon.bazelviz.enrich.repro.ZstdFrameGuard.MAX_FRAMES` | 65536 | Refuse excessive concatenated or skippable frames. |
+| Selected session manifest | `com.holtherndon.bazelviz.ui.audit.ComparisonSources.MAX_MANIFEST_BYTES` | 2097152 | Refuse during bounded reading before taking a retention lease. |
 
 ## Timing
 

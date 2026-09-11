@@ -1,0 +1,37 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("//tools:java_test_settings.bzl", "HEADLESS_TEST_JVM_FLAGS", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS")
+
+package(default_visibility = ["//visibility:public"])
+
+test_suite(
+    name = "tests",
+    tests = [":ComparisonControllerTest", ":HermeticityViewTest"],
+)
+
+java_junit5_test(
+    name = "ComparisonControllerTest",
+    srcs = ["ComparisonControllerTest.java"],
+    test_class = "com.holtherndon.bazelviz.ui.repro.ComparisonControllerTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/repro",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/repro",
+    ],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+)
+
+java_junit5_test(
+    name = "HermeticityViewTest",
+    srcs = ["HermeticityViewTest.java"],
+    test_class = "com.holtherndon.bazelviz.ui.repro.HermeticityViewTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    deps = JUNIT_DEPS + [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/repro",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/filter",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/repro",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+    ],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+)

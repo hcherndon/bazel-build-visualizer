@@ -26,8 +26,37 @@ private base verify stable/random output digests, downstream propagation and
 disk-cache masking after clean. Existing `bazel-bin`, `bazel-out`,
 `bazel-testlogs` and workspace symlinks, plus their target contents, survive
 every clean/build with `--symlink_prefix=/`. The test shuts down its own server.
-This is not a Linux/SSH, worker, remote-execution or multi-version protocol
-certification. Automatic audit support requires additional orchestration tests.
+`//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/repro:ManagedAuditBazelTest`
+also exercises the real coordinator, including sequential A/B preservation,
+invocation/checksum verification, private-base cleanup and cancellation between
+runs. These are not Linux/SSH, worker, remote-execution or multi-version protocol
+certifications.
+
+### Initial managed audit support
+
+**Console → Mode → Check reproducibility** requires Bazel 9.2.0 and confirmed
+required flags. This explicit opt-in protocol ignores all bazelrc files, uses a
+verified private output base, disables disk/remote action caches and remote
+execution, and prevents ordinary convenience-symlink changes. It supports
+`build` on the selected local or Linux SSH machine, not `test`, `run`, shell
+mode or a remote-execution cluster. Conflicting startup/configuration/strategy
+options are refused rather than silently overridden. A complete real Linux/SSH
+audit has not yet been measured.
+
+Each preserved compact log must match the BES invocation ID before a later
+clean is allowed. Actual known cache-hit or remote-runner observations stop the
+protocol; unknown runners are recorded as coverage gaps. Source snapshots and
+owned-path checks add safeguards but do not certify an ordinary rc-configured
+build. See [the audit guide](hermeticity.md) for the exact scope and limits.
+
+Offline comparison accepts compact zstd and binary `SpawnExec` logs without
+the managed protocol's version restriction. JSON logs and complex compact
+runfiles reconstruction are not supported. Unknown fields, missing digests or
+platforms, and binary tree-output flattening affect coverage; format acceptance
+is not a claim of complete evidence across every Bazel release. Binary logs
+lack the invocation ID required for managed preservation. The bounded comparison
+decoder is separate from ordinary auxiliary import, whose documented release
+hardening blocker remains open.
 
 **Everything below was measured**, on real 6.5.0, 7.6.1, 8.4.1 and 9.2.0
 binaries on macOS arm64 during Phase 2. `docs/bazel-ground-truth.md` is the

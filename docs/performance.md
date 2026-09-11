@@ -96,6 +96,43 @@ It is not a whole-process native-memory ceiling: every independently opened
 graph reader has a fixed 1 MiB SQLite page cache outside the graph budget, and
 uses file-backed temporary b-trees.
 
+## Reproducibility audits
+
+The managed protocol runs two builds sequentially in one private output base,
+with a clean before each, two build jobs and a 1 GiB private-server heap cap.
+It also reads the repository three times to compare source bytes, including
+untracked files. Per-snapshot entry, depth, file-size and total-byte limits
+refuse oversized work. On SSH Workspaces this includes remote filesystem I/O;
+no end-to-end audit latency or remote throughput measurement is claimed.
+
+Execution-log verification and comparison take bounded local snapshots before
+decoding. Default per-log ceilings are 512 MiB raw, 2 GiB expanded, 4 MiB per
+record and two million records. Compact zstd frame windows are inspected before
+decompression and limited to 8 MiB. Observation data, shared compact input-set
+graphs, semantic manifests and detail pages are stored in a private SQLite
+index, not a whole-log Java object graph or the ordinary session database.
+
+The main index, including materialized detail scratch, has a 1 GiB page limit.
+Each connection has a 1 MiB page cache and file-backed temporary storage.
+Canonical manifest/detail scans use covering indexes. This is not an absolute
+disk quota for SQLite's internal visited sets, index-building or sort scratch.
+Source/record limits and a conservative 500-million-step work budget bound
+admitted work; exhausting a limit refuses the operation rather than publishing
+an apparently complete partial comparison.
+
+Filtered counts can scan the index. Action and detail results are independently
+paged: at most 500 rows, 16,384 characters per cell and 1,048,576 characters per
+returned page. The work budget covers later inspection queries too. Parsing,
+comparison and queries run off the EDT and support cancellation. These are
+structural bounds, not large-log throughput or responsiveness measurements.
+
+Raw audit captures persist separately; normal close removes the disposable
+comparison directory, but a crash can leave scratch behind. Two raw snapshot
+files, the private main index and SQLite temporary work can coexist. The
+bounded audit verifier bypasses ordinary auxiliary enrichment; it does not
+change that path's existing release-hardening limitation above. See
+[the user guide](hermeticity.md) and [all named limits](limits.md).
+
 ## Composable Events filtering
 
 The visual filter builder (2026-09-05) runs count and keyset-page predicates in
