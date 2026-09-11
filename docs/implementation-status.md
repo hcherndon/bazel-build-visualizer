@@ -11,6 +11,17 @@ boundary and reviewed local/SSH repeat-build protocol. The approved delivery
 sequence is evidence indexing, offline comparison, then managed audits and UI.
 This contract commit does not enable a new run mode or comparison page.
 
+The private comparison backend is implemented and its 24 scoped regressions pass.
+It snapshots compact/binary execution logs, checks framing and resource limits,
+compares semantic action recipes and file manifests, and exposes shared filters
+and paged, masked results. Findings distinguish output divergence, recipe/input/
+cache-identity drift, supported downstream propagation, unmatched actions, and
+incomplete evidence. Reopening an audit can bind exact snapshots to recorded
+SHA-256 identities. No normal session schema, Query table or archive export gains
+the sensitive comparison index. JSON execution logs, complex runfiles and missing
+platform/digest evidence are refused or explicitly incomplete, never equal by
+default. UI and managed-run integration are still being verified.
+
 The package-local real-Bazel reproducibility regression now passes on 9.2.0:
 four sequential builds expose stable/random output and downstream propagation,
 then show disk-cache masking after clean. Existing workspace convenience links

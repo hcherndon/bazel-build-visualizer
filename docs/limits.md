@@ -242,6 +242,29 @@ capture, session database, build console file or terminal stream.
 |---|---|---:|---|
 | Durable session audit reference | `com.holtherndon.bazelviz.format.session.SessionAuditReference.MAX_REFERENCE_BYTES` | 16384 | Oversized ownership text is refused; an existing unreadable or partial marker keeps the session protected from retention cleanup. |
 
+## Reproducibility comparison
+
+These are refusal limits, not sampling or truncation. Both raw sources remain intact.
+The comparison database and snapshots are private, disposable files. The database
+cap includes materialized manifests and detail pages. SQLite internal temporary
+work is constrained by source and SQL-work limits; this is **not** a strict
+process-wide disk quota. Closing a comparison removes its owned files; a process
+crash can leave them behind.
+
+| Limit | Constant | Default | Behavior |
+|---|---|---:|---|
+| Raw bytes per log | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.DEFAULT_SOURCE_BYTES` | 536870912 | Refuse during bounded snapshot copying. |
+| Expanded bytes per log | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.DEFAULT_EXPANDED_BYTES` | 2147483648 | Stop decoding; publish no partial comparison. |
+| One protobuf record | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.DEFAULT_RECORD_BYTES` | 4194304 | Refuse before allocating the record. |
+| Records per log | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.DEFAULT_RECORDS` | 2000000 | Refuse the comparison. |
+| Main SQLite database | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.DEFAULT_DATABASE_BYTES` | 1073741824 | SQLite page limit stops indexing or detail materialization. |
+| Lifetime SQL work | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.DEFAULT_SQL_STEPS` | 500000000 | Stop after the work budget; each statement also charges 1000 steps to account for short statements. |
+| Requested page rows | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.DEFAULT_PAGE_ROWS` | 500 | Reject larger requests; the UI requests 100 at a time. |
+| One result cell | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.MAX_CELL_CHARACTERS` | 16384 | Refuse oversized text rather than silently shortening evidence. |
+| One result page text | `com.holtherndon.bazelviz.enrich.repro.ComparisonLimits.MAX_PAGE_CHARACTERS` | 1048576 | Refuse the page without publishing a partial page. |
+| Zstd frame window | `com.holtherndon.bazelviz.enrich.repro.ZstdFrameGuard.MAX_WINDOW_BYTES` | 8388608 | Validate every frame before the decoder can allocate its window. |
+| Zstd frames per log | `com.holtherndon.bazelviz.enrich.repro.ZstdFrameGuard.MAX_FRAMES` | 65536 | Refuse excessive concatenated or skippable frames. |
+
 ## Timing
 
 | Limit | Constant | Default |

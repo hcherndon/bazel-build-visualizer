@@ -1,0 +1,15 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "repro",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter:filter",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/repro:repro",
+        "//proto:proto",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:io_airlift_aircompressor",
+        "@maven//:org_xerial_sqlite_jdbc",
+    ],
+    visibility = ["//visibility:public"],
+)
