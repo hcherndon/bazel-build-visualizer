@@ -397,13 +397,15 @@ final class ObservationIndexer {
             ? "A cache hit did not independently execute."
             : !eligible ? "Execution failed or its runner is unavailable." : "";
     db.put(
-        "INSERT INTO spawns(side,id,target,mnemonic,runner,eligible,reason,inputs,tools,incomplete)"
-            + " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO"
+            + " spawns(side,id,target,mnemonic,runner,cache_hit,eligible,reason,inputs,tools,incomplete)"
+            + " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         side,
         id,
         label,
         mnemonic,
         runner,
+        cache,
         eligible,
         reason,
         inputs,

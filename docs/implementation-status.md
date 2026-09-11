@@ -31,7 +31,18 @@ enabled production audit.
 Durable audit retention protection is implemented: `SessionAuditReference`
 creates a bounded owner marker, and catalog cleanup refuses protected sessions
 even after a cleanup plan was made. Focused marker and catalog tests pass.
-The capture integration that creates these references is still in progress.
+The managed coordinator now creates these references, holds the workspace lease
+through both captures and cleanup, records the exact reviewed protocol, and
+verifies A's bounded raw log before cleaning for B. Its real Bazel 9.2.0 test
+passes for a complete pair and cancellation between runs. Source snapshots,
+private-base identity checks, preserved invocation/checksum binding, and actual
+cached/remote-runner checks guard later steps. Normal auxiliary ingestion is
+deferred in these audit captures; the bounded verifier handles their raw logs.
+Unknown SSH termination retains staging and prevents private-base cleanup,
+including a later close through a recovered transport. Restart records expose
+failures and partial runs without authorizing replay or cleanup. The native UI
+integration is awaiting its final broad gate; no Linux/SSH end-to-end audit
+fixture has been run.
 
 **Hermeticity research (2026-09-11).**
 [The feature plan](hermeticity-plan.md) describes a paired repeat-build audit,

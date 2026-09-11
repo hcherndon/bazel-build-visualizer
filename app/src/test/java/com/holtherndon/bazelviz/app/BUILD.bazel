@@ -65,6 +65,8 @@ java_junit5_test(
     jvm_flags = HEADLESS_TEST_JVM_FLAGS,
     runtime_deps = [
         ":tests_lib",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/repro",
+        "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/repro",
     ] + JUNIT_RUNTIME_DEPS,
     test_class = "com.holtherndon.bazelviz.app.LimitsDocTest",
     visibility = ["//visibility:public"],

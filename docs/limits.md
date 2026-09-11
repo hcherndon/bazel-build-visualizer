@@ -241,6 +241,13 @@ capture, session database, build console file or terminal stream.
 | Limit | Constant | Default | Behavior |
 |---|---|---:|---|
 | Durable session audit reference | `com.holtherndon.bazelviz.format.session.SessionAuditReference.MAX_REFERENCE_BYTES` | 16384 | Oversized ownership text is refused; an existing unreadable or partial marker keeps the session protected from retention cleanup. |
+| Audit operation record | `com.holtherndon.bazelviz.capture.repro.AuditJournal.MAX_RECORD_BYTES` | 262144 | Refuse oversized updates and reads; keep the last complete record. |
+| Repository entries per source pass | `com.holtherndon.bazelviz.capture.repro.RepositorySnapshot.MAX_FILES` | 100000 | Includes files and directories; refuse instead of skipping evidence. |
+| Repository depth | `com.holtherndon.bazelviz.capture.repro.RepositorySnapshot.MAX_DEPTH` | 64 | Stop the source check. |
+| One repository file | `com.holtherndon.bazelviz.capture.repro.RepositorySnapshot.MAX_FILE_BYTES` | 16777216 | Refuse oversized source files before the next build. |
+| Source bytes per pass | `com.holtherndon.bazelviz.capture.repro.RepositorySnapshot.MAX_TOTAL_BYTES` | 1073741824 | Stop the source check; the audit performs three passes. |
+| Directory listing page | `com.holtherndon.bazelviz.capture.repro.RepositorySnapshot.DIRECTORY_PAGE_SIZE` | 256 | Fetch more pages; never silently omit entries. |
+| Repository path characters | `com.holtherndon.bazelviz.capture.repro.RepositorySnapshot.MAX_PATH_CHARS` | 8192 | Refuse oversized paths. |
 
 ## Reproducibility comparison
 

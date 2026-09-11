@@ -36,6 +36,9 @@ public final class ExecutionLogComparison implements ReproComparison {
       long spawns,
       String sha256,
       boolean invocationMatched,
+      long cachedSpawns,
+      long remoteSpawns,
+      long unknownRunnerSpawns,
       List<String> coverageNotes) {
     public Verification {
       coverageNotes = List.copyOf(coverageNotes);
@@ -230,6 +233,13 @@ public final class ExecutionLogComparison implements ReproComparison {
             db.number("SELECT count(*) FROM spawns"),
             db.sourceDigest(snapshot),
             matched,
+            db.number(
+                "SELECT count(*) FROM spawns WHERE cache_hit=1 OR instr(runner,'cache hit')>0"),
+            db.number("SELECT count(*) FROM spawns WHERE runner='remote'"),
+            db.number(
+                "SELECT count(*) FROM spawns WHERE runner NOT IN"
+                    + " ('local','darwin-sandbox','linux-sandbox','processwrapper-sandbox','worker','remote','disk"
+                    + " cache hit','remote cache hit')"),
             db.summary().coverageNotes());
       }
     } catch (SQLException e) {
@@ -297,10 +307,10 @@ public final class ExecutionLogComparison implements ReproComparison {
         "CREATE TABLE edges(side INTEGER,parent INTEGER,child INTEGER,PRIMARY"
             + " KEY(side,parent,child)) WITHOUT ROWID");
     sql(
-        "CREATE TABLE spawns(side INTEGER,id INTEGER,target TEXT,mnemonic TEXT,runner TEXT,eligible"
-            + " INTEGER,reason TEXT,inputs INTEGER,tools INTEGER,incomplete INTEGER,recipehash"
-            + " TEXT,inputhash TEXT,outputhash TEXT,matchkey TEXT,output TEXT,PRIMARY KEY(side,id))"
-            + " WITHOUT ROWID");
+        "CREATE TABLE spawns(side INTEGER,id INTEGER,target TEXT,mnemonic TEXT,runner"
+            + " TEXT,cache_hit INTEGER,eligible INTEGER,reason TEXT,inputs INTEGER,tools"
+            + " INTEGER,incomplete INTEGER,recipehash TEXT,inputhash TEXT,outputhash TEXT,matchkey"
+            + " TEXT,output TEXT,PRIMARY KEY(side,id)) WITHOUT ROWID");
     sql("CREATE TABLE recipe(side INTEGER,spawn INTEGER,section TEXT,field TEXT,value TEXT)");
     sql("CREATE INDEX recipe_spawn ON recipe(side,spawn,section,field,value)");
     sql("CREATE TABLE outputs(side INTEGER,spawn INTEGER,item INTEGER,path TEXT)");

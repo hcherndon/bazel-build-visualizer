@@ -229,7 +229,7 @@ public final class InstrumentationPlanner {
     addExecutionLog(request, capabilities, added, outputs, availability, warnings, userFlags);
     addProfile(request, capabilities, added, outputs, availability, warnings, userFlags);
     addStarlarkCpuProfile(request, capabilities, added, outputs, availability, warnings, userFlags);
-    recordAuxiliaryQueryAvailability(availability);
+    recordAuxiliaryQueryAvailability(request, availability);
     List<AuxiliaryCommandPlan> auxiliaryCommands = auxiliaryCommands(request);
 
     // --- destinations ----------------------------------------------------
@@ -269,17 +269,24 @@ public final class InstrumentationPlanner {
         planner.aquery(request.original(), raw.resolve(AuxiliaryQueryPlanner.AQUERY_OUTPUT_FILE));
     AuxiliaryQueryPlanner.Plan cquery =
         planner.cquery(request.original(), raw.resolve(AuxiliaryQueryPlanner.CQUERY_OUTPUT_FILE));
-    return List.of(
-        describeAuxiliary(
-            aquery,
-            "Captures the declared action graph beneath the exact top-level"
-                + " targets Bazel reports for this build.",
-            DataSource.AQUERY),
-        describeAuxiliary(
-            cquery,
-            "Captures every configured target beneath the exact top-level"
-                + " targets Bazel reports for this build.",
-            DataSource.CQUERY));
+    List<AuxiliaryCommandPlan> result = new ArrayList<>();
+    if (!request.vetoed().contains(Capability.AQUERY_PROTO_OUTPUT)) {
+      result.add(
+          describeAuxiliary(
+              aquery,
+              "Captures the declared action graph beneath the exact top-level"
+                  + " targets Bazel reports for this build.",
+              DataSource.AQUERY));
+    }
+    if (!request.vetoed().contains(Capability.CQUERY_PROTO_OUTPUT)) {
+      result.add(
+          describeAuxiliary(
+              cquery,
+              "Captures every configured target beneath the exact top-level"
+                  + " targets Bazel reports for this build.",
+              DataSource.CQUERY));
+    }
+    return List.copyOf(result);
   }
 
   private static AuxiliaryCommandPlan describeAuxiliary(
@@ -600,6 +607,16 @@ public final class InstrumentationPlanner {
     if (!request.preset().requestedCapabilities().contains(Capability.EXECUTION_LOG_COMPACT)) {
       return;
     }
+    if (request.vetoed().contains(Capability.EXECUTION_LOG_COMPACT)
+        || request.vetoed().contains(Capability.EXECUTION_LOG_BINARY)) {
+      availability.put(
+          DataSource.EXECUTION_LOG,
+          new SourceAvailability.Entry(
+              SourceAvailability.Availability.DECLINED,
+              "execution-log capture was explicitly declined",
+              Optional.empty()));
+      return;
+    }
 
     Capability chosen = Capability.EXECUTION_LOG_COMPACT;
     String fileName = EXECUTION_LOG_FILE;
@@ -717,6 +734,16 @@ public final class InstrumentationPlanner {
       List<String> warnings,
       UserFlags userFlags) {
     if (!request.preset().requestedCapabilities().contains(Capability.JSON_TRACE_PROFILE)) {
+      return;
+    }
+    if (request.vetoed().contains(Capability.JSON_TRACE_PROFILE)
+        || request.vetoed().contains(Capability.PROFILE_PATH)) {
+      availability.put(
+          DataSource.PROFILE,
+          new SourceAvailability.Entry(
+              SourceAvailability.Availability.DECLINED,
+              "trace-profile capture was explicitly declined",
+              Optional.empty()));
       return;
     }
     CapabilityStatus status = capabilities.status(Capability.PROFILE_PATH);
@@ -901,44 +928,30 @@ public final class InstrumentationPlanner {
             Optional.of("--" + flagName)));
   }
 
-  /**
-   * Records that the action graph and the configured-target graph will be captured.
-   *
-   * <p>Unlike every other entry in this class, this one is not gated on {@link
-   * CapturePreset#requestedCapabilities()}. {@code CaptureCoordinator.queryGraphsQuietly}
-   * (capture-bes) runs {@code bazel aquery} and {@code bazel cquery} from the {@code finally} block
-   * of every live capture, unconditionally — it never consults this availability map and never
-   * checks which capabilities the chosen preset named. Gating this entry on {@link
-   * Capability#AQUERY_PROTO_OUTPUT} / {@link Capability#CQUERY_PROTO_OUTPUT} the way the old {@code
-   * reportUnimplemented} gated its (false) UNAVAILABLE claim would leave the map silent —
-   * defaulting to UNKNOWN — for every preset that does not name them, even though both queries run
-   * anyway. Plan rule 11 forbids exactly that: a source this application knows it will capture must
-   * not be left unrecorded. So this runs for every plan, and the verdict is {@link
-   * SourceAvailability.Availability#PLANNED}, the same verdict {@link #addProfile} and {@link
-   * #addExecutionLog} give a source that is captured after the build rather than during it.
-   *
-   * <p>This used to be {@code reportUnimplemented}, which put both sources in as UNAVAILABLE with
-   * the reason "this version of the application does not capture it yet." That was true when it was
-   * written (Phase 2, commit d8dcf89) and false from the moment the auxiliary-query capture landed
-   * (Phase 5, commit 99610e1) onward: nobody removed the stub when the feature it described
-   * shipped, so the launch dialog went on warning users away from a graph the application was
-   * already capturing. See docs/implementation-status.md for the fix.
-   */
+  /** Graph queries remain enabled for every preset unless explicitly declined in review. */
   private void recordAuxiliaryQueryAvailability(
-      Map<DataSource, SourceAvailability.Entry> availability) {
+      PlanRequest request, Map<DataSource, SourceAvailability.Entry> availability) {
     availability.put(
         DataSource.AQUERY,
         new SourceAvailability.Entry(
-            SourceAvailability.Availability.PLANNED,
-            "captured after the build, by running bazel aquery over the exact top-level"
-                + " targets the build reports",
+            request.vetoed().contains(Capability.AQUERY_PROTO_OUTPUT)
+                ? SourceAvailability.Availability.DECLINED
+                : SourceAvailability.Availability.PLANNED,
+            request.vetoed().contains(Capability.AQUERY_PROTO_OUTPUT)
+                ? "aquery was explicitly declined; no auxiliary command will run"
+                : "captured after the build, by running bazel aquery over the exact top-level"
+                    + " targets the build reports",
             Optional.empty()));
     availability.put(
         DataSource.CQUERY,
         new SourceAvailability.Entry(
-            SourceAvailability.Availability.PLANNED,
-            "captured after the build, by running bazel cquery over the transitive"
-                + " configured-target closure",
+            request.vetoed().contains(Capability.CQUERY_PROTO_OUTPUT)
+                ? SourceAvailability.Availability.DECLINED
+                : SourceAvailability.Availability.PLANNED,
+            request.vetoed().contains(Capability.CQUERY_PROTO_OUTPUT)
+                ? "cquery was explicitly declined; no auxiliary command will run"
+                : "captured after the build, by running bazel cquery over the transitive"
+                    + " configured-target closure",
             Optional.empty()));
   }
 

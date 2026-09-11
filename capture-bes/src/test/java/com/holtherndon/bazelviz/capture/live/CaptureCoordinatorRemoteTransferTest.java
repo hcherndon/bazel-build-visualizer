@@ -14,15 +14,20 @@ import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlanner;
 import com.holtherndon.bazelviz.runner.plan.PlanConflict;
 import com.holtherndon.bazelviz.runner.plan.PlanRequest;
+import com.holtherndon.bazelviz.runner.proc.CancellationMode;
+import com.holtherndon.bazelviz.runner.proc.ProcessOutcome;
+import com.holtherndon.bazelviz.runner.ssh.SshTarget;
 import com.holtherndon.bazelviz.storage.SessionDatabase;
 import com.holtherndon.bazelviz.storage.schema.MigrationRunner;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,6 +38,89 @@ final class CaptureCoordinatorRemoteTransferTest {
   private static final Path REMOTE_WORKING_DIRECTORY = Path.of("/srv/repository");
   private static final Path REMOTE_STAGING_DIRECTORY = Path.of("/tmp/bbv-capture-123");
   private static final String LOCAL_BES = "grpc://127.0.0.1:43123";
+
+  @Test
+  void remoteFilesAreUntouchableAfterDispatchUntilAKnownRemoteExit() {
+    var termination = new CaptureCoordinator.RemoteTermination();
+    assertThat(termination.isKnown()).isTrue(); // Preparation can be cleaned before dispatch.
+    termination.dispatched();
+    assertThat(termination.isKnown()).isFalse(); // Includes start/await throwing.
+    termination.completed(ProcessOutcome.exited(255, Duration.ZERO));
+    assertThat(termination.isKnown()).isFalse(); // Reconnecting does not change this state.
+    var unknown =
+        CaptureCoordinator.RemoteTermination.remoteOutcome(
+            ProcessOutcome.exited(255, Duration.ZERO));
+    assertThat(unknown.exitCode()).hasValue(255);
+    assertThat(unknown.failure())
+        .hasValueSatisfying(failure -> assertThat(failure).hasMessageContaining("unknown"));
+    assertThat(BuildOutcome.classify(Optional.of(unknown), Optional.empty()).isKnown()).isFalse();
+    termination.completed(ProcessOutcome.failed(new IllegalStateException("lost"), Duration.ZERO));
+    assertThat(termination.isKnown()).isFalse();
+    termination.completed(null);
+    assertThat(termination.isKnown()).isFalse();
+  }
+
+  @Test
+  void cancellingTheLocalSshClientDoesNotAuthorizeRemoteCleanup() {
+    var termination = new CaptureCoordinator.RemoteTermination();
+    termination.dispatched();
+    termination.completed(
+        ProcessOutcome.cancelled(OptionalInt.of(0), CancellationMode.FORCE_KILL, Duration.ZERO));
+    assertThat(termination.isKnown()).isFalse();
+  }
+
+  @Test
+  void knownSuccessfulAndFailedRemoteBuildsCanPreserveTheirFiles() {
+    for (int status : List.of(0, 1, 2, 8, 37)) {
+      var termination = new CaptureCoordinator.RemoteTermination();
+      termination.dispatched();
+      termination.completed(ProcessOutcome.exited(status, Duration.ZERO));
+      assertThat(termination.isKnown()).as("exit %s", status).isTrue();
+    }
+  }
+
+  @Test
+  void unknownTerminationRetainsStagingDuringFinalizationAndLaterClose(@TempDir Path sessions)
+      throws Exception {
+    CaptureRequest request =
+        CaptureRequest.remote(
+            sessions,
+            "test",
+            "bazel",
+            "/repository",
+            List.of("build", "//:target"),
+            SshTarget.of("unused-fixture"));
+    CaptureCoordinator coordinator = new CaptureCoordinator(request);
+    // Deliberately use the normal local executor on an empty, test-owned staging directory.
+    // If either guard regresses, the actual cleanup path removes it and this assertion fails.
+    Path staging = Files.createTempDirectory(Path.of("/tmp"), "bbv-capture.");
+    try {
+      var stagingField = CaptureCoordinator.class.getDeclaredField("remoteStagingDirectory");
+      stagingField.setAccessible(true);
+      stagingField.set(coordinator, staging.toString());
+      var terminationField = CaptureCoordinator.class.getDeclaredField("remoteTermination");
+      terminationField.setAccessible(true);
+      var termination = (CaptureCoordinator.RemoteTermination) terminationField.get(coordinator);
+      termination.dispatched();
+      termination.completed(ProcessOutcome.exited(255, Duration.ZERO));
+      var cleanup =
+          CaptureCoordinator.class.getDeclaredMethod(
+              "cleanupRemoteStagingQuietly", InstrumentationPlan.class, List.class, Set.class);
+      cleanup.setAccessible(true);
+      List<String> warnings = new ArrayList<>();
+      cleanup.invoke(coordinator, null, warnings, Set.of());
+      assertThat(warnings)
+          .singleElement()
+          .asString()
+          .contains("retained", "unknown", staging.toString());
+      assertThat(staging).isDirectory();
+      coordinator.close();
+      assertThat(staging).isDirectory();
+    } finally {
+      coordinator.close();
+      Files.deleteIfExists(staging);
+    }
+  }
 
   @Test
   @DisplayName("a relative user-owned BEP is copied into stable managed storage")

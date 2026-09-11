@@ -1,0 +1,49 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "REAL_BAZEL_ENV", "REAL_BAZEL_TAGS", "TEST_JVM_FLAGS")
+
+test_suite(
+    name = "tests",
+    tests = [":AuditSafetyTest", ":ManagedAuditBazelTest"],
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "AuditSafetyTest",
+    srcs = ["AuditSafetyTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/repro",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/id",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/session",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/ssh",
+    ],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    jvm_flags = TEST_JVM_FLAGS,
+    test_class = "com.holtherndon.bazelviz.capture.repro.AuditSafetyTest",
+)
+
+java_junit5_test(
+    name = "ManagedAuditBazelTest",
+    srcs = ["ManagedAuditBazelTest.java"],
+    deps = JUNIT_DEPS + [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/repro",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/repro",
+        "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/repro",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/repro",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+        "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel",
+    ],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    env_inherit = REAL_BAZEL_ENV,
+    tags = REAL_BAZEL_TAGS,
+    jvm_flags = TEST_JVM_FLAGS,
+    test_class = "com.holtherndon.bazelviz.capture.repro.ManagedAuditBazelTest",
+)

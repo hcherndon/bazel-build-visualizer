@@ -1,0 +1,21 @@
+load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
+load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
+
+test_suite(
+    name = "tests",
+    tests = [":ReproducibilityPlanTest"],
+    visibility = ["//visibility:public"],
+)
+
+java_junit5_test(
+    name = "ReproducibilityPlanTest",
+    srcs = ["ReproducibilityPlanTest.java"],
+    deps = JUNIT_DEPS + [
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/repro",
+    ],
+    runtime_deps = JUNIT_RUNTIME_DEPS,
+    jvm_flags = TEST_JVM_FLAGS,
+    test_class = "com.holtherndon.bazelviz.runner.repro.ReproducibilityPlanTest",
+)

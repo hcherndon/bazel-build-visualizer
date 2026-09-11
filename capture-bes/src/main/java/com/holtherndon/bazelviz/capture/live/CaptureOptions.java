@@ -29,6 +29,8 @@ import java.time.Duration;
  * @param journalFlushInterval how often staged journal bytes are handed to the operating system.
  *     Not an fsync (plan 9.3 balanced durability): it bounds what a crash of this process can lose
  *     to the frames written since the last flush
+ * @param deferAuxiliaryProcessing preserve raw auxiliary files without ordinary post-build imports
+ *     or graph queries; managed audits validate execution logs with their bounded importer instead
  */
 public record CaptureOptions(
     int receiveQueueCapacity,
@@ -38,7 +40,30 @@ public record CaptureOptions(
     long checkpointEveryFrames,
     Duration progressInterval,
     int maxMessageBytes,
-    Duration journalFlushInterval) {
+    Duration journalFlushInterval,
+    boolean deferAuxiliaryProcessing) {
+
+  /** Ordinary captures retain their existing post-build enrichment behavior. */
+  public CaptureOptions(
+      int receiveQueueCapacity,
+      int normalizeQueueCapacity,
+      int batchSize,
+      Duration flushInterval,
+      long checkpointEveryFrames,
+      Duration progressInterval,
+      int maxMessageBytes,
+      Duration journalFlushInterval) {
+    this(
+        receiveQueueCapacity,
+        normalizeQueueCapacity,
+        batchSize,
+        flushInterval,
+        checkpointEveryFrames,
+        progressInterval,
+        maxMessageBytes,
+        journalFlushInterval,
+        false);
+  }
 
   public CaptureOptions {
     requirePositive(receiveQueueCapacity, "receiveQueueCapacity");
@@ -77,7 +102,8 @@ public record CaptureOptions(
         checkpointEveryFrames,
         progressInterval,
         maxMessageBytes,
-        journalFlushInterval);
+        journalFlushInterval,
+        deferAuxiliaryProcessing);
   }
 
   public CaptureOptions withNormalizeQueueCapacity(int value) {
@@ -89,7 +115,8 @@ public record CaptureOptions(
         checkpointEveryFrames,
         progressInterval,
         maxMessageBytes,
-        journalFlushInterval);
+        journalFlushInterval,
+        deferAuxiliaryProcessing);
   }
 
   public CaptureOptions withBatchSize(int value) {
@@ -101,7 +128,22 @@ public record CaptureOptions(
         checkpointEveryFrames,
         progressInterval,
         maxMessageBytes,
-        journalFlushInterval);
+        journalFlushInterval,
+        deferAuxiliaryProcessing);
+  }
+
+  /** Preserve auxiliary raw files, but let the bounded audit importer inspect them separately. */
+  public CaptureOptions withDeferredAuxiliaryProcessing() {
+    return new CaptureOptions(
+        receiveQueueCapacity,
+        normalizeQueueCapacity,
+        batchSize,
+        flushInterval,
+        checkpointEveryFrames,
+        progressInterval,
+        maxMessageBytes,
+        journalFlushInterval,
+        true);
   }
 
   private static void requirePositive(int value, String name) {

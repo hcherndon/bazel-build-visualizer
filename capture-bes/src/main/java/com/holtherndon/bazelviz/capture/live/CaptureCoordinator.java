@@ -169,7 +169,42 @@ public final class CaptureCoordinator implements AutoCloseable {
   private boolean remoteExecutionDetached;
   private SshReverseForward reverseForward;
   private String remoteStagingDirectory;
+  private final RemoteTermination remoteTermination = new RemoteTermination();
   private boolean closed;
+
+  /** A local SSH client ending does not prove that its remote Bazel process stopped. */
+  static final class RemoteTermination {
+    private volatile boolean known = true;
+
+    void dispatched() {
+      known = false;
+    }
+
+    void completed(ProcessOutcome outcome) {
+      known =
+          outcome != null
+              && !outcome.wasCancelled()
+              && outcome.failure().isEmpty()
+              && outcome.exitCode().isPresent()
+              && outcome.exitCode().orElse(-1) != 255;
+    }
+
+    boolean isKnown() {
+      return known;
+    }
+
+    static ProcessOutcome remoteOutcome(ProcessOutcome outcome) {
+      if (outcome.exitCode().orElse(-1) != 255 || outcome.failure().isPresent()) {
+        return outcome;
+      }
+      return new ProcessOutcome(
+          outcome.exitCode(),
+          outcome.terminatedBy(),
+          outcome.duration(),
+          Optional.of(
+              new IOException("SSH exited 255; remote Bazel termination and result are unknown")));
+    }
+  }
 
   public CaptureCoordinator(CaptureRequest request) {
     this(
@@ -567,6 +602,10 @@ public final class CaptureCoordinator implements AutoCloseable {
             ProcessOutcome.cancelled(OptionalInt.empty(), requestedBeforeLaunch, Duration.ZERO);
       } else {
         LaunchRequest launch = LaunchRequest.of(plan.effective(), console);
+        if (request.isRemote()) {
+          // Mark before dispatch: a failed SSH launch can have started the remote command.
+          remoteTermination.dispatched();
+        }
         BazelLauncher.BazelProcess process =
             request.isRemote()
                 ? BazelLauncher.start(launch, commandExecutor, true)
@@ -584,6 +623,14 @@ public final class CaptureCoordinator implements AutoCloseable {
           applyPendingCancel();
         }
         outcome = process.await();
+        if (request.isRemote()) {
+          outcome = RemoteTermination.remoteOutcome(outcome);
+          remoteTermination.completed(outcome);
+          if (!remoteTermination.isKnown()) {
+            pipeline.markTransportFailure(
+                new IOException("Remote Bazel termination is unknown; the capture is incomplete"));
+          }
+        }
         log.info(
             "capture {} Bazel process ended: exit={}, cancelled={},"
                 + " failure={}, duration={} ms",
@@ -600,7 +647,8 @@ public final class CaptureCoordinator implements AutoCloseable {
           warnings.add(detail);
           pipeline.markTransportFailure(new IllegalStateException(detail));
         }
-        // No client process remains and quiescence has either been observed or timed out. Stop the
+        // No local client process remains and quiescence has either been observed or timed out.
+        // Stop the
         // listener while the sink is still attached so every live connection records its real
         // terminal state before the pipeline is finalized.
         closeBesServer(pipeline, warnings);
@@ -658,6 +706,10 @@ public final class CaptureCoordinator implements AutoCloseable {
       // the same step, so a stop arriving during finalization signals
       // nothing rather than racing the reap.
       BazelLauncher.BazelProcess launched = running.getAndSet(null);
+      if (request.isRemote() && !remoteTermination.isKnown() && pipeline != null) {
+        pipeline.markTransportFailure(
+            new IOException("Remote Bazel termination is unknown; the capture is incomplete"));
+      }
       reportEscalation(launched, warnings);
       reapIfStillRunning(launched, warnings);
       // An interrupt or launch failure can bypass the normal post-process copy. Recover
@@ -704,8 +756,18 @@ public final class CaptureCoordinator implements AutoCloseable {
       // After the indexes, because correlation joins actions by their
       // primary output. Before the database closes, because that is the
       // connection the imports write through.
-      enrichQuietly(database, executedPlan, layout, warnings);
-      queryGraphsQuietly(database, executedPlan, layout, warnings);
+      if (request.isRemote() && !remoteTermination.isKnown()) {
+        warnings.add(
+            "Remote Bazel termination is unknown. Auxiliary transfers and queries were skipped;"
+                + " reconnecting does not prove that the original command stopped.");
+      } else if (request.options().deferAuxiliaryProcessing()) {
+        warnings.add(
+            "Auxiliary raw files were preserved without normal enrichment or graph queries;"
+                + " the reproducibility audit validates execution logs with its bounded importer.");
+      } else {
+        enrichQuietly(database, executedPlan, layout, warnings);
+        queryGraphsQuietly(database, executedPlan, layout, warnings);
+      }
       cleanupRemoteStagingQuietly(executedPlan, warnings, remoteOutputsToPreserve);
       closeQuietly(streams, "stream registry", warnings);
       closeQuietly(database, "session database", warnings);
@@ -1034,6 +1096,15 @@ public final class CaptureCoordinator implements AutoCloseable {
     if (!request.isRemote() || staging == null || commandExecutor == null) {
       return;
     }
+    if (!remoteTermination.isKnown()) {
+      warnings.add(
+          "The private SSH capture staging directory was retained at "
+              + staging
+              + " because remote Bazel termination is unknown. No remote files were removed;"
+              + " verify that the command stopped before recovering this evidence.");
+      log.warn("retaining SSH staging {} because remote Bazel termination is unknown", staging);
+      return;
+    }
     if (!isOwnedRemoteStaging(staging)) {
       warnings.add("refused to clean an invalid SSH staging path: " + staging);
       return;
@@ -1224,6 +1295,14 @@ public final class CaptureCoordinator implements AutoCloseable {
       InstrumentationPlan plan, ManagedSessionLayout layout, List<String> warnings) {
     ExecutionFileSystem files = remoteFileSystem;
     Set<String> appOwnedOutputs = appOwnedRemoteOutputs(plan);
+    if (!remoteTermination.isKnown()) {
+      warnings.add(
+          "Remote capture files were not read because remote Bazel termination is unknown;"
+              + " they may still be changing in "
+              + remoteStagingDirectory
+              + ".");
+      return appOwnedOutputs;
+    }
     if (files == null) {
       warnings.add(
           "remote capture files could not be copied because the SSH filesystem"

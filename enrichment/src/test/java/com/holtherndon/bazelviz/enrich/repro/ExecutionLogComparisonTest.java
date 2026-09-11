@@ -540,6 +540,21 @@ class ExecutionLogComparisonTest {
   }
 
   @Test
+  void verificationReportsActualCacheRemoteAndUnknownRunnerEvidence() throws Exception {
+    Path log =
+        binary(
+            "runners",
+            spawn("cached", "x").setCacheHit(true).clearPlatform(),
+            spawn("remote", "x").setRunner("remote"),
+            spawn("unknown", "x").setRunner("custom"),
+            spawn("local", "x").setRunner("linux-sandbox"));
+    var verification = ExecutionLogComparison.verify(log, temp.resolve("scratch"), "", () -> false);
+    assertEquals(1, verification.cachedSpawns());
+    assertEquals(1, verification.remoteSpawns());
+    assertEquals(1, verification.unknownRunnerSpawns());
+  }
+
+  @Test
   void zstdPreflightRejectsTruncatedBlocksAndFrameCountOverflow() throws Exception {
     Path truncated = temp.resolve("truncated");
     Files.write(truncated, new byte[] {0x28, (byte) 0xb5, 0x2f, (byte) 0xfd, 0, 0, 81, 0, 0, 1, 2});

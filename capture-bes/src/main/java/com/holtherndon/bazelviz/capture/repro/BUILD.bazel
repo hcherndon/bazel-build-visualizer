@@ -1,0 +1,23 @@
+load("@rules_java//java:defs.bzl", "java_library")
+
+java_library(
+    name = "repro",
+    srcs = glob(["*.java"]),
+    deps = [
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/bes",
+        "//capture-bes/src/main/java/com/holtherndon/bazelviz/capture/live",
+        "//core-model/src/main/java/com/holtherndon/bazelviz/core/source",
+        "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/repro",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/files",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/repro",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/workspace",
+        "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
+    ],
+    visibility = ["//visibility:public"],
+)

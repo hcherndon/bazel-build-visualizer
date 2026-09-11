@@ -2,6 +2,12 @@ load("@contrib_rules_jvm//java:defs.bzl", "java_junit5_test")
 load("@rules_java//java:defs.bzl", "java_library")
 load("//tools:java_test_settings.bzl", "JUNIT_DEPS", "JUNIT_RUNTIME_DEPS", "TEST_JVM_FLAGS")
 
+test_suite(
+    name = "tests",
+    tests = [":ExecutionLogComparisonTest"],
+    visibility = ["//visibility:public"],
+)
+
 java_library(
     name = "tests_lib",
     srcs = ["ExecutionLogComparisonTest.java"],

@@ -16,6 +16,7 @@ test_suite(
     tests = [
         "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/bes:tests",
         "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/live:tests",
+        "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/repro:tests",
         "//capture-bes/src/test/java/com/holtherndon/bazelviz/capture/reprofixture:RealBazelReproducibilityTest",
     ],
 )

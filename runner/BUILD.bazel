@@ -27,6 +27,7 @@ test_suite(
         "//runner/src/test/java/com/holtherndon/bazelviz/runner/files:tests",
         "//runner/src/test/java/com/holtherndon/bazelviz/runner/launch:tests",
         "//runner/src/test/java/com/holtherndon/bazelviz/runner/plan:tests",
+        "//runner/src/test/java/com/holtherndon/bazelviz/runner/repro:tests",
         "//runner/src/test/java/com/holtherndon/bazelviz/runner/runtime:tests",
         "//runner/src/test/java/com/holtherndon/bazelviz/runner/ssh:tests",
     ],

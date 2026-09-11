@@ -30,6 +30,34 @@ class InstrumentationPlannerTest {
   private final InstrumentationPlanner planner = new InstrumentationPlanner();
 
   @Test
+  void explicitlyDeclinedAuxiliarySourcesDoNotRunOrRemainPlanned(@TempDir Path raw) {
+    var request =
+        PlanRequest.initial(
+                parse("build", "//..."),
+                fullCapabilities(),
+                CapturePreset.defaultPreset(),
+                raw,
+                Optional.of(ENDPOINT))
+            .vetoing(Capability.AQUERY_PROTO_OUTPUT)
+            .vetoing(Capability.CQUERY_PROTO_OUTPUT)
+            .vetoing(Capability.EXECUTION_LOG_COMPACT)
+            .vetoing(Capability.PROFILE_PATH);
+    var plan = planner.plan(request);
+    assertThat(plan.auxiliaryCommands()).isEmpty();
+    assertThat(plan.expectedOutputs())
+        .noneMatch(
+            path ->
+                path.getFileName().toString().startsWith("execution-log")
+                    || path.getFileName().toString().equals(InstrumentationPlanner.PROFILE_FILE));
+    for (DataSource source :
+        List.of(
+            DataSource.AQUERY, DataSource.CQUERY, DataSource.EXECUTION_LOG, DataSource.PROFILE)) {
+      assertThat(plan.sourceAvailability().entry(source).availability())
+          .isEqualTo(SourceAvailability.Availability.DECLINED);
+    }
+  }
+
+  @Test
   @DisplayName("a plain build gets the backend and action publication, and can launch")
   void plainBuild(@TempDir Path raw) {
     InstrumentationPlan plan =

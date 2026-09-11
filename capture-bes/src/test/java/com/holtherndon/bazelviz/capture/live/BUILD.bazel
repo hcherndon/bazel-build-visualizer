@@ -102,6 +102,8 @@ java_junit5_test(
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/command:command",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/files:files",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/plan:plan",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc:proc",
+        "//runner/src/main/java/com/holtherndon/bazelviz/runner/ssh:ssh",
         "//session-format/src/main/java/com/holtherndon/bazelviz/format/session:session",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/schema:schema",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage:storage",

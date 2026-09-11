@@ -21,6 +21,7 @@ test_suite(
         "//enrichment/src/test/java/com/holtherndon/bazelviz/enrich/fs:tests",
         "//enrichment/src/test/java/com/holtherndon/bazelviz/enrich/graph:tests",
         "//enrichment/src/test/java/com/holtherndon/bazelviz/enrich/profile:tests",
+        "//enrichment/src/test/java/com/holtherndon/bazelviz/enrich/repro:tests",
         "//enrichment/src/test/java/com/holtherndon/bazelviz/enrich/starlark:tests",
     ],
 )
