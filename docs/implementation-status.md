@@ -17,6 +17,11 @@ new instrumentation preset or a change to the controlled protocol below.
 The inline executable field now takes the row's flexible space, while Build mode
 keeps its readable width; it no longer collapses at narrow window sizes. Both
 normal and diagnostic modes were visually checked at 740–1200px Console widths.
+The final 2026-09-15 gate passed: `bazel build //... --jobs=2` covered 594 targets;
+`bazel test //... --test_tag_filters=-bazel-sweep --jobs=2 --local_test_jobs=2`
+passed all 360 test targets (314 cached). Direct workflow regressions cover
+automatic comparison, exact A/B run links, partial captures and checksum refusal;
+launcher regressions cover transient diagnostic selection and asynchronous settings.
 
 **Build reproducibility checks (2026-09-11).** **Hermeticity** has Summary,
 Action differences, and Coverage & runs tabs. The initial managed protocol requires
