@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.ui.capture.LauncherStateStore.ExecutionHost;
+import com.holtherndon.bazelviz.ui.theme.AppTheme;
 import com.holtherndon.bazelviz.ui.theme.PageToolbar;
+import com.holtherndon.bazelviz.ui.theme.Themes;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
@@ -164,6 +166,61 @@ class LauncherPanelTest {
     assertThat(form.getConstraints(namedComponent(panel, "launcher.optionsRow")).gridx)
         .isEqualTo(1);
     assertThat(form.getConstraints(panel.commandFieldForTest()).gridx).isEqualTo(1);
+  }
+
+  @Test
+  void narrowConsoleKeepsExecutableAndBothBuildModesReadable() throws Exception {
+    SwingUtilities.invokeAndWait(
+        () -> {
+          AppTheme previous = Themes.current();
+          Themes.installDark();
+          LauncherPanel panel = new LauncherPanel(() -> {}, () -> {});
+          try {
+            panel.useManagedWorkspace(
+                "Aibox", ExecutionHost.SSH, "/home/aibox/bazel", "bazelisk", "aibox", "");
+            PageToolbar toolbar = new PageToolbar("Console");
+            toolbar.setWorkspaceName("Aibox");
+            panel.installPageToolbar(toolbar);
+            toolbar.setControls(panel);
+            JButton run = (JButton) namedComponent(panel, "launcher.run");
+            for (int width : List.of(740, 760, 800, 1200)) {
+              for (LaunchMode mode :
+                  List.of(LaunchMode.PERFORMANCE_DIAGNOSTICS, LaunchMode.HERMETICITY_DIAGNOSTIC)) {
+                panel.presetChoiceForTest().setSelectedItem(mode);
+                toolbar.setSize(width, 240);
+                layoutRecursively(toolbar);
+                toolbar.setSize(width, toolbar.getPreferredSize().height);
+                layoutRecursively(toolbar);
+                var executable = panel.bazelFieldForTest();
+                int usableWidth =
+                    executable
+                            .getFontMetrics(executable.getFont())
+                            .stringWidth("/usr/local/bin/bazelisk")
+                        + executable.getInsets().left
+                        + executable.getInsets().right;
+                assertThat(executable.getWidth())
+                    .as("executable at %s px in %s", width, mode)
+                    .isGreaterThanOrEqualTo(usableWidth);
+                assertThat(panel.presetChoiceForTest().getWidth())
+                    .isGreaterThanOrEqualTo(panel.presetChoiceForTest().getPreferredSize().width);
+                assertThat(SwingUtilities.convertPoint(executable, 0, 0, panel).x)
+                    .isEqualTo(panel.commandFieldForTest().getX());
+                assertThat(
+                        SwingUtilities.convertPoint(
+                                panel.presetChoiceForTest(),
+                                panel.presetChoiceForTest().getWidth(),
+                                0,
+                                toolbar)
+                            .x)
+                    .isLessThanOrEqualTo(width);
+                assertThat(run.getWidth()).isGreaterThanOrEqualTo(run.getPreferredSize().width);
+              }
+            }
+          } finally {
+            panel.closeAsync();
+            Themes.install(previous);
+          }
+        });
   }
 
   @Test
@@ -698,6 +755,15 @@ class LauncherPanelTest {
       }
     }
     return result;
+  }
+
+  private static void layoutRecursively(Container root) {
+    root.doLayout();
+    for (Component child : root.getComponents()) {
+      if (child.isVisible() && child instanceof Container nested) {
+        layoutRecursively(nested);
+      }
+    }
   }
 
   private static List<LaunchMode> items(JComboBox<LaunchMode> choices) {

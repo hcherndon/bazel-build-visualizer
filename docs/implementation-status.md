@@ -14,6 +14,9 @@ linked automatically; manual source selection is only needed for offline logs.
 Existing normal capture preferences are preserved, but diagnostic mode does not
 silently return after reopening a Workspace. This is a UI workflow choice, not a
 new instrumentation preset or a change to the controlled protocol below.
+The inline executable field now takes the row's flexible space, while Build mode
+keeps its readable width; it no longer collapses at narrow window sizes. Both
+normal and diagnostic modes were visually checked at 740–1200px Console widths.
 
 **Build reproducibility checks (2026-09-11).** **Hermeticity** has Summary,
 Action differences, and Coverage & runs tabs. The initial managed protocol requires

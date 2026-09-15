@@ -354,9 +354,9 @@ public final class LauncherPanel extends JPanel {
 
     JPanel launchOptions = new JPanel(new GridBagLayout());
     launchOptions.setName("launcher.optionsRow");
-    launchOptions.add(bazelExecutable, inlineConstraints(0, 0, 0));
+    launchOptions.add(bazelExecutable, inlineConstraints(0, 0, 1));
     launchOptions.add(detailLabel, inlineConstraints(1, 8, 0));
-    launchOptions.add(captureDetail, inlineConstraints(2, 8, 1));
+    launchOptions.add(captureDetail, inlineConstraints(2, 8, 0));
     add(bazelLabel, constraints(0, 2, 0, 0));
     add(launchOptions, constraints(1, 2, 1, 2));
 
@@ -390,6 +390,7 @@ public final class LauncherPanel extends JPanel {
     GridBagConstraints constraints = new GridBagConstraints();
     constraints.gridx = x;
     constraints.weightx = weightX;
+    constraints.fill = weightX > 0 ? GridBagConstraints.HORIZONTAL : GridBagConstraints.NONE;
     constraints.anchor = GridBagConstraints.WEST;
     constraints.insets = new Insets(0, leftInset, 0, 0);
     return constraints;
