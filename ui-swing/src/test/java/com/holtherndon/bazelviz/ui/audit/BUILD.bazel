@@ -16,6 +16,7 @@ java_library(
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/repro",
         "//core-model/src/main/java/com/holtherndon/bazelviz/core/filter",
         "//enrichment/src/main/java/com/holtherndon/bazelviz/enrich/repro",
+        "//proto:proto",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/command",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec",
@@ -25,8 +26,11 @@ java_library(
         "//session-format/src/main/java/com/holtherndon/bazelviz/format/session",
         "//storage-sqlite/src/main/java/com/holtherndon/bazelviz/storage/catalog",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/audit",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/capture",
+        "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/repro",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/session",
         "//ui-swing/src/main/java/com/holtherndon/bazelviz/ui/theme",
+        "@maven//:com_google_protobuf_protobuf_java",
     ],
 )
 
@@ -45,6 +49,13 @@ java_junit5_test(
 )
 
 java_junit5_test(
+    name = "AuditWorkflowTest",
+    test_class = "com.holtherndon.bazelviz.ui.audit.AuditWorkflowTest",
+    jvm_flags = HEADLESS_TEST_JVM_FLAGS,
+    runtime_deps = JUNIT_RUNTIME_DEPS + [":tests_lib"],
+)
+
+java_junit5_test(
     name = "ComparisonSourcesTest",
     test_class = "com.holtherndon.bazelviz.ui.audit.ComparisonSourcesTest",
     jvm_flags = HEADLESS_TEST_JVM_FLAGS,
@@ -53,5 +64,5 @@ java_junit5_test(
 
 test_suite(
     name = "tests",
-    tests = [":AuditLaunchControllerTest", ":AuditReviewDialogTest", ":ComparisonSourcesTest"],
+    tests = [":AuditLaunchControllerTest", ":AuditReviewDialogTest", ":AuditWorkflowTest", ":ComparisonSourcesTest"],
 )

@@ -110,15 +110,23 @@ directory holding everything captured, indexed for querying.
 Choose a Workspace, open **Console**, enter the Bazel command you would have
 typed, and press **Run**. The launcher shows the selected machine and directory.
 The left-aligned launch row places editable **Bazel Executable** immediately
-before **Capture detail**. Bazel Executable defaults to `bazel`; type another
+before **Build mode**. Bazel Executable defaults to `bazel`; type another
 command available on that machine's PATH or an executable path when the
 Workspace needs one. There is no file-selector button. The typed value is saved
 to a saved Workspace profile or to the limited launch-preference sidecar for a
 discovered Workspace.
 
-Capture detail has no separate summary text. Hover an option in its dropdown to
+Build mode has no separate summary text. Hover an option in its dropdown to
 see the complete capture scope and cost explanation immediately. The selected
 option keeps that explanation as the control's accessible description.
+
+Choose **Hermeticity diagnostic** to run an automated repeat-build check instead
+of one normal capture. Enter a `build` command and press **Run diagnostic**. After
+the safety and command review, the app runs both builds, links A/B and opens their
+comparison automatically. This deliberately changes cache and rc behavior;
+see [reproducibility checks](hermeticity.md) for requirements and limits. The
+diagnostic selection is not persisted; reopening a Workspace returns to a
+normal capture option without changing its existing capture preferences.
 
 Clicking or focusing the command field opens its Workspace's recent commands
 below it, newest first.
@@ -132,8 +140,9 @@ command, the effective command the tool will actually run, every flag it added,
 and why. Nothing is added silently. If a flag you set conflicts with one the tool
 needs, the conflict is shown and you choose.
 
-The tool adds flags to make the build *observable* — an event stream, an
-execution log, a timing profile. It does not change what the build does.
+For normal captures, the tool adds flags to make the build *observable* — an
+event stream, an execution log, a timing profile. It does not change what the
+build does.
 
 For an SSH Workspace, capture borrows the connection that Workspace already
 owns. Preflight adds a capture-scoped reverse loopback tunnel from the remote

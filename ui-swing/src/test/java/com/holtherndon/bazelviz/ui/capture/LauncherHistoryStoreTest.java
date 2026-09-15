@@ -161,7 +161,7 @@ final class LauncherHistoryStoreTest {
           LauncherPanel panel = new LauncherPanel(() -> {}, () -> {});
           panel.useManagedWorkspace(
               "Current", ExecutionHost.SSH, "/srv/current", "bazelisk", "builder", "2222");
-          panel.presetChoiceForTest().setSelectedItem(CapturePreset.LIVE_ESSENTIALS);
+          panel.presetChoiceForTest().setSelectedItem(LaunchMode.LIVE_ESSENTIALS);
           panel.commandFieldForTest().setText("query //draft");
           panel.attachHistoryPersistence(store, queuedIo::add);
           panel.rememberCommand("test //new");
@@ -190,6 +190,34 @@ final class LauncherHistoryStoreTest {
     queuedIo.remove().run();
     assertThat(store.load().history()).containsExactly("test //new", "build //stored");
     assertThat(store.load().bazelExecutable()).isEqualTo("/tools/custom-bazel");
+  }
+
+  @Test
+  void discoveredHistoryLoadingPreservesAnExplicitDiagnosticAndNeverPersistsItsMode()
+      throws Exception {
+    LauncherHistoryStore store = new LauncherHistoryStore(temporaryDirectory);
+    assertThat(store.save(state(List.of("build //stored")))).isTrue();
+    ArrayDeque<Runnable> queuedIo = new ArrayDeque<>();
+    AtomicReference<LauncherPanel> panelReference = new AtomicReference<>();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          LauncherPanel panel = new LauncherPanel(() -> {}, () -> {});
+          panel.attachHistoryPersistence(store, queuedIo::add);
+          panel.presetChoiceForTest().setSelectedItem(LaunchMode.HERMETICITY_DIAGNOSTIC);
+          panel.rememberCommand("build //diagnosed");
+          panelReference.set(panel);
+        });
+    queuedIo.remove().run();
+    SwingUtilities.invokeAndWait(() -> {});
+
+    LauncherPanel panel = panelReference.get();
+    assertThat(panel.launchMode()).isEqualTo(LaunchMode.HERMETICITY_DIAGNOSTIC);
+    assertThat(panel.historyEntriesForTest())
+        .containsExactly("build //diagnosed", "build //stored");
+    queuedIo.remove().run();
+    assertThat(store.load().history()).containsExactly("build //diagnosed", "build //stored");
+    assertThat(Files.readString(store.file())).doesNotContain("preset", "HERMETICITY_DIAGNOSTIC");
+    SwingUtilities.invokeAndWait(panel::close);
   }
 
   @Test

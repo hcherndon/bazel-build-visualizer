@@ -219,6 +219,107 @@ class LauncherStateStoreTest {
   }
 
   @Test
+  void diagnosticSavesTheLastNormalPresetAndTheNextWindowRestoresOnlyThatPreset() throws Exception {
+    LauncherStateStore store = new LauncherStateStore(temporaryDirectory);
+    ArrayDeque<Runnable> queuedIo = new ArrayDeque<>();
+    LauncherPanel panel = panelAttachedTo(store, queuedIo);
+    queuedIo.remove().run();
+    SwingUtilities.invokeAndWait(() -> {});
+    SwingUtilities.invokeAndWait(
+        () -> {
+          panel.presetChoiceForTest().setSelectedItem(LaunchMode.LIVE_ESSENTIALS);
+          panel.presetChoiceForTest().setSelectedItem(LaunchMode.HERMETICITY_DIAGNOSTIC);
+          panel.rememberCommand("build //diagnosed");
+          panel.close();
+        });
+    while (!queuedIo.isEmpty()) {
+      queuedIo.remove().run();
+    }
+
+    assertThat(store.load().preset()).isEqualTo(CapturePreset.LIVE_ESSENTIALS);
+    assertThat(store.load().history()).containsExactly("build //diagnosed");
+    assertThat(Files.readString(store.file())).doesNotContain("HERMETICITY_DIAGNOSTIC");
+    LauncherPanel reopened = panelAttachedTo(store, queuedIo);
+    queuedIo.remove().run();
+    SwingUtilities.invokeAndWait(() -> {});
+    assertThat(reopened.launchMode()).isEqualTo(LaunchMode.LIVE_ESSENTIALS);
+    SwingUtilities.invokeAndWait(reopened::close);
+  }
+
+  @Test
+  void lateSettingsLoadKeepsTheSelectedDiagnosticWithoutOverwritingTheStoredNormalPreset()
+      throws Exception {
+    LauncherStateStore store = new LauncherStateStore(temporaryDirectory);
+    LauncherStateStore.State stored =
+        new LauncherStateStore.State(
+            "/stored", "bazel", CapturePreset.FULL_GRAPH_DIAGNOSTICS, "", List.of());
+    assertThat(store.save(stored)).isTrue();
+    ArrayDeque<Runnable> queuedIo = new ArrayDeque<>();
+    LauncherPanel panel = panelAttachedTo(store, queuedIo);
+    SwingUtilities.invokeAndWait(
+        () -> panel.presetChoiceForTest().setSelectedItem(LaunchMode.HERMETICITY_DIAGNOSTIC));
+    queuedIo.remove().run();
+    SwingUtilities.invokeAndWait(() -> {});
+
+    assertThat(panel.launchMode()).isEqualTo(LaunchMode.HERMETICITY_DIAGNOSTIC);
+    assertThat(panel.preset()).isEqualTo(CapturePreset.PERFORMANCE_DIAGNOSTICS);
+    assertThat(queuedIo).isEmpty();
+    SwingUtilities.invokeAndWait(
+        () -> {
+          panel.setWorkspace("/changed");
+          panel.close();
+        });
+    queuedIo.remove().run();
+    assertThat(store.load().workspace()).isEqualTo("/changed");
+    assertThat(store.load().preset()).isEqualTo(CapturePreset.FULL_GRAPH_DIAGNOSTICS);
+  }
+
+  @Test
+  void aNormalPresetEditedBeforeLoadStillWinsWhenFollowedByDiagnosticSelection() throws Exception {
+    LauncherStateStore store = new LauncherStateStore(temporaryDirectory);
+    assertThat(
+            store.save(
+                new LauncherStateStore.State(
+                    "/stored", "bazel", CapturePreset.FULL_GRAPH_DIAGNOSTICS, "", List.of())))
+        .isTrue();
+    ArrayDeque<Runnable> queuedIo = new ArrayDeque<>();
+    LauncherPanel panel = panelAttachedTo(store, queuedIo);
+    SwingUtilities.invokeAndWait(
+        () -> {
+          panel.presetChoiceForTest().setSelectedItem(LaunchMode.LIVE_ESSENTIALS);
+          panel.presetChoiceForTest().setSelectedItem(LaunchMode.HERMETICITY_DIAGNOSTIC);
+        });
+    queuedIo.remove().run();
+    SwingUtilities.invokeAndWait(() -> {});
+
+    assertThat(panel.launchMode()).isEqualTo(LaunchMode.HERMETICITY_DIAGNOSTIC);
+    queuedIo.remove().run();
+    assertThat(store.load().preset()).isEqualTo(CapturePreset.LIVE_ESSENTIALS);
+    SwingUtilities.invokeAndWait(panel::close);
+  }
+
+  @Test
+  void closingWithDiagnosticSelectedBeforeLoadPreservesTheUnloadedNormalPreset() throws Exception {
+    LauncherStateStore store = new LauncherStateStore(temporaryDirectory);
+    LauncherStateStore.State stored =
+        new LauncherStateStore.State(
+            "/stored", "bazel", CapturePreset.LIVE_ESSENTIALS, "", List.of());
+    assertThat(store.save(stored)).isTrue();
+    ArrayDeque<Runnable> queuedIo = new ArrayDeque<>();
+    LauncherPanel panel = panelAttachedTo(store, queuedIo);
+    SwingUtilities.invokeAndWait(
+        () -> {
+          panel.presetChoiceForTest().setSelectedItem(LaunchMode.HERMETICITY_DIAGNOSTIC);
+          panel.close();
+        });
+    queuedIo.remove().run();
+    SwingUtilities.invokeAndWait(() -> {});
+
+    assertThat(store.load()).isEqualTo(stored);
+    assertThat(queuedIo).isEmpty();
+  }
+
+  @Test
   void lateLoadDoesNotOverwriteAnewerEdit() throws Exception {
     LauncherStateStore store = new LauncherStateStore(temporaryDirectory);
     assertThat(

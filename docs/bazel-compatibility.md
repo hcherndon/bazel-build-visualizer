@@ -34,7 +34,7 @@ certifications.
 
 ### Initial managed audit support
 
-**Console → Mode → Check reproducibility** requires Bazel 9.2.0 and confirmed
+**Console → Build mode → Hermeticity diagnostic** requires Bazel 9.2.0 and confirmed
 required flags. This explicit opt-in protocol ignores all bazelrc files, uses a
 verified private output base, disables disk/remote action caches and remote
 execution, and prevents ordinary convenience-symlink changes. It supports

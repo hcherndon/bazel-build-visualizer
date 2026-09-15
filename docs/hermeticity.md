@@ -8,8 +8,9 @@ unrecorded clock, network service, host file or environment value. See
 
 ## Run a controlled check
 
-1. Open a local or SSH Workspace. In **Console**, choose **Mode → Check
-   reproducibility** and enter a `build` command, such as `build //my/package:app`.
+1. Open a local or SSH Workspace. In **Console**, choose **Build mode →
+   Hermeticity diagnostic**, enter a `build` command such as `build //my/package:app`,
+   and press **Run diagnostic**.
 2. Read the initial warning and review the exact commands, capture settings,
    private output base and changed flags. The initial protocol requires
    **Bazel 9.2.0**, confirmed capabilities, and execution on the Workspace's
@@ -18,8 +19,16 @@ unrecorded clock, network service, host file or environment value. See
    app snapshots source files, cleans its private output base, runs A and
    preserves A's evidence. It snapshots the sources again, cleans the same
    private base, runs B, preserves B and takes a final source snapshot.
-4. Inspect **Hermeticity**. Start with **Summary**, then select an action in
-   **Action differences**. Read **Coverage & runs** before interpreting a result.
+4. The app automatically links run A and run B and opens their comparison in
+   **Hermeticity**. No file selection or second launch is needed. Start with
+   **Summary**, then select an action in **Action differences**. **Coverage & runs**
+   includes links to open each retained build; read its notes before interpreting
+   a result.
+
+The same Build mode dropdown retains the normal capture options. The diagnostic
+selection is not restored after reopening a Workspace; existing normal capture
+preferences are unchanged. A failed or cancelled diagnostic keeps available
+partial runs visible without presenting them as a completed comparison.
 
 This is a deliberately controlled experiment, **not your usual rc-configured
 build**. It ignores system, user and repository bazelrc files, disables disk and

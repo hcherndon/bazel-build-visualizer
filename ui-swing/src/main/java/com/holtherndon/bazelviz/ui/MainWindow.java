@@ -43,6 +43,7 @@ import com.holtherndon.bazelviz.ui.capture.CaptureStatusModel;
 import com.holtherndon.bazelviz.ui.capture.ConsoleView;
 import com.holtherndon.bazelviz.ui.capture.InstrumentationPlanDialog;
 import com.holtherndon.bazelviz.ui.capture.LaunchController;
+import com.holtherndon.bazelviz.ui.capture.LaunchMode;
 import com.holtherndon.bazelviz.ui.capture.LauncherPanel;
 import com.holtherndon.bazelviz.ui.capture.LauncherStateStore.ExecutionHost;
 import com.holtherndon.bazelviz.ui.configurations.ConfigurationsView;
@@ -150,7 +151,6 @@ import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.DefaultListModel;
 import javax.swing.JCheckBox;
-import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JFileChooser;
@@ -457,8 +457,6 @@ public final class MainWindow extends JFrame {
 
   private final LaunchController launchController;
   private final AuditWorkflow auditWorkflow;
-  private final JComboBox<String> buildMode =
-      new JComboBox<>(new String[] {"Build", "Check reproducibility"});
   private CaptureStatusModel captureStatus = CaptureStatusModel.idle();
 
   private final CardLayout cardLayout = new CardLayout();
@@ -3980,7 +3978,7 @@ public final class MainWindow extends JFrame {
           CaptureRequest.of(sessionsRoot, APP_VERSION, executable, workingDirectory, arguments);
     }
     request = request.withPreset(launcherPanel.preset());
-    boolean audit = buildMode.getSelectedIndex() == 1;
+    boolean audit = launcherPanel.launchMode() == LaunchMode.HERMETICITY_DIAGNOSTIC;
     if (audit && !auditWorkflow.confirmProtocol()) return;
 
     if (!acquireCaptureLease(workspace)) {
@@ -4527,12 +4525,6 @@ public final class MainWindow extends JFrame {
     PageToolbar console = pageToolbars.get(NavEntry.BUILD);
     launcherPanel.installPageToolbar(console);
     capturePanel.installPageToolbar(console);
-    JLabel modeLabel = new JLabel("Mode:");
-    modeLabel.setLabelFor(buildMode);
-    buildMode.setToolTipText(
-        "Build normally, or compare two controlled rc-free builds with Bazel 9.2.0.");
-    console.addAction(modeLabel);
-    console.addAction(buildMode);
     console.setControls(launcherPanel);
     updateConsoleMetadata(captureStatus);
   }

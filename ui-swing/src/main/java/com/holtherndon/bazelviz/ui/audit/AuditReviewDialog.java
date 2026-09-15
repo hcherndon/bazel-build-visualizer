@@ -49,7 +49,7 @@ public final class AuditReviewDialog extends JDialog {
   private Choice choice = Choice.CANCEL;
 
   public AuditReviewDialog(Window owner, Review review) {
-    super(owner, "Review reproducibility audit", ModalityType.DOCUMENT_MODAL);
+    super(owner, "Review hermeticity diagnostic", ModalityType.DOCUMENT_MODAL);
     Content content =
         content(
             review,
@@ -84,7 +84,7 @@ public final class AuditReviewDialog extends JDialog {
     Objects.requireNonNull(decide, "decide");
     JPanel panel = new JPanel(new BorderLayout(0, 8));
     panel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
-    JTextArea title = WrappingLabel.create("Check reproducibility · two controlled builds");
+    JTextArea title = WrappingLabel.create("Hermeticity diagnostic · two controlled builds");
     title.setFont(title.getFont().deriveFont(Font.BOLD, 18f));
     panel.add(title, BorderLayout.NORTH);
     JTabbedPane tabs = new JTabbedPane();
@@ -98,7 +98,7 @@ public final class AuditReviewDialog extends JDialog {
     JButton run = button("Run both builds", Choice.RUN_BOTH, decide);
     run.setEnabled(false);
     run.setToolTipText(
-        "Requires a launchable review and acknowledgement of the controlled configuration.");
+        "After approval, runs both builds and opens their linked comparison automatically.");
     JButton cancel = button("Cancel", Choice.CANCEL, decide);
     JCheckBox acknowledgement = new JCheckBox("I understand that rc files will be ignored");
     acknowledgement.setEnabled(review.canLaunch());

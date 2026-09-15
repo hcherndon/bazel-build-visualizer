@@ -1,14 +1,23 @@
 # Implementation status
 
-Last updated: 2026-09-11. This file states what exists in the tree, not what
+Last updated: 2026-09-15. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
 
-**Build reproducibility checks (2026-09-11).** Console has a **Check
-reproducibility** mode, and **Hermeticity** has Summary, Action differences, and
-Coverage & runs tabs. The initial managed protocol requires Bazel 9.2.0 and
-explicit approval of an rc-free, on-machine `build` experiment. It performs two
+**Console diagnostic entry point (2026-09-15).** The launch form now has one
+**Build mode** dropdown containing the three normal capture options and
+**Hermeticity diagnostic**. The separate toolbar mode selector is removed.
+Selecting the diagnostic changes the button to **Run diagnostic** and routes
+through the reviewed two-build workflow. Both runs and their comparison are
+linked automatically; manual source selection is only needed for offline logs.
+Existing normal capture preferences are preserved, but diagnostic mode does not
+silently return after reopening a Workspace. This is a UI workflow choice, not a
+new instrumentation preset or a change to the controlled protocol below.
+
+**Build reproducibility checks (2026-09-11).** **Hermeticity** has Summary,
+Action differences, and Coverage & runs tabs. The initial managed protocol requires
+Bazel 9.2.0 and explicit approval of an rc-free, on-machine `build` experiment. It performs two
 clean/build captures in one private output base, without touching the normal
 output base or workspace convenience links. Local and selected SSH workspaces
 use the same reviewed protocol; remote execution clusters are not supported.

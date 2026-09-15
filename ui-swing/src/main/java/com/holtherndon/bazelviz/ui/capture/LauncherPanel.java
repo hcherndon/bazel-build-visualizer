@@ -93,15 +93,9 @@ public final class LauncherPanel extends JPanel {
           "test",
           "version");
 
-  private static final CapturePreset[] VISIBLE_PRESETS = {
-    CapturePreset.LIVE_ESSENTIALS,
-    CapturePreset.PERFORMANCE_DIAGNOSTICS,
-    CapturePreset.FULL_GRAPH_DIAGNOSTICS
-  };
-
   private final JTextField workspace = new JTextField(34);
   private final JTextField bazelExecutable = new JTextField(24);
-  private final JComboBox<CapturePreset> captureDetail = new JComboBox<>(VISIBLE_PRESETS);
+  private final JComboBox<LaunchMode> captureDetail = new JComboBox<>(LaunchMode.values());
   private final JTextField command = new HistoryCommandField(34);
   private final JComboBox<ExecutionHost> executionHost = new JComboBox<>(ExecutionHost.values());
   private final JTextField sshDestination = new JTextField(22);
@@ -152,6 +146,7 @@ public final class LauncherPanel extends JPanel {
   private boolean managedWorkspace;
   private boolean pageToolbarInstalled;
   private boolean immediatePresetTooltipsActive;
+  private CapturePreset lastNormalPreset = CapturePreset.defaultPreset();
   private ManagedWorkspace managedWorkspaceSelection;
   private String lastCommittedManagedBazel = "";
 
@@ -182,7 +177,8 @@ public final class LauncherPanel extends JPanel {
     LauncherStateStore.State defaults = LauncherStateStore.State.defaults();
     workspace.setText(defaults.workspace());
     bazelExecutable.setText(defaults.bazelExecutable());
-    captureDetail.setSelectedItem(defaults.preset());
+    lastNormalPreset = LaunchMode.fromPreset(defaults.preset()).preset();
+    captureDetail.setSelectedItem(LaunchMode.fromPreset(lastNormalPreset));
     executionHost.setSelectedItem(defaults.executionHost());
 
     workspace.setName("launcher.workspace");
@@ -232,7 +228,6 @@ public final class LauncherPanel extends JPanel {
             "Saved, non-secret SSH settings. Selecting one restores its remote directory"
                 + " and Bazel executable."));
     forgetSshConnection.setToolTipText("Remove the selected saved connection");
-    run.setToolTipText("Preflight the command and show the effective command for review");
     selectedWorkspace.setEditable(false);
     selectedWorkspace.setFocusable(true);
     selectedWorkspace.setToolTipText(
@@ -243,7 +238,10 @@ public final class LauncherPanel extends JPanel {
     captureDetail.addActionListener(
         event -> {
           updatePresetTooltip();
-          markDirty(Setting.PRESET);
+          if (launchMode() != LaunchMode.HERMETICITY_DIAGNOSTIC) {
+            lastNormalPreset = preset();
+            markDirty(Setting.PRESET);
+          }
         });
     captureDetail.addPopupMenuListener(
         new PopupMenuListener() {
@@ -325,7 +323,7 @@ public final class LauncherPanel extends JPanel {
     hostLabel = label("Run on", executionHost, "launcher.executionHostLabel");
     workspaceLabel = label("Workspace", workspace, "launcher.workspaceLabel");
     bazelLabel = label("Bazel executable", bazelExecutable, "launcher.bazelLabel");
-    JLabel detailLabel = label("Capture detail", captureDetail, "launcher.captureDetailLabel");
+    JLabel detailLabel = label("Build mode", captureDetail, "launcher.captureDetailLabel");
     JLabel commandLabel = label("Bazel command", command, "launcher.commandLabel");
 
     JLabel destinationLabel =
@@ -526,28 +524,16 @@ public final class LauncherPanel extends JPanel {
   }
 
   private void updatePresetTooltip() {
-    CapturePreset selected = preset();
-    String tooltip = presetTooltip(selected);
+    LaunchMode selected = launchMode();
+    String tooltip = selected.tooltip();
     captureDetail.setToolTipText(PlainText.tooltip(tooltip));
     captureDetail.getAccessibleContext().setAccessibleDescription(tooltip);
-  }
-
-  private static String presetTooltip(CapturePreset selected) {
-    String explanation =
-        switch (selected) {
-          case LIVE_ESSENTIALS ->
-              "Live BEP and console; no execution log, timing trace, or Starlark CPU profile.";
-          case PERFORMANCE_DIAGNOSTICS ->
-              "Recommended: adds the execution log, timing trace, and Starlark CPU profile"
-                  + " to live BEP and console.";
-          case FULL_GRAPH_DIAGNOSTICS ->
-              "Currently the same sources as Performance Diagnostics; it adds no graph capture"
-                  + " today.";
-          case CUSTOM -> throw new IllegalStateException("Custom is not a visible launcher option");
-        };
-    return explanation
-        + " After every build, BBV runs aquery and cquery and indexes both graphs,"
-        + " using extra disk, CPU, and indexing time.";
+    boolean diagnostic = selected == LaunchMode.HERMETICITY_DIAGNOSTIC;
+    run.setText(diagnostic ? "Run diagnostic" : "Run");
+    run.setToolTipText(
+        diagnostic
+            ? PlainText.tooltip(tooltip)
+            : "Preflight the command and show the effective command for review");
   }
 
   private void beginImmediatePresetTooltips() {
@@ -596,9 +582,7 @@ public final class LauncherPanel extends JPanel {
                     ? list.getModel().getElementAt(index)
                     : null;
             list.setToolTipText(
-                value instanceof CapturePreset preset
-                    ? PlainText.tooltip(presetTooltip(preset))
-                    : null);
+                value instanceof LaunchMode mode ? PlainText.tooltip(mode.tooltip()) : null);
           }
         });
   }
@@ -1071,7 +1055,12 @@ public final class LauncherPanel extends JPanel {
     try {
       workspace.setText(loaded.workspace());
       bazelExecutable.setText(loaded.bazelExecutable());
-      captureDetail.setSelectedItem(visibleOrDefault(loaded.preset()));
+      lastNormalPreset = LaunchMode.fromPreset(loaded.preset()).preset();
+      // An asynchronous settings load must not undo a diagnostic explicitly selected in this
+      // window. Its ordinary preset still loads normally for the next window and later saves.
+      if (launchMode() != LaunchMode.HERMETICITY_DIAGNOSTIC) {
+        captureDetail.setSelectedItem(LaunchMode.fromPreset(lastNormalPreset));
+      }
       executionHost.setSelectedItem(loaded.executionHost());
       sshDestination.setText(loaded.sshDestination());
       sshPort.setText(loaded.sshPort());
@@ -1132,7 +1121,7 @@ public final class LauncherPanel extends JPanel {
     return new LauncherStateStore.State(
         workspace.getText(),
         bazelExecutable.getText(),
-        preset(),
+        lastNormalPreset,
         command.getText(),
         history.entries(),
         executionHost(),
@@ -1377,8 +1366,12 @@ public final class LauncherPanel extends JPanel {
   }
 
   public CapturePreset preset() {
-    CapturePreset selected = (CapturePreset) captureDetail.getSelectedItem();
-    return visibleOrDefault(selected);
+    return launchMode().preset();
+  }
+
+  public LaunchMode launchMode() {
+    LaunchMode selected = (LaunchMode) captureDetail.getSelectedItem();
+    return selected == null ? LaunchMode.fromPreset(CapturePreset.defaultPreset()) : selected;
   }
 
   public void setRunEnabled(boolean enabled) {
@@ -1398,15 +1391,6 @@ public final class LauncherPanel extends JPanel {
     command.setEnabled(enabled);
     chooseWorkspace.setEnabled(enabled);
     changeWorkspace.setEnabled(enabled);
-  }
-
-  private static CapturePreset visibleOrDefault(CapturePreset preset) {
-    if (preset == CapturePreset.LIVE_ESSENTIALS
-        || preset == CapturePreset.PERFORMANCE_DIAGNOSTICS
-        || preset == CapturePreset.FULL_GRAPH_DIAGNOSTICS) {
-      return preset;
-    }
-    return CapturePreset.defaultPreset();
   }
 
   private static LauncherStateStore.State mergeLoaded(
@@ -1495,7 +1479,7 @@ public final class LauncherPanel extends JPanel {
     return bazelExecutable;
   }
 
-  JComboBox<CapturePreset> presetChoiceForTest() {
+  JComboBox<LaunchMode> presetChoiceForTest() {
     return captureDetail;
   }
 
@@ -1609,18 +1593,13 @@ public final class LauncherPanel extends JPanel {
     @Override
     public Component getListCellRendererComponent(
         JList<?> list, Object value, int index, boolean selected, boolean focused) {
-      CapturePreset preset = value instanceof CapturePreset item ? item : null;
-      String text =
-          preset == null
-              ? ""
-              : preset.displayName()
-                  + (preset == CapturePreset.PERFORMANCE_DIAGNOSTICS ? " (recommended)" : "");
+      LaunchMode mode = value instanceof LaunchMode item ? item : null;
+      String text = mode == null ? "" : mode.displayName();
       JLabel label =
           (JLabel) super.getListCellRendererComponent(list, text, index, selected, focused);
       PlainText.disableHtml(label);
       label.setHorizontalAlignment(JLabel.LEFT);
-      label.setToolTipText(
-          preset == null ? null : PlainText.tooltip(LauncherPanel.presetTooltip(preset)));
+      label.setToolTipText(mode == null ? null : PlainText.tooltip(mode.tooltip()));
       if (index >= 0 && selected) {
         list.setToolTipText(label.getToolTipText());
       }

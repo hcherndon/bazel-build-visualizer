@@ -21,6 +21,14 @@ Its initial execution scope is `build` on a selected local or SSH workspace
 machine. Remote-execution clusters, test-cache semantics and environment
 variation are later protocols, not silently approximated by this one.
 
+UI clarification (2026-09-15): the Console's single **Build mode** dropdown
+offers **Hermeticity diagnostic** beside the normal capture presets. This is a
+shortcut to the separate reviewed A/B workflow, not a new instrumentation
+`CapturePreset`. After approval, both builds and their linked comparison run
+automatically. The diagnostic selection is transient and does not replace
+persisted capture-detail preferences; opening a Workspace does not silently
+restore a two-build diagnostic selection.
+
 The result compares recorded commands, environments, platform properties,
 input manifests and output observations. It distinguishes independent output
 divergence from changed generated inputs, recipe drift, cache reuse, ambiguous

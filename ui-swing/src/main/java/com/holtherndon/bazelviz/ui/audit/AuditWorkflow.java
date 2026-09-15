@@ -96,8 +96,10 @@ public final class AuditWorkflow {
                 + " check.\n"
                 + "Bazel 9.2.0 is required. Builds still execute repository code on the selected"
                 + " machine.\n\n"
-                + "The next screen shows the exact commands, changes and capture settings.",
-            "Check reproducibility",
+                + "The next screen shows the exact commands, changes and capture settings.\n"
+                + "After approval, both builds run automatically. Their captures are linked as\n"
+                + "run A/B, and the comparison opens automatically when the check finishes.",
+            "Hermeticity diagnostic",
             JOptionPane.OK_CANCEL_OPTION,
             JOptionPane.WARNING_MESSAGE)
         == JOptionPane.OK_OPTION;
@@ -138,22 +140,7 @@ public final class AuditWorkflow {
 
               @Override
               public void finished(Result result) {
-                host.ready();
-                CaptureStatusModel.Phase phase =
-                    switch (result.state()) {
-                      case CAPTURED -> CaptureStatusModel.Phase.DONE;
-                      case CANCELLED -> CaptureStatusModel.Phase.CANCELLED;
-                      default -> CaptureStatusModel.Phase.FAILED;
-                    };
-                host.status(
-                    CaptureStatusModel.idle()
-                        .withPhase(
-                            phase,
-                            "Audit "
-                                + result.state()
-                                + " · private-base cleanup "
-                                + result.cleanup()));
-                loadAudit(result.directory(), result.notices());
+                captureFinished(result);
               }
 
               @Override
@@ -171,6 +158,22 @@ public final class AuditWorkflow {
       launch.closeAsync();
       throw failure;
     }
+  }
+
+  /** Transfers a worker-finished audit into its linked comparison. Called on the EDT. */
+  void captureFinished(Result result) {
+    host.ready();
+    CaptureStatusModel.Phase phase =
+        switch (result.state()) {
+          case CAPTURED -> CaptureStatusModel.Phase.DONE;
+          case CANCELLED -> CaptureStatusModel.Phase.CANCELLED;
+          default -> CaptureStatusModel.Phase.FAILED;
+        };
+    host.status(
+        CaptureStatusModel.idle()
+            .withPhase(
+                phase, "Audit " + result.state() + " · private-base cleanup " + result.cleanup()));
+    loadAudit(result.directory(), result.notices());
   }
 
   private void review(Review review) {

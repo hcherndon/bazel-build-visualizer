@@ -83,8 +83,7 @@ class LauncherPanelTest {
         .isSameAs(panel.commandFieldForTest());
     assertThat(namedLabel(panel, "launcher.workspaceLabel").getText()).isEqualTo("Workspace:");
     assertThat(namedLabel(panel, "launcher.bazelLabel").getText()).isEqualTo("Bazel executable:");
-    assertThat(namedLabel(panel, "launcher.captureDetailLabel").getText())
-        .isEqualTo("Capture detail:");
+    assertThat(namedLabel(panel, "launcher.captureDetailLabel").getText()).isEqualTo("Build mode:");
     assertThat(namedLabel(panel, "launcher.commandLabel").getText()).isEqualTo("Bazel command:");
     assertThat(panel.chooseWorkspaceForTest().getText()).isEqualTo("Choose workspace…");
 
@@ -196,30 +195,37 @@ class LauncherPanelTest {
   }
 
   @Test
-  void offersThreeExplainedPresetsWithoutCustomAndDefaultsToRecommended() throws Exception {
+  void offersThreeCaptureModesAndAnExplicitDiagnosticAndDefaultsToRecommended() throws Exception {
     LauncherPanel panel = panel();
-    JComboBox<CapturePreset> choices = panel.presetChoiceForTest();
+    JComboBox<LaunchMode> choices = panel.presetChoiceForTest();
 
     assertThat(items(choices))
         .containsExactly(
-            CapturePreset.LIVE_ESSENTIALS,
-            CapturePreset.PERFORMANCE_DIAGNOSTICS,
-            CapturePreset.FULL_GRAPH_DIAGNOSTICS);
-    assertThat(choices.getSelectedItem()).isEqualTo(CapturePreset.PERFORMANCE_DIAGNOSTICS);
-    assertThat(renderedText(choices, CapturePreset.PERFORMANCE_DIAGNOSTICS))
+            LaunchMode.LIVE_ESSENTIALS,
+            LaunchMode.PERFORMANCE_DIAGNOSTICS,
+            LaunchMode.FULL_GRAPH_DIAGNOSTICS,
+            LaunchMode.HERMETICITY_DIAGNOSTIC);
+    assertThat(panel.launchMode()).isEqualTo(LaunchMode.PERFORMANCE_DIAGNOSTICS);
+    assertThat(choices.getSelectedItem()).isEqualTo(LaunchMode.PERFORMANCE_DIAGNOSTICS);
+    assertThat(renderedText(choices, LaunchMode.PERFORMANCE_DIAGNOSTICS))
         .isEqualTo("Performance Diagnostics (recommended)");
+    assertThat(renderedText(choices, LaunchMode.LIVE_ESSENTIALS)).isEqualTo("Live Essentials");
+    assertThat(renderedText(choices, LaunchMode.FULL_GRAPH_DIAGNOSTICS))
+        .isEqualTo("Full Graph Diagnostics");
+    assertThat(renderedText(choices, LaunchMode.HERMETICITY_DIAGNOSTIC))
+        .isEqualTo("Hermeticity diagnostic");
     assertPresetTooltip(
         panel,
-        CapturePreset.LIVE_ESSENTIALS,
+        LaunchMode.LIVE_ESSENTIALS,
         "Live BEP and console; no execution log, timing trace, or Starlark CPU profile.");
     assertPresetTooltip(
         panel,
-        CapturePreset.PERFORMANCE_DIAGNOSTICS,
+        LaunchMode.PERFORMANCE_DIAGNOSTICS,
         "Recommended: adds the execution log, timing trace, and Starlark CPU profile"
             + " to live BEP and console.");
     assertPresetTooltip(
         panel,
-        CapturePreset.FULL_GRAPH_DIAGNOSTICS,
+        LaunchMode.FULL_GRAPH_DIAGNOSTICS,
         "Currently the same sources as Performance Diagnostics;");
 
     assertThat(allComponents(panel))
@@ -227,6 +233,58 @@ class LauncherPanelTest {
     assertThat(allComponents(panel)).noneMatch(JTextArea.class::isInstance);
     assertThat(Arrays.stream(CapturePreset.values()))
         .allSatisfy(preset -> assertThat(preset.requiresCostWarning()).isTrue());
+  }
+
+  @Test
+  void diagnosticExplainsItsWorkflowAndChangesTheRunButtonWithoutChangingThePresetContract()
+      throws Exception {
+    AtomicInteger runs = new AtomicInteger();
+    LauncherPanel panel = panel(runs::incrementAndGet);
+    JButton run = (JButton) namedComponent(panel, "launcher.run");
+    SwingUtilities.invokeAndWait(
+        () -> panel.presetChoiceForTest().setSelectedItem(LaunchMode.HERMETICITY_DIAGNOSTIC));
+
+    assertThat(panel.launchMode()).isEqualTo(LaunchMode.HERMETICITY_DIAGNOSTIC);
+    assertThat(panel.preset()).isEqualTo(CapturePreset.PERFORMANCE_DIAGNOSTICS);
+    assertThat(run.getText()).isEqualTo("Run diagnostic");
+    assertThat(run.getToolTipText())
+        .contains(
+            "Review",
+            "two clean/build cycles",
+            "linked comparison automatically",
+            "Requires Bazel 9.2.0 and a build command",
+            "ignores bazelrc files and disables build-cache reuse");
+    assertThat(run.getToolTipText()).isEqualTo(panel.presetChoiceForTest().getToolTipText());
+    assertThat(run.getToolTipText()).doesNotContain("aquery", "cquery");
+    assertThat(
+            renderedLabel(panel.presetChoiceForTest(), LaunchMode.HERMETICITY_DIAGNOSTIC)
+                .getToolTipText())
+        .isEqualTo(run.getToolTipText());
+    assertThat(runs).hasValue(0);
+
+    SwingUtilities.invokeAndWait(
+        () -> {
+          panel.commandFieldForTest().setText("build //app");
+          invokeCommandKey(panel, KeyEvent.VK_ENTER, 0);
+          panel.setRunEnabled(false);
+          run.doClick();
+        });
+    assertThat(runs).hasValue(1);
+    assertThat(panel.presetChoiceForTest().isEnabled()).isFalse();
+    assertThat(run.isEnabled()).isFalse();
+    assertThat(run.getText()).isEqualTo("Run diagnostic");
+
+    SwingUtilities.invokeAndWait(
+        () -> {
+          panel.setRunEnabled(true);
+          panel.presetChoiceForTest().setSelectedItem(LaunchMode.LIVE_ESSENTIALS);
+        });
+    assertThat(panel.preset()).isEqualTo(CapturePreset.LIVE_ESSENTIALS);
+    assertThat(run.getText()).isEqualTo("Run");
+    assertThat(run.getToolTipText())
+        .isEqualTo("Preflight the command and show the effective command for review");
+    assertThat(run.isEnabled()).isTrue();
+    assertThat(panel.presetChoiceForTest().isEnabled()).isTrue();
   }
 
   @Test
@@ -243,7 +301,7 @@ class LauncherPanelTest {
       SwingUtilities.invokeAndWait(() -> firePresetPopupVisible(second.presetChoiceForTest()));
       SwingUtilities.invokeAndWait(() -> firePresetPopupHidden(first.presetChoiceForTest()));
       assertThat(tooltips.getInitialDelay())
-          .as("another Workspace still has its Capture detail dropdown open")
+          .as("another Workspace still has its Build mode dropdown open")
           .isZero();
 
       SwingUtilities.invokeAndWait(() -> firePresetPopupHidden(second.presetChoiceForTest()));
@@ -642,8 +700,8 @@ class LauncherPanelTest {
     return result;
   }
 
-  private static List<CapturePreset> items(JComboBox<CapturePreset> choices) {
-    List<CapturePreset> values = new ArrayList<>();
+  private static List<LaunchMode> items(JComboBox<LaunchMode> choices) {
+    List<LaunchMode> values = new ArrayList<>();
     for (int i = 0; i < choices.getItemCount(); i++) {
       values.add(choices.getItemAt(i));
     }
@@ -665,14 +723,14 @@ class LauncherPanelTest {
         .isTrue();
   }
 
-  private static void firePresetPopupVisible(JComboBox<CapturePreset> choices) {
+  private static void firePresetPopupVisible(JComboBox<LaunchMode> choices) {
     PopupMenuEvent event = new PopupMenuEvent(choices);
     for (PopupMenuListener listener : choices.getPopupMenuListeners()) {
       listener.popupMenuWillBecomeVisible(event);
     }
   }
 
-  private static void firePresetPopupHidden(JComboBox<CapturePreset> choices) {
+  private static void firePresetPopupHidden(JComboBox<LaunchMode> choices) {
     PopupMenuEvent event = new PopupMenuEvent(choices);
     for (PopupMenuListener listener : choices.getPopupMenuListeners()) {
       listener.popupMenuWillBecomeInvisible(event);
@@ -680,7 +738,7 @@ class LauncherPanelTest {
   }
 
   private static void assertPresetTooltip(
-      LauncherPanel panel, CapturePreset preset, String explanation) throws Exception {
+      LauncherPanel panel, LaunchMode preset, String explanation) throws Exception {
     SwingUtilities.invokeAndWait(() -> panel.presetChoiceForTest().setSelectedItem(preset));
     JLabel rendered = renderedLabel(panel.presetChoiceForTest(), preset);
     assertThat(rendered.getHorizontalAlignment()).isEqualTo(JLabel.LEFT);
@@ -694,12 +752,12 @@ class LauncherPanelTest {
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static String renderedText(JComboBox<CapturePreset> choices, CapturePreset value) {
+  private static String renderedText(JComboBox<LaunchMode> choices, LaunchMode value) {
     return renderedLabel(choices, value).getText();
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static JLabel renderedLabel(JComboBox<CapturePreset> choices, CapturePreset value) {
+  private static JLabel renderedLabel(JComboBox<LaunchMode> choices, LaunchMode value) {
     Component rendered =
         choices.getRenderer().getListCellRendererComponent(new JList(), value, 0, false, false);
     return (JLabel) rendered;
