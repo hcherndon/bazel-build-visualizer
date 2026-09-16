@@ -141,6 +141,25 @@ public record PlanRequest(
         destinationsAreLocal);
   }
 
+  /** Removes one user veto; the preset and observed support still decide whether to add it. */
+  public PlanRequest enabling(Capability capability) {
+    Objects.requireNonNull(capability, "capability");
+    Set<Capability> remaining = EnumSet.noneOf(Capability.class);
+    remaining.addAll(vetoed);
+    remaining.remove(capability);
+    return new PlanRequest(
+        original,
+        capabilities,
+        preset,
+        sessionRawDirectory,
+        besEndpoint,
+        remaining,
+        resolutions,
+        allowOverwrite,
+        effectiveOptions,
+        destinationsAreLocal);
+  }
+
   /**
    * The same request pointed at a real session directory.
    *

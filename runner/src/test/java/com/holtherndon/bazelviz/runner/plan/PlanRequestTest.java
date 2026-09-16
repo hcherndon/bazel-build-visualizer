@@ -1,6 +1,7 @@
 package com.holtherndon.bazelviz.runner.plan;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.holtherndon.bazelviz.runner.caps.BazelCapabilities;
 import com.holtherndon.bazelviz.runner.caps.Capability;
@@ -49,6 +50,72 @@ final class PlanRequestTest {
     assertThat(request.vetoed()).containsExactly(Capability.PUBLISH_ALL_ACTIONS);
     assertThat(request.resolutionFor(PlanConflict.Kind.EXISTING_BES_BACKEND))
         .contains(PlanConflict.RESOLUTION_REPLACE_BES);
+  }
+
+  @Test
+  void enablingRemovesOnlyTheRequestedVetoWithoutChangingTheOriginalRequest() {
+    PlanRequest request =
+        PlanRequest.initial(
+                command(),
+                BazelCapabilities.unprobed("not needed by this test"),
+                CapturePreset.PERFORMANCE_DIAGNOSTICS,
+                Path.of("/tmp/raw"),
+                Optional.of("grpc://127.0.0.1:39117"))
+            .withRemoteDestinations()
+            .resolving(PlanConflict.Kind.EXISTING_BES_BACKEND, PlanConflict.RESOLUTION_REPLACE_BES)
+            .withEffectiveOptions(Optional.of(List.of("--keep_going")))
+            .inSession(Path.of("/tmp/session/raw"))
+            .vetoing(Capability.EXECUTION_LOG_COMPACT)
+            .vetoing(Capability.EXECUTION_LOG_BINARY)
+            .vetoing(Capability.PUBLISH_ALL_ACTIONS);
+
+    PlanRequest enabled = request.enabling(Capability.EXECUTION_LOG_COMPACT);
+
+    assertThat(enabled.vetoed())
+        .containsExactlyInAnyOrder(Capability.EXECUTION_LOG_BINARY, Capability.PUBLISH_ALL_ACTIONS);
+    assertThat(enabled).usingRecursiveComparison().ignoringFields("vetoed").isEqualTo(request);
+    assertThat(request.vetoed())
+        .containsExactlyInAnyOrder(
+            Capability.EXECUTION_LOG_COMPACT,
+            Capability.EXECUTION_LOG_BINARY,
+            Capability.PUBLISH_ALL_ACTIONS);
+    assertThatThrownBy(() -> enabled.vetoed().clear())
+        .isInstanceOf(UnsupportedOperationException.class);
+    assertThat(enabled.vetoing(Capability.EXECUTION_LOG_COMPACT)).isEqualTo(request);
+    assertThat(enabled.enabling(Capability.EXECUTION_LOG_BINARY).vetoed())
+        .containsExactly(Capability.PUBLISH_ALL_ACTIONS);
+  }
+
+  @Test
+  void enablingAnUnvetoedCapabilityIsAnIdempotentValueOperation() {
+    PlanRequest request =
+        PlanRequest.initial(
+            command(),
+            BazelCapabilities.unprobed("not needed by this test"),
+            CapturePreset.LIVE_ESSENTIALS,
+            Path.of("/tmp/raw"),
+            Optional.empty());
+
+    assertThat(request.enabling(Capability.EXECUTION_LOG_COMPACT)).isEqualTo(request);
+    PlanRequest vetoed = request.vetoing(Capability.EXECUTION_LOG_BINARY);
+    assertThat(vetoed.enabling(Capability.EXECUTION_LOG_COMPACT)).isEqualTo(vetoed);
+    assertThat(
+            vetoed
+                .enabling(Capability.EXECUTION_LOG_BINARY)
+                .enabling(Capability.EXECUTION_LOG_BINARY))
+        .isEqualTo(request);
+  }
+
+  @Test
+  void enablingRequiresACapability() {
+    PlanRequest request =
+        PlanRequest.initial(
+            command(),
+            BazelCapabilities.unprobed("not needed by this test"),
+            CapturePreset.LIVE_ESSENTIALS,
+            Path.of("/tmp/raw"),
+            Optional.empty());
+    assertThatThrownBy(() -> request.enabling(null)).isInstanceOf(NullPointerException.class);
   }
 
   private static BazelCommand command() {
