@@ -28,6 +28,7 @@ final class ObservationIndexer {
   private long expanded;
   private long synthetic;
   private String algorithm = "";
+  private boolean compactFormat;
   private boolean invocation;
   private String invocationId = "";
 
@@ -37,6 +38,14 @@ final class ObservationIndexer {
 
   String invocationId() {
     return invocationId;
+  }
+
+  boolean compactFormat() {
+    return compactFormat;
+  }
+
+  boolean invocationHeaderPresent() {
+    return invocation;
   }
 
   ObservationIndexer(ExecutionLogComparison db, int side) {
@@ -53,7 +62,7 @@ final class ObservationIndexer {
         new PushbackInputStream(new BufferedInputStream(Files.newInputStream(path)), 4)) {
       byte[] head = raw.readNBytes(4);
       raw.unread(head);
-      boolean compact =
+      compactFormat =
           head.length == 4
               && head[0] == 0x28
               && head[1] == (byte) 0xb5
@@ -63,12 +72,12 @@ final class ObservationIndexer {
         db.note(side, "Empty log: cached work and missing capture cannot be distinguished.");
         return;
       }
-      if (compact) {
+      if (compactFormat) {
         ZstdFrameGuard.verify(path, db::cancelled);
       }
       // Every first byte, including '{' and whitespace, can be a valid protobuf length varint.
       // Only zstd magic establishes a format. Other files must pass bounded protobuf decoding.
-      try (InputStream stream = compact ? new ZstdInputStream(raw) : raw) {
+      try (InputStream stream = compactFormat ? new ZstdInputStream(raw) : raw) {
         byte[] bytes;
         while ((bytes = frame(stream)) != null) {
           db.check();
@@ -76,15 +85,20 @@ final class ObservationIndexer {
             throw new IOException(
                 "Execution log exceeds the record limit (" + db.limits.records() + ").");
           }
-          if (compact) {
+          if (compactFormat) {
             compact(ExecLogEntry.parseFrom(bytes));
           } else {
             binary(SpawnExec.parseFrom(bytes));
           }
         }
       }
-      if (compact && !invocation) {
+      if (compactFormat && !invocation) {
         db.note(side, "Compact invocation header is missing; digest algorithms may be unknown.");
+      } else if (compactFormat && invocationId.isEmpty()) {
+        db.note(
+            side,
+            "The compact invocation header has no embedded invocation ID; it cannot independently"
+                + " identify the build that produced this log.");
       }
       db.note(
           side,

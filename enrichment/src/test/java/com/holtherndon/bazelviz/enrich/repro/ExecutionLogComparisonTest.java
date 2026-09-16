@@ -442,19 +442,122 @@ class ExecutionLogComparisonTest {
     var verified =
         ExecutionLogComparison.verify(a, temp.resolve("scratch"), "build-a", () -> false);
     assertTrue(verified.invocationMatched());
+    assertTrue(verified.compactFormat());
+    assertTrue(verified.invocationHeaderPresent());
+    assertEquals(Optional.of("build-a"), verified.embeddedInvocationId());
     assertEquals(3, verified.records());
     assertEquals(1, verified.spawns());
     assertEquals(64, verified.sha256().length());
     assertThrows(
         IOException.class,
         () -> ExecutionLogComparison.verify(a, temp.resolve("scratch"), "build-b", () -> false));
+    assertThrows(
+        IOException.class,
+        () -> ExecutionLogComparison.verify(a, temp.resolve("scratch"), "", () -> false));
+    assertThrows(
+        IOException.class,
+        () -> ExecutionLogComparison.verify(a, temp.resolve("scratch"), null, () -> false));
     Path b = binary("b", spawn("same", "x"));
-    assertFalse(
-        ExecutionLogComparison.verify(b, temp.resolve("scratch"), "build-a", () -> false)
-            .invocationMatched());
+    var binary = ExecutionLogComparison.verify(b, temp.resolve("scratch"), "build-a", () -> false);
+    assertFalse(binary.invocationMatched());
+    assertFalse(binary.compactFormat());
+    assertFalse(binary.invocationHeaderPresent());
+    assertTrue(binary.embeddedInvocationId().isEmpty());
     assertThrows(
         IOException.class,
         () -> ExecutionLogComparison.verify(temp, temp.resolve("scratch"), "build-a", () -> false));
+  }
+
+  @Test
+  void bazel74ShapedCompactLogRetainsItsHeaderWithoutInventingAnInvocationId() throws Exception {
+    // Bazel 7.4.1 spawn.proto has header fields 1..3, but no Invocation.id (field 4).
+    // Its compact file digests inherit the hash function from that header.
+    var legacyHeader = header();
+    legacyHeader.getInvocationBuilder().setWorkspaceRunfilesDirectory("_main");
+    var input = compactFile(1, "src", "input");
+    input.getFileBuilder().getDigestBuilder().clearHashFunctionName();
+    var outputA = compactFile(2, "out", "before");
+    outputA.getFileBuilder().getDigestBuilder().clearHashFunctionName();
+    var outputB = compactFile(2, "out", "after");
+    outputB.getFileBuilder().getDigestBuilder().clearHashFunctionName();
+    Path a =
+        compact(
+            "legacy-a",
+            legacyHeader,
+            input,
+            set(3, List.of(1), List.of()),
+            outputA,
+            compactSpawn(3, 2));
+    Path b =
+        compact(
+            "legacy-b",
+            legacyHeader,
+            input,
+            set(3, List.of(1), List.of()),
+            outputB,
+            compactSpawn(3, 2));
+
+    var verification =
+        ExecutionLogComparison.verify(a, temp.resolve("scratch"), "bes-invocation-a", () -> false);
+    assertTrue(verification.compactFormat());
+    assertTrue(verification.invocationHeaderPresent());
+    assertTrue(verification.embeddedInvocationId().isEmpty());
+    assertFalse(verification.invocationMatched());
+    assertEquals(5, verification.records());
+    assertEquals(1, verification.spawns());
+    assertTrue(
+        verification.coverageNotes().stream()
+            .anyMatch(note -> note.contains("no embedded invocation ID")));
+    // The missing identity does not disable version-independent offline content comparison.
+    try (ReproComparison comparison = open(a, b)) {
+      assertEquals(1, comparison.summary().outputDivergences());
+      assertEquals(1, comparison.summary().matched());
+      assertTrue(
+          comparison.summary().coverageNotes().stream()
+              .anyMatch(note -> note.contains("no embedded invocation ID")));
+    }
+  }
+
+  @Test
+  void headerlessAndEmptyCompactLogsCannotMasqueradeAsOlderInvocationHeaders() throws Exception {
+    Path headerless = compact("headerless", compactFile(2, "out", "x"), compactSpawn(0, 2));
+    var verification =
+        ExecutionLogComparison.verify(headerless, temp.resolve("scratch"), "build-a", () -> false);
+    assertTrue(verification.compactFormat());
+    assertFalse(verification.invocationHeaderPresent());
+    assertTrue(verification.embeddedInvocationId().isEmpty());
+    assertFalse(verification.invocationMatched());
+    assertTrue(
+        verification.coverageNotes().stream().anyMatch(note -> note.contains("header is missing")));
+
+    Path empty = compact("empty-compact");
+    var emptyVerification =
+        ExecutionLogComparison.verify(empty, temp.resolve("scratch"), "build-a", () -> false);
+    assertTrue(emptyVerification.compactFormat());
+    assertFalse(emptyVerification.invocationHeaderPresent());
+    assertTrue(emptyVerification.embeddedInvocationId().isEmpty());
+    assertFalse(emptyVerification.invocationMatched());
+    assertEquals(0, emptyVerification.records());
+    assertEquals(0, emptyVerification.spawns());
+  }
+
+  @Test
+  void duplicatedOrLateCompactHeadersAreRejectedInsteadOfQualifyingForLegacyProvenance()
+      throws Exception {
+    Path duplicate = compact("duplicate-header", header(), header());
+    Path late = compact("late-header", compactFile(1, "out", "x"), header());
+    for (Path source : List.of(duplicate, late)) {
+      IOException failure =
+          assertThrows(
+              IOException.class,
+              () ->
+                  ExecutionLogComparison.verify(
+                      source, temp.resolve("scratch"), "build-a", () -> false));
+      assertTrue(failure.getMessage().contains("duplicated or out of order"));
+    }
+    try (var scratch = Files.list(temp.resolve("scratch"))) {
+      assertEquals(0, scratch.count());
+    }
   }
 
   @Test

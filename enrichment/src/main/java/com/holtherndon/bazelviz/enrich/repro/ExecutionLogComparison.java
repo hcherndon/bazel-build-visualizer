@@ -30,17 +30,26 @@ import org.sqlite.ProgressHandler;
  * Source IDs, record ordering and shared input-set shapes do not participate in semantic equality.
  */
 public final class ExecutionLogComparison implements ReproComparison {
-  /** Verified raw bytes, not a statement that every recorded action can be compared completely. */
+  /**
+   * Verified raw bytes, not a statement that every recorded action can be compared completely.
+   * Format, header presence and embedded identity are separate evidence: older compact headers
+   * carry no invocation ID, while binary logs have no invocation header at all. Identity is never
+   * inferred from the expected ID or a file's name.
+   */
   public record Verification(
       long records,
       long spawns,
       String sha256,
       boolean invocationMatched,
+      boolean compactFormat,
+      boolean invocationHeaderPresent,
+      Optional<String> embeddedInvocationId,
       long cachedSpawns,
       long remoteSpawns,
       long unknownRunnerSpawns,
       List<String> coverageNotes) {
     public Verification {
+      Objects.requireNonNull(embeddedInvocationId);
       coverageNotes = List.copyOf(coverageNotes);
     }
   }
@@ -215,10 +224,7 @@ public final class ExecutionLogComparison implements ReproComparison {
         boolean matched =
             !indexer.invocationId().isEmpty()
                 && indexer.invocationId().equals(expectedInvocationId);
-        if (!indexer.invocationId().isEmpty()
-            && expectedInvocationId != null
-            && !expectedInvocationId.isBlank()
-            && !matched) {
+        if (!indexer.invocationId().isEmpty() && !matched) {
           throw new IOException(
               "Execution-log invocation identity does not match the captured build.");
         }
@@ -233,6 +239,11 @@ public final class ExecutionLogComparison implements ReproComparison {
             db.number("SELECT count(*) FROM spawns"),
             db.sourceDigest(snapshot),
             matched,
+            indexer.compactFormat(),
+            indexer.invocationHeaderPresent(),
+            indexer.invocationId().isEmpty()
+                ? Optional.empty()
+                : Optional.of(indexer.invocationId()),
             db.number(
                 "SELECT count(*) FROM spawns WHERE cache_hit=1 OR instr(runner,'cache hit')>0"),
             db.number("SELECT count(*) FROM spawns WHERE runner='remote'"),
