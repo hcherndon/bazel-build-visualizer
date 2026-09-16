@@ -39,6 +39,7 @@ import com.holtherndon.bazelviz.runner.exec.BazelExecutableResolver;
 import com.holtherndon.bazelviz.runner.files.ExecutionFileSystem;
 import com.holtherndon.bazelviz.runner.files.ExecutionPath;
 import com.holtherndon.bazelviz.runner.files.FileMetadata;
+import com.holtherndon.bazelviz.runner.files.LocalExecutionFileSystem;
 import com.holtherndon.bazelviz.runner.files.UploadMode;
 import com.holtherndon.bazelviz.runner.launch.BazelLauncher;
 import com.holtherndon.bazelviz.runner.launch.LaunchRequest;
@@ -170,6 +171,17 @@ public final class CaptureCoordinator implements AutoCloseable {
   private SshReverseForward reverseForward;
   private String remoteStagingDirectory;
   private final RemoteTermination remoteTermination = new RemoteTermination();
+  private ControlledExecutionLog controlledExecutionLog;
+  private ExecutionLogReceipt executionLogReceipt;
+
+  /** Capture-bound provenance, separate from an invocation ID embedded in an execution log. */
+  public record ExecutionLogReceipt(Path executionPath, Path localPath) {}
+
+  /** Present only after a fresh controlled output was successfully preserved after a known exit. */
+  public Optional<ExecutionLogReceipt> executionLogReceipt() {
+    return Optional.ofNullable(executionLogReceipt);
+  }
+
   private boolean closed;
 
   /** A local SSH client ending does not prove that its remote Bazel process stopped. */
@@ -487,6 +499,8 @@ public final class CaptureCoordinator implements AutoCloseable {
    *     conflicts first, and the plan says which
    */
   public CaptureResult run() throws IOException {
+    controlledExecutionLog = null;
+    executionLogReceipt = null;
     long startedNanos = System.nanoTime();
     Preflight ready = preflight();
     if (!ready.canLaunch()) {
@@ -601,6 +615,16 @@ public final class CaptureCoordinator implements AutoCloseable {
         outcome =
             ProcessOutcome.cancelled(OptionalInt.empty(), requestedBeforeLaunch, Duration.ZERO);
       } else {
+        if (request.options().deferAuxiliaryProcessing()) {
+          // Check the final paths, not the provisional local paths shown during preflight.
+          controlledExecutionLog =
+              ControlledExecutionLog.prepare(
+                  plan,
+                  executionRawDirectory,
+                  layout.rawDirectory(),
+                  request.isRemote() ? remoteFileSystem : new LocalExecutionFileSystem(),
+                  request.isRemote());
+        }
         LaunchRequest launch = LaunchRequest.of(plan.effective(), console);
         if (request.isRemote()) {
           // Mark before dispatch: a failed SSH launch can have started the remote command.
@@ -777,6 +801,18 @@ public final class CaptureCoordinator implements AutoCloseable {
       }
     }
 
+    if (controlledExecutionLog != null
+        && outcome != null
+        && outcome.exitCode().orElse(-1) == 0
+        && outcome.failure().isEmpty()
+        && !outcome.wasCancelled()
+        && (!request.isRemote() || remoteTermination.isKnown())) {
+      try {
+        executionLogReceipt = controlledExecutionLog.receipt();
+      } catch (IOException failure) {
+        warnings.add("Controlled execution-log preservation failed: " + failure.getMessage());
+      }
+    }
     CaptureResult result =
         new CaptureResult(
             sessionRoot,
@@ -1317,7 +1353,12 @@ public final class CaptureCoordinator implements AutoCloseable {
                 .map(Preflight.RemoteDetails::workingDirectory)
                 .orElse(request.workingDirectory());
     return transferRemoteOutputs(
-        files, effectiveWorkingDirectory, plan, layout.rawDirectory(), warnings);
+        files,
+        effectiveWorkingDirectory,
+        plan,
+        layout.rawDirectory(),
+        warnings,
+        controlledExecutionLog);
   }
 
   static Set<String> transferRemoteOutputs(
@@ -1326,6 +1367,17 @@ public final class CaptureCoordinator implements AutoCloseable {
       InstrumentationPlan plan,
       Path localRawDirectory,
       List<String> warnings) {
+    return transferRemoteOutputs(
+        files, effectiveWorkingDirectory, plan, localRawDirectory, warnings, null);
+  }
+
+  static Set<String> transferRemoteOutputs(
+      ExecutionFileSystem files,
+      String effectiveWorkingDirectory,
+      InstrumentationPlan plan,
+      Path localRawDirectory,
+      List<String> warnings,
+      ControlledExecutionLog controlledLog) {
     Objects.requireNonNull(files, "files");
     Objects.requireNonNull(effectiveWorkingDirectory, "effectiveWorkingDirectory");
     Objects.requireNonNull(plan, "plan");
@@ -1344,6 +1396,11 @@ public final class CaptureCoordinator implements AutoCloseable {
     }
     for (RemoteCaptureTransfer transfer : remoteCaptureTransfers(plan, localRawDirectory)) {
       try {
+        if (controlledLog != null && controlledLog.matches(transfer.executionPath())) {
+          controlledLog.download(MAX_REMOTE_CAPTURE_FILE_BYTES);
+          failures.remove(transfer.executionPath());
+          continue;
+        }
         ExecutionPath source = files.resolve(workingDirectory, transfer.executionPath());
         FileMetadata sourceMetadata = files.stat(source);
         if (sourceMetadata.state() == FileMetadata.State.MISSING) {

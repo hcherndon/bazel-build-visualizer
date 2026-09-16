@@ -30,7 +30,8 @@ import java.time.Duration;
  *     Not an fsync (plan 9.3 balanced durability): it bounds what a crash of this process can lose
  *     to the frames written since the last flush
  * @param deferAuxiliaryProcessing preserve raw auxiliary files without ordinary post-build imports
- *     or graph queries; managed audits validate execution logs with their bounded importer instead
+ *     or graph queries; managed audits require a fresh app-owned compact execution log, preserve it
+ *     without following a file symlink, and validate it with their bounded importer instead
  */
 public record CaptureOptions(
     int receiveQueueCapacity,

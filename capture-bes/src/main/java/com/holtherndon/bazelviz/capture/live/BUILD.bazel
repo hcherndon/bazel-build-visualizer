@@ -13,6 +13,7 @@ java_library(
         "CaptureResult.java",
         "CaptureSummary.java",
         "ConsoleCapture.java",
+        "ControlledExecutionLog.java",
         "InstrumentationPlanCodec.java",
         "LiveCapturePipeline.java",
         "Preflight.java",
