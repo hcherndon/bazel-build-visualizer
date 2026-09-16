@@ -88,3 +88,11 @@ Bazel's own `--announce_rc` output is now read and fed into the same conflict
 checks. It covers the `common` and `build` sections; a command-specific
 section is not visible, and the plan says which part was inspected rather than
 claiming to have checked everything.
+
+Named `--config` selections are passed before the inspecting command's separator
+as well as in the options being canonicalized. Otherwise Bazel prints the config
+name without expanding it. Named and nested config announcements are read too,
+including split values and values with spaces. Bazel removes original quoting
+from these announcements, so value text resembling another option is ambiguous;
+this remains observed conflict evidence, not a full reconstruction of effective
+argv or precedence.

@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,10 +31,12 @@ import org.slf4j.LoggerFactory;
  * raised, no {@code ReplacedFlag} recorded, and nothing in the session to say it happened. That is
  * precisely the silent override ADR-007 exists to prevent.
  *
- * <p>{@code bazel canonicalize-flags --announce_rc} is Bazel's own answer, and it needs no build.
- * Two channels, and both are read: the canonical form of the options passed in arrives on stdout,
- * and the options Bazel picked up from rc files are announced on stderr as {@code Inherited
- * '<section>' options: --flag=value …}.
+ * <p>{@code bazel canonicalize-flags --announce_rc} needs no build. Two channels are read: the
+ * canonical form of the options passed in arrives on stdout, and options from rc files are
+ * announced on stderr. Explicit {@code --config} selections are also passed to the inspecting
+ * command before its separator: selections after the separator alone are printed without being
+ * expanded. Bazel announces the selected configs and their nested expansions as {@code Found
+ * applicable config definition ...}.
  *
  * <h2>What this does not see</h2>
  *
@@ -44,6 +47,12 @@ import org.slf4j.LoggerFactory;
  * invisible here even with {@code --for_command=test}. So a plan built from this is better informed
  * than one built from the argv alone and is still not omniscient, which is why the planner warns
  * rather than claiming to have checked everything.
+ *
+ * <p>Rc announcements join arguments with spaces without preserving their original quoting. Values
+ * containing spaces are retained, including literal quote characters, but text within a value that
+ * itself looks like another option cannot be distinguished from a separate option. These are
+ * observed options for conservative conflict checks, not a complete reconstruction of effective
+ * argv or its precedence.
  *
  * <h2>Why this one runs inside the workspace</h2>
  *
@@ -57,6 +66,9 @@ public final class EffectiveOptions {
 
   private static final Logger log = LoggerFactory.getLogger(EffectiveOptions.class);
 
+  private static final Pattern ANNOUNCED_OPTION_BOUNDARY =
+      Pattern.compile("(?<=\\S)\\s+(?=--?[A-Za-z][A-Za-z0-9_-]*(?:[=\\s]|$))");
+
   /**
    * Generous, because the answer matters and the command is cheap. The cost of waiting is a slower
    * launch; the cost of giving up is injecting a backend over somebody else's.
@@ -66,7 +78,7 @@ public final class EffectiveOptions {
   private EffectiveOptions() {}
 
   /**
-   * The canonical option list for {@code command}, rc files included.
+   * Observed options for {@code command}, including inherited rc sections and selected configs.
    *
    * @return the expanded options, or empty when Bazel could not be asked — which the caller must
    *     report rather than treat as "no extra options"
@@ -167,6 +179,22 @@ public final class EffectiveOptions {
     argv.add(executable);
     argv.addAll(command.startupArgs());
     argv.add("canonicalize-flags");
+    List<String> arguments = command.commandArgs();
+    for (int i = 0; i < arguments.size(); i++) {
+      String argument = arguments.get(i);
+      if (argument.equals("--")) {
+        break;
+      }
+      if (argument.startsWith("--config=")) {
+        argv.add(argument);
+      } else if (argument.equals("--config")) {
+        argv.add(argument);
+        if (i + 1 < arguments.size()) {
+          argv.add(arguments.get(++i));
+        }
+      }
+    }
+    // Keep inspection controls after config expansions that could otherwise disable announcements.
     argv.add("--announce_rc");
     argv.add("--for_command=" + command.command());
     argv.add("--");
@@ -175,10 +203,14 @@ public final class EffectiveOptions {
   }
 
   private static Optional<List<String>> parse(String stdout, String stderr) {
-    List<String> options = new ArrayList<>();
-    options.addAll(rcOptions(stderr));
+    Optional<List<String>> inherited = rcOptions(stderr);
+    if (inherited.isEmpty()) {
+      log.debug("canonicalize-flags produced an unreadable rc announcement");
+      return Optional.empty();
+    }
+    List<String> options = new ArrayList<>(inherited.orElseThrow());
     for (String line : stdout.split("\n")) {
-      String option = line.strip();
+      String option = line.endsWith("\r") ? line.substring(0, line.length() - 1) : line;
       if (option.startsWith("--")) {
         options.add(option);
       }
@@ -189,29 +221,64 @@ public final class EffectiveOptions {
   /**
    * The options Bazel announced as coming from rc files.
    *
-   * <p>Parsed from lines of the form {@code Inherited 'build' options: --a=1 --b=2}. The client's
-   * own terminal options are announced the same way and are dropped: they are Bazel talking to
-   * itself about the tty, not something the user configured, and reporting them as user options
-   * would produce nonsense conflicts.
+   * <p>Both inherited sections and named config definitions contain unquoted, space-joined
+   * arguments. Split only before another option so that values containing spaces or literal quotes
+   * survive. Keep a separate value as its own list entry for the existing command parser. The
+   * client's own terminal options are excluded because they are not user configuration.
    */
-  private static List<String> rcOptions(String stderr) {
+  private static Optional<List<String>> rcOptions(String stderr) {
     List<String> options = new ArrayList<>();
     for (String line : stderr.split("\n")) {
-      int marker = line.indexOf("options:");
-      if (marker < 0 || !line.contains("Inherited")) {
+      int marker;
+      int config = line.indexOf("Found applicable config definition ");
+      if (config >= 0) {
+        int file = line.indexOf(" in file ", config);
+        marker = file < 0 ? -1 : line.indexOf(": ", file + " in file ".length());
+        if (marker < 0) {
+          return Optional.empty();
+        }
+        marker += 2;
+      } else if (line.contains("Inherited '")) {
+        marker = line.indexOf("options:");
+        if (marker < 0) {
+          return Optional.empty();
+        }
+        marker += "options:".length();
+      } else {
         continue;
       }
-      for (String token : line.substring(marker + "options:".length()).strip().split("\\s+")) {
-        if (token.startsWith("--") && !CLIENT_OPTIONS.contains(nameOf(token))) {
-          options.add(token);
+      String announcement = line.substring(marker).stripLeading();
+      if (announcement.isBlank()) {
+        continue;
+      }
+      for (String argument : ANNOUNCED_OPTION_BOUNDARY.split(announcement)) {
+        int separateValue = -1;
+        for (int i = 0; i < argument.length(); i++) {
+          if (argument.charAt(i) == '=') {
+            break;
+          }
+          if (Character.isWhitespace(argument.charAt(i))) {
+            separateValue = i;
+            break;
+          }
+        }
+        String option = separateValue < 0 ? argument : argument.substring(0, separateValue);
+        if (!CommandLineParser.isFlag(option)) {
+          return Optional.empty();
+        }
+        if (!CLIENT_OPTIONS.contains(nameOf(option))) {
+          options.add(option);
+          if (separateValue >= 0) {
+            options.add(argument.substring(separateValue + 1));
+          }
         }
       }
     }
-    return options;
+    return Optional.of(List.copyOf(options));
   }
 
   private static String nameOf(String token) {
-    String bare = token.substring(2);
+    String bare = token.substring(token.startsWith("--") ? 2 : 1);
     int equals = bare.indexOf('=');
     return equals < 0 ? bare : bare.substring(0, equals);
   }
