@@ -88,9 +88,22 @@ not a claim to reproduce the user's ordinary rc-configured invocation. Users
 must opt into that difference; unresolved command-line configuration/strategy
 conflicts are refused. As a narrow exception to the general capability-only
 policy, automatic destructive audit steps additionally require the tested
-Bazel 9.2.0 protocol. Required capabilities and resolved-path checks still apply;
+Bazel 9.2.0 or Bazel 7.4.x protocol. Required capabilities and resolved-path checks still apply;
 a matching version alone is never sufficient. Ordinary capture and offline
 comparison retain their independent format/capability policies.
+
+Compatibility extension (2026-09-16): Bazel 7.4 compact execution logs do not
+include an invocation ID. Managed 7.4 audits may instead bind evidence through
+the app-controlled capture: distinct per-run output paths in private staging,
+absence checked before dispatch, the exact reviewed log flag, successful known
+process completion and complete BES capture, successful preservation, and a
+recorded checksum. This is capture-bound evidence, not an independently
+verified embedded invocation identity. The review, results and reopened audit
+must disclose that distinction. An embedded ID, when present, must still match;
+9.2.0 continues to require it. Binary logs, stale files, ambiguous paths,
+unknown SSH outcomes and failed transfers do not qualify for this fallback.
+Compatibility fixtures must exercise the 7.4 clean/build protocol before it is
+advertised as verified; unmeasured hosts and patch releases remain explicit.
 
 Preserve A's evidence outside the private output base before cleaning for B;
 SSH transfer failure stops the sequence. Source/configuration changes between
