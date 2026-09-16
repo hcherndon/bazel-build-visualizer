@@ -13,7 +13,7 @@ unrecorded clock, network service, host file or environment value. See
    and press **Run diagnostic**.
 2. Read the initial warning and review the exact commands, capture settings,
    private output base and changed flags. The initial protocol requires
-   **Bazel 9.2.0**, confirmed capabilities, and execution on the Workspace's
+   **Bazel 7.4.x or 9.2.0**, confirmed capabilities, and execution on the Workspace's
    machine. An SSH Workspace runs on that Linux host, not on the desktop.
 3. Approve the check. Leave the repository unchanged until it finishes. The
    app snapshots source files, cleans its private output base, runs A and
@@ -89,9 +89,15 @@ zstd execution logs and length-delimited binary `SpawnExec` logs, not JSON logs.
 Offline comparison does not establish that the sources, machine, configuration
 or cache policy stayed unchanged. Imported commands are never executed.
 
-The managed audit additionally requires a compact log whose invocation ID
-matches the captured BES invocation. Binary logs can be compared offline but
-do not carry the invocation evidence required before the audit cleans for B.
+The managed audit requires compact logs. With Bazel 9.2.0, each log's embedded
+invocation ID must match the captured BES invocation. Bazel 7.4.x does not write
+that ID, so the app instead binds each log to its controlled capture: separate
+private output paths checked absent before execution, a successful completed
+build and BES capture, successful preservation, and a recorded checksum. The
+review and **Coverage & runs** disclose this weaker, capture-based association;
+it is not an independently verified ID inside the log. Any embedded ID that is
+present must still match. Binary logs remain available for offline comparison,
+not the automated audit.
 
 ## Read the findings
 

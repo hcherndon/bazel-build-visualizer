@@ -67,7 +67,8 @@ final class AuditWorkflowTest {
                     "Run A: 1 recorded actions", "Run B: 1 recorded actions", "Matched pairs: 1");
             assertThat(table(harness.view()).getValueAt(0, 1)).isEqualTo("//fixture:output");
             assertThat(area(harness.view(), "hermeticity.coverage").getText())
-                .contains(fixture.directory().toString(), "CAPTURED", "Fixture capture note");
+                .contains(fixture.directory().toString(), "CAPTURED")
+                .containsOnlyOnce("Fixture capture note");
             assertThat(harness.host().ready).isEqualTo(1);
             assertThat(harness.host().revealed).isEqualTo(1);
             assertThat(harness.host().status.phase()).isEqualTo(CaptureStatusModel.Phase.DONE);
@@ -193,6 +194,7 @@ final class AuditWorkflowTest {
     if (b.isPresent()) record.setProperty("sessionB", b.orElseThrow().toString());
     record.setProperty("preserved.PRESERVE_A", logA.toString());
     record.setProperty("execution.PRESERVE_A.sha256", sha256(logA));
+    record.setProperty("execution.PRESERVE_A.evidenceBindingNotice", "Fixture capture note");
     if (logB.isPresent()) {
       record.setProperty("preserved.PRESERVE_B", logB.orElseThrow().toString());
       record.setProperty("execution.PRESERVE_B.sha256", sha256(logB.orElseThrow()));

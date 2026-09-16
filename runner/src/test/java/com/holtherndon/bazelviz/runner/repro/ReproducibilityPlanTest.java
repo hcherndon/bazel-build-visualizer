@@ -57,6 +57,9 @@ final class ReproducibilityPlanTest {
             List.of("build", "--symlink_prefix=custom-", "//..."),
             List.of("build", "--spawn_strategy=remote,local", "//..."),
             List.of("build", "--config=ci", "//..."),
+            List.of("build", "--execution_log_compact_file=/tmp/old.zst", "//..."),
+            List.of("build", "--execution_log_binary_file", "/tmp/old.bin", "//..."),
+            List.of("build", "--execution_log_json_file=", "//..."),
             List.of("build", "--jobs=100", "//..."))) {
       assertThat(plan(args.toArray(String[]::new)).canLaunch()).as(args.toString()).isFalse();
     }
@@ -79,7 +82,7 @@ final class ReproducibilityPlanTest {
   }
 
   @Test
-  void requiresTheMeasuredReleaseAndObservedBuildFlags() {
+  void requiresSupportedReleasesAndObservedBuildFlags() {
     Map<String, FlagSpec> flags = new LinkedHashMap<>();
     for (String name :
         List.of(
@@ -91,14 +94,16 @@ final class ReproducibilityPlanTest {
             "lockfile_mode")) {
       flags.put(name, FlagSpec.of(name, Set.of("build")));
     }
-    var known =
-        BazelCapabilities.fromFlags(
-            "bazel 9.2.0",
-            Optional.of("9.2.0"),
-            BazelCapabilities.DetectionMethod.FLAGS_PROTO,
-            flags,
-            List.of());
-    assertThat(plan("build", "//...").capabilityBlockers(known)).isEmpty();
+    for (String version : List.of("9.2.0", "7.4.0", "7.4.1", "7.4.19")) {
+      var known =
+          BazelCapabilities.fromFlags(
+              "bazel " + version,
+              Optional.of(version),
+              BazelCapabilities.DetectionMethod.FLAGS_PROTO,
+              flags,
+              List.of());
+      assertThat(plan("build", "//...").capabilityBlockers(known)).as(version).isEmpty();
+    }
     var other =
         BazelCapabilities.fromFlags(
             "bazel 10.0.0",
@@ -110,6 +115,31 @@ final class ReproducibilityPlanTest {
         .anyMatch(value -> value.contains("9.2.0"));
     assertThat(plan("build", "//...").capabilityBlockers(BazelCapabilities.unprobed("failed")))
         .isNotEmpty();
+  }
+
+  @Test
+  void identityFallbackIsLimitedToStrict74PatchReleases() {
+    for (String version : List.of("7.4.0", "7.4.1", "7.4.123")) {
+      assertThat(ReproducibilityPlan.allowsCaptureBoundIdentity(version)).as(version).isTrue();
+    }
+    assertThat(ReproducibilityPlan.supportsVersion("9.2.0")).isTrue();
+    assertThat(ReproducibilityPlan.allowsCaptureBoundIdentity("9.2.0")).isFalse();
+    for (String version :
+        List.of(
+            "",
+            "7.4",
+            "7.4.-1",
+            "7.4.01",
+            "7.4.0rc1",
+            "7.4.1-fork",
+            "7.4.0+vendor",
+            "7.4.1\n",
+            " 7.4.1",
+            "7.5.0",
+            "9.2.1")) {
+      assertThat(ReproducibilityPlan.supportsVersion(version)).as(version).isFalse();
+      assertThat(ReproducibilityPlan.allowsCaptureBoundIdentity(version)).as(version).isFalse();
+    }
   }
 
   @Test

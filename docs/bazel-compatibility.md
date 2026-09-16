@@ -34,19 +34,28 @@ certifications.
 
 ### Initial managed audit support
 
-**Console → Build mode → Hermeticity diagnostic** requires Bazel 9.2.0 and confirmed
-required flags. This explicit opt-in protocol ignores all bazelrc files, uses a
-verified private output base, disables disk/remote action caches and remote
+**Console → Build mode → Hermeticity diagnostic** accepts Bazel 7.4.x and 9.2.0
+with confirmed required flags. This explicit opt-in protocol ignores all
+bazelrc files, uses a verified private output base, disables disk/remote action caches and remote
 execution, and prevents ordinary convenience-symlink changes. It supports
 `build` on the selected local or Linux SSH machine, not `test`, `run`, shell
 mode or a remote-execution cluster. Conflicting startup/configuration/strategy
 options are refused rather than silently overridden. A complete real Linux/SSH
 audit has not yet been measured.
 
-Each preserved compact log must match the BES invocation ID before a later
-clean is allowed. Actual known cache-hit or remote-runner observations stop the
-protocol; unknown runners are recorded as coverage gaps. Source snapshots and
-owned-path checks add safeguards but do not certify an ordinary rc-configured
+For 9.2.0, each preserved compact log must match the BES invocation ID before a
+later clean is allowed. Bazel 7.4 compact logs have no invocation ID. Their
+fallback requires a fresh app-owned compact output for each run, checked before
+dispatch, successful known process completion, complete single-invocation BES
+capture, successful preservation and a checksum. Review and saved audit notes
+label this as capture-bound evidence, not independently verified log identity.
+Any present but mismatched ID still fails; binary or headerless logs cannot
+qualify. The exact reviewed version is checked again before clean/shutdown, so
+switching between supported releases mid-audit is also refused.
+
+Actual known cache-hit or remote-runner observations stop the protocol; unknown
+runners are recorded as coverage gaps. Source snapshots and owned-path checks
+add safeguards but do not certify an ordinary rc-configured
 build. See [the audit guide](hermeticity.md) for the exact scope and limits.
 
 Offline comparison accepts compact zstd and binary `SpawnExec` logs without
@@ -54,9 +63,36 @@ the managed protocol's version restriction. JSON logs and complex compact
 runfiles reconstruction are not supported. Unknown fields, missing digests or
 platforms, and binary tree-output flattening affect coverage; format acceptance
 is not a claim of complete evidence across every Bazel release. Binary logs
-lack the invocation ID required for managed preservation. The bounded comparison
-decoder is separate from ordinary auxiliary import, whose documented release
+do not qualify for managed preservation. The bounded comparison decoder is
+separate from ordinary auxiliary import, whose documented release
 hardening blocker remains open.
+
+### Run the scoped reproducibility fixtures
+
+On 2026-09-16, both fixtures passed on macOS arm64 separately for **7.4.0** and
+**7.4.1**. They cover uncached stable/changing/downstream outputs, disk-cache
+masking, convenience-link protection, the managed two-build sequence, saved
+capture-bound notices/checksums, private-base cleanup and cancellation between
+runs. Filesystem-only transfer tests also cover stale paths, symlinks, unknown
+metadata and failed/partial downloads. These do not certify a live Linux/SSH
+7.4 audit, worker behavior or a remote-execution cluster.
+
+The two protocol fixtures can select one release explicitly, independently of
+the ordinary capture matrix:
+
+```bash
+bazel test \
+  //capture-bes/src/test/java/com/holtherndon/bazelviz/capture/reprofixture:RealBazelReproducibilityTest \
+  //capture-bes/src/test/java/com/holtherndon/bazelviz/capture/repro:ManagedAuditBazelTest \
+  --test_env=BBV_REPRO_BAZEL_VERSION=7.4.1 \
+  --jobs=2 --local_test_jobs=1 --test_output=errors
+```
+
+The selector accepts `7.4.0`, `7.4.1`, or `9.2.0` (default). Each invocation
+selects exactly one version, and both targets are exclusive. Run versions
+sequentially; this is not permission to launch the hazardous version sweep.
+The app accepts the 7.4.x release family with capability checks; a tested patch
+is not proof that every future patch or custom build behaves identically.
 
 **Everything below was measured**, on real 6.5.0, 7.6.1, 8.4.1 and 9.2.0
 binaries on macOS arm64 during Phase 2. `docs/bazel-ground-truth.md` is the

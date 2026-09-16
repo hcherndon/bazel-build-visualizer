@@ -8,7 +8,8 @@ java_junit5_test(
         "//proto:proto",
         "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel:bazel",
     ],
-    env_inherit = REAL_BAZEL_ENV,
+    # Opt in to one 7.4 patch release per invocation; the default remains 9.2.0.
+    env_inherit = REAL_BAZEL_ENV + ["BBV_REPRO_BAZEL_VERSION"],
     jvm_flags = TEST_JVM_FLAGS,
     runtime_deps = JUNIT_RUNTIME_DEPS,
     size = "large",

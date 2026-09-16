@@ -39,9 +39,10 @@ class RealBazelReproducibilityTest {
     assumeTrue(bazel.isPresent(), BazelBinary::whyUnavailable);
     assumeTrue(Files.isReadable(Path.of("/dev/urandom")), "fixture needs a POSIX execution host");
 
-    try (PrivateBazel fixture = new PrivateBazel(directory, bazel.orElseThrow())) {
+    String version = BazelBinary.reproducibilityFixtureVersion();
+    try (PrivateBazel fixture = new PrivateBazel(directory, bazel.orElseThrow(), version)) {
       assertThat(fixture.command(List.of("version", "--gnu_format")).lines())
-          .contains("bazel 9.2.0");
+          .contains("bazel " + version);
 
       Map<String, SpawnExec> first = fixture.cleanBuild("A", false);
       Map<String, SpawnExec> second = fixture.cleanBuild("B", false);
@@ -150,11 +151,13 @@ class RealBazelReproducibilityTest {
     private final Path outputBase;
     private final Path evidence;
     private final Path diskCache;
+    private final String version;
     private final List<String> startup;
     private final Map<Path, Path> existingLinks = new LinkedHashMap<>();
     private int commandIndex;
 
-    PrivateBazel(Path directory, Path bazel) throws IOException {
+    PrivateBazel(Path directory, Path bazel, String version) throws IOException {
+      this.version = version;
       Path root = directory.toRealPath();
       workspace = Files.createDirectory(root.resolve("ws"));
       outputBase = Files.createDirectory(root.resolve("private-output-base"));
@@ -162,6 +165,8 @@ class RealBazelReproducibilityTest {
       diskCache = Files.createDirectory(root.resolve("disk-cache"));
       Files.writeString(
           workspace.resolve("MODULE.bazel"), "module(name = \"reproducibility_fixture\")\n");
+      Files.writeString(workspace.resolve("WORKSPACE"), "");
+      Files.writeString(workspace.resolve(".bazelversion"), version + "\n");
       Files.writeString(
           workspace.resolve("BUILD.bazel"),
           """
@@ -239,7 +244,7 @@ class RealBazelReproducibilityTest {
               .directory(workspace.toFile())
               .redirectErrorStream(true)
               .redirectOutput(transcript.toFile());
-      builder.environment().put(BazelBinary.VERSION_ENV, "9.2.0");
+      builder.environment().put(BazelBinary.VERSION_ENV, version);
       Process process = builder.start();
       try {
         assertThat(process.waitFor(2, TimeUnit.MINUTES))

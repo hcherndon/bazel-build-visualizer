@@ -309,7 +309,7 @@ class LauncherPanelTest {
             "Review",
             "two clean/build cycles",
             "linked comparison automatically",
-            "Requires Bazel 9.2.0 and a build command",
+            "Requires Bazel 7.4.x or 9.2.0 and a build command",
             "ignores bazelrc files and disables build-cache reuse");
     assertThat(run.getToolTipText()).isEqualTo(panel.presetChoiceForTest().getToolTipText());
     assertThat(run.getToolTipText()).doesNotContain("aquery", "cquery");

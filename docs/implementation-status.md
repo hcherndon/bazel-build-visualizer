@@ -1,9 +1,26 @@
 # Implementation status
 
-Last updated: 2026-09-15. This file states what exists in the tree, not what
+Last updated: 2026-09-16. This file states what exists in the tree, not what
 is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
+
+**Bazel 7.4 reproducibility compatibility (2026-09-16).**
+The managed protocol now accepts release versions 7.4.x alongside
+9.2.0. Since 7.4 compact logs omit invocation IDs, capture-bound verification
+uses fresh per-run paths, known successful completion, complete BES capture,
+preservation and checksums. Present mismatched IDs still fail; 9.2.0 retains
+its embedded-ID requirement. The distinction is disclosed in review and saved
+audit notes. Version-specific real fixtures are opt-in one release at a time,
+not a new multi-server sweep. Real macOS arm64 fixtures passed separately on
+7.4.0 and 7.4.1, covering uncached output drift, downstream changes, disk-cache
+masking, untouched convenience symlinks, managed A/B preservation and comparison,
+saved binding notices, cleanup and cancellation between runs. Focused parser,
+capture-safety, fresh-path, transfer-failure and UI tests pass. The full gate
+passed: `bazel build //... --jobs=2` covered 595 targets, and
+`bazel test //... --test_tag_filters=-bazel-sweep --jobs=2 --local_test_jobs=2`
+passed all 361 test targets (291 cached), including the existing real 9.2
+protocol fixtures. No live Linux/SSH 7.4 audit has been measured.
 
 **Console diagnostic entry point (2026-09-15).** The launch form now has one
 **Build mode** dropdown containing the three normal capture options and
@@ -24,10 +41,11 @@ automatic comparison, exact A/B run links, partial captures and checksum refusal
 launcher regressions cover transient diagnostic selection and asynchronous settings.
 
 **Build reproducibility checks (2026-09-11).** **Hermeticity** has Summary,
-Action differences, and Coverage & runs tabs. The initial managed protocol requires
-Bazel 9.2.0 and explicit approval of an rc-free, on-machine `build` experiment. It performs two
-clean/build captures in one private output base, without touching the normal
-output base or workspace convenience links. Local and selected SSH workspaces
+Action differences, and Coverage & runs tabs. The managed protocol now requires
+Bazel 7.4.x or 9.2.0 and explicit approval of an rc-free, on-machine `build`
+experiment. It performs two clean/build captures in one private output base,
+without touching the normal output base or workspace convenience links.
+Local and selected SSH workspaces
 use the same reviewed protocol; remote execution clusters are not supported.
 See [the user guide](hermeticity.md) and
 [ADR-014](adr/014-reproducibility-audits.md).

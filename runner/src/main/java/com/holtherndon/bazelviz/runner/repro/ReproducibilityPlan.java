@@ -65,6 +65,13 @@ public record ReproducibilityPlan(
       blockers.add("Arguments after -- are not supported by the initial audit protocol.");
     }
     validateBuildOptions(original.commandArgs(), blockers);
+    if (original.commandArgs().stream()
+        .map(ReproducibilityPlan::optionName)
+        .anyMatch(ReproducibilityPlan::isExecutionLogOutput)) {
+      blockers.add(
+          "The managed audit requires its own fresh compact execution log for each build."
+              + " Remove explicit execution-log output flags before reviewing the audit.");
+    }
     List<String> startup =
         List.of(
             "--ignore_all_rc_files",
@@ -108,11 +115,13 @@ public record ReproducibilityPlan(
         blockers);
   }
 
-  /** The protocol's clean/symlink semantics have been measured only for this exact release. */
+  /** Supported release families still require observed flags and per-operation safety checks. */
   public List<String> capabilityBlockers(BazelCapabilities capabilities) {
     List<String> result = new ArrayList<>(blockers);
-    if (!capabilities.bazelVersion().orElse("").equals("9.2.0")) {
-      result.add("The managed repeat-build protocol is currently verified only for Bazel 9.2.0.");
+    if (!supportsVersion(capabilities.bazelVersion().orElse(""))) {
+      result.add(
+          "The managed repeat-build protocol supports Bazel 9.2.0 and release versions 7.4.x;"
+              + " prereleases, forks and other versions are not supported.");
     }
     for (String name : REQUIRED_BUILD_VALUES.keySet()) {
       if (capabilities.flag(name).filter(flag -> flag.appliesTo("build")).isEmpty()) {
@@ -120,6 +129,22 @@ public record ReproducibilityPlan(
       }
     }
     return List.copyOf(result);
+  }
+
+  public static boolean supportsVersion(String version) {
+    return "9.2.0".equals(version) || allowsCaptureBoundIdentity(version);
+  }
+
+  /** Only this supported release family may use capture-bound evidence without an embedded ID. */
+  public static boolean allowsCaptureBoundIdentity(String version) {
+    return version != null && version.matches("7\\.4\\.(0|[1-9][0-9]*)");
+  }
+
+  private static boolean isExecutionLogOutput(String option) {
+    return Set.of(
+            "execution_log_compact_file", "experimental_execution_log_compact_file",
+            "execution_log_binary_file", "execution_log_json_file")
+        .contains(option);
   }
 
   public boolean canLaunch() {

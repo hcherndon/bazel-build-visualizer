@@ -27,6 +27,7 @@ import com.holtherndon.bazelviz.runner.runtime.RuntimeEnvironment;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -143,6 +144,8 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
   private CaptureCoordinator b;
   private volatile CaptureCoordinator active;
   private ReproducibilityPlan protocol;
+  private String reviewedVersion = "";
+  private Path reviewedExecutable;
   private Review review;
   private State state = State.PREFLIGHT;
   private Cleanup cleanup = Cleanup.NOT_ALLOCATED;
@@ -226,11 +229,13 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
       b = new CaptureCoordinator(capture);
       bazelContacted = true;
       Preflight first = a.replan(ReproducibilityCoordinator::withoutAuxiliaryQueries);
-      Preflight second = b.replan(ReproducibilityCoordinator::withoutAuxiliaryQueries);
+      reviewedVersion = first.capabilities().bazelVersion().orElse("");
+      reviewedExecutable = first.executable().resolved();
       protocol =
           ReproducibilityPlan.controlled(
               parsed.toBuilder().executable(first.executable().resolved()).build(),
               owned.outputBase());
+      Preflight second = b.replan(ReproducibilityCoordinator::withoutAuxiliaryQueries);
       checkCancelled();
       return installReview(first, second);
     } catch (InterruptedException interrupted) {
@@ -278,28 +283,44 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
         blockers.add(
             "Both builds require a captured execution log; vetoing it disables this audit.");
       }
+      try {
+        ExecutionLogBinding.plannedPath(preflight.plan());
+      } catch (IOException invalid) {
+        blockers.add(invalid.getMessage());
+      }
     }
     List<String> reviewNotices =
-        List.of(
-            "Controlled audit: rc files are ignored. This is not the workspace's normal configured"
-                + " build.",
-            "The reviewed commands request execution on the selected machine, with no disk/remote"
-                + " action cache. Recorded cached/remote spawns stop the audit; unknown runners are"
-                + " coverage gaps. Repository download caches remain enabled.",
-            "Source checks include dirty and untracked files; .git and the standard root"
-                + " bazel-bin/out/testlogs/workspace links are excluded. Other symlinks, special"
-                + " files and exceeded bounds stop the audit.",
-            "The lease prevents other app captures, not edits or builds from external terminals."
-                + " Permission changes, transient edits and inputs outside the repository are not"
-                + " fully checked.",
-            "Version checks do not prove that a trusted wrapper or tool installation behaves"
-                + " identically. Launcher hashes are compared when available during preflight;"
-                + " later external tool changes are not fully checked.",
-            "Auxiliary aquery/cquery commands are deferred; they do not run between A and B.",
-            "Ordinary clean does not reset every worker, host or network state. Equal recorded"
-                + " results never prove hermeticity.",
-            "Raw sessions and the private operation record are retained. A's output file contents"
-                + " are not retained before the second clean.");
+        new ArrayList<>(
+            List.of(
+                "Controlled audit: rc files are ignored. This is not the workspace's normal"
+                    + " configured build.",
+                "The reviewed commands request execution on the selected machine, with no"
+                    + " disk/remote action cache. Recorded cached/remote spawns stop the audit;"
+                    + " unknown runners are coverage gaps. Repository download caches remain"
+                    + " enabled.",
+                "Source checks include dirty and untracked files; .git and the standard root"
+                    + " bazel-bin/out/testlogs/workspace links are excluded. Other symlinks,"
+                    + " special files and exceeded bounds stop the audit.",
+                "The lease prevents other app captures, not edits or builds from external"
+                    + " terminals. Permission changes, transient edits and inputs outside the"
+                    + " repository are not fully checked.",
+                "Version checks do not prove that a trusted wrapper or tool installation behaves"
+                    + " identically. Launcher hashes are compared when available during preflight;"
+                    + " later external tool changes are not fully checked.",
+                "Auxiliary aquery/cquery commands are deferred; they do not run between A and B.",
+                "Ordinary clean does not reset every worker, host or network state. Equal recorded"
+                    + " results never prove hermeticity.",
+                "Raw sessions and the private operation record are retained. A's output file"
+                    + " contents are not retained before the second clean."));
+    if (ReproducibilityPlan.allowsCaptureBoundIdentity(reviewedVersion)) {
+      reviewNotices.add(
+          "Bazel "
+              + reviewedVersion
+              + " compact logs have no embedded invocation ID. This audit"
+              + " uses capture-bound evidence: distinct fresh app-owned paths, successful complete"
+              + " BES captures, successful preservation and recorded checksums. Embedded invocation"
+              + " identity is not independently verified.");
+    }
     review =
         new Review(
             journal.directory(),
@@ -309,6 +330,8 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
             blockers.stream().distinct().toList(),
             reviewNotices);
     state = State.REVIEW;
+    journal.put("bazelVersion", reviewedVersion);
+    journal.put("bazelExecutable", reviewedExecutable.toString());
     journal.put("state", state.name());
     return review;
   }
@@ -354,12 +377,12 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
       RepositorySnapshot.Result before = snapshot(Step.SNAPSHOT_BEFORE, root, "before");
       clean(Step.CLEAN_A);
       first = capture(Step.BUILD_A, a, "A");
-      preserve(Step.PRESERVE_A, first);
+      preserve(Step.PRESERVE_A, first, a, Optional.empty());
       RepositorySnapshot.Result between = snapshot(Step.SNAPSHOT_BETWEEN, root, "between");
       requireUnchanged(before, between);
       clean(Step.CLEAN_B);
       second = capture(Step.BUILD_B, b, "B");
-      preserve(Step.PRESERVE_B, second);
+      preserve(Step.PRESERVE_B, second, b, a.executionLogReceipt());
       RepositorySnapshot.Result after = snapshot(Step.SNAPSHOT_AFTER, root, "after");
       requireUnchanged(before, after);
       state = State.CAPTURED;
@@ -441,6 +464,12 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
 
   private void verifyOutputBase() throws IOException, InterruptedException {
     owned.validate();
+    if (!ReproducibilityPlan.supportsVersion(reviewedVersion)
+        || reviewedExecutable == null
+        || !protocol.outputBaseProbe().executable().equals(reviewedExecutable)) {
+      throw new IOException(
+          "No supported reviewed executable/version is available for private-base cleanup.");
+    }
     String version =
         runHelper(
                 protocol.outputBaseProbe().toBuilder()
@@ -449,20 +478,25 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
                     .targets(List.of())
                     .build())
             .strip();
-    if (!version
-        .lines()
-        .filter(line -> line.startsWith("bazel "))
-        .toList()
-        .equals(List.of("bazel 9.2.0"))) {
-      throw new IOException(
-          "The selected Bazel version changed or cannot be verified. Refusing private-base"
-              + " cleanup.");
-    }
+    requireReviewedVersion(reviewedVersion, version);
     String observed = runHelper(protocol.outputBaseProbe()).strip();
     if (!observed.equals(owned.outputBase())
         || !files.canonicalize(files.path(observed)).value().equals(owned.outputBase())) {
       throw new IOException(
           "Bazel resolved a different output base. Refusing to clean or shut down it.");
+    }
+  }
+
+  static void requireReviewedVersion(String expected, String output) throws IOException {
+    if (!ReproducibilityPlan.supportsVersion(expected)
+        || !output
+            .lines()
+            .filter(line -> line.startsWith("bazel "))
+            .toList()
+            .equals(List.of("bazel " + expected))) {
+      throw new IOException(
+          "The selected Bazel version changed or cannot be verified. Refusing private-base"
+              + " cleanup.");
     }
   }
 
@@ -511,35 +545,32 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
     journal.put("session" + name, result.sessionRoot().toString());
   }
 
-  private void preserve(Step stage, CaptureResult capture) throws IOException {
+  private void preserve(
+      Step stage,
+      CaptureResult capture,
+      CaptureCoordinator coordinator,
+      Optional<CaptureCoordinator.ExecutionLogReceipt> previous)
+      throws IOException {
     checkCancelled();
     step(stage);
     Path local =
         executionLogPath(capture)
             .orElseThrow(
                 () -> new IOException("An unambiguous managed execution log was not planned."));
-    if (!Files.isRegularFile(local) || Files.size(local) == 0) {
+    if (!Files.isRegularFile(local, LinkOption.NOFOLLOW_LINKS) || Files.size(local) == 0) {
       throw new IOException(
           "The execution log was not preserved locally; the next clean is refused.");
     }
-    List<String> invocationIds =
-        capture.capture().orElseThrow().streams().stream()
-            .map(stream -> stream.key().invocationId())
-            .filter(value -> !value.isBlank())
-            .distinct()
-            .toList();
-    if (invocationIds.size() != 1) {
-      throw new IOException(
-          "The build did not establish one unambiguous invocation identity; the next clean is"
-              + " refused.");
-    }
+    String invocationId = ExecutionLogBinding.singleInvocationId(capture);
     var verified =
-        ExecutionLogComparison.verify(
-            local, journal.directory(), invocationIds.getFirst(), cancelled::get);
-    if (!verified.invocationMatched()) {
-      throw new IOException(
-          "The preserved execution log cannot be bound to this build; the next clean is refused.");
-    }
+        ExecutionLogComparison.verify(local, journal.directory(), invocationId, cancelled::get);
+    ExecutionLogBinding.Identity binding =
+        ExecutionLogBinding.verify(
+            reviewedVersion, capture, coordinator.executionLogReceipt(), verified, previous);
+    String bindingNotice = binding.notice(reviewedVersion, stage == Step.PRESERVE_A ? "A" : "B");
+    journal.put("execution." + stage.name() + ".evidenceBinding", binding.name());
+    journal.put("execution." + stage.name() + ".evidenceBindingNotice", bindingNotice);
+    notices.add(bindingNotice);
     journal.put("execution." + stage.name() + ".sha256", verified.sha256());
     journal.put("execution." + stage.name() + ".records", Long.toString(verified.records()));
     journal.put("execution." + stage.name() + ".spawns", Long.toString(verified.spawns()));
@@ -856,6 +887,10 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
       }
     }
     for (String phase : List.of("PRESERVE_A", "PRESERVE_B")) {
+      String binding = record.getProperty("execution." + phase + ".evidenceBindingNotice");
+      if (binding != null) {
+        notices.add(binding);
+      }
       String count = record.getProperty("execution." + phase + ".unknownRunnerSpawns");
       if (count != null && !count.equals("0")) {
         notices.add(

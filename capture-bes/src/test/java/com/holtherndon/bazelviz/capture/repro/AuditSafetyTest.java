@@ -4,15 +4,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+import com.holtherndon.bazelviz.capture.bes.BesStreamKey;
+import com.holtherndon.bazelviz.capture.bes.BesStreamState;
 import com.holtherndon.bazelviz.capture.live.CaptureCoordinator;
+import com.holtherndon.bazelviz.capture.live.CaptureCoordinator.ExecutionLogReceipt;
 import com.holtherndon.bazelviz.capture.live.CaptureRequest;
 import com.holtherndon.bazelviz.capture.live.CaptureResult;
+import com.holtherndon.bazelviz.capture.live.CaptureSummary;
 import com.holtherndon.bazelviz.core.id.SessionId;
 import com.holtherndon.bazelviz.core.session.SessionState;
+import com.holtherndon.bazelviz.core.source.DataSource;
+import com.holtherndon.bazelviz.enrich.repro.ExecutionLogComparison.Verification;
+import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
+import com.holtherndon.bazelviz.runner.caps.Capability;
+import com.holtherndon.bazelviz.runner.caps.CapabilityStatus;
 import com.holtherndon.bazelviz.runner.command.BazelCommand;
 import com.holtherndon.bazelviz.runner.files.LocalExecutionFileSystem;
+import com.holtherndon.bazelviz.runner.plan.AddedFlag;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
+import com.holtherndon.bazelviz.runner.plan.InstrumentationPlanner;
+import com.holtherndon.bazelviz.runner.plan.Overhead;
 import com.holtherndon.bazelviz.runner.plan.SourceAvailability;
 import com.holtherndon.bazelviz.runner.proc.ProcessOutcome;
 import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
@@ -29,6 +41,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -36,6 +49,281 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 final class AuditSafetyTest {
+  @Test
+  void cleanAndShutdownRequireTheExactSupportedReviewedVersion() throws Exception {
+    for (String version : List.of("7.4.0", "7.4.1", "9.2.0")) {
+      ReproducibilityCoordinator.requireReviewedVersion(
+          version, "Bazelisk version: v1.27.0\nbazel " + version + "\n");
+      for (String reported :
+          List.of(
+              "bazel 7.4.2",
+              "bazel 9.2.1",
+              "bazel " + version + "-fork",
+              "bazel " + version + "\nbazel " + version,
+              "unknown")) {
+        assertThatThrownBy(
+                () -> ReproducibilityCoordinator.requireReviewedVersion(version, reported))
+            .isInstanceOf(IOException.class);
+      }
+    }
+    assertThatThrownBy(
+            () -> ReproducibilityCoordinator.requireReviewedVersion("7.4.0rc1", "bazel 7.4.0rc1"))
+        .isInstanceOf(IOException.class);
+  }
+
+  @Test
+  void missingEmbeddedIdentityUsesOnly74CompactCaptureBoundEvidence(@TempDir Path temporary)
+      throws Exception {
+    CaptureResult capture = bindingCapture(temporary);
+    Optional<ExecutionLogReceipt> receipt = Optional.of(receipt(capture));
+    Verification legacy = verification(true, true, Optional.empty(), false);
+    for (String version : List.of("7.4.0", "7.4.1")) {
+      var binding = ExecutionLogBinding.verify(version, capture, receipt, legacy, Optional.empty());
+      assertThat(binding).isEqualTo(ExecutionLogBinding.Identity.CAPTURE_BOUND_7_4);
+      assertThat(binding.notice(version, "A"))
+          .contains("capture-bound", "no embedded invocation ID");
+    }
+    for (String version : List.of("9.2.0", "7.3.2", "7.4.0rc1")) {
+      assertThatThrownBy(
+              () -> ExecutionLogBinding.verify(version, capture, receipt, legacy, Optional.empty()))
+          .isInstanceOf(IOException.class);
+    }
+    for (Verification unsupported :
+        List.of(
+            verification(false, false, Optional.empty(), false),
+            verification(true, false, Optional.empty(), false),
+            verification(true, true, Optional.of("wrong-invocation"), false))) {
+      assertThatThrownBy(
+              () ->
+                  ExecutionLogBinding.verify(
+                      "7.4.1", capture, receipt, unsupported, Optional.empty()))
+          .isInstanceOf(IOException.class);
+    }
+    for (String version : List.of("9.2.0", "7.4.1")) {
+      assertThat(
+              ExecutionLogBinding.verify(
+                  version,
+                  capture,
+                  receipt,
+                  verification(true, true, Optional.of("invocation"), true),
+                  Optional.empty()))
+          .isEqualTo(ExecutionLogBinding.Identity.EMBEDDED_INVOCATION_ID);
+    }
+  }
+
+  @Test
+  void bindingRequiresMatchingFreshReceiptAndDistinctRunPaths(@TempDir Path temporary)
+      throws Exception {
+    CaptureResult capture = bindingCapture(temporary);
+    Verification legacy = verification(true, true, Optional.empty(), false);
+    ExecutionLogReceipt receipt = receipt(capture);
+    assertThatThrownBy(
+            () ->
+                ExecutionLogBinding.verify(
+                    "7.4.1", capture, Optional.empty(), legacy, Optional.empty()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("receipt");
+    for (ExecutionLogReceipt wrong :
+        List.of(
+            new ExecutionLogReceipt(temporary.resolve("other-source"), receipt.localPath()),
+            new ExecutionLogReceipt(receipt.executionPath(), temporary.resolve("other-local")))) {
+      assertThatThrownBy(
+              () ->
+                  ExecutionLogBinding.verify(
+                      "7.4.1", capture, Optional.of(wrong), legacy, Optional.empty()))
+          .isInstanceOf(IOException.class);
+    }
+    for (ExecutionLogReceipt previous :
+        List.of(
+            receipt,
+            new ExecutionLogReceipt(receipt.executionPath(), temporary.resolve("previous-local")),
+            new ExecutionLogReceipt(temporary.resolve("previous-source"), receipt.localPath()))) {
+      assertThatThrownBy(
+              () ->
+                  ExecutionLogBinding.verify(
+                      "7.4.1", capture, Optional.of(receipt), legacy, Optional.of(previous)))
+          .isInstanceOf(IOException.class)
+          .hasMessageContaining("distinct");
+    }
+    Path saved = temporary.resolve("saved-log");
+    Files.move(receipt.localPath(), saved);
+    Files.createSymbolicLink(receipt.localPath(), saved);
+    assertThatThrownBy(
+            () ->
+                ExecutionLogBinding.verify(
+                    "7.4.1", capture, Optional.of(receipt), legacy, Optional.empty()))
+        .isInstanceOf(IOException.class);
+    Files.delete(receipt.localPath());
+    assertThatThrownBy(
+            () ->
+                ExecutionLogBinding.verify(
+                    "7.4.1", capture, Optional.of(receipt), legacy, Optional.empty()))
+        .isInstanceOf(IOException.class);
+  }
+
+  @Test
+  void bindingRejectsUnreviewedOrUserOwnedLogFlags(@TempDir Path temporary) throws Exception {
+    InstrumentationPlan plan = bindingCapture(temporary).plan();
+    assertThat(ExecutionLogBinding.plannedPath(plan)).isEqualTo(plan.expectedOutputs().getFirst());
+    for (InstrumentationPlan invalid :
+        List.of(
+            bindingPlan(
+                plan.original().toBuilder().commandArgs(plan.effective().commandArgs()).build(),
+                plan.effective(),
+                plan.addedFlags(),
+                plan.expectedOutputs()),
+            bindingPlan(
+                plan.original(),
+                plan.effective().toBuilder()
+                    .commandArgs(List.of("--execution_log_compact_file=/stale/log.zst"))
+                    .build(),
+                plan.addedFlags(),
+                plan.expectedOutputs()),
+            bindingPlan(plan.original(), plan.effective(), List.of(), plan.expectedOutputs()),
+            bindingPlan(plan.original(), plan.effective(), plan.addedFlags(), List.of()))) {
+      assertThatThrownBy(() -> ExecutionLogBinding.plannedPath(invalid))
+          .isInstanceOf(IOException.class);
+    }
+  }
+
+  @Test
+  void bindingRequiresKnownSuccessfulCompleteSingleInvocation(@TempDir Path temporary)
+      throws Exception {
+    CaptureResult capture = bindingCapture(temporary);
+    var receipt = Optional.of(receipt(capture));
+    Verification legacy = verification(true, true, Optional.empty(), false);
+    for (Optional<ProcessOutcome> process :
+        List.of(
+            Optional.<ProcessOutcome>empty(),
+            Optional.of(ProcessOutcome.exited(1, Duration.ZERO)),
+            Optional.of(ProcessOutcome.exited(255, Duration.ZERO)))) {
+      CaptureResult invalid =
+          new CaptureResult(
+              capture.sessionRoot(),
+              capture.sessionId(),
+              capture.state(),
+              capture.plan(),
+              process,
+              capture.capture(),
+              List.of());
+      assertThatThrownBy(
+              () -> ExecutionLogBinding.verify("7.4.1", invalid, receipt, legacy, Optional.empty()))
+          .isInstanceOf(IOException.class);
+    }
+    for (CaptureSummary summary :
+        List.of(
+            new CaptureSummary(
+                2, 1, 1, 0, 0, 1, List.of(finishedStream("invocation")), false, Optional.empty()),
+            summary(List.of(finishedStream("invocation"), finishedStream("other"))),
+            summary(List.of(finishedStream("invocation"), finishedStream(""))))) {
+      CaptureResult invalid =
+          new CaptureResult(
+              capture.sessionRoot(),
+              capture.sessionId(),
+              capture.state(),
+              capture.plan(),
+              capture.process(),
+              Optional.of(summary),
+              List.of());
+      assertThatThrownBy(
+              () -> ExecutionLogBinding.verify("7.4.1", invalid, receipt, legacy, Optional.empty()))
+          .isInstanceOf(IOException.class);
+    }
+  }
+
+  @Test
+  void reopenedOperationRetainsCaptureBoundIdentityDisclosure(@TempDir Path temporary)
+      throws Exception {
+    AuditJournal journal = new AuditJournal(temporary);
+    String notice = ExecutionLogBinding.Identity.CAPTURE_BOUND_7_4.notice("7.4.1", "A");
+    journal.put("execution.PRESERVE_A.evidenceBinding", "CAPTURE_BOUND_7_4");
+    journal.put("execution.PRESERVE_A.evidenceBindingNotice", notice);
+    assertThat(ReproducibilityCoordinator.readSavedOperation(journal.directory()).notices())
+        .contains(notice);
+  }
+
+  private static CaptureResult bindingCapture(Path session) throws IOException {
+    Path raw = Files.createDirectories(ManagedSessionLayout.at(session).rawDirectory());
+    Path log =
+        Files.writeString(raw.resolve(InstrumentationPlanner.EXECUTION_LOG_FILE), "test evidence");
+    BazelCommand command =
+        BazelCommand.builder(Path.of("/bazel"), session).command("build").build();
+    String argument = "--execution_log_compact_file=" + log;
+    AddedFlag flag =
+        new AddedFlag(
+            argument,
+            AddedFlag.Placement.COMMAND,
+            Capability.EXECUTION_LOG_COMPACT,
+            CapabilityStatus.SUPPORTED,
+            "test",
+            DataSource.EXECUTION_LOG,
+            Overhead.MEDIUM,
+            Optional.of(log),
+            true,
+            true);
+    InstrumentationPlan plan =
+        bindingPlan(
+            command,
+            command.toBuilder().commandArgs(List.of(argument)).build(),
+            List.of(flag),
+            List.of(log));
+    return new CaptureResult(
+        session,
+        SessionId.random(),
+        SessionState.READY,
+        plan,
+        Optional.of(ProcessOutcome.exited(0, Duration.ZERO)),
+        Optional.of(summary(List.of(finishedStream("invocation")))),
+        List.of());
+  }
+
+  private static InstrumentationPlan bindingPlan(
+      BazelCommand original, BazelCommand effective, List<AddedFlag> flags, List<Path> outputs) {
+    return new InstrumentationPlan(
+        original,
+        effective,
+        flags,
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        outputs,
+        new SourceAvailability(Map.of()),
+        CapturePreset.defaultPreset());
+  }
+
+  private static CaptureSummary summary(List<BesStreamState> streams) {
+    return new CaptureSummary(
+        streams.size(), streams.size(), streams.size(), 0, 0, 1, streams, false, Optional.empty());
+  }
+
+  private static BesStreamState finishedStream(String invocation) {
+    return new BesStreamState(
+        new BesStreamKey("build", invocation, "TOOL"),
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        OptionalLong.of(1),
+        OptionalLong.of(2),
+        BesStreamState.Completion.FINISHED,
+        Optional.empty());
+  }
+
+  private static ExecutionLogReceipt receipt(CaptureResult capture) {
+    Path path = ReproducibilityCoordinator.executionLogPath(capture).orElseThrow();
+    return new ExecutionLogReceipt(path, path);
+  }
+
+  private static Verification verification(
+      boolean compact, boolean header, Optional<String> identity, boolean matched) {
+    return new Verification(
+        1, 1, "ab".repeat(32), matched, compact, header, identity, 0, 0, 0, List.of());
+  }
+
   @Test
   void unknownSshOutcomeSurvivesLocalJournalFailureAndRetainsPrivateBase(@TempDir Path temporary)
       throws Exception {

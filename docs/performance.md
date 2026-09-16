@@ -105,6 +105,12 @@ untracked files. Per-snapshot entry, depth, file-size and total-byte limits
 refuse oversized work. On SSH Workspaces this includes remote filesystem I/O;
 no end-to-end audit latency or remote throughput measurement is claimed.
 
+Bazel 7.4 compatibility adds a fixed number of file metadata/path checks per
+run, not an extra repository scan or execution-log copy. Its capture-bound
+identity uses the existing bounded log verification and checksum pass. SSH
+preservation remains streaming; a failed or uncertain transfer cannot qualify
+an older log for the automatic second build.
+
 Execution-log verification and comparison take bounded local snapshots before
 decoding. Default per-log ceilings are 512 MiB raw, 2 GiB expanded, 4 MiB per
 record and two million records. Compact zstd frame windows are inspected before

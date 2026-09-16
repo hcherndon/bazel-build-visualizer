@@ -38,6 +38,9 @@ public final class BazelBinary {
   /** Environment variable Bazelisk reads to choose a Bazel version. */
   public static final String VERSION_ENV = "USE_BAZEL_VERSION";
 
+  /** Selects one protocol-fixture release without adding a sweep to ordinary test runs. */
+  public static final String REPRODUCIBILITY_VERSION_ENV = "BBV_REPRO_BAZEL_VERSION";
+
   private BazelBinary() {}
 
   /**
@@ -89,6 +92,20 @@ public final class BazelBinary {
   /** The versions this project targets, for tests that sweep the range. */
   public static List<String> targetedVersions() {
     return List.of("6.5.0", "7.6.1", "8.4.1", "9.2.0");
+  }
+
+  /**
+   * One explicitly selected real-Bazel reproducibility fixture version, defaulting to 9.2.0. Run
+   * 7.4.0 and 7.4.1 in separate scoped test invocations, never as an automatic matrix.
+   */
+  public static String reproducibilityFixtureVersion() {
+    String selected = System.getenv(REPRODUCIBILITY_VERSION_ENV);
+    if (selected == null || selected.isBlank()) return "9.2.0";
+    if (!List.of("9.2.0", "7.4.0", "7.4.1").contains(selected)) {
+      throw new IllegalArgumentException(
+          REPRODUCIBILITY_VERSION_ENV + " must select exactly one of 9.2.0, 7.4.0, or 7.4.1.");
+    }
+    return selected;
   }
 
   private static Optional<Path> onPath(String name) {

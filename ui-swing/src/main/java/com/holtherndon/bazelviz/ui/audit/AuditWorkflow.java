@@ -94,8 +94,8 @@ public final class AuditWorkflow {
                 + " your\n"
                 + "ordinary rc-configured build. Source files must stay unchanged during the"
                 + " check.\n"
-                + "Bazel 9.2.0 is required. Builds still execute repository code on the selected"
-                + " machine.\n\n"
+                + "Bazel 7.4.x or 9.2.0 is required. Builds still execute repository code on the"
+                + " selected machine.\n\n"
                 + "The next screen shows the exact commands, changes and capture settings.\n"
                 + "After approval, both builds run automatically. Their captures are linked as\n"
                 + "run A/B, and the comparison opens automatically when the check finishes.",
@@ -341,7 +341,7 @@ public final class AuditWorkflow {
                     notes.add(
                         "One or both verified execution logs are unavailable. Retained run sessions"
                             + " can still be inspected.");
-                  view.setContextNotes(notes);
+                  view.setContextNotes(notes.stream().distinct().toList());
                   updateSources();
                   // Failed or cancelled runs remain inspectable even when no complete log was
                   // preserved.

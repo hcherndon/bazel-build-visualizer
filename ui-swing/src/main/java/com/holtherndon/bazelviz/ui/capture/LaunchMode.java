@@ -29,7 +29,7 @@ public enum LaunchMode {
   public String tooltip() {
     if (this == HERMETICITY_DIAGNOSTIC) {
       return "Review the diagnostic commands, run two clean/build cycles in a private output base,"
-          + " then open their linked comparison automatically. Requires Bazel 9.2.0 and a"
+          + " then open their linked comparison automatically. Requires Bazel 7.4.x or 9.2.0 and a"
           + " build command; ignores bazelrc files and disables build-cache reuse. Matching"
           + " builds do not prove hermeticity.";
     }
