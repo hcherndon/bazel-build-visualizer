@@ -12,7 +12,11 @@ unrecorded clock, network service, host file or environment value. See
    Hermeticity diagnostic**, enter a `build` command such as `build //my/package:app`,
    and press **Run diagnostic**.
 2. Review the single confirmation screen. It explains the private output base,
-   rc-free configuration and cost. Exact commands and optional capture settings
+   configuration and cost. Normal system, user and repository rc files are
+   **enabled by default**, including named `--config` definitions. Select
+   **Ignore rc files** only to compare builds without those settings. Changing
+   the checkbox refreshes both plans and returns to review; it never starts a
+   build. Exact commands and optional capture settings
    are under **Commands & capture**; inspecting each capture is not required.
    The protocol requires
    **Bazel 7.4.x or 9.2.0**, confirmed capabilities, and execution on the Workspace's
@@ -40,16 +44,21 @@ start either build. A failed flag probe, unsupported compact logs or conflicting
 output option has its own explanation. Do not add an execution-log flag manually:
 the app must choose a fresh private output file for each build.
 
-This is a deliberately controlled experiment, **not your usual rc-configured
-build**. It ignores system, user and repository bazelrc files, disables disk and
-remote action caches and remote execution, limits the build to two jobs, and
+This is a deliberately controlled experiment. It preserves normal rc settings
+unless **Ignore rc files** is checked, but explicitly overrides rc defaults for
+its private output base, disabled disk/remote action caches and remote execution,
+protected convenience links, and resource limits. Review these differences in
+**Protocol changes**. It limits the build to two jobs and
 does not update `MODULE.bazel.lock`. It uses one private Bazel server with a
 1 GiB Java heap cap. Repository download caches can still be reused, and an
 ordinary `clean` does not promise a fully cold operating system or worker state.
 
 Only `build` is supported initially. Shell mode, explicit startup options,
-arguments after `--`, `--config`, conflicting isolation/cache flags and explicit
-remote or dynamic execution strategies are refused. Required evidence cannot
+arguments after `--`, conflicting command-line isolation/cache flags and
+remote or dynamic execution strategies are refused. `--config` is supported
+when rc files are enabled; it is a setup blocker when they are ignored.
+If rc option inspection fails, fix the configuration and retry or explicitly
+choose **Ignore rc files**. Required evidence cannot
 be vetoed while retaining the audit label. Builds still execute repository
 code: run checks only in repositories you trust.
 
@@ -72,10 +81,19 @@ audit. Ordinary directories with a `bazel-*` name are not automatically skipped.
 File permissions, external inputs and changes made and reverted between
 snapshots are not proven unchanged by this byte-level check.
 
+With rc files enabled, the observed build options are rechecked before each
+clean and changed or unavailable answers stop the diagnostic. This is not a
+complete snapshot of configuration: rc files outside the repository, startup
+settings and helper-specific rc sections are not fully covered by those option
+checks. Bazel's textual rc announcements cannot preserve every argument boundary.
+Keep all configuration unchanged throughout the operation. The saved audit
+records whether rc files were read or ignored; older audit records are rc-free.
+
 Both builds use the same newly owned private output base. Before every clean,
 the app checks Bazel's resolved output-base path. `--symlink_prefix=/` protects
 the Workspace's usual `bazel-bin`, `bazel-out`, `bazel-testlogs` and workspace
-links. The app does not clean your normal output base.
+links. Clean explicitly uses `--noexpunge --noasync`, overriding rc clean modes.
+The app does not clean your normal output base.
 
 On success, the app shuts down its own server and removes only its verified
 private base. Cancellation or failure stops subsequent builds. If an SSH

@@ -42,7 +42,14 @@ final class AuditReviewDialogTest {
           var content = AuditReviewDialog.content(review(List.of()), choices::add);
           assertThat(choices).isEmpty();
           assertThat(content.run().isEnabled()).isTrue();
-          assertThat(controls(content.panel(), JCheckBox.class)).isEmpty();
+          assertThat(controls(content.panel(), JCheckBox.class))
+              .singleElement()
+              .satisfies(
+                  checkbox -> {
+                    assertThat(checkbox.getText()).isEqualTo("Ignore rc files");
+                    assertThat(checkbox.isSelected()).isFalse();
+                    assertThat(checkbox.isEnabled()).isTrue();
+                  });
           assertThat(controls(content.panel(), JTextArea.class))
               .anyMatch(
                   area -> area.getText().contains("Run both builds approves two uncached builds"));
@@ -61,6 +68,68 @@ final class AuditReviewDialogTest {
               controls((Container) blocked.tabs().getComponentAt(0), SectionPane.class).getFirst();
           assertThat(controls(firstSection, JTextArea.class))
               .anyMatch(area -> area.getText().equals("Execution log was declined"));
+        });
+  }
+
+  @Test
+  void rcModeCanBeChangedInEitherDirectionEvenWhenLaunchIsBlocked() throws Exception {
+    SwingUtilities.invokeAndWait(
+        () -> {
+          for (boolean ignoreRcFiles : List.of(false, true)) {
+            for (List<String> blockers :
+                List.of(List.<String>of(), List.of("Resolve required capture option"))) {
+              List<AuditReviewDialog.Choice> choices = new ArrayList<>();
+              var content =
+                  AuditReviewDialog.content(
+                      review(blockers, Set.of(), ignoreRcFiles), choices::add);
+              JCheckBox checkbox = controls(content.panel(), JCheckBox.class).getFirst();
+              assertThat(checkbox.isSelected()).isEqualTo(ignoreRcFiles);
+              assertThat(checkbox.isEnabled()).isTrue();
+              assertThat(choices).isEmpty();
+              checkbox.doClick();
+              assertThat(choices)
+                  .containsExactly(
+                      ignoreRcFiles
+                          ? AuditReviewDialog.Choice.USE_RC_FILES
+                          : AuditReviewDialog.Choice.IGNORE_RC_FILES);
+              assertThat(content.run().isEnabled()).isEqualTo(blockers.isEmpty());
+            }
+          }
+        });
+  }
+
+  @Test
+  void configurationCopyAndCommandsDescribeTheReviewedMode() throws Exception {
+    SwingUtilities.invokeAndWait(
+        () -> {
+          for (boolean ignoreRcFiles : List.of(false, true)) {
+            var content =
+                AuditReviewDialog.content(review(List.of(), Set.of(), ignoreRcFiles), choice -> {});
+            String mode = ignoreRcFiles ? "ignored" : "enabled";
+            assertThat(content.run().getToolTipText()).contains("rc files " + mode);
+            List<JTextArea> text = controls(content.panel(), JTextArea.class);
+            assertThat(text)
+                .anyMatch(
+                    area ->
+                        area.getText()
+                            .equals(
+                                "Run both builds approves two uncached builds with rc files "
+                                    + mode
+                                    + "."));
+            assertThat(text)
+                .anyMatch(
+                    area ->
+                        area.getText()
+                            .contains(
+                                ignoreRcFiles
+                                    ? "ignores system, user and workspace rc files"
+                                    : "reads your normal system, user and workspace rc files"));
+            assertThat(
+                    text.stream()
+                        .anyMatch(area -> area.getText().contains("--ignore_all_rc_files")))
+                .isEqualTo(ignoreRcFiles);
+            assertThat(text).anyMatch(area -> area.getText().contains("over rc settings"));
+          }
         });
   }
 
@@ -139,7 +208,9 @@ final class AuditReviewDialogTest {
                   });
           assertThat(text)
               .anyMatch(
-                  area -> area.getText().contains("ignores system, user and workspace rc files"));
+                  area ->
+                      area.getText()
+                          .contains("reads your normal system, user and workspace rc files"));
           assertThat(text).anyMatch(area -> area.getText().contains("/private/audit/output-base"));
         });
   }
@@ -166,6 +237,11 @@ final class AuditReviewDialogTest {
   }
 
   private static Review review(List<String> blockers, Set<Capability> vetoed) {
+    return review(blockers, vetoed, false);
+  }
+
+  private static Review review(
+      List<String> blockers, Set<Capability> vetoed, boolean ignoreRcFiles) {
     Path executable = Path.of("/usr/bin/bazel");
     Path workspace = Path.of("/workspace");
     BazelCommand original =
@@ -174,7 +250,9 @@ final class AuditReviewDialogTest {
             .targets(List.of("//..."))
             .build();
     ReproducibilityPlan protocol =
-        ReproducibilityPlan.controlled(original, "/private/audit/output-base");
+        ignoreRcFiles
+            ? ReproducibilityPlan.controlled(original, "/private/audit/output-base", true)
+            : ReproducibilityPlan.controlled(original, "/private/audit/output-base");
     BazelCapabilities capabilities = BazelCapabilities.unprobed("inert UI fixture");
     InstrumentationPlan plan =
         new InstrumentationPlan(

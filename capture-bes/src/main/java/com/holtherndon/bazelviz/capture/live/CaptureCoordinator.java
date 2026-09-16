@@ -341,7 +341,12 @@ public final class CaptureCoordinator implements AutoCloseable {
                 provisionalRaw,
                 Optional.of(endpoint.besBackendUri()))
             .withEffectiveOptions(
-                EffectiveOptions.resolve(executable.resolved(), localWorkingDirectory, original));
+                // The managed audit owns configuration inspection, including unknown-outcome
+                // tracking. Do not issue an untracked duplicate probe before its review.
+                request.options().deferAuxiliaryProcessing()
+                    ? Optional.empty()
+                    : EffectiveOptions.resolve(
+                        executable.resolved(), localWorkingDirectory, original));
 
     preflight =
         new Preflight(
@@ -417,11 +422,13 @@ public final class CaptureCoordinator implements AutoCloseable {
                   Optional.of(reverseForward.besBackendUri().toString()))
               .withRemoteDestinations()
               .withEffectiveOptions(
-                  EffectiveOptions.resolve(
-                      executable.resolved().toString(),
-                      workingDirectory,
-                      original,
-                      commandExecutor));
+                  request.options().deferAuxiliaryProcessing()
+                      ? Optional.empty()
+                      : EffectiveOptions.resolve(
+                          executable.resolved().toString(),
+                          workingDirectory,
+                          original,
+                          commandExecutor));
 
       Preflight.RemoteDetails remote =
           new Preflight.RemoteDetails(

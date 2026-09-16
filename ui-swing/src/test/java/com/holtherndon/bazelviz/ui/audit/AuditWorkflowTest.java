@@ -91,6 +91,41 @@ final class AuditWorkflowTest {
   }
 
   @Test
+  void reopeningUsesTheSavedRcPolicyAndKeepsLegacyRecordsIgnored() throws Exception {
+    for (String rcPolicy : List.of("READ", "IGNORE", "")) {
+      Fixture fixture = fixture(State.CANCELLED, false, rcPolicy);
+      Harness harness = harness();
+      try {
+        edt(
+            () -> {
+              harness.workflow().captureFinished(fixture.result());
+              return null;
+            });
+        await(() -> harness.host().revealed == 1);
+        edt(
+            () -> {
+              String coverage = area(harness.view(), "hermeticity.coverage").getText();
+              assertThat(coverage).contains("Two matching runs do not prove hermeticity.");
+              if (rcPolicy.equals("READ")) {
+                assertThat(coverage)
+                    .contains("Normal rc files and named configs are enabled")
+                    .doesNotContain("Rc files are ignored", "rc-free");
+              } else {
+                assertThat(coverage)
+                    .contains("Rc files are ignored for both builds and helpers")
+                    .doesNotContain("Normal rc files and named configs are enabled");
+              }
+              assertThat(table(harness.view()).getRowCount()).isZero();
+              return null;
+            });
+        assertScratchEmpty();
+      } finally {
+        close(harness);
+      }
+    }
+  }
+
+  @Test
   void cancelledAndFailedPartialRunsStayLinkedWithoutStartingAPairComparison() throws Exception {
     for (State state : List.of(State.CANCELLED, State.FAILED)) {
       Fixture fixture = fixture(state, false);
@@ -179,6 +214,10 @@ final class AuditWorkflowTest {
   }
 
   private Fixture fixture(State state, boolean completePair) throws Exception {
+    return fixture(state, completePair, "");
+  }
+
+  private Fixture fixture(State state, boolean completePair, String rcPolicy) throws Exception {
     Path directory = Files.createDirectory(temporary.resolve("audit-" + UUID.randomUUID()));
     Path sessions = Files.createDirectory(directory.resolve("sessions"));
     Path a = session(sessions);
@@ -187,6 +226,7 @@ final class AuditWorkflowTest {
     Optional<Path> logB = completePair ? Optional.of(log(b.orElseThrow())) : Optional.empty();
     Properties record = new Properties();
     record.setProperty("format", "1");
+    if (!rcPolicy.isEmpty()) record.setProperty("rcPolicy", rcPolicy);
     record.setProperty("state", state.name());
     record.setProperty("cleanup", "REMOVED");
     record.setProperty("step", completePair ? "COMPARE_READY" : "BETWEEN_RUNS");

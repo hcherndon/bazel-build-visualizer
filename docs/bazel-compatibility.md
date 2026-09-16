@@ -35,13 +35,23 @@ certifications.
 ### Initial managed audit support
 
 **Console → Build mode → Hermeticity diagnostic** accepts Bazel 7.4.x and 9.2.0
-with confirmed required flags. This explicit opt-in protocol ignores all
-bazelrc files, uses a verified private output base, disables disk/remote action caches and remote
+with confirmed required flags. This explicit opt-in protocol reads normal rc
+files by default; **Ignore rc files** in review opts both builds and helpers out.
+Named configs are supported with rc files enabled. It uses a verified private
+output base, disables disk/remote action caches and remote
 execution, and prevents ordinary convenience-symlink changes. It supports
 `build` on the selected local or Linux SSH machine, not `test`, `run`, shell
 mode or a remote-execution cluster. Conflicting startup/configuration/strategy
 options are refused rather than silently overridden. A complete real Linux/SSH
 audit has not yet been measured.
+
+Small private batch fixtures on 7.4.1 and 9.2.0 verified that explicit
+`clean --noexpunge --noasync --symlink_prefix=/` overrides an rc-provided
+`--expunge_async` and preserves existing normal links and the private-base root.
+They also verified that `canonicalize-flags` expands named configs only when
+selected before its `--` separator; those selections and their nested config
+announcements are now included in option inspection. Text announcements remain
+incomplete evidence of exact argv boundaries and helper-specific rc settings.
 
 For 9.2.0, each preserved compact log must match the BES invocation ID before a
 later clean is allowed. Bazel 7.4 compact logs have no invocation ID. Their

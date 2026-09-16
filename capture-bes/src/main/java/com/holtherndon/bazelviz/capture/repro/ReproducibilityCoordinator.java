@@ -10,6 +10,7 @@ import com.holtherndon.bazelviz.format.session.SessionAuditReference;
 import com.holtherndon.bazelviz.runner.caps.Capability;
 import com.holtherndon.bazelviz.runner.command.BazelCommand;
 import com.holtherndon.bazelviz.runner.command.CommandLineParser;
+import com.holtherndon.bazelviz.runner.command.EffectiveOptions;
 import com.holtherndon.bazelviz.runner.files.ExecutionFileSystem;
 import com.holtherndon.bazelviz.runner.files.ExecutionPath;
 import com.holtherndon.bazelviz.runner.files.LocalExecutionFileSystem;
@@ -21,7 +22,9 @@ import com.holtherndon.bazelviz.runner.repro.ReproducibilityPlan;
 import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
 import com.holtherndon.bazelviz.runner.runtime.CommandRequest;
 import com.holtherndon.bazelviz.runner.runtime.CommandResult;
+import com.holtherndon.bazelviz.runner.runtime.InteractiveChannel;
 import com.holtherndon.bazelviz.runner.runtime.LocalCommandExecutor;
+import com.holtherndon.bazelviz.runner.runtime.RunningCommand;
 import com.holtherndon.bazelviz.runner.runtime.RuntimeEnvironment;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -157,7 +160,7 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
 
   /**
    * Ownership of a non-null, already acquired canonical workspace lease transfers here. The UI must
-   * have explicitly selected the controlled/no-rc protocol before calling preflight.
+   * have explicitly selected the controlled diagnostic before calling preflight.
    */
   public ReproducibilityCoordinator(
       CaptureRequest request,
@@ -191,6 +194,7 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
     }
     checkCancelled();
     journal = new AuditJournal(auditsRoot);
+    journal.put("rcPolicy", "READ");
     step(Step.PREFLIGHT);
     try {
       cleanup = Cleanup.PENDING;
@@ -227,24 +231,33 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
       a = new CaptureCoordinator(capture);
       b = new CaptureCoordinator(capture);
       bazelContacted = true;
-      Preflight first = a.replan(ReproducibilityCoordinator::withoutAuxiliaryQueries);
+      Preflight first =
+          a.replan(
+              request -> refreshConfiguration(withoutAuxiliaryQueries(request), protocol.build()));
+      if (clientOutcomeUnknown) {
+        throw new IOException(
+            "Configuration inspection ended with an unknown command outcome. No further probes"
+                + " or builds will run; the private base is retained for review.");
+      }
       reviewedVersion = first.capabilities().bazelVersion().orElse("");
       reviewedExecutable = first.executable().resolved();
       protocol =
           ReproducibilityPlan.controlled(
               parsed.toBuilder().executable(first.executable().resolved()).build(),
               owned.outputBase());
-      Preflight second = b.replan(ReproducibilityCoordinator::withoutAuxiliaryQueries);
+      Preflight second =
+          b.replan(
+              request -> refreshConfiguration(withoutAuxiliaryQueries(request), protocol.build()));
       checkCancelled();
       return installReview(first, second);
     } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
-      clientOutcomeUnknown = original.isRemote();
+      clientOutcomeUnknown |= original.isRemote();
       recordFailure("preflight interrupted");
       throw new IOException("audit preflight interrupted", interrupted);
     } catch (IOException | RuntimeException failure) {
       // A failed remote probe may have left a server client running. Never reconnect and replay it.
-      clientOutcomeUnknown = original.isRemote();
+      clientOutcomeUnknown |= original.isRemote();
       recordFailure(failure.toString());
       throw failure;
     }
@@ -261,8 +274,86 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
     return installReview(first, second);
   }
 
+  /** Changes the configuration of both unstarted captures, preserving instrumentation choices. */
+  public synchronized Review setIgnoreRcFiles(boolean ignore) throws IOException {
+    preflight();
+    if (state != State.REVIEW) throw new IllegalStateException("the audit is no longer in review");
+    if (clientOutcomeUnknown)
+      throw new IOException(
+          "A previous command outcome is unknown. Cancel this diagnostic and review the connection"
+              + " before retrying.");
+    checkCancelled();
+    protocol = ReproducibilityPlan.controlled(protocol.original(), owned.outputBase(), ignore);
+    journal.put("rcPolicy", ignore ? "IGNORE" : "READ");
+    Preflight first = a.replan(request -> refreshConfiguration(request, protocol.build()));
+    Preflight second = b.replan(request -> refreshConfiguration(request, protocol.build()));
+    checkCancelled();
+    return installReview(first, second);
+  }
+
+  private PlanRequest refreshConfiguration(PlanRequest current, BazelCommand command) {
+    BazelCommand resolved = command.toBuilder().executable(current.original().executable()).build();
+    return new PlanRequest(
+        resolved,
+        current.capabilities(),
+        current.preset(),
+        current.sessionRawDirectory(),
+        current.besEndpoint(),
+        current.vetoed(),
+        current.resolutions(),
+        current.allowOverwrite(),
+        inspectConfiguration(resolved),
+        current.destinationsAreLocal());
+  }
+
+  private Optional<List<String>> inspectConfiguration(BazelCommand command) {
+    if (clientOutcomeUnknown) return Optional.empty();
+    return EffectiveOptions.resolve(
+        command.executable().toString(),
+        original.workingDirectory(),
+        command,
+        new CommandExecutor() {
+          @Override
+          public CommandResult run(CommandRequest request, Duration timeout)
+              throws IOException, InterruptedException {
+            try {
+              CommandResult result = executor.run(request, timeout);
+              if (result.timedOut() || result.exitCode() == 255) clientOutcomeUnknown = true;
+              return result;
+            } catch (IOException | InterruptedException failure) {
+              clientOutcomeUnknown |=
+                  original.isRemote() || failure instanceof InterruptedException;
+              throw failure;
+            }
+          }
+
+          @Override
+          public CommandResult runRedirectingStdout(
+              CommandRequest request, Duration timeout, Path output) {
+            throw new UnsupportedOperationException(
+                "Configuration inspection uses bounded output capture.");
+          }
+
+          @Override
+          public RunningCommand start(CommandRequest request) {
+            throw new UnsupportedOperationException(
+                "Configuration inspection does not launch builds.");
+          }
+
+          @Override
+          public InteractiveChannel openTerminal(String directory) {
+            throw new UnsupportedOperationException(
+                "Configuration inspection does not open terminals.");
+          }
+        });
+  }
+
   private Review installReview(Preflight first, Preflight second) throws IOException {
     List<String> blockers = new ArrayList<>(protocol.capabilityBlockers(first.capabilities()));
+    if (clientOutcomeUnknown)
+      blockers.add(
+          "A command outcome is unknown. Cancel and review the connection; no build or private-base"
+              + " cleanup will run.");
     blockers.addAll(protocol.capabilityBlockers(second.capabilities()));
     if (!first.executable().resolved().equals(second.executable().resolved())
         || !first.capabilities().bazelVersion().equals(second.capabilities().bazelVersion())) {
@@ -275,6 +366,7 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
     }
     for (Preflight preflight : List.of(first, second)) {
       blockers.addAll(protocol.effectiveBlockers(preflight.plan().effective()));
+      blockers.addAll(protocol.configurationBlockers(preflight.request().effectiveOptions()));
       if (!preflight.canLaunch()) {
         blockers.add("Resolve capture instrumentation conflicts for both runs before launch.");
       }
@@ -284,8 +376,12 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
     List<String> reviewNotices =
         new ArrayList<>(
             List.of(
-                "Controlled audit: rc files are ignored. This is not the workspace's normal"
-                    + " configured build.",
+                rcPolicyNotice(protocol.ignoreRcFiles()),
+                "Audit-owned output-base, cache, convenience-link and resource flags override rc"
+                    + " defaults as shown in Protocol changes. Explicit command-line conflicts"
+                    + " must be resolved; remote/dynamic strategies are not silently replaced.",
+                "Clean is explicitly synchronous and non-expunging (--noasync --noexpunge),"
+                    + " including when rc files configure a different clean mode.",
                 "The reviewed commands request execution on the selected machine, with no"
                     + " disk/remote action cache. Recorded cached/remote spawns stop the audit;"
                     + " unknown runners are coverage gaps. Repository download caches remain"
@@ -323,6 +419,7 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
             reviewNotices);
     state = State.REVIEW;
     journal.put("bazelVersion", reviewedVersion);
+    journal.put("rcPolicy", protocol.ignoreRcFiles() ? "IGNORE" : "READ");
     journal.put("bazelExecutable", reviewedExecutable.toString());
     journal.put("state", state.name());
     return review;
@@ -367,11 +464,13 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
                                   .orElse(original.localWorkingDirectory())
                                   .toString())));
       RepositorySnapshot.Result before = snapshot(Step.SNAPSHOT_BEFORE, root, "before");
+      verifyConfiguration(approved.a());
       clean(Step.CLEAN_A);
       first = capture(Step.BUILD_A, a, "A");
       preserve(Step.PRESERVE_A, first, a, Optional.empty());
       RepositorySnapshot.Result between = snapshot(Step.SNAPSHOT_BETWEEN, root, "between");
       requireUnchanged(before, between);
+      verifyConfiguration(approved.b());
       clean(Step.CLEAN_B);
       second = capture(Step.BUILD_B, b, "B");
       preserve(Step.PRESERVE_B, second, b, a.executionLogReceipt());
@@ -444,6 +543,30 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
           "Repository source bytes or entries changed during the audit. No changes were reverted;"
               + " the run pair is not an unchanged-source experiment.");
     }
+  }
+
+  private void verifyConfiguration(Preflight approved) throws IOException {
+    if (protocol.ignoreRcFiles()) return;
+    checkCancelled();
+    BazelCommand command = approved.request().original();
+    Optional<List<String>> observed = inspectConfiguration(command);
+    List<String> blockers = protocol.configurationBlockers(observed);
+    if (!blockers.isEmpty()) throw new IOException(String.join("\n", blockers));
+    if (!observed.equals(approved.request().effectiveOptions())) {
+      throw new IOException(
+          "The observed rc/build options changed after review. No later clean or build will start;"
+              + " review a new diagnostic.");
+    }
+  }
+
+  private static String rcPolicyNotice(boolean ignore) {
+    return ignore
+        ? "Rc files are ignored for both builds and helpers. This is not the workspace's normal"
+            + " configured build."
+        : "Normal rc files and named configs are enabled for both builds and helpers. Observed"
+            + " build options are rechecked before each clean. Repository rc files are covered by"
+            + " source checks, but files outside the repository and transient changes are not"
+            + " fully verified. Command-specific helper rc options are not fully inspected.";
   }
 
   private void clean(Step stage) throws IOException, InterruptedException {
@@ -859,6 +982,13 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
   public static SavedOperation readSavedOperation(Path directory) throws IOException {
     Properties record = AuditJournal.read(directory);
     List<String> notices = new ArrayList<>();
+    String rcPolicy = record.getProperty("rcPolicy", "IGNORE");
+    notices.add(
+        switch (rcPolicy) {
+          case "READ" -> rcPolicyNotice(false);
+          case "IGNORE" -> rcPolicyNotice(true);
+          default -> "The saved rc-file policy is unknown: " + rcPolicy;
+        });
     for (String key : List.of("failure", "cleanupFailure")) {
       String detail = record.getProperty(key);
       if (detail != null) {

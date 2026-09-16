@@ -5,6 +5,25 @@ is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
 
+**Selectable diagnostic rc policy (2026-09-16).** Hermeticity diagnostics now
+read normal rc files and named configs by default. **Ignore rc files** in review
+replans both captures asynchronously, preserves instrumentation choices and
+requires a fresh explicit launch. Audit-owned isolation/cache/resource overrides
+remain disclosed; clean explicitly stays synchronous and non-expunging. Unknown
+rc inspection and incompatible execution strategies block launch. Observed build
+options are rechecked before each clean; external rc contents, startup settings,
+helper-specific sections and transient changes are not fully verified. Saved
+audits retain the selected policy; missing policy in older records means ignored.
+Named and nested config inspection, checkbox replanning, stale-review refusal,
+saved policy and uncertain-probe cleanup refusal have regression coverage. Real
+managed fixtures passed on Bazel 7.4.1 and 9.2.0 on macOS arm64: required rc
+settings reach both builds, explicit ignore bypasses invalid rc settings, rc
+changes stop execution before cleaning, and normal links survive rc-configured
+expunge requests. The full gate passed: `bazel build //... --jobs=2` covered 596
+targets; `bazel test //... --test_tag_filters=-bazel-sweep --jobs=2
+--local_test_jobs=2` passed all 362 test targets (274 cached). No live SSH rc-policy
+fixture was run; fake-executor tests cover unknown SSH probe outcomes.
+
 **Capability probe identity and partial results (2026-09-16).** The scratch
 probe pins the workspace-resolved Bazel version even for launchers installed
 as `bazel` without a Bazelisk banner, and verifies the scratch launcher's
@@ -24,7 +43,7 @@ fixes and stock 7.4.1 support, not that host's specific failure cause.
 
 **Simpler diagnostic launch review (2026-09-16).** Hermeticity diagnostics use
 one final confirmation, without the preliminary warning dialog or disabled
-acknowledgement checkbox. **Run both builds** explicitly approves the rc-free,
+acknowledgement checkbox. **Run both builds** explicitly approves the reviewed,
 uncached experiment once setup is valid; inspecting each capture is optional.
 Blocking issues appear first in Summary and explain the actual execution-log
 problem instead of the generic “app-injected” requirement. An explicit
@@ -74,7 +93,7 @@ launcher regressions cover transient diagnostic selection and asynchronous setti
 
 **Build reproducibility checks (2026-09-11).** **Hermeticity** has Summary,
 Action differences, and Coverage & runs tabs. The managed protocol now requires
-Bazel 7.4.x or 9.2.0 and explicit approval of an rc-free, on-machine `build`
+Bazel 7.4.x or 9.2.0 and explicit approval of a controlled, on-machine `build`
 experiment. It performs two clean/build captures in one private output base,
 without touching the normal output base or workspace convenience links.
 Local and selected SSH workspaces

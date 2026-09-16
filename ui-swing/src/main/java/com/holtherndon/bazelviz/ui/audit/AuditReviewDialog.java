@@ -25,6 +25,7 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JPanel;
@@ -44,6 +45,8 @@ public final class AuditReviewDialog extends JDialog {
     REVIEW_A,
     REVIEW_B,
     ENABLE_LOGS,
+    IGNORE_RC_FILES,
+    USE_RC_FILES,
     CANCEL
   }
 
@@ -99,7 +102,9 @@ public final class AuditReviewDialog extends JDialog {
     run.setEnabled(review.canLaunch());
     run.setToolTipText(
         review.canLaunch()
-            ? "Approves the rc-free check, runs both builds and opens their comparison."
+            ? "Approves the check with rc files "
+                + (review.protocol().ignoreRcFiles() ? "ignored" : "enabled")
+                + ", runs both builds and opens their comparison."
             : "Cannot start: " + String.join("; ", review.blockers()));
     PlainText.disableHtml(run);
     JButton cancel = button("Cancel", Choice.CANCEL, decide);
@@ -108,7 +113,8 @@ public final class AuditReviewDialog extends JDialog {
     footer.add(
         WrappingLabel.create(
             review.canLaunch()
-                ? "Run both builds approves two uncached builds with all bazelrc files ignored."
+                ? "Run both builds approves two uncached builds with rc files "
+                    + (review.protocol().ignoreRcFiles() ? "ignored." : "enabled.")
                 : "Cannot start yet. Fix the setup issues at the top of Summary."),
         BorderLayout.NORTH);
     JPanel buttons = new JPanel(new WrapLayout(FlowLayout.RIGHT, 6, 4));
@@ -154,12 +160,35 @@ public final class AuditReviewDialog extends JDialog {
             "Clean a private output base → build A → preserve its log → clean again → build B"
                 + " → compare automatically. Your normal output base and Bazel links are untouched."
                 + " Keep repository files unchanged until the check finishes."));
+    JPanel configuration = stack();
+    JCheckBox ignoreRcFiles = new JCheckBox("Ignore rc files", review.protocol().ignoreRcFiles());
+    ignoreRcFiles.setToolTipText(
+        "Replan both builds with this setting, then review again. This does not start a build.");
+    ignoreRcFiles.addActionListener(
+        event ->
+            decide.accept(
+                ignoreRcFiles.isSelected() ? Choice.IGNORE_RC_FILES : Choice.USE_RC_FILES));
+    configuration.add(ignoreRcFiles);
+    configuration.add(
+        WrappingLabel.create(
+            review.protocol().ignoreRcFiles()
+                ? "This check ignores system, user and workspace rc files, which may change"
+                    + " toolchains, platforms and build behavior. Named --config definitions from"
+                    + " rc files are unavailable."
+                : "This check reads your normal system, user and workspace rc files, including"
+                    + " named --config definitions. External rc-file changes are outside repository"
+                    + " snapshot coverage."));
+    configuration.add(
+        WrappingLabel.create(
+            "This setting applies to both builds and their helper commands. Changing it rebuilds"
+                + " both plans and opens a fresh review without starting a build."));
+    addSection(body, "Bazel configuration", configuration);
     addSection(
         body,
         "Different from your normal build",
         WrappingLabel.create(
-            "This check ignores system, user and workspace rc files, which may change toolchains,"
-                + " platforms and build behavior. Both builds run on the selected machine without"
+            "Audit-owned cache, output-base, convenience-link and resource flags take precedence"
+                + " over rc settings. Both builds run on the selected machine without"
                 + " disk or remote action-cache reuse. Two full builds can take much longer than"
                 + " a cached build (two jobs, 1 GiB private server heap). Only run repositories you"
                 + " trust: builds execute their code."));

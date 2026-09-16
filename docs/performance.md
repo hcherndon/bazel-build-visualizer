@@ -1,5 +1,11 @@
 # Performance
 
+Rc-enabled hermeticity diagnostics inspect each capture's build options during
+review and recheck them before each clean. Changing **Ignore rc files** reruns
+both option inspections on the existing audit worker without launching builds.
+These calls use the existing bounded capture and option-probe timeout; SSH adds
+command round trips. No latency benchmark for this workflow is claimed.
+
 Capability detection adds one client-only `bazel --version` check outside the
 workspace before trusting a fresh flag probe when the workspace version is
 known. It uses the existing probe timeout and bounded output capture, starts no

@@ -31,6 +31,7 @@ import com.holtherndon.bazelviz.runner.plan.PlanRequest;
 import com.holtherndon.bazelviz.runner.plan.SourceAvailability;
 import com.holtherndon.bazelviz.runner.proc.ProcessOutcome;
 import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
+import com.holtherndon.bazelviz.runner.runtime.CommandResult;
 import com.holtherndon.bazelviz.runner.runtime.LocalCommandExecutor;
 import com.holtherndon.bazelviz.runner.ssh.SshTarget;
 import java.io.IOException;
@@ -525,6 +526,110 @@ final class AuditSafetyTest {
   }
 
   @Test
+  void timedOutAndDisconnectedConfigurationProbesBlockFurtherDispatch(@TempDir Path temporary)
+      throws Exception {
+    for (CommandResult outcome :
+        List.of(
+            new CommandResult(0, "", "probe timed out", true),
+            new CommandResult(255, "", "SSH disconnected", false))) {
+      AtomicInteger dispatches = new AtomicInteger();
+      try (var audit = configurationProbeAudit(temporary, dispatches, () -> outcome)) {
+        assertThat(inspectConfiguration(audit, temporary)).isEmpty();
+        assertThat(getField(audit, "clientOutcomeUnknown")).isEqualTo(true);
+        assertThat(inspectConfiguration(audit, temporary)).isEmpty();
+        assertThat(dispatches.get()).isEqualTo(1);
+      }
+      assertThat(dispatches.get()).isEqualTo(1);
+    }
+  }
+
+  @Test
+  void sshConfigurationIoFailureBlocksFurtherDispatch(@TempDir Path temporary) throws Exception {
+    AtomicInteger dispatches = new AtomicInteger();
+    try (var audit =
+        configurationProbeAudit(
+            temporary,
+            dispatches,
+            () -> {
+              throw new IOException("SSH transport lost after probe dispatch");
+            })) {
+      assertThat(inspectConfiguration(audit, temporary)).isEmpty();
+      assertThat(getField(audit, "clientOutcomeUnknown")).isEqualTo(true);
+      assertThat(inspectConfiguration(audit, temporary)).isEmpty();
+      assertThat(dispatches.get()).isEqualTo(1);
+    }
+    assertThat(dispatches.get()).isEqualTo(1);
+  }
+
+  @Test
+  void knownConfigurationErrorAllowsAnotherProbeAfterCorrection(@TempDir Path temporary)
+      throws Exception {
+    AtomicInteger dispatches = new AtomicInteger();
+    try (var audit =
+        configurationProbeAudit(
+            temporary,
+            dispatches,
+            () ->
+                dispatches.get() == 1
+                    ? new CommandResult(2, "", "Unrecognized option: --bad_rc_option", false)
+                    : new CommandResult(0, "--keep_going\n", "", false))) {
+      assertThat(inspectConfiguration(audit, temporary)).isEmpty();
+      assertThat(getField(audit, "clientOutcomeUnknown")).isEqualTo(false);
+      assertThat(inspectConfiguration(audit, temporary))
+          .isEqualTo(Optional.of(List.of("--keep_going")));
+      assertThat(getField(audit, "clientOutcomeUnknown")).isEqualTo(false);
+      assertThat(dispatches.get()).isEqualTo(2);
+    }
+    assertThat(dispatches.get()).isEqualTo(2);
+  }
+
+  private static ReproducibilityCoordinator configurationProbeAudit(
+      Path temporary, AtomicInteger dispatches, ConfigurationProbe outcome) throws Exception {
+    var audit =
+        new ReproducibilityCoordinator(
+            idleRequest(temporary), temporary.resolve("audits"), () -> {}, step -> {});
+    // Inject remote request metadata and a fake executor without connecting to an SSH host.
+    setField(
+        audit,
+        "original",
+        CaptureRequest.remote(
+            temporary.resolve("sessions"),
+            "test",
+            "bazel",
+            "/repository",
+            List.of("build", "//:fixture"),
+            SshTarget.of("unused-fixture")));
+    CommandExecutor executor =
+        (CommandExecutor)
+            Proxy.newProxyInstance(
+                CommandExecutor.class.getClassLoader(),
+                new Class<?>[] {CommandExecutor.class},
+                (proxy, method, arguments) -> {
+                  assertThat(method.getName()).isEqualTo("run");
+                  dispatches.incrementAndGet();
+                  return outcome.run();
+                });
+    setField(audit, "executor", executor);
+    return audit;
+  }
+
+  private static Optional<?> inspectConfiguration(ReproducibilityCoordinator audit, Path temporary)
+      throws Exception {
+    var method =
+        ReproducibilityCoordinator.class.getDeclaredMethod(
+            "inspectConfiguration", BazelCommand.class);
+    method.setAccessible(true);
+    return (Optional<?>)
+        method.invoke(
+            audit, BazelCommand.builder(Path.of("/bazel"), temporary).command("build").build());
+  }
+
+  @FunctionalInterface
+  private interface ConfigurationProbe {
+    CommandResult run() throws IOException;
+  }
+
+  @Test
   void unknownSshOutcomeSurvivesLocalJournalFailureAndRetainsPrivateBase(@TempDir Path temporary)
       throws Exception {
     var request = idleRequest(temporary);
@@ -759,6 +864,8 @@ final class AuditSafetyTest {
     assertThat(saved.step()).isEqualTo("PRESERVE_A");
     assertThat(saved.notices())
         .containsExactly(
+            "Rc files are ignored for both builds and helpers. This is not the workspace's normal"
+                + " configured build.",
             "Audit failure: Remote termination unknown",
             "Cleanup failure: Kept private base for review",
             "Source check before: 12 entries, 900 bytes; fingerprint recorded.");

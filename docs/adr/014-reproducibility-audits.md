@@ -83,17 +83,31 @@ build mislabelled as an audit. Repository download-cache reuse is outside the
 initial experiment. Actual spawn cache/runner evidence determines comparison
 coverage even after approved cache-bypass flags.
 
-The first managed protocol is explicitly rc-free (`--ignore_all_rc_files`),
-not a claim to reproduce the user's ordinary rc-configured invocation. Users
-must opt into that difference; unresolved command-line configuration/strategy
-conflicts are refused. As a narrow exception to the general capability-only
+Configuration policy amendment (2026-09-16): managed diagnostics read the normal
+system, user and workspace rc files by default, including named `--config`
+definitions. An unchecked **Ignore rc files** checkbox in the review can opt
+both runs and their helpers into `--ignore_all_rc_files`. Changing it rebuilds
+both capture plans on a worker and requires a fresh review; it never starts a
+build. The chosen policy is recorded for passive reopening. Older records
+without a policy field retain their original rc-free interpretation.
+
+The review explicitly discloses audit-owned cache, output-base, convenience-link
+and resource overrides, including their precedence over rc settings. Typed
+conflicts and incompatible remote/dynamic execution strategies remain blockers.
+Reading rc files does not relax private-base validation, successful capture or
+observed cache/runner checks. Rc-derived option inspection must not treat an
+unavailable answer as no options; its known limitations and external rc-file
+changes not covered by repository snapshots remain visible. Ignoring rc files
+is not a claim to reproduce the user's ordinary configured build.
+
+As a narrow exception to the general capability-only
 policy, automatic destructive audit steps additionally require the tested
 Bazel 9.2.0 or Bazel 7.4.x protocol. Required capabilities and resolved-path checks still apply;
 a matching version alone is never sufficient. Ordinary capture and offline
 comparison retain their independent format/capability policies.
 
 Review UX clarification (2026-09-16): one final review is the consent boundary.
-Its **Run both builds** action explicitly approves the displayed rc-free,
+Its **Run both builds** action explicitly approves the displayed configuration,
 uncached experiment; no preliminary confirmation, acknowledgement checkbox or
 separate approval of each capture is required. Setup blockers appear first and
 disable execution, not the ability to inspect or correct settings. Turning off

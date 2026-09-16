@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /** Pure, explicitly controlled repeat-build protocol. Constructing a plan executes nothing. */
@@ -42,11 +43,14 @@ public record ReproducibilityPlan(
     blockers = List.copyOf(blockers);
   }
 
-  /**
-   * A controlled audit deliberately ignores rc files. This is not the workspace's ordinary
-   * configured build, and a caller must obtain explicit approval of that distinction.
-   */
+  /** Reads normal rc files by default, with the audit-owned overrides disclosed for review. */
   public static ReproducibilityPlan controlled(BazelCommand original, String outputBase) {
+    return controlled(original, outputBase, false);
+  }
+
+  /** Both builds and helpers use the same explicitly reviewed rc policy. */
+  public static ReproducibilityPlan controlled(
+      BazelCommand original, String outputBase, boolean ignoreRcFiles) {
     Objects.requireNonNull(original, "original");
     requireOwnedPath(outputBase);
     List<String> blockers = new ArrayList<>();
@@ -64,7 +68,7 @@ public record ReproducibilityPlan(
     if (!original.argsAfterDoubleDash().isEmpty()) {
       blockers.add("Arguments after -- are not supported by the initial audit protocol.");
     }
-    validateBuildOptions(original.commandArgs(), blockers);
+    validateBuildOptions(original.commandArgs(), ignoreRcFiles, blockers);
     if (original.commandArgs().stream()
         .map(ReproducibilityPlan::optionName)
         .anyMatch(ReproducibilityPlan::isExecutionLogOutput)) {
@@ -72,28 +76,35 @@ public record ReproducibilityPlan(
           "The managed audit requires its own fresh compact execution log for each build."
               + " Remove explicit execution-log output flags before reviewing the audit.");
     }
-    List<String> startup =
-        List.of(
-            "--ignore_all_rc_files",
-            "--output_base=" + outputBase,
-            "--host_jvm_args=-Xmx1g",
-            "--max_idle_secs=15");
-    List<Change> changes =
+    List<String> startup = new ArrayList<>();
+    List<Change> changes = new ArrayList<>();
+    if (ignoreRcFiles) {
+      startup.add("--ignore_all_rc_files");
+      changes.add(
+          new Change(
+              "--ignore_all_rc_files",
+              "Opt-in controlled configuration: ignore system, user and workspace rc files."
+                  + " This can change toolchains, platforms and build behavior; this is not"
+                  + " an audit of your usual rc-configured build."));
+    }
+    startup.addAll(
+        List.of("--output_base=" + outputBase, "--host_jvm_args=-Xmx1g", "--max_idle_secs=15"));
+    changes.addAll(
         List.of(
             new Change(
-                startup.get(0),
-                "Opt-in controlled configuration: ignore system, user and workspace rc files."
-                    + " This can change toolchains, platforms and build behavior; this is not"
-                    + " an audit of your usual rc-configured build."),
-            new Change(startup.get(1), "Use this private, app-owned base at the same path twice."),
-            new Change(startup.get(2), "Cap the private Bazel server at 1 GiB of Java heap."),
-            new Change(startup.get(3), "Stop an idle private server after 15 seconds."),
+                "--output_base=" + outputBase,
+                "Use this private, app-owned base at the same path twice, overriding rc output-base"
+                    + " settings."),
+            new Change(
+                "--host_jvm_args=-Xmx1g", "Cap the private Bazel server at 1 GiB of Java heap."),
+            new Change("--max_idle_secs=15", "Stop an idle private server after 15 seconds."),
             new Change("--disk_cache=", "Disable disk action-cache reads and writes."),
             new Change("--remote_cache=", "Disable the remote action-cache endpoint."),
             new Change("--remote_executor=", "Execute on this machine, not a build cluster."),
             new Change("--symlink_prefix=/", "Do not create or remove ordinary bazel-* links."),
             new Change("--jobs=2", "Limit the audit to two concurrent jobs."),
-            new Change("--lockfile_mode=off", "Do not update MODULE.bazel.lock during the audit."));
+            new Change(
+                "--lockfile_mode=off", "Do not update MODULE.bazel.lock during the audit.")));
     List<String> buildArgs = new ArrayList<>(original.commandArgs());
     for (Change change : changes.subList(startup.size(), changes.size())) {
       String name = optionName(change.argument());
@@ -107,7 +118,10 @@ public record ReproducibilityPlan(
     return new ReproducibilityPlan(
         original,
         build,
-        helper.command("clean").commandArgs(List.of("--symlink_prefix=/")).build(),
+        helper
+            .command("clean")
+            .commandArgs(List.of("--noexpunge", "--noasync", "--symlink_prefix=/"))
+            .build(),
         helper.command("info").commandArgs(List.of()).targets(List.of("output_base")).build(),
         helper.command("shutdown").targets(List.of()).build(),
         outputBase,
@@ -151,6 +165,33 @@ public record ReproducibilityPlan(
     return blockers.isEmpty();
   }
 
+  public boolean ignoreRcFiles() {
+    return build.startupArgs().contains("--ignore_all_rc_files");
+  }
+
+  /** Rc settings may supply build configuration, but not incompatible execution strategies. */
+  public List<String> configurationBlockers(Optional<List<String>> observedOptions) {
+    if (ignoreRcFiles()) return List.of();
+    if (observedOptions.isEmpty()) {
+      return List.of(
+          "Could not inspect the rc configuration. Fix the Bazel option/config error and retry,"
+              + " or select Ignore rc files to review a build without that configuration.");
+    }
+    List<String> blockers = new ArrayList<>();
+    List<String> args = observedOptions.orElseThrow();
+    for (int index = 0; index < args.size(); index++) {
+      String argument = args.get(index);
+      String name = optionName(argument);
+      int equals = argument.indexOf('=');
+      String value =
+          equals >= 0
+              ? argument.substring(equals + 1)
+              : index + 1 < args.size() ? args.get(index + 1) : "";
+      validateExecutionOption(name, value, blockers);
+    }
+    return List.copyOf(blockers);
+  }
+
   /** Replanning capture instrumentation must not alter the audit's isolation contract. */
   public List<String> effectiveBlockers(BazelCommand effective) {
     List<String> result = new ArrayList<>();
@@ -170,7 +211,7 @@ public record ReproducibilityPlan(
           "Capture replanning changed the reviewed executable, targets, environment or target"
               + " arguments.");
     }
-    validateBuildOptions(effective.commandArgs(), result);
+    validateBuildOptions(effective.commandArgs(), ignoreRcFiles(), result);
     for (String name : REQUIRED_BUILD_VALUES.keySet()) {
       if (effective.commandArgs().stream().noneMatch(arg -> optionName(arg).equals(name))) {
         result.add("The required audit flag --" + name + " was removed.");
@@ -179,7 +220,8 @@ public record ReproducibilityPlan(
     return List.copyOf(result);
   }
 
-  private static void validateBuildOptions(List<String> args, List<String> blockers) {
+  private static void validateBuildOptions(
+      List<String> args, boolean ignoreRcFiles, List<String> blockers) {
     for (int index = 0; index < args.size(); index++) {
       String arg = args.get(index);
       if (!arg.startsWith("--")) {
@@ -195,18 +237,21 @@ public record ReproducibilityPlan(
           && !REQUIRED_BUILD_VALUES.get(name).equals(value)) {
         blockers.add("Explicit --" + name + " conflicts with the controlled audit protocol.");
       }
-      if (name.equals("config")) {
-        blockers.add(
-            "--config requires rc files, which this opt-in controlled audit does not read.");
+      if (ignoreRcFiles && name.equals("config")) {
+        blockers.add("--config requires rc files. Uncheck Ignore rc files or remove --config.");
       }
-      if (Set.of("spawn_strategy", "strategy", "strategy_regexp").contains(name)
-          && (value.contains("remote") || value.contains("dynamic"))) {
-        blockers.add("Remote/dynamic execution strategies are outside the initial audit scope.");
-      }
-      if (name.equals("experimental_spawn_scheduler")
-          || name.equals("experimental_convenience_symlinks")) {
-        blockers.add("Explicit --" + name + " is not supported by the controlled audit protocol.");
-      }
+      validateExecutionOption(name, value, blockers);
+    }
+  }
+
+  private static void validateExecutionOption(String name, String value, List<String> blockers) {
+    if (Set.of("spawn_strategy", "strategy", "strategy_regexp").contains(name)
+        && (value.contains("remote") || value.contains("dynamic"))) {
+      blockers.add("Remote/dynamic execution strategies are outside the initial audit scope.");
+    }
+    if (name.equals("experimental_spawn_scheduler")
+        || name.equals("experimental_convenience_symlinks")) {
+      blockers.add("Explicit --" + name + " is not supported by the controlled audit protocol.");
     }
   }
 

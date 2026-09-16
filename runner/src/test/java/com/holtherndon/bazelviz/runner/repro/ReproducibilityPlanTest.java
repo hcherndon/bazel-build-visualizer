@@ -23,10 +23,7 @@ final class ReproducibilityPlanTest {
     assertThat(plan.canLaunch()).isTrue();
     assertThat(plan.build().startupArgs())
         .containsExactly(
-            "--ignore_all_rc_files",
-            "--output_base=/tmp/owned/output-base",
-            "--host_jvm_args=-Xmx1g",
-            "--max_idle_secs=15");
+            "--output_base=/tmp/owned/output-base", "--host_jvm_args=-Xmx1g", "--max_idle_secs=15");
     assertThat(plan.build().commandArgs())
         .contains(
             "--disk_cache=",
@@ -36,13 +33,12 @@ final class ReproducibilityPlanTest {
             "--jobs=2",
             "--lockfile_mode=off");
     assertThat(plan.clean().startupArgs()).isEqualTo(plan.build().startupArgs());
-    assertThat(plan.clean().commandArgs()).containsExactly("--symlink_prefix=/");
+    assertThat(plan.clean().commandArgs())
+        .containsExactly("--noexpunge", "--noasync", "--symlink_prefix=/");
     assertThat(plan.clean().targets()).isEmpty();
     assertThat(plan.shutdown().commandArgs()).isEmpty();
     assertThat(plan.shutdown().targets()).isEmpty();
-    assertThat(plan.changes())
-        .anySatisfy(
-            change -> assertThat(change.explanation()).contains("not an audit of your usual"));
+    assertThat(plan.ignoreRcFiles()).isFalse();
     assertThat(plan.effectiveBlockers(plan.build())).isEmpty();
   }
 
@@ -56,7 +52,6 @@ final class ReproducibilityPlanTest {
             List.of("build", "--remote_cache", "grpc://cache", "//..."),
             List.of("build", "--symlink_prefix=custom-", "//..."),
             List.of("build", "--spawn_strategy=remote,local", "//..."),
-            List.of("build", "--config=ci", "//..."),
             List.of("build", "--execution_log_compact_file=/tmp/old.zst", "//..."),
             List.of("build", "--execution_log_binary_file", "/tmp/old.bin", "//..."),
             List.of("build", "--execution_log_json_file=", "//..."),
@@ -66,6 +61,63 @@ final class ReproducibilityPlanTest {
     assertThat(
             plan("build", "--disk_cache=", "--remote_executor=", "--jobs=2", "//...").canLaunch())
         .isTrue();
+  }
+
+  @Test
+  void readsRcAndNamedConfigsByDefaultAndCanExplicitlyIgnoreThem() {
+    var original = command("build", "--config=ci", "//...");
+    var defaults = ReproducibilityPlan.controlled(original, "/tmp/owned/output-base");
+    assertThat(defaults.ignoreRcFiles()).isFalse();
+    assertThat(defaults.canLaunch()).isTrue();
+    assertThat(defaults.build().commandArgs()).contains("--config=ci");
+    assertThat(defaults.effectiveBlockers(defaults.build())).isEmpty();
+    var ignored = ReproducibilityPlan.controlled(original, "/tmp/owned/output-base", true);
+    assertThat(ignored.ignoreRcFiles()).isTrue();
+    assertThat(ignored.blockers()).anyMatch(value -> value.contains("Uncheck Ignore rc files"));
+    assertThat(ignored.build().startupArgs()).contains("--ignore_all_rc_files");
+    assertThat(ignored.clean().startupArgs()).isEqualTo(ignored.build().startupArgs());
+    assertThat(ignored.outputBaseProbe().startupArgs()).isEqualTo(ignored.build().startupArgs());
+    assertThat(ignored.shutdown().startupArgs()).isEqualTo(ignored.build().startupArgs());
+    assertThat(ignored.changes())
+        .anySatisfy(
+            change -> assertThat(change.explanation()).contains("not an audit of your usual"));
+    assertThat(
+            ReproducibilityPlan.controlled(
+                    command("build", "//..."), "/tmp/owned/output-base", true)
+                .canLaunch())
+        .isTrue();
+  }
+
+  @Test
+  void rcPolicyRequiresKnownOptionsAndRejectsIncompatibleStrategies() {
+    var plan = plan("build", "//...");
+    assertThat(plan.configurationBlockers(Optional.empty()))
+        .anyMatch(value -> value.contains("Could not inspect the rc configuration"));
+    assertThat(
+            plan.configurationBlockers(
+                Optional.of(
+                    List.of(
+                        "--disk_cache=/team/cache",
+                        "--remote_cache=grpc://team-cache",
+                        "--jobs=20",
+                        "--define=mode=custom",
+                        "--spawn_strategy=sandboxed,local"))))
+        .isEmpty();
+    for (String flag :
+        List.of(
+            "--spawn_strategy=remote",
+            "--strategy=Javac=dynamic",
+            "--strategy_regexp=compile=remote",
+            "--experimental_spawn_scheduler",
+            "--experimental_convenience_symlinks=normal")) {
+      assertThat(plan.configurationBlockers(Optional.of(List.of(flag)))).as(flag).isNotEmpty();
+    }
+    assertThat(plan.configurationBlockers(Optional.of(List.of("--spawn_strategy", "remote"))))
+        .isNotEmpty();
+    assertThat(
+            ReproducibilityPlan.controlled(command("build"), "/tmp/owned/output-base", true)
+                .configurationBlockers(Optional.empty()))
+        .isEmpty();
   }
 
   @Test

@@ -161,6 +161,8 @@ public final class AuditWorkflow {
     dialog.setVisible(true);
     switch (dialog.choice()) {
       case RUN_BOTH -> launch.launch(review);
+      case IGNORE_RC_FILES -> launch.setIgnoreRcFiles(true);
+      case USE_RC_FILES -> launch.setIgnoreRcFiles(false);
       case ENABLE_LOGS ->
           launch.replan(
               request ->
@@ -310,8 +312,7 @@ public final class AuditWorkflow {
                           + saved.state()
                           + "; private-base cleanup: "
                           + saved.cleanup());
-                  notes.add(
-                      "Controlled rc-free experiment. Two matching runs do not prove hermeticity.");
+                  notes.add("Two matching runs do not prove hermeticity.");
                   if (!saved.state().equals("CAPTURED"))
                     notes.add(
                         "This experiment did not complete successfully. Do not treat matching"

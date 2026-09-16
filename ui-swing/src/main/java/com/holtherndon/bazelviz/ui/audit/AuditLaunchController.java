@@ -30,6 +30,8 @@ public final class AuditLaunchController {
 
     Review replan(UnaryOperator<PlanRequest> change) throws IOException;
 
+    Review setIgnoreRcFiles(boolean ignoreRcFiles) throws IOException;
+
     Result run(Review review) throws IOException;
 
     void cancel();
@@ -63,6 +65,11 @@ public final class AuditLaunchController {
           }
 
           @Override
+          public Review setIgnoreRcFiles(boolean ignoreRcFiles) throws IOException {
+            return coordinator.setIgnoreRcFiles(ignoreRcFiles);
+          }
+
+          @Override
           public Result run(Review review) throws IOException {
             return coordinator.run(review);
           }
@@ -93,6 +100,10 @@ public final class AuditLaunchController {
 
   public void replan(UnaryOperator<PlanRequest> change) {
     review(() -> operation.replan(change));
+  }
+
+  public void setIgnoreRcFiles(boolean ignoreRcFiles) {
+    review(() -> operation.setIgnoreRcFiles(ignoreRcFiles));
   }
 
   private void review(ReviewTask task) {

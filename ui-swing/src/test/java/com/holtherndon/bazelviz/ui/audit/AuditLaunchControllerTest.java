@@ -17,12 +17,121 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
+import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.Test;
 
 class AuditLaunchControllerTest {
+  @Test
+  void changingRcModeReplansOffEdtAndRequiresASeparateLaunch() throws Exception {
+    Review initial =
+        new Review(Path.of("audit"), null, null, null, List.of("Rc conflict"), List.of());
+    Review ignored = new Review(Path.of("audit"), null, null, null, List.of(), List.of());
+    Review restored = new Review(Path.of("audit"), null, null, null, List.of(), List.of());
+    CountDownLatch firstReview = new CountDownLatch(1);
+    CountDownLatch replanStarted = new CountDownLatch(1);
+    CountDownLatch releaseReplan = new CountDownLatch(1);
+    CountDownLatch ignoredReview = new CountDownLatch(1);
+    CountDownLatch restoredReview = new CountDownLatch(1);
+    CountDownLatch done = new CountDownLatch(1);
+    AtomicBoolean workOnEdt = new AtomicBoolean();
+    AtomicBoolean callbacksOffEdt = new AtomicBoolean();
+    AtomicReference<Review> launched = new AtomicReference<>();
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicInteger replans = new AtomicInteger();
+    FakeOperation operation =
+        new FakeOperation() {
+          @Override
+          public Review preflight() {
+            return initial;
+          }
+
+          @Override
+          public Review setIgnoreRcFiles(boolean ignoreRcFiles) throws IOException {
+            if (SwingUtilities.isEventDispatchThread()) workOnEdt.set(true);
+            replans.incrementAndGet();
+            if (ignoreRcFiles) {
+              replanStarted.countDown();
+              await(releaseReplan);
+              return ignored;
+            }
+            return restored;
+          }
+
+          @Override
+          public Result run(Review review) {
+            launched.set(review);
+            return super.run(review);
+          }
+        };
+    AuditLaunchController controller =
+        new AuditLaunchController(
+            operation,
+            SwingUtilities::invokeLater,
+            new AuditLaunchController.Listener() {
+              @Override
+              public void reviewReady(Review review) {
+                if (!SwingUtilities.isEventDispatchThread()) callbacksOffEdt.set(true);
+                if (review == initial) firstReview.countDown();
+                if (review == ignored) ignoredReview.countDown();
+                if (review == restored) restoredReview.countDown();
+              }
+
+              @Override
+              public void finished(Result result) {
+                if (!SwingUtilities.isEventDispatchThread()) callbacksOffEdt.set(true);
+                done.countDown();
+              }
+
+              @Override
+              public void failed(Throwable value) {
+                failure.set(value);
+                firstReview.countDown();
+                ignoredReview.countDown();
+                restoredReview.countDown();
+                done.countDown();
+              }
+            });
+    try {
+      SwingUtilities.invokeAndWait(controller::preflight);
+      assertThat(firstReview.await(5, TimeUnit.SECONDS)).isTrue();
+      SwingUtilities.invokeAndWait(() -> controller.setIgnoreRcFiles(true));
+      assertThat(replanStarted.await(5, TimeUnit.SECONDS)).isTrue();
+      AtomicBoolean uiResponsive = new AtomicBoolean();
+      SwingUtilities.invokeAndWait(() -> uiResponsive.set(true));
+      assertThat(uiResponsive.get()).isTrue();
+      assertThat(ignoredReview.getCount()).isEqualTo(1);
+      assertThat(operation.runs.get()).isZero();
+      releaseReplan.countDown();
+      assertThat(ignoredReview.await(5, TimeUnit.SECONDS)).isTrue();
+      assertThat(failure.get()).isNull();
+      assertThat(operation.runs.get()).isZero();
+
+      SwingUtilities.invokeAndWait(() -> controller.setIgnoreRcFiles(false));
+      assertThat(restoredReview.await(5, TimeUnit.SECONDS)).isTrue();
+      assertThat(failure.get()).isNull();
+      assertThat(replans.get()).isEqualTo(2);
+      assertThat(operation.runs.get()).isZero();
+      assertThat(operation.closed).isFalse();
+      assertThat(controller.isBusy()).isTrue();
+      assertThat(workOnEdt.get()).isFalse();
+      assertThat(callbacksOffEdt.get()).isFalse();
+
+      SwingUtilities.invokeAndWait(() -> controller.launch(restored));
+      assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
+      assertThat(failure.get()).isNull();
+      assertThat(operation.runs.get()).isEqualTo(1);
+      assertThat(launched.get()).isSameAs(restored);
+      assertThat(callbacksOffEdt.get()).isFalse();
+    } finally {
+      releaseReplan.countDown();
+      controller.closeAsync().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    }
+  }
+
   @Test
   void restoringExecutionLogsOnlyReviewsUntilTheUserExplicitlyLaunches() throws Exception {
     PlanRequest disabled =
@@ -226,6 +335,11 @@ class AuditLaunchControllerTest {
 
     @Override
     public Review replan(UnaryOperator<PlanRequest> change) {
+      return null;
+    }
+
+    @Override
+    public Review setIgnoreRcFiles(boolean ignoreRcFiles) throws IOException {
       return null;
     }
 
