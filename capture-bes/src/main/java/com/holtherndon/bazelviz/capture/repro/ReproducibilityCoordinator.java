@@ -4,7 +4,6 @@ import com.holtherndon.bazelviz.capture.live.CaptureCoordinator;
 import com.holtherndon.bazelviz.capture.live.CaptureRequest;
 import com.holtherndon.bazelviz.capture.live.CaptureResult;
 import com.holtherndon.bazelviz.capture.live.Preflight;
-import com.holtherndon.bazelviz.core.source.DataSource;
 import com.holtherndon.bazelviz.enrich.repro.ExecutionLogComparison;
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
 import com.holtherndon.bazelviz.format.session.SessionAuditReference;
@@ -279,15 +278,8 @@ public final class ReproducibilityCoordinator implements AutoCloseable {
       if (!preflight.canLaunch()) {
         blockers.add("Resolve capture instrumentation conflicts for both runs before launch.");
       }
-      if (!preflight.plan().sourceAvailability().isPlanned(DataSource.EXECUTION_LOG)) {
-        blockers.add(
-            "Both builds require a captured execution log; vetoing it disables this audit.");
-      }
-      try {
-        ExecutionLogBinding.plannedPath(preflight.plan());
-      } catch (IOException invalid) {
-        blockers.add(invalid.getMessage());
-      }
+      ExecutionLogBinding.reviewBlocker(preflight.request(), preflight.plan())
+          .ifPresent(blockers::add);
     }
     List<String> reviewNotices =
         new ArrayList<>(

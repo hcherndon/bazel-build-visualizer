@@ -5,6 +5,7 @@ import com.holtherndon.bazelviz.capture.repro.ReproducibilityCoordinator;
 import com.holtherndon.bazelviz.capture.repro.ReproducibilityCoordinator.Result;
 import com.holtherndon.bazelviz.capture.repro.ReproducibilityCoordinator.Review;
 import com.holtherndon.bazelviz.capture.repro.ReproducibilityCoordinator.SavedOperation;
+import com.holtherndon.bazelviz.runner.caps.Capability;
 import com.holtherndon.bazelviz.ui.audit.ComparisonSources.Source;
 import com.holtherndon.bazelviz.ui.capture.CaptureStatusModel;
 import com.holtherndon.bazelviz.ui.capture.InstrumentationPlanDialog;
@@ -81,28 +82,6 @@ public final class AuditWorkflow {
             loadAudit(chooser.getSelectedFile().toPath(), List.of());
         });
     toolbar.addAction(open);
-  }
-
-  /** Asked before acquiring a lease or contacting Bazel. Final exact-command review follows. */
-  public boolean confirmProtocol() {
-    return JOptionPane.showConfirmDialog(
-            owner,
-            "Run a controlled repeat-build check?\n\n"
-                + "This runs two full builds with a clean between them, using a private output"
-                + " base.\n"
-                + "All bazelrc files are ignored and build-cache reuse is disabled. This is not"
-                + " your\n"
-                + "ordinary rc-configured build. Source files must stay unchanged during the"
-                + " check.\n"
-                + "Bazel 7.4.x or 9.2.0 is required. Builds still execute repository code on the"
-                + " selected machine.\n\n"
-                + "The next screen shows the exact commands, changes and capture settings.\n"
-                + "After approval, both builds run automatically. Their captures are linked as\n"
-                + "run A/B, and the comparison opens automatically when the check finishes.",
-            "Hermeticity diagnostic",
-            JOptionPane.OK_CANCEL_OPTION,
-            JOptionPane.WARNING_MESSAGE)
-        == JOptionPane.OK_OPTION;
   }
 
   /**
@@ -182,6 +161,12 @@ public final class AuditWorkflow {
     dialog.setVisible(true);
     switch (dialog.choice()) {
       case RUN_BOTH -> launch.launch(review);
+      case ENABLE_LOGS ->
+          launch.replan(
+              request ->
+                  request
+                      .enabling(Capability.EXECUTION_LOG_COMPACT)
+                      .enabling(Capability.EXECUTION_LOG_BINARY));
       case CANCEL ->
           launch
               .closeAsync()
@@ -199,7 +184,7 @@ public final class AuditWorkflow {
             new InstrumentationPlanDialog(
                 owner,
                 dialog.choice() == AuditReviewDialog.Choice.REVIEW_A ? review.a() : review.b(),
-                "Accept capture settings");
+                "Back to diagnostic");
         capture.setVisible(true);
         switch (capture.choice()) {
           case RESOLVE ->

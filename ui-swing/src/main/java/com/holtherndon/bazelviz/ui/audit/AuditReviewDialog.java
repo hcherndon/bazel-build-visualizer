@@ -2,6 +2,7 @@ package com.holtherndon.bazelviz.ui.audit;
 
 import com.holtherndon.bazelviz.capture.live.Preflight;
 import com.holtherndon.bazelviz.capture.repro.ReproducibilityCoordinator.Review;
+import com.holtherndon.bazelviz.runner.caps.Capability;
 import com.holtherndon.bazelviz.runner.command.BazelCommand;
 import com.holtherndon.bazelviz.ui.theme.PlainText;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
@@ -24,7 +25,6 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
-import javax.swing.JCheckBox;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JPanel;
@@ -43,6 +43,7 @@ public final class AuditReviewDialog extends JDialog {
     RUN_BOTH,
     REVIEW_A,
     REVIEW_B,
+    ENABLE_LOGS,
     CANCEL
   }
 
@@ -76,8 +77,7 @@ public final class AuditReviewDialog extends JDialog {
   }
 
   /** Package seam keeps safety gates and narrow-layout checks testable without a desktop. */
-  record Content(
-      JPanel panel, JButton run, JButton cancel, JCheckBox acknowledgement, JTabbedPane tabs) {}
+  record Content(JPanel panel, JButton run, JButton cancel, JTabbedPane tabs) {}
 
   static Content content(Review review, Consumer<Choice> decide) {
     Objects.requireNonNull(review, "review");
@@ -89,29 +89,29 @@ public final class AuditReviewDialog extends JDialog {
     panel.add(title, BorderLayout.NORTH);
     JTabbedPane tabs = new JTabbedPane();
     PlainText.disableHtml(tabs);
-    tabs.addTab("Summary", scroll(summary(review)));
-    tabs.addTab("Commands", scroll(commands(review)));
+    tabs.addTab("Summary", scroll(summary(review, decide)));
+    tabs.addTab("Commands & capture", scroll(commands(review, decide)));
     tabs.addTab("Protocol changes", scroll(changes(review)));
     tabs.addTab("Coverage & blockers", scroll(coverage(review)));
     panel.add(tabs, BorderLayout.CENTER);
 
     JButton run = button("Run both builds", Choice.RUN_BOTH, decide);
-    run.setEnabled(false);
+    run.setEnabled(review.canLaunch());
     run.setToolTipText(
-        "After approval, runs both builds and opens their linked comparison automatically.");
+        review.canLaunch()
+            ? "Approves the rc-free check, runs both builds and opens their comparison."
+            : "Cannot start: " + String.join("; ", review.blockers()));
+    PlainText.disableHtml(run);
     JButton cancel = button("Cancel", Choice.CANCEL, decide);
-    JCheckBox acknowledgement = new JCheckBox("I understand that rc files will be ignored");
-    acknowledgement.setEnabled(review.canLaunch());
-    acknowledgement.setToolTipText(
-        "This can change toolchains, platforms and build behavior compared with your usual build.");
-    acknowledgement.addActionListener(
-        event -> run.setEnabled(review.canLaunch() && acknowledgement.isSelected()));
     JPanel footer = new JPanel(new BorderLayout(0, 4));
     footer.setBorder(BorderFactory.createEmptyBorder(4, 0, 0, 0));
-    footer.add(acknowledgement, BorderLayout.NORTH);
+    footer.add(
+        WrappingLabel.create(
+            review.canLaunch()
+                ? "Run both builds approves two uncached builds with all bazelrc files ignored."
+                : "Cannot start yet. Fix the setup issues at the top of Summary."),
+        BorderLayout.NORTH);
     JPanel buttons = new JPanel(new WrapLayout(FlowLayout.RIGHT, 6, 4));
-    buttons.add(button("Review capture A", Choice.REVIEW_A, decide));
-    buttons.add(button("Review capture B", Choice.REVIEW_B, decide));
     buttons.add(cancel);
     buttons.add(run);
     footer.add(buttons, BorderLayout.CENTER);
@@ -129,35 +129,40 @@ public final class AuditReviewDialog extends JDialog {
                 decide.accept(Choice.CANCEL);
               }
             });
-    return new Content(panel, run, cancel, acknowledgement, tabs);
+    return new Content(panel, run, cancel, tabs);
   }
 
-  private static JPanel summary(Review review) {
+  private static JPanel summary(Review review, Consumer<Choice> decide) {
     JPanel body = stack();
+    if (!review.canLaunch()) {
+      JPanel issues = stack();
+      issues.add(WrappingLabel.create(String.join("\n\n", review.blockers())));
+      if (executionLogsDisabled(review)) {
+        JPanel actions = new JPanel(new WrapLayout(FlowLayout.LEFT, 0, 4));
+        JButton enable = button("Enable execution logs", Choice.ENABLE_LOGS, decide);
+        enable.setToolTipText(
+            "Re-enable execution-log capture for both builds, then check setup again.");
+        actions.add(enable);
+        issues.add(actions);
+      }
+      addSection(body, "Cannot start yet", issues);
+    }
     addSection(
         body,
-        "Controlled configuration — please read",
+        "Two builds, one comparison",
         WrappingLabel.create(
-            "This audit ignores system, user and workspace rc files. It may use different"
-                + " toolchains, platforms or options from your normal build. It is not a check of"
-                + " that normal rc-configured build. The commands and every protocol change are"
-                + " listed in the other tabs."));
+            "Clean a private output base → build A → preserve its log → clean again → build B"
+                + " → compare automatically. Your normal output base and Bazel links are untouched."
+                + " Keep repository files unchanged until the check finishes."));
     addSection(
         body,
-        "What will happen",
+        "Different from your normal build",
         WrappingLabel.create(
-            "Check source bytes → clean the private base → build A → preserve and verify A's log"
-                + " → check sources again → clean the same private base → build B → preserve and"
-                + " verify B's log → compare. The private server is shut down and its base removed"
-                + " only when command termination is known."));
-    addSection(
-        body,
-        "Cost & limits",
-        WrappingLabel.create(
-            "Two full builds without disk or remote action-cache reuse can take considerably longer"
-                + " than a normal cached build. This protocol allows two concurrent jobs and a 1"
-                + " GiB private server heap. Repository download caches remain available. Source"
-                + " snapshot or evidence limits stop the audit; data is not silently dropped."));
+            "This check ignores system, user and workspace rc files, which may change toolchains,"
+                + " platforms and build behavior. Both builds run on the selected machine without"
+                + " disk or remote action-cache reuse. Two full builds can take much longer than"
+                + " a cached build (two jobs, 1 GiB private server heap). Only run repositories you"
+                + " trust: builds execute their code."));
     JPanel location = stack();
     addField(
         location,
@@ -169,10 +174,6 @@ public final class AuditReviewDialog extends JDialog {
         location, "Private output base — used for both builds", review.protocol().outputBase());
     addField(location, "Retained audit evidence", review.directory().toString());
     addSection(body, "Scope & storage", location);
-    if (!review.canLaunch()) {
-      addSection(
-          body, "Review required", WrappingLabel.create(String.join("\n\n", review.blockers())));
-    }
     addSection(
         body,
         "Meaning of the result",
@@ -184,8 +185,24 @@ public final class AuditReviewDialog extends JDialog {
     return body;
   }
 
-  private static JPanel commands(Review review) {
+  private static boolean executionLogsDisabled(Review review) {
+    return List.of(review.a(), review.b()).stream()
+        .anyMatch(
+            capture ->
+                capture.request().vetoed().contains(Capability.EXECUTION_LOG_COMPACT)
+                    || capture.request().vetoed().contains(Capability.EXECUTION_LOG_BINARY));
+  }
+
+  private static JPanel commands(Review review, Consumer<Choice> decide) {
     JPanel body = stack();
+    body.add(
+        WrappingLabel.create(
+            "Capture settings are optional to inspect; you do not need to approve each build"
+                + " separately. Changes apply to both captures."));
+    JPanel settings = new JPanel(new WrapLayout(FlowLayout.LEFT, 6, 4));
+    settings.add(button("Capture A settings…", Choice.REVIEW_A, decide));
+    settings.add(button("Capture B settings…", Choice.REVIEW_B, decide));
+    body.add(settings);
     body.add(
         WrappingLabel.create(
             "Each numbered line is one exact argument; quotes and escapes make spaces and control"
@@ -229,7 +246,7 @@ public final class AuditReviewDialog extends JDialog {
     }
     body.add(
         WrappingLabel.create(
-            "Review capture A/B to inspect added capture flags, resolve conflicts or decline"
+            "Use Commands & capture to inspect added capture flags, resolve conflicts or decline"
                 + " optional capture data. Declining a required execution log disables this audit."
                 + " No aquery/cquery or ordinary auxiliary imports run between these builds."));
     return body;
@@ -267,6 +284,11 @@ public final class AuditReviewDialog extends JDialog {
   }
 
   private static JScrollPane scroll(JPanel body) {
+    // BoxLayout shares an alignment axis. Mixing centered text with left-aligned
+    // sections pushes those sections into the right half of the available width.
+    for (Component child : body.getComponents()) {
+      if (child instanceof JComponent component) component.setAlignmentX(Component.LEFT_ALIGNMENT);
+    }
     ScrollableViewport viewport = new ScrollableViewport(new BorderLayout());
     viewport.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
     viewport.add(body, BorderLayout.NORTH);

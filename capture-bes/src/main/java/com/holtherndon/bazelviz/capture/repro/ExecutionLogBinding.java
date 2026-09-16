@@ -2,10 +2,14 @@ package com.holtherndon.bazelviz.capture.repro;
 
 import com.holtherndon.bazelviz.capture.live.CaptureCoordinator.ExecutionLogReceipt;
 import com.holtherndon.bazelviz.capture.live.CaptureResult;
+import com.holtherndon.bazelviz.core.source.DataSource;
 import com.holtherndon.bazelviz.enrich.repro.ExecutionLogComparison.Verification;
 import com.holtherndon.bazelviz.runner.caps.Capability;
+import com.holtherndon.bazelviz.runner.caps.CapabilityStatus;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlanner;
+import com.holtherndon.bazelviz.runner.plan.PlanRequest;
+import com.holtherndon.bazelviz.runner.plan.SourceAvailability;
 import com.holtherndon.bazelviz.runner.repro.ReproducibilityPlan;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -36,6 +40,85 @@ final class ExecutionLogBinding {
   }
 
   private ExecutionLogBinding() {}
+
+  /** One actionable cause, not a second generic message for the same missing evidence. */
+  static Optional<String> reviewBlocker(PlanRequest request, InstrumentationPlan plan) {
+    SourceAvailability.Entry source = plan.sourceAvailability().entry(DataSource.EXECUTION_LOG);
+    try {
+      plannedPath(plan);
+      if (!plan.sourceAvailability().isPlanned(DataSource.EXECUTION_LOG)) {
+        throw new IOException(
+            "Execution-log source availability is " + source.availability() + ", not PLANNED.");
+      }
+      return Optional.empty();
+    } catch (IOException invalid) {
+      if (request.vetoed().contains(Capability.EXECUTION_LOG_COMPACT)
+          || request.vetoed().contains(Capability.EXECUTION_LOG_BINARY)) {
+        return Optional.of(
+            "Execution-log capture is turned off. Choose Enable execution logs to restore the"
+                + " required log for both builds; the diagnostic cannot run without it.");
+      }
+      if (!request.preset().requestedCapabilities().contains(Capability.EXECUTION_LOG_COMPACT)) {
+        return Optional.of(
+            "The "
+                + request.preset().displayName()
+                + " capture preset does not request execution"
+                + " logs. Cancel and start Hermeticity diagnostic again to use its required capture"
+                + " settings.");
+      }
+      CapabilityStatus status = request.capabilities().status(Capability.EXECUTION_LOG_COMPACT);
+      String probe =
+          "Capability: " + status + "; probe: " + request.capabilities().detection() + ".";
+      String warnings =
+          request.capabilities().probeWarnings().isEmpty()
+              ? ""
+              : " Probe details: " + String.join("; ", request.capabilities().probeWarnings());
+      if (status == CapabilityStatus.UNKNOWN) {
+        return Optional.of(
+            "Bazel's flag probe could not confirm support for --execution_log_compact_file. "
+                + probe
+                + warnings
+                + " Cancel and retry after checking the selected Bazel executable and, for a remote"
+                + " workspace, its SSH connection. Do not add a log flag manually.");
+      }
+      if (status == CapabilityStatus.UNSUPPORTED) {
+        boolean binaryPlanned =
+            plan.appliedFlags().stream()
+                .anyMatch(flag -> flag.capability() == Capability.EXECUTION_LOG_BINARY);
+        return Optional.of(
+            "Bazel "
+                + request.capabilities().bazelVersion().orElse("(version unknown)")
+                + " did not report support for --execution_log_compact_file. "
+                + probe
+                + (binaryPlanned
+                    ? " Only a binary execution log was planned; the managed diagnostic"
+                        + " requires compact logs to bind each file to its build."
+                    : "")
+                + warnings
+                + " Select a supported Bazel executable with compact-log support and retry.");
+      }
+      if (source.availability() == SourceAvailability.Availability.DECLINED
+          && source.enabledBy().filter(ExecutionLogBinding::isOutputArgument).isPresent()) {
+        return Optional.of(
+            "Execution-log capture was not added: "
+                + source.reason()
+                + " ("
+                + source.enabledBy().orElseThrow()
+                + "). Remove that execution-log output option"
+                + " from the command or its wrapper and retry. The diagnostic must choose its own"
+                + " fresh private output files.");
+      }
+      return Optional.of(
+          "Compact execution-log capture could not be prepared: "
+              + invalid.getMessage()
+              + " Capture plan: "
+              + source.reason()
+              + ". "
+              + probe
+              + " Cancel and restart the diagnostic. If this persists, report these capture-plan"
+              + " details; do not add an execution-log output flag manually.");
+    }
+  }
 
   static Path plannedPath(InstrumentationPlan plan) throws IOException {
     var flags =

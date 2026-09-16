@@ -6,6 +6,7 @@ import com.holtherndon.bazelviz.capture.bes.BesEndpoint;
 import com.holtherndon.bazelviz.capture.live.Preflight;
 import com.holtherndon.bazelviz.capture.repro.ReproducibilityCoordinator.Review;
 import com.holtherndon.bazelviz.runner.caps.BazelCapabilities;
+import com.holtherndon.bazelviz.runner.caps.Capability;
 import com.holtherndon.bazelviz.runner.command.BazelCommand;
 import com.holtherndon.bazelviz.runner.exec.BazelExecutable;
 import com.holtherndon.bazelviz.runner.plan.CapturePreset;
@@ -15,6 +16,7 @@ import com.holtherndon.bazelviz.runner.plan.SourceAvailability;
 import com.holtherndon.bazelviz.runner.repro.ReproducibilityPlan;
 import com.holtherndon.bazelviz.runner.workspace.WorkspaceInfo;
 import com.holtherndon.bazelviz.ui.theme.ScrollableViewport;
+import com.holtherndon.bazelviz.ui.theme.SectionPane;
 import java.awt.Component;
 import java.awt.Container;
 import java.nio.file.Path;
@@ -22,7 +24,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
+import javax.swing.JComponent;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
@@ -30,29 +35,32 @@ import org.junit.jupiter.api.Test;
 
 final class AuditReviewDialogTest {
   @Test
-  void launchingRequiresBothAValidPlanAndExplicitNoRcAcknowledgement() throws Exception {
+  void validSetupNeedsOnlyTheExplicitRunActionAndBlockedSetupCannotRun() throws Exception {
     SwingUtilities.invokeAndWait(
         () -> {
           List<AuditReviewDialog.Choice> choices = new ArrayList<>();
           var content = AuditReviewDialog.content(review(List.of()), choices::add);
-          assertThat(content.run().isEnabled()).isFalse();
-          content.run().doClick();
           assertThat(choices).isEmpty();
-          content.acknowledgement().doClick();
           assertThat(content.run().isEnabled()).isTrue();
+          assertThat(controls(content.panel(), JCheckBox.class)).isEmpty();
+          assertThat(controls(content.panel(), JTextArea.class))
+              .anyMatch(
+                  area -> area.getText().contains("Run both builds approves two uncached builds"));
           content.run().doClick();
           assertThat(choices).containsExactly(AuditReviewDialog.Choice.RUN_BOTH);
-          content.acknowledgement().doClick();
-          assertThat(content.run().isEnabled()).isFalse();
 
           var blocked =
               AuditReviewDialog.content(
                   review(List.of("Execution log was declined")), choices::add);
-          assertThat(blocked.acknowledgement().isEnabled()).isFalse();
-          blocked.acknowledgement().setSelected(true);
           blocked.run().doClick();
           assertThat(blocked.run().isEnabled()).isFalse();
+          assertThat(blocked.run().getToolTipText()).contains("Execution log was declined");
           assertThat(choices).hasSize(1);
+          assertThat(blocked.tabs().getSelectedIndex()).isZero();
+          SectionPane firstSection =
+              controls((Container) blocked.tabs().getComponentAt(0), SectionPane.class).getFirst();
+          assertThat(controls(firstSection, JTextArea.class))
+              .anyMatch(area -> area.getText().equals("Execution log was declined"));
         });
   }
 
@@ -64,14 +72,36 @@ final class AuditReviewDialogTest {
           var content =
               AuditReviewDialog.content(
                   review(List.of("Resolve required capture option")), choices::add);
-          button(content.panel(), "Review capture A").doClick();
-          button(content.panel(), "Review capture B").doClick();
+          button(content.panel(), "Capture A settings…").doClick();
+          button(content.panel(), "Capture B settings…").doClick();
           content.cancel().doClick();
           assertThat(choices)
               .containsExactly(
                   AuditReviewDialog.Choice.REVIEW_A,
                   AuditReviewDialog.Choice.REVIEW_B,
                   AuditReviewDialog.Choice.CANCEL);
+        });
+  }
+
+  @Test
+  void disabledExecutionLogsHaveAnExplicitRecoveryActionThatDoesNotLaunch() throws Exception {
+    SwingUtilities.invokeAndWait(
+        () -> {
+          for (Capability veto :
+              List.of(Capability.EXECUTION_LOG_COMPACT, Capability.EXECUTION_LOG_BINARY)) {
+            List<AuditReviewDialog.Choice> choices = new ArrayList<>();
+            var content =
+                AuditReviewDialog.content(
+                    review(List.of("Execution logs are disabled"), Set.of(veto)), choices::add);
+            button(content.panel(), "Enable execution logs").doClick();
+            assertThat(choices).containsExactly(AuditReviewDialog.Choice.ENABLE_LOGS);
+            assertThat(content.run().isEnabled()).isFalse();
+          }
+          var probeFailure =
+              AuditReviewDialog.content(
+                  review(List.of("Could not probe compact logging")), choice -> {});
+          assertThat(controls(probeFailure.panel(), JButton.class))
+              .noneMatch(button -> button.getText().equals("Enable execution logs"));
         });
   }
 
@@ -90,6 +120,12 @@ final class AuditReviewDialogTest {
             ScrollableViewport viewport = (ScrollableViewport) scroll.getViewport().getView();
             assertThat(viewport.getScrollableTracksViewportWidth()).isTrue();
             assertThat(viewport.getScrollableTracksViewportHeight()).isFalse();
+            Container body = (Container) viewport.getComponent(0);
+            for (Component child : body.getComponents()) {
+              if (child instanceof JComponent component) {
+                assertThat(component.getAlignmentX()).isEqualTo(Component.LEFT_ALIGNMENT);
+              }
+            }
           }
           List<JTextArea> text = controls(content.panel(), JTextArea.class);
           assertThat(text)
@@ -126,6 +162,10 @@ final class AuditReviewDialogTest {
   }
 
   private static Review review(List<String> blockers) {
+    return review(blockers, Set.of());
+  }
+
+  private static Review review(List<String> blockers, Set<Capability> vetoed) {
     Path executable = Path.of("/usr/bin/bazel");
     Path workspace = Path.of("/workspace");
     BazelCommand original =
@@ -149,6 +189,14 @@ final class AuditReviewDialogTest {
             List.of(),
             new SourceAvailability(Map.of()),
             CapturePreset.defaultPreset());
+    PlanRequest request =
+        PlanRequest.initial(
+            protocol.build(),
+            capabilities,
+            CapturePreset.defaultPreset(),
+            Path.of("/private/audit/raw"),
+            Optional.of("grpc://127.0.0.1:43210"));
+    for (Capability capability : vetoed) request = request.vetoing(capability);
     Preflight capture =
         new Preflight(
             new BazelExecutable(
@@ -167,12 +215,7 @@ final class AuditReviewDialogTest {
             capabilities,
             BesEndpoint.loopback(43210),
             plan,
-            PlanRequest.initial(
-                protocol.build(),
-                capabilities,
-                CapturePreset.defaultPreset(),
-                Path.of("/private/audit/raw"),
-                Optional.of("grpc://127.0.0.1:43210")));
+            request);
     return new Review(
         Path.of("/private/audit"),
         protocol,

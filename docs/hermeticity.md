@@ -11,11 +11,14 @@ unrecorded clock, network service, host file or environment value. See
 1. Open a local or SSH Workspace. In **Console**, choose **Build mode →
    Hermeticity diagnostic**, enter a `build` command such as `build //my/package:app`,
    and press **Run diagnostic**.
-2. Read the initial warning and review the exact commands, capture settings,
-   private output base and changed flags. The initial protocol requires
+2. Review the single confirmation screen. It explains the private output base,
+   rc-free configuration and cost. Exact commands and optional capture settings
+   are under **Commands & capture**; inspecting each capture is not required.
+   The protocol requires
    **Bazel 7.4.x or 9.2.0**, confirmed capabilities, and execution on the Workspace's
    machine. An SSH Workspace runs on that Linux host, not on the desktop.
-3. Approve the check. Leave the repository unchanged until it finishes. The
+3. Click **Run both builds** to approve the check; there is no separate
+   acknowledgement checkbox. Leave the repository unchanged until it finishes. The
    app snapshots source files, cleans its private output base, runs A and
    preserves A's evidence. It snapshots the sources again, cleans the same
    private base, runs B, preserves B and takes a final source snapshot.
@@ -29,6 +32,13 @@ The same Build mode dropdown retains the normal capture options. The diagnostic
 selection is not restored after reopening a Workspace; existing normal capture
 preferences are unchanged. A failed or cancelled diagnostic keeps available
 partial runs visible without presenting them as a completed comparison.
+
+If **Run both builds** is disabled, **Cannot start yet** at the top of Summary
+explains the setup issue. If execution logs were turned off, **Enable execution
+logs** restores them for both builds and checks the plans again; it does not
+start either build. A failed flag probe, unsupported compact logs or conflicting
+output option has its own explanation. Do not add an execution-log flag manually:
+the app must choose a fresh private output file for each build.
 
 This is a deliberately controlled experiment, **not your usual rc-configured
 build**. It ignores system, user and repository bazelrc files, disables disk and

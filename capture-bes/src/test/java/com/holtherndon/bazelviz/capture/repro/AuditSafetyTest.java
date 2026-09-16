@@ -16,8 +16,10 @@ import com.holtherndon.bazelviz.core.session.SessionState;
 import com.holtherndon.bazelviz.core.source.DataSource;
 import com.holtherndon.bazelviz.enrich.repro.ExecutionLogComparison.Verification;
 import com.holtherndon.bazelviz.format.session.ManagedSessionLayout;
+import com.holtherndon.bazelviz.runner.caps.BazelCapabilities;
 import com.holtherndon.bazelviz.runner.caps.Capability;
 import com.holtherndon.bazelviz.runner.caps.CapabilityStatus;
+import com.holtherndon.bazelviz.runner.caps.FlagSpec;
 import com.holtherndon.bazelviz.runner.command.BazelCommand;
 import com.holtherndon.bazelviz.runner.files.LocalExecutionFileSystem;
 import com.holtherndon.bazelviz.runner.plan.AddedFlag;
@@ -25,6 +27,7 @@ import com.holtherndon.bazelviz.runner.plan.CapturePreset;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlan;
 import com.holtherndon.bazelviz.runner.plan.InstrumentationPlanner;
 import com.holtherndon.bazelviz.runner.plan.Overhead;
+import com.holtherndon.bazelviz.runner.plan.PlanRequest;
 import com.holtherndon.bazelviz.runner.plan.SourceAvailability;
 import com.holtherndon.bazelviz.runner.proc.ProcessOutcome;
 import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
@@ -38,10 +41,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -49,6 +55,200 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 final class AuditSafetyTest {
+  @Test
+  void defaultLocalAndRemoteCaptureDoNotInventMissingLogBlockers(@TempDir Path temporary) {
+    PlanRequest request =
+        reviewRequest(temporary, reviewCapabilities(true), CapturePreset.defaultPreset());
+    for (PlanRequest variant : List.of(request, request.withRemoteDestinations())) {
+      assertThat(
+              ExecutionLogBinding.reviewBlocker(
+                  variant, new InstrumentationPlanner().plan(variant)))
+          .isEmpty();
+    }
+  }
+
+  @Test
+  void validCompactFlagCannotOverrideUnplannedOrMissingSourceMetadata(@TempDir Path temporary)
+      throws Exception {
+    PlanRequest request =
+        reviewRequest(temporary, reviewCapabilities(true), CapturePreset.defaultPreset());
+    InstrumentationPlan planned = new InstrumentationPlanner().plan(request);
+    List<SourceAvailability> unavailable = new ArrayList<>();
+    unavailable.add(new SourceAvailability(Map.of()));
+    for (SourceAvailability.Availability state :
+        List.of(
+            SourceAvailability.Availability.UNKNOWN,
+            SourceAvailability.Availability.UNAVAILABLE,
+            SourceAvailability.Availability.DECLINED)) {
+      unavailable.add(
+          new SourceAvailability(
+              Map.of(
+                  DataSource.EXECUTION_LOG,
+                  new SourceAvailability.Entry(state, "test source " + state, Optional.empty()))));
+    }
+    for (SourceAvailability source : unavailable) {
+      InstrumentationPlan inconsistent =
+          new InstrumentationPlan(
+              planned.original(),
+              planned.effective(),
+              planned.addedFlags(),
+              planned.replacedFlags(),
+              planned.auxiliaryCommands(),
+              planned.conflicts(),
+              planned.warnings(),
+              planned.errors(),
+              planned.expectedOutputs(),
+              source,
+              planned.preset());
+      assertThat(ExecutionLogBinding.plannedPath(inconsistent))
+          .isEqualTo(ExecutionLogBinding.plannedPath(planned));
+      assertThat(ExecutionLogBinding.reviewBlocker(request, inconsistent))
+          .hasValueSatisfying(
+              message ->
+                  assertThat(message)
+                      .contains("not PLANNED", source.entry(DataSource.EXECUTION_LOG).reason()));
+    }
+  }
+
+  @Test
+  void reviewExplainsVetoAndDoesNotRepeatGenericMissingLogMessage(@TempDir Path temporary) {
+    PlanRequest request =
+        reviewRequest(temporary, reviewCapabilities(true), CapturePreset.defaultPreset());
+    for (Capability veto :
+        List.of(Capability.EXECUTION_LOG_COMPACT, Capability.EXECUTION_LOG_BINARY)) {
+      PlanRequest disabled = request.vetoing(veto);
+      assertThat(
+              ExecutionLogBinding.reviewBlocker(
+                  disabled, new InstrumentationPlanner().plan(disabled)))
+          .hasValueSatisfying(
+              message ->
+                  assertThat(message)
+                      .contains("turned off", "Enable execution logs")
+                      .doesNotContain("app-injected", "UNSUPPORTED"));
+      PlanRequest restored =
+          disabled
+              .enabling(Capability.EXECUTION_LOG_COMPACT)
+              .enabling(Capability.EXECUTION_LOG_BINARY);
+      assertThat(
+              ExecutionLogBinding.reviewBlocker(
+                  restored, new InstrumentationPlanner().plan(restored)))
+          .isEmpty();
+    }
+  }
+
+  @Test
+  void reviewDistinguishesProbeFailureFromConfirmedUnsupportedBinaryFallback(
+      @TempDir Path temporary) {
+    PlanRequest unknown =
+        reviewRequest(
+            temporary,
+            BazelCapabilities.unprobed("SSH probe timed out"),
+            CapturePreset.defaultPreset());
+    assertThat(
+            ExecutionLogBinding.reviewBlocker(unknown, new InstrumentationPlanner().plan(unknown)))
+        .hasValueSatisfying(
+            message ->
+                assertThat(message)
+                    .contains("UNKNOWN", "probe: NONE", "SSH probe timed out", "Cancel and retry")
+                    .doesNotContain("turned off", "UNSUPPORTED"));
+
+    PlanRequest binary =
+        reviewRequest(temporary, reviewCapabilities(false), CapturePreset.defaultPreset());
+    assertThat(ExecutionLogBinding.reviewBlocker(binary, new InstrumentationPlanner().plan(binary)))
+        .hasValueSatisfying(
+            message ->
+                assertThat(message)
+                    .contains(
+                        "Bazel 7.4.1",
+                        "UNSUPPORTED",
+                        "FLAGS_PROTO",
+                        "Only a binary execution log",
+                        "Select a supported Bazel executable")
+                    .doesNotContain("turned off", "Enable execution logs"));
+  }
+
+  @Test
+  void reviewIdentifiesPresetAndExistingOutputOptionSeparately(@TempDir Path temporary) {
+    PlanRequest omitted =
+        reviewRequest(temporary, reviewCapabilities(true), CapturePreset.LIVE_ESSENTIALS);
+    assertThat(
+            ExecutionLogBinding.reviewBlocker(omitted, new InstrumentationPlanner().plan(omitted)))
+        .hasValueSatisfying(
+            message ->
+                assertThat(message)
+                    .contains(
+                        "Live Essentials", "does not request", "start Hermeticity diagnostic"));
+
+    PlanRequest existing =
+        reviewRequest(temporary, reviewCapabilities(true), CapturePreset.defaultPreset())
+            .withEffectiveOptions(
+                Optional.of(List.of("--execution_log_compact_file=/wrapper/log.zst")));
+    assertThat(
+            ExecutionLogBinding.reviewBlocker(
+                existing, new InstrumentationPlanner().plan(existing)))
+        .hasValueSatisfying(
+            message ->
+                assertThat(message)
+                    .contains(
+                        "your command already writes an execution log",
+                        "--execution_log_compact_file",
+                        "Remove that execution-log output option",
+                        "wrapper")
+                    .doesNotContain("UNSUPPORTED", "Enable execution logs"));
+  }
+
+  @Test
+  void reviewFlagsAnUnexpectedMalformedPlanWithoutBlamingTheUser(@TempDir Path temporary)
+      throws Exception {
+    CaptureResult capture = bindingCapture(temporary);
+    InstrumentationPlan malformed =
+        bindingPlan(
+            capture.plan().original(),
+            capture.plan().effective(),
+            List.of(),
+            capture.plan().expectedOutputs());
+    PlanRequest request =
+        reviewRequest(temporary, reviewCapabilities(true), CapturePreset.defaultPreset());
+    assertThat(ExecutionLogBinding.reviewBlocker(request, malformed))
+        .hasValueSatisfying(
+            message ->
+                assertThat(message)
+                    .contains(
+                        "could not be prepared",
+                        "SUPPORTED",
+                        "report these capture-plan details",
+                        "do not add an execution-log output flag manually")
+                    .doesNotContain("turned off"));
+  }
+
+  private static PlanRequest reviewRequest(
+      Path temporary, BazelCapabilities capabilities, CapturePreset preset) {
+    return PlanRequest.initial(
+            BazelCommand.builder(Path.of("/bazel"), temporary).command("build").build(),
+            capabilities,
+            preset,
+            temporary.resolve("pending-raw"),
+            Optional.of("grpc://127.0.0.1:12345"))
+        .withEffectiveOptions(Optional.of(List.of()));
+  }
+
+  private static BazelCapabilities reviewCapabilities(boolean compact) {
+    Map<String, FlagSpec> flags = new LinkedHashMap<>();
+    for (String name : List.of("bes_backend", "execution_log_binary_file")) {
+      flags.put(name, FlagSpec.of(name, Set.of("build")));
+    }
+    if (compact) {
+      flags.put(
+          "execution_log_compact_file", FlagSpec.of("execution_log_compact_file", Set.of("build")));
+    }
+    return BazelCapabilities.fromFlags(
+        "bazel 7.4.1",
+        Optional.of("7.4.1"),
+        BazelCapabilities.DetectionMethod.FLAGS_PROTO,
+        flags,
+        List.of());
+  }
+
   @Test
   void cleanAndShutdownRequireTheExactSupportedReviewedVersion() throws Exception {
     for (String version : List.of("7.4.0", "7.4.1", "9.2.0")) {

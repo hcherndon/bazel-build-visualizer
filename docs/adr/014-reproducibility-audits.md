@@ -92,6 +92,15 @@ Bazel 9.2.0 or Bazel 7.4.x protocol. Required capabilities and resolved-path che
 a matching version alone is never sufficient. Ordinary capture and offline
 comparison retain their independent format/capability policies.
 
+Review UX clarification (2026-09-16): one final review is the consent boundary.
+Its **Run both builds** action explicitly approves the displayed rc-free,
+uncached experiment; no preliminary confirmation, acknowledgement checkbox or
+separate approval of each capture is required. Setup blockers appear first and
+disable execution, not the ability to inspect or correct settings. Turning off
+required execution logs is reversible through an explicit **Enable execution
+logs** action, which replans both captures without overriding other choices.
+Capability and evidence checks still apply after that action.
+
 Compatibility extension (2026-09-16): Bazel 7.4 compact execution logs do not
 include an invocation ID. Managed 7.4 audits may instead bind evidence through
 the app-controlled capture: distinct per-run output paths in private staging,

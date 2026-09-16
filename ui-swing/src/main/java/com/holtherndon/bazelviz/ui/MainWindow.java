@@ -3979,7 +3979,6 @@ public final class MainWindow extends JFrame {
     }
     request = request.withPreset(launcherPanel.preset());
     boolean audit = launcherPanel.launchMode() == LaunchMode.HERMETICITY_DIAGNOSTIC;
-    if (audit && !auditWorkflow.confirmProtocol()) return;
 
     if (!acquireCaptureLease(workspace)) {
       return;

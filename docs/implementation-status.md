@@ -5,6 +5,21 @@ is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
 
+**Simpler diagnostic launch review (2026-09-16).** Hermeticity diagnostics use
+one final confirmation, without the preliminary warning dialog or disabled
+acknowledgement checkbox. **Run both builds** explicitly approves the rc-free,
+uncached experiment once setup is valid; inspecting each capture is optional.
+Blocking issues appear first in Summary and explain the actual execution-log
+problem instead of the generic “app-injected” requirement. An explicit
+**Enable execution logs** action reverses compact/binary capture vetoes for both
+runs and returns to review, preserving other settings and all safety checks.
+Regression tests cover blocked/valid approval, reversible vetoes, probe failures,
+source-availability checks and replan-without-execution. FlatLaf renders were
+checked at 480×420 and 820×660; command sections use the full available width.
+The final gate passed: `bazel build //... --jobs=2` covered 595 targets and
+`bazel test //... --test_tag_filters=-bazel-sweep --jobs=2 --local_test_jobs=2`
+passed all 361 test targets (323 cached), including the real-Bazel audit fixtures.
+
 **Bazel 7.4 reproducibility compatibility (2026-09-16).**
 The managed protocol now accepts release versions 7.4.x alongside
 9.2.0. Since 7.4 compact logs omit invocation IDs, capture-bound verification
