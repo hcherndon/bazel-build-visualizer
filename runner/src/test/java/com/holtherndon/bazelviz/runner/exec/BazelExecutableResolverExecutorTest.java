@@ -18,6 +18,19 @@ import org.junit.jupiter.api.Test;
 final class BazelExecutableResolverExecutorTest {
 
   @Test
+  void versionParsingDistinguishesBazelFromItsLauncher() {
+    assertThat(
+            BazelExecutableResolver.reportedBazelVersion(
+                "Bazelisk version: v1.26.0\nbazel 7.4.1\n"))
+        .contains("7.4.1");
+    assertThat(BazelExecutableResolver.reportedBazelVersion("Build label: 7.4.1-custom\n"))
+        .contains("7.4.1-custom");
+    assertThat(BazelExecutableResolver.reportedBazelVersion("Bazelisk version: v1.26.0\n"))
+        .isEmpty();
+    assertThat(BazelExecutableResolver.reportedBazelVersion("")).isEmpty();
+  }
+
+  @Test
   void resolvesOnExecutorWithoutTouchingDesktopFilesystem() throws Exception {
     RecordingExecutor executor = new RecordingExecutor();
     BazelExecutable executable =

@@ -7,12 +7,21 @@ java_library(
     testonly = True,
     srcs = glob(["*.java"]),
     deps = JUNIT_DEPS + [
+        "//proto",
+        "@maven//:com_google_protobuf_protobuf_java",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/caps",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/exec",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/proc",
         "//runner/src/main/java/com/holtherndon/bazelviz/runner/runtime",
         "//test-support/src/main/java/com/holtherndon/bazelviz/testsupport/bazel",
     ],
+)
+
+java_junit5_test(
+    name = "BazelCapabilitiesTest",
+    jvm_flags = TEST_JVM_FLAGS,
+    runtime_deps = [":test-lib"] + JUNIT_RUNTIME_DEPS,
+    test_class = "com.holtherndon.bazelviz.runner.caps.BazelCapabilitiesTest",
 )
 
 java_junit5_test(
@@ -36,6 +45,7 @@ java_junit5_test(
 test_suite(
     name = "tests",
     tests = [
+        ":BazelCapabilitiesTest",
         ":BazelCapabilityDetectorExecutorTest",
         ":RealBazelCapabilityTest",
     ],

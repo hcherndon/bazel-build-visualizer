@@ -1,11 +1,13 @@
 package com.holtherndon.bazelviz.runner.caps;
 
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * What one Bazel binary was observed to support (plan 7.1 {@code BazelCapabilityDetector}).
@@ -80,8 +82,35 @@ public record BazelCapabilities(
       DetectionMethod detection,
       Map<String, FlagSpec> flags,
       List<String> probeWarnings) {
+    Set<String> commands = new HashSet<>();
+    for (Capability capability : Capability.values()) {
+      commands.add(capability.probeCommand());
+    }
+    return fromFlags(versionOutput, bazelVersion, detection, flags, commands, probeWarnings);
+  }
+
+  /**
+   * Derives statuses from command-specific probes that may have only partly succeeded.
+   *
+   * <p>An absent flag means unsupported only if its command was successfully inspected. A flag
+   * observed on another command cannot establish whether the failed command supports it.
+   *
+   * @param successfullyProbedCommands commands whose nonempty flag output was successfully read
+   */
+  public static BazelCapabilities fromFlags(
+      String versionOutput,
+      Optional<String> bazelVersion,
+      DetectionMethod detection,
+      Map<String, FlagSpec> flags,
+      Set<String> successfullyProbedCommands,
+      List<String> probeWarnings) {
+    Set<String> inspected = Set.copyOf(successfullyProbedCommands);
     Map<Capability, CapabilityStatus> statuses = new EnumMap<>(Capability.class);
     for (Capability capability : Capability.values()) {
+      if (!inspected.contains(capability.probeCommand())) {
+        statuses.put(capability, CapabilityStatus.UNKNOWN);
+        continue;
+      }
       boolean found =
           capability.flagNames().stream()
               .map(flags::get)

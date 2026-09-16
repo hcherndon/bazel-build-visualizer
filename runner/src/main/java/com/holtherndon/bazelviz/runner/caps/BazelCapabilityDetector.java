@@ -4,6 +4,7 @@ import com.google.devtools.build.lib.runtime.commands.proto.BazelFlagsProto.Flag
 import com.google.devtools.build.lib.runtime.commands.proto.BazelFlagsProto.FlagInfo;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.holtherndon.bazelviz.runner.exec.BazelExecutable;
+import com.holtherndon.bazelviz.runner.exec.BazelExecutableResolver;
 import com.holtherndon.bazelviz.runner.proc.Subprocess;
 import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
 import com.holtherndon.bazelviz.runner.runtime.CommandRequest;
@@ -143,6 +144,8 @@ public final class BazelCapabilityDetector {
           "could not create a scratch directory to probe from: " + failure);
     }
     try {
+      Optional<BazelCapabilities> mismatch = verifyProbeVersion(executable, scratch.toString());
+      if (mismatch.isPresent()) return mismatch.orElseThrow();
       Optional<BazelCapabilities> structured =
           probeFlagsProto(executable, startupArgs, scratch.toString());
       if (structured.isPresent()) {
@@ -184,6 +187,8 @@ public final class BazelCapabilityDetector {
           "could not create a scratch directory on the execution host: " + created.failureDetail());
     }
     try {
+      Optional<BazelCapabilities> mismatch = verifyProbeVersion(executable, scratch);
+      if (mismatch.isPresent()) return mismatch.orElseThrow();
       Optional<BazelCapabilities> structured = probeFlagsProto(executable, startupArgs, scratch);
       return structured.orElseGet(() -> probeHelpText(executable, startupArgs, scratch));
     } finally {
@@ -320,6 +325,7 @@ public final class BazelCapabilityDetector {
     Map<String, FlagSpec> specs = new LinkedHashMap<>();
     List<String> warnings = new ArrayList<>();
     Map<String, Set<String>> commandsByFlag = new HashMap<>();
+    Set<String> successfullyProbedCommands = new LinkedHashSet<>();
 
     // The commands a user is likely to launch, plus the two the auxiliary
     // queries use. A command missing from this list gets an empty command
@@ -349,11 +355,15 @@ public final class BazelCapabilityDetector {
         continue;
       }
       Matcher matcher = HELP_FLAG.matcher(result.stdout());
+      boolean foundFlag = false;
       while (matcher.find()) {
+        foundFlag = true;
         commandsByFlag
             .computeIfAbsent(matcher.group(1), ignored -> new LinkedHashSet<>())
             .add(command);
       }
+      if (foundFlag) successfullyProbedCommands.add(command);
+      else warnings.add("'help " + command + "' returned no recognizable flags");
     }
 
     if (commandsByFlag.isEmpty()) {
@@ -369,25 +379,64 @@ public final class BazelCapabilityDetector {
         executable.effectiveVersion(),
         BazelCapabilities.DetectionMethod.HELP_TEXT,
         specs,
+        successfullyProbedCommands,
         warnings);
   }
 
   // ------------------------------------------------------------- internals
 
   /**
-   * Pins Bazelisk to the version the workspace resolved to.
+   * Pins version-selecting launchers to the version the workspace resolved to.
    *
    * <p>Without this, probing from a scratch directory asks Bazelisk for whatever it considers
    * current — downloading a Bazel the user does not have and reporting its flags as theirs.
+   * Bazelisk may be installed as a file named {@code bazel}, with no identifying banner, so its
+   * name is not a reliable gate. Native Bazel ignores this launcher-only variable.
    */
   private static Map<String, String> pinnedVersion(BazelExecutable executable) {
-    if (!executable.isBazelisk()) {
-      return Map.of();
-    }
     return executable
         .bazelVersion()
         .map(version -> Map.of("USE_BAZEL_VERSION", version))
         .orElseGet(Map::of);
+  }
+
+  /** Never label a scratch launcher's flag table with a different workspace-selected version. */
+  private Optional<BazelCapabilities> verifyProbeVersion(
+      BazelExecutable executable, String scratch) {
+    if (executable.bazelVersion().isEmpty()) return Optional.empty();
+    String expected = executable.bazelVersion().orElseThrow();
+    ProbeResult result;
+    try {
+      // --version is answered by Bazel's client, without acquiring a workspace server lock.
+      result =
+          runProbe(
+              List.of(executable.resolved().toString(), "--version"),
+              scratch,
+              pinnedVersion(executable));
+    } catch (IOException | InterruptedException failure) {
+      if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+      return Optional.of(
+          BazelCapabilities.unprobed(
+              "could not verify the capability probe's Bazel version: " + failure));
+    }
+    if (!result.isSuccess()) {
+      return Optional.of(
+          BazelCapabilities.unprobed(
+              "could not verify the capability probe's Bazel version: " + result.failureDetail()));
+    }
+    Optional<String> observed =
+        BazelExecutableResolver.reportedBazelVersion(result.stdout() + "\n" + result.stderr());
+    if (observed.filter(expected::equals).isEmpty()) {
+      return Optional.of(
+          BazelCapabilities.unprobed(
+              "The workspace selected Bazel "
+                  + expected
+                  + ", but its launcher reported "
+                  + observed.orElse("no Bazel version")
+                  + " outside the workspace. The capability probe was not used. Select the exact"
+                  + " Bazel binary or a launcher that honors USE_BAZEL_VERSION, then retry."));
+    }
+    return Optional.empty();
   }
 
   private static List<String> warningsFrom(ProbeResult result) {

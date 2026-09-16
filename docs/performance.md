@@ -1,5 +1,11 @@
 # Performance
 
+Capability detection adds one client-only `bazel --version` check outside the
+workspace before trusting a fresh flag probe when the workspace version is
+known. It uses the existing probe timeout and bounded output capture, starts no
+workspace server, and is skipped on detector cache hits. SSH incurs one extra
+command round trip per fresh detection; no latency benchmark is claimed.
+
 SSH recovery is on demand, not periodic polling. Healthy operations check the
 owned master process locally. After a possible transport failure, a bounded
 five-second remote liveness probe distinguishes ordinary operation errors from

@@ -120,7 +120,12 @@ Three details are load-bearing and each cost an experiment to learn:
   server, no lock, ~0.7 s.
 - **Bazelisk must be pinned.** Outside a workspace it has no `.bazelversion`
   to read and will happily probe a different Bazel than the build will use, so
-  the resolved version is passed back through `USE_BAZEL_VERSION`. On a Linux
+  the resolved version is passed back through `USE_BAZEL_VERSION`, even when
+  the launcher is installed as `bazel` and has no Bazelisk banner. A client-only
+  `--version` check in the same scratch directory verifies that the launcher
+  honors that selection before its flag table is trusted. A mismatch or failed
+  version check yields `UNKNOWN`, not another release's flags labelled with the
+  workspace's version. Native Bazel ignores this launcher-only variable. On a Linux
   SSH host, GNU `env`'s `--` option terminator must precede that assignment;
   after an assignment it is treated as the executable name and the probe fails.
 - **stdout must not be merged with stderr.** The base64 is on stdout, a batch
@@ -130,6 +135,16 @@ Three details are load-bearing and each cost an experiment to learn:
 A failed probe yields `UNKNOWN` for every capability, never `UNSUPPORTED`. One
 unrecognized flag in a user's `.bazelrc` makes the probe exit 2 with empty
 stdout on every version.
+
+The text fallback tracks successful help requests separately for each command.
+If `help build --long` fails or returns no recognizable flags, capabilities
+needed for `build` remain `UNKNOWN` even when another command's help succeeds.
+Only a successful command-specific flag listing can establish absence. Stock
+7.4.1 reports `execution_log_compact_file` for `build` in both the structured
+table and long help; a missing result is not inferred from its version number.
+The opt-in `renamedBazeliskKeepsSelectedVersionOutsideWorkspace` regression in
+`RealBazelCapabilityTest` uses `BBV_REPRO_BAZEL_VERSION` to check one selected
+release, without expanding the ordinary version matrix or running a build.
 
 For an SSH workspace the resolver, version check, flag probe and effective-rc
 inspection run through the same non-TTY remote executor that will launch the

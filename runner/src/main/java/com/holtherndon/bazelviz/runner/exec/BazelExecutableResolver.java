@@ -158,8 +158,7 @@ public final class BazelExecutableResolver {
     }
 
     String output = result.stdout() + (result.stderr().isBlank() ? "" : "\n" + result.stderr());
-    Optional<String> version =
-        findFirst(SHORT_VERSION, output).or(() -> findFirst(BUILD_LABEL, output));
+    Optional<String> version = reportedBazelVersion(output);
     if (!result.isSuccess() && version.isEmpty()) {
       throw new ExecutableNotUsableException(entered, result.failureDetail());
     }
@@ -245,8 +244,7 @@ public final class BazelExecutableResolver {
                 RuntimeEnvironment.INHERIT_ALL,
                 false));
     String output = result.stdout() + (result.stderr().isBlank() ? "" : "\n" + result.stderr());
-    Optional<String> version =
-        findFirst(SHORT_VERSION, output).or(() -> findFirst(BUILD_LABEL, output));
+    Optional<String> version = reportedBazelVersion(output);
     if (!result.isSuccess() && version.isEmpty()) {
       throw new ExecutableNotUsableException(entered, result.failureDetail());
     }
@@ -356,6 +354,12 @@ public final class BazelExecutableResolver {
         .filter(Files::isExecutable)
         .map(candidate -> candidate.toAbsolutePath().normalize())
         .findFirst();
+  }
+
+  /** Reads Bazel's version, not its launcher's version, from a client version response. */
+  public static Optional<String> reportedBazelVersion(String output) {
+    Objects.requireNonNull(output, "output");
+    return findFirst(SHORT_VERSION, output).or(() -> findFirst(BUILD_LABEL, output));
   }
 
   private static Optional<String> findFirst(Pattern pattern, String text) {

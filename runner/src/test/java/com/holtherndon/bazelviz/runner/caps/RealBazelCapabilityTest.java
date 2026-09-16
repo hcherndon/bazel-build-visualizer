@@ -5,14 +5,27 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.holtherndon.bazelviz.runner.exec.BazelExecutable;
 import com.holtherndon.bazelviz.runner.exec.BazelExecutableResolver;
+import com.holtherndon.bazelviz.runner.runtime.CommandExecutor;
+import com.holtherndon.bazelviz.runner.runtime.CommandRequest;
+import com.holtherndon.bazelviz.runner.runtime.CommandResult;
+import com.holtherndon.bazelviz.runner.runtime.InteractiveChannel;
+import com.holtherndon.bazelviz.runner.runtime.LocalCommandExecutor;
+import com.holtherndon.bazelviz.runner.runtime.RunningCommand;
 import com.holtherndon.bazelviz.testsupport.bazel.BazelBinary;
 import com.holtherndon.bazelviz.testsupport.bazel.BazelWorkspaceFixture;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -27,6 +40,115 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 @Tag("real-bazel")
 class RealBazelCapabilityTest {
+
+  @Test
+  void renamedBazeliskKeepsSelectedVersionOutsideWorkspace(@TempDir Path directory)
+      throws Exception {
+    assumeTrue(
+        System.getenv(BazelBinary.REPRODUCIBILITY_VERSION_ENV) != null,
+        "Opt in with BBV_REPRO_BAZEL_VERSION to check one selected release, not another matrix.");
+    String version = BazelBinary.reproducibilityFixtureVersion();
+    Optional<Path> bazel = BazelBinary.find();
+    assumeTrue(bazel.isPresent(), BazelBinary::whyUnavailable);
+    BazelWorkspaceFixture workspace = BazelWorkspaceFixture.simple(directory.resolve("ws"), 1);
+    Files.writeString(workspace.root().resolve(".bazelversion"), version + "\n");
+    Map<String, String> selectedVersion = Map.of(BazelBinary.VERSION_ENV, version);
+    BazelExecutable original =
+        BazelExecutableResolver.resolve(
+            bazel.orElseThrow().toString(), Optional.of(workspace.root()), selectedVersion);
+    assumeTrue(original.isBazelisk(), "This regression needs a real Bazelisk launcher.");
+    assumeTrue(
+        Files.size(original.resolved()) < 16 * 1024 * 1024,
+        "Copy only the small launcher, not a full Bazel distribution.");
+    assertThat(original.bazelVersion()).contains(version);
+
+    Path renamed =
+        Files.copy(
+            original.resolved(),
+            Files.createDirectory(directory.resolve("bin")).resolve("bazel"),
+            StandardCopyOption.COPY_ATTRIBUTES);
+    Map<Path, String> before = workspaceContents(workspace.root());
+    BazelExecutable executable =
+        BazelExecutableResolver.resolve(
+            renamed.toString(), Optional.of(workspace.root()), selectedVersion);
+    assertThat(executable.bazelVersion()).contains(version);
+    assertThat(executable.isBazelisk()).isFalse();
+
+    RealRecordingExecutor executor = new RealRecordingExecutor();
+    BazelCapabilities capabilities =
+        new BazelCapabilityDetector(executor, Duration.ofSeconds(30))
+            .detect(executable, List.of("--host_jvm_args=-Xmx512m"));
+
+    assertThat(capabilities.detection())
+        .describedAs("probe warnings: %s", capabilities.probeWarnings())
+        .isEqualTo(BazelCapabilities.DetectionMethod.FLAGS_PROTO);
+    assertThat(capabilities.bazelVersion()).contains(version);
+    assertThat(capabilities.supports(Capability.EXECUTION_LOG_COMPACT)).isTrue();
+    assertThat(capabilities.flags()).hasSizeGreaterThan(500);
+    List<ProbeInvocation> probes =
+        executor.invocations.stream()
+            .filter(call -> call.request().argv().getFirst().equals(renamed.toString()))
+            .toList();
+    assertThat(probes).hasSize(2);
+    assertThat(probes.getFirst().request().argv()).contains("--version");
+    assertThat(probes.getFirst().result().isSuccess()).isTrue();
+    assertThat(probes.getFirst().result().stdout()).contains("bazel " + version);
+    assertThat(probes.getLast().request().argv()).contains("help", "flags-as-proto");
+    for (ProbeInvocation probe : probes) {
+      assertThat(probe.request().environmentOverrides())
+          .containsEntry(BazelBinary.VERSION_ENV, Optional.of(version));
+      Path scratch = Path.of(probe.request().workingDirectory().orElseThrow());
+      assertThat(scratch.startsWith(workspace.root())).isFalse();
+      assertThat(Files.exists(scratch)).as("probe scratch is removed").isFalse();
+    }
+    assertThat(workspaceContents(workspace.root())).isEqualTo(before);
+  }
+
+  private static Map<Path, String> workspaceContents(Path root) throws IOException {
+    Map<Path, String> contents = new LinkedHashMap<>();
+    try (var paths = Files.walk(root)) {
+      for (Path path : paths.sorted().toList()) {
+        contents.put(
+            root.relativize(path),
+            Files.isSymbolicLink(path)
+                ? "symlink: " + Files.readSymbolicLink(path)
+                : Files.isDirectory(path) ? "directory" : Files.readString(path));
+      }
+    }
+    return contents;
+  }
+
+  private record ProbeInvocation(CommandRequest request, CommandResult result) {}
+
+  /** Records the actual process requests and payloads; no capability output is simulated. */
+  private static final class RealRecordingExecutor implements CommandExecutor {
+    final List<ProbeInvocation> invocations = new ArrayList<>();
+
+    @Override
+    public CommandResult run(CommandRequest request, Duration timeout)
+        throws IOException, InterruptedException {
+      CommandResult result = LocalCommandExecutor.INSTANCE.run(request, timeout);
+      invocations.add(new ProbeInvocation(request, result));
+      return result;
+    }
+
+    @Override
+    public CommandResult runRedirectingStdout(
+        CommandRequest request, Duration timeout, Path localOutputFile) {
+      throw new UnsupportedOperationException("Capability probes must not redirect output.");
+    }
+
+    @Override
+    public RunningCommand start(CommandRequest request) {
+      throw new UnsupportedOperationException(
+          "Capability probes must not leave a running process.");
+    }
+
+    @Override
+    public InteractiveChannel openTerminal(String workingDirectory) {
+      throw new UnsupportedOperationException("Capability probes must not open terminals.");
+    }
+  }
 
   @ParameterizedTest(name = "Bazel {0}")
   @ValueSource(strings = {"6.5.0", "7.6.1", "8.4.1", "9.2.0"})

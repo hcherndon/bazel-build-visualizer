@@ -5,6 +5,23 @@ is planned to exist. Update it in the same change that lands the work.
 
 ## 0.1.0 release status
 
+**Capability probe identity and partial results (2026-09-16).** The scratch
+probe pins the workspace-resolved Bazel version even for launchers installed
+as `bazel` without a Bazelisk banner, and verifies the scratch launcher's
+client-reported version before trusting its flags. A wrong version or failed
+version check is unknown, not unsupported. Help fallback now tracks each
+successfully inspected command: failed or empty build help cannot become a
+negative capability verdict merely because test or query help succeeded.
+No version-based compact-log override or weakened diagnostic check is added.
+Regression tests cover renamed launchers, mismatched and failed version checks,
+partial help failures, and positive/negative flag evidence. On macOS arm64,
+the opt-in real Bazel 7.4.1 renamed-launcher probe and managed A/B diagnostic
+both passed. The full gate passed: `bazel build //... --jobs=2` covered 596
+targets; `bazel test //... --test_tag_filters=-bazel-sweep --jobs=2
+--local_test_jobs=2` passed all 362 test targets (273 cached). The affected
+user's host has not been reproduced; these checks establish the detector
+fixes and stock 7.4.1 support, not that host's specific failure cause.
+
 **Simpler diagnostic launch review (2026-09-16).** Hermeticity diagnostics use
 one final confirmation, without the preliminary warning dialog or disabled
 acknowledgement checkbox. **Run both builds** explicitly approves the rc-free,
